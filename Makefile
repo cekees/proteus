@@ -360,7 +360,7 @@ endif
 ifdef CONDA_PREFIX
 	cd ${CONDA_PREFIX}/lib/python3.7/site-packages/notebook/static/components/react && wget https://unpkg.com/react-dom@16/umd/react-dom.production.min.js
 else
-	cd linux/lib/python3.7/site-packages/notebook/static/components/react && wget https://unpkg.com/react-dom@16/umd/react-dom.production.min.js
+	cd linux/lib/python3.9/site-packages/notebook/static/components/react && wget https://unpkg.com/react-dom@16/umd/react-dom.production.min.js
 endif
 
 jupyterlab:

@@ -10,6 +10,8 @@ import proteus
 import sys
 from proteus.mprans.cRANS2P import *
 from proteus.mprans.cRANS2P2D import *
+from proteus.mprans.cRANS1P import *
+from proteus.mprans.cRANS1P2D import *
 from proteus import Profiling
 from proteus import LinearAlgebraTools as LAT
 from proteus.Comm import (globalSum,
@@ -244,7 +246,9 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  force_y=None,
                  force_z=None,
                  normalize_pressure=False,
-                 useInternalParticleSolver=True):
+                 useInternalParticleSolver=False,
+                 full2P=True):
+        self.full2P=full2P
         self.normalize_pressure=normalize_pressure
         self.force_x=force_x
         self.force_y=force_y
@@ -1617,26 +1621,49 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.numericalFlux.isDOFBoundary[3] = self.numericalFlux.isDOFBoundary[2].copy()
             self.numericalFlux.ebqe[('u', 3)] = self.numericalFlux.ebqe[('u', 2)].copy()
             logEvent("calling cRANS2P2D_base ctor")
-            self.rans2p = cRANS2P2D_base(self.nSpace_global,
-                                         self.nQuadraturePoints_element,
-                                         self.u[0].femSpace.elementMaps.localFunctionSpace.dim,
-                                         self.u[0].femSpace.referenceFiniteElement.localFunctionSpace.dim,
-                                         self.testSpace[0].referenceFiniteElement.localFunctionSpace.dim,
-                                         self.u[1].femSpace.referenceFiniteElement.localFunctionSpace.dim,
-                                         self.testSpace[1].referenceFiniteElement.localFunctionSpace.dim,
-                                         self.nElementBoundaryQuadraturePoints_elementBoundary,
-                                         compKernelFlag)
+            if self.coefficients.full2P:
+                self.rans2p = cRANS2P2D_base(self.nSpace_global,
+                                             self.nQuadraturePoints_element,
+                                             self.u[0].femSpace.elementMaps.localFunctionSpace.dim,
+                                             self.u[0].femSpace.referenceFiniteElement.localFunctionSpace.dim,
+                                             self.testSpace[0].referenceFiniteElement.localFunctionSpace.dim,
+                                             self.u[1].femSpace.referenceFiniteElement.localFunctionSpace.dim,
+                                             self.testSpace[1].referenceFiniteElement.localFunctionSpace.dim,
+                                             self.nElementBoundaryQuadraturePoints_elementBoundary,
+                                             compKernelFlag)
+            else:
+                self.rans2p = cRANS1P2D_base(self.nSpace_global,
+                                             self.nQuadraturePoints_element,
+                                             self.u[0].femSpace.elementMaps.localFunctionSpace.dim,
+                                             self.u[0].femSpace.referenceFiniteElement.localFunctionSpace.dim,
+                                             self.testSpace[0].referenceFiniteElement.localFunctionSpace.dim,
+                                             self.u[1].femSpace.referenceFiniteElement.localFunctionSpace.dim,
+                                             self.testSpace[1].referenceFiniteElement.localFunctionSpace.dim,
+                                             self.nElementBoundaryQuadraturePoints_elementBoundary,
+                                             compKernelFlag)
+                
         else:
             logEvent("calling  cRANS2P_base ctor")
-            self.rans2p = cRANS2P_base(self.nSpace_global,
-                                       self.nQuadraturePoints_element,
-                                       self.u[0].femSpace.elementMaps.localFunctionSpace.dim,
-                                       self.u[0].femSpace.referenceFiniteElement.localFunctionSpace.dim,
-                                       self.testSpace[0].referenceFiniteElement.localFunctionSpace.dim,
-                                       self.u[1].femSpace.referenceFiniteElement.localFunctionSpace.dim,
-                                       self.testSpace[1].referenceFiniteElement.localFunctionSpace.dim,
-                                       self.nElementBoundaryQuadraturePoints_elementBoundary,
-                                       compKernelFlag)
+            if self.coefficients.full2P:
+                self.rans2p = cRANS2P_base(self.nSpace_global,
+                                           self.nQuadraturePoints_element,
+                                           self.u[0].femSpace.elementMaps.localFunctionSpace.dim,
+                                           self.u[0].femSpace.referenceFiniteElement.localFunctionSpace.dim,
+                                           self.testSpace[0].referenceFiniteElement.localFunctionSpace.dim,
+                                           self.u[1].femSpace.referenceFiniteElement.localFunctionSpace.dim,
+                                           self.testSpace[1].referenceFiniteElement.localFunctionSpace.dim,
+                                           self.nElementBoundaryQuadraturePoints_elementBoundary,
+                                           compKernelFlag)
+            else:
+                self.rans2p = cRANS1P_base(self.nSpace_global,
+                                           self.nQuadraturePoints_element,
+                                           self.u[0].femSpace.elementMaps.localFunctionSpace.dim,
+                                           self.u[0].femSpace.referenceFiniteElement.localFunctionSpace.dim,
+                                           self.testSpace[0].referenceFiniteElement.localFunctionSpace.dim,
+                                           self.u[1].femSpace.referenceFiniteElement.localFunctionSpace.dim,
+                                           self.testSpace[1].referenceFiniteElement.localFunctionSpace.dim,
+                                           self.nElementBoundaryQuadraturePoints_elementBoundary,
+                                           compKernelFlag)
         self.ball_u = self.u[1].dof.copy()
         self.ball_v = self.u[2].dof.copy()
         if self.nSpace_global == 3:

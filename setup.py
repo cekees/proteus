@@ -631,6 +631,23 @@ EXTENSIONS_TO_BUILD = [
         extra_link_args=PROTEUS_EXTRA_LINK_ARGS,
         language='c++'),
     Extension(
+        'mprans.cRANS1P',
+        ['proteus/mprans/RANS1P.cpp'],
+        depends=["proteus/mprans/RANS1P.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/MixedModelFactory.h","proteus/CompKernel.h"] + [
+            "proteus/equivalent_polynomials.h",
+            "proteus/equivalent_polynomials_utils.h",
+            "proteus/equivalent_polynomials_coefficients.h",
+            'proteus/equivalent_polynomials_coefficients_quad.h'],
+        include_dirs=get_xtensor_include() + PROTEUS_MPI_INCLUDE_DIRS,
+        extra_compile_args=PROTEUS_OPT+PROTEUS_MPI_LIB_DIRS+['-std=c++14','-fopenmp'],#,'-DXTENSOR_USE_OPENMP'],
+        library_dirs=PROTEUS_MPI_LIB_DIRS+[PROTEUS_LAPACK_LIB_DIR,
+                      PROTEUS_BLAS_LIB_DIR],
+        libraries=PROTEUS_MPI_LIBS+['m',
+                                    PROTEUS_LAPACK_LIB,
+                                    PROTEUS_BLAS_LIB],
+        extra_link_args=PROTEUS_SCOREC_EXTRA_LINK_ARGS+PROTEUS_EXTRA_LINK_ARGS+['-fopenmp'],
+        language='c++'),
+    Extension(
         'mprans.cRANS2P',
         ['proteus/mprans/RANS2P.cpp'],
         depends=["proteus/mprans/RANS2P.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/MixedModelFactory.h","proteus/CompKernel.h"] + [
@@ -657,6 +674,23 @@ EXTENSIONS_TO_BUILD = [
             'proteus/equivalent_polynomials_coefficients_quad.h'],
         include_dirs=get_xtensor_include(),
         extra_compile_args=PROTEUS_OPT+['-std=c++14'],
+        language='c++'),
+    Extension(
+        'mprans.cRANS1P2D',
+        ['proteus/mprans/RANS1P2D.cpp'],
+        depends=["proteus/mprans/RANS1P2D.h"] + ["proteus/MixedModelFactory.h","proteus/CompKernel.h"] + [
+            "proteus/equivalent_polynomials.h",
+            "proteus/equivalent_polynomials_utils.h",
+            "proteus/equivalent_polynomials_coefficients.h",
+            'proteus/equivalent_polynomials_coefficients_quad.h'],
+        include_dirs=get_xtensor_include() + PROTEUS_MPI_INCLUDE_DIRS,
+        extra_compile_args=PROTEUS_OPT+PROTEUS_MPI_LIB_DIRS+['-std=c++14','-fopenmp'],#,'-DXTENSOR_USE_OPENMP'],
+        library_dirs=PROTEUS_MPI_LIB_DIRS+[PROTEUS_LAPACK_LIB_DIR,
+                      PROTEUS_BLAS_LIB_DIR],
+        libraries=PROTEUS_MPI_LIBS+['m',
+                                    PROTEUS_LAPACK_LIB,
+                                    PROTEUS_BLAS_LIB],
+        extra_link_args=PROTEUS_SCOREC_EXTRA_LINK_ARGS+PROTEUS_EXTRA_LINK_ARGS+['-fopenmp'],
         language='c++'),
     Extension(
         'mprans.cRANS2P2D',
