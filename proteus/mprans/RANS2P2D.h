@@ -192,6 +192,7 @@ namespace proteus
       
       while (td < dt)
 	{
+	  double w = td/dt, w_last = 1.0-w;
 	  nSteps +=1;
 	  //particle-wall and particle-particle collision forces
 #pragma omp parallel for
@@ -201,8 +202,8 @@ namespace proteus
 	      double vp[3], vpnorm;
 	      for (int i=0; i< 3; i++)
 		{
-		  ball_last_FT(ip,   i) = particle_netForces(ip,i) + ball_mass(ip)*g[i] + ball_f(ip,i) + wall_f(ip,i);// - 2.0*0.001*vnorm*ball_last_velocity(ip,i);
-		  ball_last_FT(ip, 3+i) = particle_netMoments(ip,i);
+		  ball_last_FT(ip,   i) = w_last*last_particle_netForces(ip,i) + w*particle_netForces(ip,i) + ball_mass(ip)*g[i] + ball_f(ip,i) + wall_f(ip,i);// - 2.0*0.001*vnorm*ball_last_velocity(ip,i);
+		  ball_last_FT(ip, 3+i) = last_particle_netMoments(ip,i);
 		  vp[i] = ball_last_velocity(ip,i) + ball_a(ip,i)*DT;
 		}
 	      vpnorm = enorm(vp);
@@ -254,10 +255,11 @@ namespace proteus
 	      int pivots[18];
 	      double r[18];
 	      double J[18*18];
+	      double w = td/dt, w_last = 1.0-w;
 	      for (int i=0; i<3; i++)
 		{
-		  ball_FT(ip,   i) = particle_netForces(ip, i) + ball_mass(ip)*g[i] + ball_f(ip, i) + wall_f(ip, i);
-		  ball_FT(ip, 3+i) = particle_netMoments(ip, i);
+		  ball_FT(ip,   i) = w*particle_netForces(ip, i) + w_last*last_particle_netForces(ip, i) + ball_mass(ip)*g[i] + ball_f(ip, i) + wall_f(ip, i);
+		  ball_FT(ip, 3+i) = w*particle_netMoments(ip, i) + w_last*last_particle_netMoments(ip, i);
 		}
 	      F6DOF(DT, ball_mass(ip), &ball_I.data()[ip*9], &ball_last_u.data()[ip*18], &ball_FT.data()[ip*6], &ball_last_FT.data()[ip*6], &ball_last_mom.data()[ip*6], &ball_u.data()[ip*18], 
 		    &ball_mom.data()[ip*6], r, J);

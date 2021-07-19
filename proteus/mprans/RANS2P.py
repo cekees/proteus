@@ -997,6 +997,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             mpicomm.Bcast(self.ball_angular_velocity)
             logEvent("minimimum particle dt {0}".format(min_dt[0]))
             logEvent("particle sub-steps {0}".format(nSteps[0]))
+            self.last_particle_netForces[:] = self.particle_netForces[:self.nParticles]
+            self.last_particle_netMoments[:] = self.last_particle_netMoments[:self.nParticles]
             if self.comm.isMaster():
                 np.savetxt(self.history_file, np.vstack((self.ball_center,self.ball_velocity, self.ball_angular_velocity)))
                 self.history_file.flush()
@@ -1673,6 +1675,81 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         r : :class:`numpy.ndarray`
             Stores the calculated residual vector.
         """
+        self.comm = Comm.get()
+        # take provisional particle step
+        if self.timeIntegration.dt < 1.0 and self.coefficients.nParticles > 0 and self.coefficients.use_ball_as_particle and self.coefficients.useInternalParticleSolver:
+            try:
+                self.ball_last_velocity_save[:] = self.coefficients.ball_last_velocity
+                self.ball_last_mom_save[:] = self.coefficients.ball_last_mom
+                self.ball_last_u_save[:] = self.coefficients.ball_last_u
+                self.ball_f_save[:] = self.coefficients.ball_f
+                self.wall_f_save[:] = self.coefficients.wall_f
+                self.ball_a_save[:] = self.coefficients.ball_a
+                self.ball_center_save[:] = self.coefficients.ball_center
+            except:
+                self.ball_last_velocity_save = self.coefficients.ball_last_velocity.copy()
+                self.ball_last_mom_save = self.coefficients.ball_last_mom.copy()
+                self.ball_last_u_save = self.coefficients.ball_last_u.copy()
+                self.ball_f_save = self.coefficients.ball_f.copy()
+                self.wall_f_save = self.coefficients.wall_f.copy()
+                self.ball_a_save = self.coefficients.ball_a.copy()
+                self.ball_center_save = self.coefficients.ball_center.copy()
+
+            argsDict = cArgumentsDict.ArgumentsDict()
+            argsDict["ball_FT"] = self.coefficients.ball_FT
+            argsDict["ball_last_FT"] = self.coefficients.ball_last_FT
+            argsDict["ball_h"] = self.coefficients.ball_h
+            argsDict["ball_last_h"] = self.coefficients.ball_last_h
+            argsDict["ball_center"] = self.coefficients.ball_center
+            argsDict["ball_center_last"] = self.coefficients.ball_center_last
+            argsDict["ball_velocity"] = self.coefficients.ball_velocity
+            argsDict["ball_angular_velocity"] = self.coefficients.ball_angular_velocity
+            argsDict["ball_last_velocity"] = self.coefficients.ball_last_velocity
+            argsDict["ball_last_angular_velocity"] = self.coefficients.ball_last_angular_velocity
+            argsDict["ball_Q"] = self.coefficients.ball_Q
+            argsDict["ball_last_Q"] = self.coefficients.ball_last_Q
+            argsDict["ball_Omega"] = self.coefficients.ball_Omega
+            argsDict["ball_last_Omega"] = self.coefficients.ball_last_Omega
+            argsDict["ball_u"] = self.coefficients.ball_u
+            argsDict["ball_last_u"] = self.coefficients.ball_last_u
+            argsDict["ball_mom"] = self.coefficients.ball_mom
+            argsDict["ball_last_mom"] = self.coefficients.ball_last_mom
+            argsDict["ball_a"] = self.coefficients.ball_a
+            argsDict["ball_I"] = self.coefficients.ball_I
+            argsDict["ball_mass"] = self.coefficients.ball_mass
+            argsDict["ball_radius"] = self.coefficients.ball_radius
+            argsDict["ball_f"] = self.coefficients.ball_f
+            argsDict["wall_f"] = self.coefficients.wall_f
+            argsDict["particle_netForces"] = self.coefficients.particle_netForces
+            argsDict["particle_netMoments"] = self.coefficients.particle_netMoments
+            argsDict["last_particle_netForces"] = self.coefficients.last_particle_netForces
+            argsDict["last_particle_netMoments"] = self.coefficients.last_particle_netMoments
+            argsDict["ball_angular_velocity_avg"] = self.coefficients.ball_angular_velocity_avg
+            argsDict["g"] = self.coefficients.particle_g
+            argsDict["L"] = self.coefficients.L
+            argsDict["dt"] = self.timeIntegration.dt
+            argsDict["ball_force_range"] = self.coefficients.ball_force_range
+            argsDict["ball_stiffness"] = self.coefficients.ball_stiffness
+            argsDict["particle_cfl"] = self.coefficients.particle_cfl
+            argsDict["min_dt"] = min_dt = np.zeros((1,),'d')
+            argsDict["nSteps"] = nSteps = np.zeros((1,),'i')
+            logEvent("Provisional particle step")
+            if self.comm.rank() == 0:
+                self.rans2p.step6DOF(argsDict)
+            from mpi4py import MPI
+            mpicomm = MPI.COMM_WORLD
+            mpicomm.Bcast(self.coefficients.ball_center)
+            mpicomm.Bcast(self.coefficients.ball_velocity)
+            mpicomm.Bcast(self.coefficients.ball_angular_velocity)
+            logEvent("minimimum particle dt {0}".format(min_dt[0]))
+            logEvent("particle sub-steps {0}".format(nSteps[0]))
+            self.coefficients.ball_last_velocity[:] = self.ball_last_velocity_save
+            self.coefficients.ball_last_mom[:] = self.ball_last_mom_save
+            self.coefficients.ball_last_u[:] = self.ball_last_u_save
+            self.coefficients.ball_f[:] = self.ball_f_save
+            self.coefficients.wall_f[:] = self.wall_f_save
+            self.coefficients.ball_a[:] = self.ball_a_save
+            self.coefficients.ball_center[:] = self.ball_center_save
         assert(np.all(np.isfinite(u)))
         assert(np.all(np.isfinite(r)))
         # Load the unknowns into the finite element dof
