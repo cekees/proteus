@@ -736,7 +736,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         comm = Comm.get()
         import os
         if comm.isMaster():
-            self.history_file = open(os.path.join(proteus.Profiling.logDir, "particles.txt"),"ab")
+            self.history_file = open(os.path.join(proteus.Profiling.logDir, "particles.txt"),"wb")
             self.timeHistory = open(os.path.join(proteus.Profiling.logDir, "timeHistory.txt"), "w")
             self.wettedAreaHistory = open(os.path.join(proteus.Profiling.logDir, "wettedAreaHistory.txt"), "w")
             self.forceHistory_p = open(os.path.join(proteus.Profiling.logDir, "forceHistory_p.txt"), "w")
@@ -910,6 +910,54 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                         sdf_ebNE_kb,sdNormals = sdf(self.model.ebqe['x'][ebNE,kb])
                         if (sdf_ebNE_kb < self.ebqe_phi_s[ebNE,kb]):
                             self.ebqe_phi_s[ebNE,kb]=sdf_ebNE_kb
+        if self.nParticles > 0 and self.use_ball_as_particle and self.useInternalParticleSolver:
+            argsDict = cArgumentsDict.ArgumentsDict()
+            argsDict["ball_FT"] = self.ball_FT
+            argsDict["ball_last_FT"] = self.ball_last_FT
+            argsDict["ball_h"] = self.ball_h
+            argsDict["ball_last_h"] = self.ball_last_h
+            argsDict["ball_center"] = self.ball_center
+            argsDict["ball_center_last"] = self.ball_center_last
+            argsDict["ball_velocity"] = self.ball_velocity
+            argsDict["ball_angular_velocity"] = self.ball_angular_velocity
+            argsDict["ball_last_velocity"] = self.ball_last_velocity
+            argsDict["ball_last_angular_velocity"] = self.ball_last_angular_velocity
+            argsDict["ball_Q"] = self.ball_Q
+            argsDict["ball_last_Q"] = self.ball_last_Q
+            argsDict["ball_Omega"] = self.ball_Omega
+            argsDict["ball_last_Omega"] = self.ball_last_Omega
+            argsDict["ball_u"] = self.ball_u
+            argsDict["ball_last_u"] = self.ball_last_u
+            argsDict["ball_mom"] = self.ball_mom
+            argsDict["ball_last_mom"] = self.ball_last_mom
+            argsDict["ball_a"] = self.ball_a
+            argsDict["ball_I"] = self.ball_I
+            argsDict["ball_mass"] = self.ball_mass
+            argsDict["ball_radius"] = self.ball_radius
+            argsDict["ball_f"] = self.ball_f
+            argsDict["wall_f"] = self.wall_f
+            argsDict["particle_netForces"] = self.particle_netForces
+            argsDict["particle_netMoments"] = self.particle_netMoments
+            argsDict["last_particle_netForces"] = self.last_particle_netForces
+            argsDict["last_particle_netMoments"] = self.last_particle_netMoments
+            argsDict["ball_angular_velocity_avg"] = self.ball_angular_velocity_avg
+            argsDict["g"] = self.particle_g
+            argsDict["L"] = self.L
+            argsDict["dt"] = self.model.timeIntegration.dt/2.0
+            argsDict["ball_force_range"] = self.ball_force_range
+            argsDict["ball_stiffness"] = self.ball_stiffness
+            argsDict["particle_cfl"] = self.particle_cfl
+            argsDict["min_dt"] = min_dt = np.zeros((1,),'d')
+            argsDict["nSteps"] = nSteps = np.zeros((1,),'i')
+            if self.comm.rank() == 0:
+                self.model.rans2p.step6DOF(argsDict)
+            from mpi4py import MPI
+            mpicomm = MPI.COMM_WORLD
+            mpicomm.Bcast(self.ball_center)
+            mpicomm.Bcast(self.ball_velocity)
+            mpicomm.Bcast(self.ball_angular_velocity)
+            logEvent("minimimum particle dt {0}".format(min_dt[0]))
+            logEvent("particle sub-steps {0}".format(nSteps[0]))
         # if self.comm.isMaster():
         # print "wettedAreas"
         # print self.wettedAreas[:]
@@ -982,7 +1030,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             argsDict["ball_angular_velocity_avg"] = self.ball_angular_velocity_avg
             argsDict["g"] = self.particle_g
             argsDict["L"] = self.L
-            argsDict["dt"] = self.model.timeIntegration.dt
+            argsDict["dt"] = self.model.timeIntegration.dt/2.0
             argsDict["ball_force_range"] = self.ball_force_range
             argsDict["ball_stiffness"] = self.ball_stiffness
             argsDict["particle_cfl"] = self.particle_cfl
