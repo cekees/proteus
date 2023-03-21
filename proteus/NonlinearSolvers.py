@@ -678,6 +678,10 @@ class Newton(NonlinearSolver):
             logEvent("   Newton it %d norm(r) = %12.5e  \t\t norm(r)/(rtol*norm(r0)+atol) = %12.5e"
                 % (self.its,self.norm_r,(old_div(self.norm_r,(self.rtol_r*self.norm_r0+self.atol_r)))),level=1)
             logEvent(memory("Newton","Newton"),level=4)
+            if hasattr(self.F.coefficients,'FCT') and self.F.coefficients.FCT==True:
+                logEvent("FCT Step After Newton")
+                self.F.FCTStep()
+                u[:] = self.F.u[0].dof
             return self.failedFlag
         logEvent("  NumericalAnalytics NewtonIteration: %d, NewtonNorm: %12.5e"
                  %(self.its-1, self.norm_r), level=7)
@@ -841,12 +845,40 @@ class ExplicitLumpedMassMatrix(Newton):
         ############
         if hasattr(self.F.coefficients,'FCT') and self.F.coefficients.FCT==True:
             self.F.FCTStep()
+        else:
+            u[:]=self.F.uLow
         ###########################################
         # DISTRUBUTE SOLUTION FROM u to u[ci].dof #
         ###########################################
         self.F.auxiliaryCallCalculateResidual = True
         self.computeResidual(u,r,b)
         self.F.auxiliaryCallCalculateResidual = False
+        
+class ExplicitLumpedMassMatrixForRichards(Newton):
+    """
+     This is a fake solver meant to be used with optimized code
+    A simple iterative solver that is Newton's method
+    if you give it the right Jacobian
+    """
+    def solve(self,u,r=None,b=None,par_u=None,par_r=None):
+        logEvent("Explicit Step", level=1)
+        self.computeResidual(u,r,b)
+        ############
+        # FCT STEP #
+        ############
+        if hasattr(self.F.coefficients,'FCT') and self.F.coefficients.FCT==True:
+            logEvent("After explicit step: linearized FCT", level=1)
+            self.F.FCTStep()
+            u[:] = self.F.u[0].dof
+        else:
+            logEvent("After explicit set: using low order solution", level=1)
+            u[:]=self.F.uLow
+        ###########################################
+        # DISTRUBUTE SOLUTION FROM u to u[ci].dof #
+        ###########################################
+        #self.F.auxiliaryCallCalculateResidual = True
+        #self.computeResidual(u,r,b)
+        #self.F.auxiliaryCallCalculateResidual = False
 
 class ExplicitConsistentMassMatrixWithRedistancing(Newton):
     """
@@ -977,6 +1009,42 @@ class ExplicitConsistentMassMatrixForVOF(Newton):
             self.linearSolver.solve(u=self.du,b=r,par_u=self.par_du,par_b=par_r)
             self.linearSolverFailed = self.linearSolver.failed()
         u-=self.du
+        ############
+        # FCT STEP #
+        ############
+        if self.F.coefficients.FCT==True:
+            self.F.FCTStep()
+        ###########################################
+        # DISTRIBUTE SOLUTION FROM u to u[ci].dof #
+        ###########################################
+        self.F.auxiliaryCallCalculateResidual = True
+        self.computeResidual(u,r,b)
+        self.F.auxiliaryCallCalculateResidual = False
+
+class ExplicitConsistentMassMatrixForRichards(Newton):
+    """
+     This is a fake solver meant to be used with optimized code
+    A simple iterative solver that is Newton's method
+    if you give it the right Jacobian
+    """
+    def solve(self,u,r=None,b=None,par_u=None,par_r=None):
+        #########################
+        # COMPUTE MAIN SOLUTION #
+        #########################
+        self.computeResidual(u,r,b)
+        if self.updateJacobian or self.fullNewton:
+            self.F.getJacobian(self.J)
+            self.linearSolver.prepare(b=r)
+            self.updateJacobian = False
+        self.du[:]=0.0
+        # Set sparse factors
+        if not self.directSolver:
+            if self.EWtol:
+                self.setLinearSolverTolerance(r)
+        if not self.linearSolverFailed:
+            self.linearSolver.solve(u=self.du,b=r,par_u=self.par_du,par_b=par_r)
+            self.linearSolverFailed = self.linearSolver.failed()
+        self.F.invert(self.du, u)
         ############
         # FCT STEP #
         ############
@@ -3241,10 +3309,14 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
         levelNonlinearSolverType = ExplicitConsistentMassMatrixShallowWaterEquationsSolver
     elif (levelNonlinearSolverType == ExplicitLumpedMassMatrix):
         levelNonlinearSolverType = ExplicitLumpedMassMatrix
+    elif (levelNonlinearSolverType == ExplicitLumpedMassMatrixForRichards):
+        levelNonlinearSolverType = ExplicitLumpedMassMatrixForRichards
     elif (levelNonlinearSolverType == ExplicitConsistentMassMatrixWithRedistancing):
         levelNonlinearSolverType = ExplicitConsistentMassMatrixWithRedistancing
     elif (levelNonlinearSolverType == ExplicitConsistentMassMatrixForVOF):
         levelNonlinearSolverType = ExplicitConsistentMassMatrixForVOF
+    elif (levelNonlinearSolverType == ExplicitConsistentMassMatrixForRichards):
+        levelNonlinearSolverType = ExplicitConsistentMassMatrixForRichards
     elif (levelNonlinearSolverType == NewtonWithL2ProjectionForMassCorrection):
         levelNonlinearSolverType = NewtonWithL2ProjectionForMassCorrection
     elif (levelNonlinearSolverType == CLSVOFNewton):
