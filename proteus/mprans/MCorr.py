@@ -699,7 +699,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
         argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
-        argsDict["ghost_penalty_constant"] = self.coefficients.flowCoefficients.ghost_penalty_constant
+        argsDict["ghost_penalty_constant"] = 10.0*self.coefficients.flowCoefficients.ghost_penalty_constant
         argsDict["phi_solid_nodes"] = self.coefficients.flowCoefficients.phi_s
         argsDict["useExact_s"] = int(self.coefficients.flowCoefficients.useExact)
         argsDict["isActiveR"] = self.isActiveR
@@ -824,7 +824,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["csrColumnOffsets_u_u"] = self.csrColumnOffsets[(0, 0)]
         argsDict["globalJacobian"] = jacobian.getCSRrepresentation()[2]
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0, 0)]
-        argsDict["ghost_penalty_constant"] = self.coefficients.flowCoefficients.ghost_penalty_constant
+        argsDict["ghost_penalty_constant"] = 10.0*self.coefficients.flowCoefficients.ghost_penalty_constant
         argsDict["phi_solid_nodes"] = self.coefficients.flowCoefficients.phi_s
         argsDict["useExact_s"] = int(self.coefficients.flowCoefficients.useExact)
         argsDict["isActiveR"] = self.isActiveR
