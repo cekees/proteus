@@ -1635,7 +1635,7 @@ class ParametersModelMCorr(ParametersModelBase):
             self.OptDB.setValue(prefix+'pc_type', 'lu')
             self.OptDB.setValue(prefix+'pc_factor_mat_solver_type', 'superlu_dist')
         else:
-            self.OptDB.setValue(prefix+'ksp_type', 'cg')
+            self.OptDB.setValue(prefix+'ksp_type', 'fgmres')
             self.OptDB.setValue(prefix+'pc_type', 'hypre')
             self.OptDB.setValue(prefix+'pc_pc_hypre_type', 'boomeramg')
             self.OptDB.setValue(prefix+'ksp_max_it', 2000)

@@ -759,7 +759,7 @@ namespace proteus
 					 double *projection_direction,
 					 double *particle_volume)
     {
-      double C, rho, mu, nu, H_mu, ImH_mu, uc, duc_du, duc_dv, duc_dw, H_s, ImH_s, D_s, phi_s, u_s, v_s, w_s;
+      double C, rho, mu, nu, H_mu, ImH_mu, uc, duc_du, duc_dv, duc_dw, ImH_s, D_s, phi_s, u_s, v_s, w_s;
       double force_x, force_y, r_x, r_y, force_p_x, force_p_y, force_stress_x, force_stress_y;
       double phi_s_normal[nSpace]=ZEROVEC;
       double fluid_outward_normal[nSpace]=ZEROVEC;
@@ -818,6 +818,7 @@ namespace proteus
           v_s = vel[1];
           w_s = 0.;
           D_s = gf_s.D(eps_s, phi_s);
+          ImH_s = gf_s.ImH(eps_s, phi_s);
 
           double rel_vel_norm = sqrt((uStar - u_s) * (uStar - u_s) +
                                      (vStar - v_s) * (vStar - v_s) +
@@ -837,7 +838,7 @@ namespace proteus
           if (element_owned)
             {
               particle_surfaceArea[i] += dV * D_s;
-	      particle_volume[i] *= dV * H_s;
+	      particle_volume[i] *= dV * ImH_s;
               particle_surfaceArea_projected[i] += dV * D_s * fmax(fluid_outward_normal[0]*projection_direction[0] +
 								   fluid_outward_normal[1]*projection_direction[1],0.0);
               particle_netForces[i * 3 + 0] += force_x;

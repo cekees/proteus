@@ -2081,7 +2081,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 logEvent("particle i=" + repr(i)+ " moment " + repr(self.coefficients.particle_netMoments[i]))
                 logEvent("particle i=" + repr(i)+ " surfaceArea " + repr(self.coefficients.particle_surfaceArea[i]))
                 logEvent("particle i=" + repr(i)+ " projected surfaceArea " + repr(self.coefficients.particle_surfaceArea_projected[i]))
-                logEvent("particle i=" + repr(i)+ " particle volume" + repr(self.coefficients.particle_volume[i]))
+                logEvent("particle i=" + repr(i)+ " particle volume " + repr(self.coefficients.particle_volume[i]))
                 logEvent("particle i=" + repr(i)+ " stress force " + repr(self.coefficients.particle_netForces[i+self.coefficients.nParticles]))
                 logEvent("particle i=" + repr(i)+ " pressure force " + repr(self.coefficients.particle_netForces[i+2*self.coefficients.nParticles]))
 
