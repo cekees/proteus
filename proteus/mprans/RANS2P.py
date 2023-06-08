@@ -245,6 +245,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  force_z=None,
                  normalize_pressure=False,
                  useInternalParticleSolver=False):
+        self.phi_s_isSet=False
         self.normalize_pressure=normalize_pressure
         self.force_x=force_x
         self.force_y=force_y
@@ -263,6 +264,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.particle_netForces = np.zeros((3*self.nParticles, 3), 'd')#####[total_force_1,total_force_2,...,stress_1,stress_2,...,pressure_1,pressure_2,...]  
         self.particle_netMoments = np.zeros((self.nParticles, 3), 'd')
         self.particle_surfaceArea = np.zeros((self.nParticles,), 'd')
+        self.particle_surfaceArea_projected = np.zeros((self.nParticles,), 'd')
+        self.particle_volume = np.zeros((self.nParticles,), 'd')
         if ball_center is None:
             self.ball_center = 1e10*numpy.ones((self.nParticles,3),'d')
         else:
@@ -430,6 +433,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.particle_netForces = np.zeros((3*self.nParticles, 3), 'd')#####[total_force_1,total_force_2,...,stress_1,stress_2,...,pressure_1,pressure_2,...]  
         self.particle_netMoments = np.zeros((self.nParticles, 3), 'd')
         self.particle_surfaceArea = np.zeros((self.nParticles,), 'd')
+        self.particle_surfaceArea_projected = np.zeros((self.nParticles,), 'd')
+        self.particle_volume = np.zeros((self.nParticles,), 'd')
         if self.ball_center is None:
             self.ball_center = 1e10*numpy.ones((self.nParticles,3),'d')
         if self.ball_radius is None:
@@ -694,6 +699,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.v_old_dof = self.model.u[2].dof.copy()
         self.w_old_dof = self.model.u[3].dof.copy()
         if self.nParticles > 0 and self.particle_sdfList != None and not self.use_ball_as_particle:
+            self.phi_s_isSet=True
             self.phi_s[:] = 1e10
             self.phisField[:] = 1e10
             self.ebqe_phi_s[:] = 1e10
@@ -701,23 +707,35 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             self.ebq_particle_velocity_s[:] = 1e10
             t=0.0
             for i in range(self.nParticles):
-                vel = lambda x: self.particle_velocityList[i](t, x)
-                sdf = lambda x: self.particle_sdfList[i](t, x)
-                for j in range(self.mesh.nodeArray.shape[0]):
-                    sdf_at_node, sdNormals = sdf(self.mesh.nodeArray[j, :])
-                    if (sdf_at_node < self.phi_s[j]):
-                        self.phi_s[j] = sdf_at_node
-                for eN in range(self.model.q['x'].shape[0]):
-                    for k in range(self.model.q['x'].shape[1]):
-                        self.particle_signed_distances[i, eN, k], self.particle_signed_distance_normals[i, eN, k,:] = sdf(self.model.q['x'][eN, k])
-                        self.particle_velocities[i, eN, k,:] = vel(self.model.q['x'][eN, k])
-                        if (self.particle_signed_distances[i, eN, k] < self.phisField[eN, k]):
-                            self.phisField[eN, k] = self.particle_signed_distances[i, eN, k]
-                for ebNE in range(self.model.ebqe['x'].shape[0]):
-                    for kb in range(self.model.ebqe['x'].shape[1]):
-                        sdf_ebNE_kb,sdNormals = sdf(self.model.ebqe['x'][ebNE,kb])
-                        if (sdf_ebNE_kb < self.ebqe_phi_s[ebNE,kb]):
-                            self.ebqe_phi_s[ebNE,kb]=sdf_ebNE_kb
+                try:
+                    assert self.nParticles == 1
+                    self.particle_sdfList[0](t, np.reshape(self.mesh.nodeArray, (self.mesh.nodeArray.size//3,3)),
+                                             np.reshape(self.phi_s, (self.phi_s.size,)))
+                    self.particle_sdfList[0](t, np.reshape(self.model.q['x'], (self.model.q['x'].size//3,3)),
+                                             np.reshape(self.phisField, (self.phisField.size,)))
+                    self.particle_sdfList[0](t, np.reshape(self.model.ebqe['x'], (self.model.ebqe['x'].size//3,3)),
+                                             np.reshape(self.ebqe_phi_s, (self.ebqe_phi_s.size,)))
+                    self.particle_velocities[...,:]=0.0
+                    self.ebq_particle_velocity_s[...,:] = 0.0
+                    self.particle_signed_distance_normals[...,:] = 0.0
+                except:
+                    vel = lambda x: self.particle_velocityList[i](t, x)
+                    sdf = lambda x: self.particle_sdfList[i](t, x)
+                    for j in range(self.mesh.nodeArray.shape[0]):
+                        sdf_at_node, sdNormals = sdf(self.mesh.nodeArray[j, :])
+                        if (sdf_at_node < self.phi_s[j]):
+                            self.phi_s[j] = sdf_at_node
+                    for eN in range(self.model.q['x'].shape[0]):
+                        for k in range(self.model.q['x'].shape[1]):
+                            self.particle_signed_distances[i, eN, k], self.particle_signed_distance_normals[i, eN, k,:] = sdf(self.model.q['x'][eN, k])
+                            self.particle_velocities[i, eN, k,:] = vel(self.model.q['x'][eN, k])
+                            if (self.particle_signed_distances[i, eN, k] < self.phisField[eN, k]):
+                                self.phisField[eN, k] = self.particle_signed_distances[i, eN, k]
+                    for ebNE in range(self.model.ebqe['x'].shape[0]):
+                        for kb in range(self.model.ebqe['x'].shape[1]):
+                            sdf_ebNE_kb,sdNormals = sdf(self.model.ebqe['x'][ebNE,kb])
+                            if (sdf_ebNE_kb < self.ebqe_phi_s[ebNE,kb]):
+                                self.ebqe_phi_s[ebNE,kb]=sdf_ebNE_kb
 
     def initializeMesh(self, mesh):
         self.phi_s = numpy.ones(mesh.nodeArray.shape[0], 'd')*1e10#
@@ -886,7 +904,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                     if self.nd == 3:
                         self.model.q[('u', 3)][eN,k] = self.analyticalSolution[3].uOfXT(self.model.q['x'][eN,k],t)
 
-        if self.nParticles > 0 and self.use_ball_as_particle == 0:
+        if self.nParticles > 0 and self.use_ball_as_particle == 0 and not self.phi_s_isSet:
             self.phi_s[:] = 1e10
             self.phisField[:] = 1e10
             self.ebqe_phi_s[:] = 1e10
@@ -1727,6 +1745,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.coefficients.particle_netForces[:, :] = 0.0
         self.coefficients.particle_netMoments[:, :] = 0.0
         self.coefficients.particle_surfaceArea[:] = 0.0
+        self.coefficients.particle_surfaceArea_projected[:] = 0.0
+        self.coefficients.particle_volume[:] = 0.0
         if self.forceStrongConditions:
             try:
                 for cj in range(len(self.dirichletConditionsForceDOF)):
@@ -1968,6 +1988,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["particle_netForces"] = self.coefficients.particle_netForces
         argsDict["particle_netMoments"] = self.coefficients.particle_netMoments
         argsDict["particle_surfaceArea"] = self.coefficients.particle_surfaceArea
+        argsDict["particle_surfaceArea_projected"] = self.coefficients.particle_surfaceArea_projected
+        argsDict["projection_direction"] = self.coefficients.projection_direction
+        argsDict["particle_volume"] = self.coefficients.particle_volume
         argsDict["nElements_owned"] = int(self.mesh.nElements_owned)
         argsDict["particle_nitsche"] = self.coefficients.particle_nitsche
         argsDict["particle_epsFact"] = self.coefficients.particle_epsFact
@@ -2049,12 +2072,16 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         comm.Allreduce(self.coefficients.particle_netForces.copy(),self.coefficients.particle_netForces)
         comm.Allreduce(self.coefficients.particle_netMoments.copy(),self.coefficients.particle_netMoments)
         comm.Allreduce(self.coefficients.particle_surfaceArea.copy(),self.coefficients.particle_surfaceArea)
+        comm.Allreduce(self.coefficients.particle_surfaceArea_projected.copy(),self.coefficients.particle_surfaceArea_projected)
+        comm.Allreduce(self.coefficients.particle_volume.copy(),self.coefficients.particle_volume)
 
         if (self.coefficients.nParticles < 10):
             for i in range(self.coefficients.nParticles):
                 logEvent("particle i=" + repr(i)+ " force " + repr(self.coefficients.particle_netForces[i]))
                 logEvent("particle i=" + repr(i)+ " moment " + repr(self.coefficients.particle_netMoments[i]))
                 logEvent("particle i=" + repr(i)+ " surfaceArea " + repr(self.coefficients.particle_surfaceArea[i]))
+                logEvent("particle i=" + repr(i)+ " projected surfaceArea " + repr(self.coefficients.particle_surfaceArea_projected[i]))
+                logEvent("particle i=" + repr(i)+ " particle volume" + repr(self.coefficients.particle_volume[i]))
                 logEvent("particle i=" + repr(i)+ " stress force " + repr(self.coefficients.particle_netForces[i+self.coefficients.nParticles]))
                 logEvent("particle i=" + repr(i)+ " pressure force " + repr(self.coefficients.particle_netForces[i+2*self.coefficients.nParticles]))
 
