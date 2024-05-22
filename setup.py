@@ -214,6 +214,14 @@ EXTENSIONS_TO_BUILD = [
         language='c++',
         extra_compile_args=PROTEUS_OPT+['-std=c++14'],
     ),
+   Extension(
+        'richards.cADR',
+        sources=['proteus/richards/cADR.cpp'],
+        depends=['proteus/richards/ADR.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_xtensor_include(),
+        language='c++',
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
+    ),
     Extension(
         'elastoplastic.cElastoPlastic',
         sources=['proteus/elastoplastic/cElastoPlastic.cpp'],
