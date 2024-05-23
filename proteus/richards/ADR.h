@@ -41,10 +41,10 @@ namespace proteus
     virtual void calculateResidual(arguments_dict& args)=0;
     virtual void calculateJacobian(arguments_dict& args)=0;
     virtual void invert(arguments_dict& args)=0;
-    virtual void FCTStep(arguments_dict& args)=0;
-    virtual void kth_FCT_step(arguments_dict& args)=0;
-    virtual void calculateResidual_entropy_viscosity(arguments_dict& args)=0;
-    virtual void calculateMassMatrix(arguments_dict& args)=0;
+    //virtual void FCTStep(arguments_dict& args)=0;
+    //virtual void kth_FCT_step(arguments_dict& args)=0;
+    //virtual void calculateResidual_entropy_viscosity(arguments_dict& args)=0;
+    //virtual void calculateMassMatrix(arguments_dict& args)=0;
   };
 
   template<class CompKernelType,
@@ -64,6 +64,188 @@ namespace proteus
       ck()
     {}
     inline
+
+
+	inline void evaluateCoefficients(const double* velocity,
+                                     const double& u,
+                                     double& m,
+                                     double& dm,
+                                     double f[nSpace],
+                                     double df[nSpace],
+                                     double a[nSpace][nSpace],
+                                     double da[nSpace][nSpace],
+                                     const double r)
+    {
+      m = u;
+      dm = 1.0;
+
+      for (int I = 0; I < nSpace; I++)
+      {
+        f[I] = velocity[I] * u;
+        df[I] = velocity[I];
+
+        for (int J = 0; J < nSpace; J++)
+        {
+          a[I][J] = (I == J) ? r : 0.0;
+          da[I][J] = 0.0;
+        }
+      }
+    }
+
+    void calculateResidual(arguments_dict& args)
+    {
+      xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
+      xt::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
+      xt::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
+      xt::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
+      xt::pyarray<double>& dV_ref = args.array<double>("dV_ref");
+      xt::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
+      xt::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
+      xt::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
+      xt::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
+      xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
+      xt::pyarray<double>& cfl = args.array<double>("cfl");
+      double Ct_sge = args.scalar<double>("Ct_sge");
+      double sc_uref = args.scalar<double>("sc_uref");
+      double sc_alpha = args.scalar<double>("sc_alpha");
+      double useMetrics = args.scalar<double>("useMetrics");
+      xt::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
+      xt::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
+      xt::pyarray<double>& dS_ref = args.array<double>("dS_ref");
+      xt::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
+      xt::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
+      xt::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
+      xt::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
+      xt::pyarray<double>& normal_ref = args.array<double>("normal_ref");
+      xt::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
+      int nElements_global = args.scalar<int>("nElements_global");
+      xt::pyarray<int>& u_l2g = args.array<int>("u_l2g");
+      xt::pyarray<double>& u_dof = args.array<double>("u_dof");
+      xt::pyarray<int>& sd_rowptr = args.array<int>("sd_rowptr");
+      xt::pyarray<int>& sd_colind = args.array<int>("sd_colind");
+      xt::pyarray<double>& q_a = args.array<double>("q_a");
+      xt::pyarray<double>& q_v = args.array<double>("q_v");
+      xt::pyarray<double>& q_r = args.array<double>("q_r");
+      int lag_shockCapturing = args.scalar<int>("lag_shockCapturing");
+      double shockCapturingDiffusion = args.scalar<double>("shockCapturingDiffusion");
+      xt::pyarray<double>& q_numDiff_u = args.array<double>("q_numDiff_u");
+      xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
+      int offset_u = args.scalar<int>("offset_u");
+      int stride_u = args.scalar<int>("stride_u");
+      xt::pyarray<double>& globalResidual = args.array<double>("globalResidual");
+      int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
+      xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
+      xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
+      xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
+      xt::pyarray<double>& ebqe_a = args.array<double>("ebqe_a");
+      xt::pyarray<double>& ebqe_v = args.array<double>("ebqe_v");
+      xt::pyarray<int>& isDOFBoundary_u = args.array<int>("isDOFBoundary_u");
+      xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
+      xt::pyarray<int>& isDiffusiveFluxBoundary_u = args.array<int>("isDiffusiveFluxBoundary_u");
+      xt::pyarray<int>& isAdvectiveFluxBoundary_u = args.array<int>("isAdvectiveFluxBoundary_u");
+      xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
+      xt::pyarray<double>& ebqe_bc_advectiveFlux_u_ext = args.array<double>("ebqe_bc_advectiveFlux_u_ext");
+      xt::pyarray<double>& ebqe_penalty_ext = args.array<double>("ebqe_penalty_ext");
+      const bool embeddedBoundary = args.scalar<int>("embeddedBoundary");
+      const double embeddedBoundary_penalty = args.scalar<double>("embeddedBoundary_penalty");
+      const double embeddedBoundary_ghost_penalty = args.scalar<double>("embedded_ghost_penalty");
+      xt::pyarray<double>& embeddedBoundary_sdf_nodes = args.array<double>("embeddedBoundary_sdf_nodes");
+      xt::pyarray<double>& embeddedBoundary_sdf_q = args.array<double>("embeddedBoundary_sdf_q");
+      xt::pyarray<double>& embeddedBoundary_normal_q = args.array<double>("embeddedBoundary_normal_q");
+      xt::pyarray<double>& embeddedBoundary_u_q = args.array<double>("embeddedBoundary_u_q");
+      xt::pyarray<double>& isActiveDOF = args.array<double>("isActiveDOF");
+      const double eb_adjoint_sigma = args.scalar<double>("eb_adjoint_sigma");
+      xt::pyarray<double>& x_ref = args.array<double>("x_ref");
+      xt::pyarray<int>& elementBoundariesArray = args.array<int>("elementBoundariesArray");
+      const int nElementBoundaries_owned = args.scalar<int>("nElementBoundaries_owned");
+      xt::pyarray<double>& elementBoundaryDiameter = args.array<double>("elementBoundaryDiameter");
+      xt::pyarray<double>& nodeDiametersArray = args.array<double>("nodeDiametersArray");
+
+      xt::pyarray<double> elementIsActive = xt::zeros<double>({nElements_global});
+
+      for (int eN = 0; eN < nElements_global; eN++)
+      {
+          auto elementResidual_u = xt::zeros<double>({nDOF_test_element});
+          auto element_u = xt::zeros<double>({nDOF_trial_element});
+          //bool element_active = false;
+          //elementIsActive[eN] = false;
+
+          for (int i = 0; i < nDOF_trial_element; i++)
+          {
+              int eN_i = eN * nDOF_trial_element + i;
+              element_u(i) = u_dof(u_l2g(eN_i));
+          }
+
+          for (int k = 0; k < nQuadraturePoints_element; k++)
+          {
+              double u = 0.0;
+              double grad_u[nSpace] = {0.0};
+              double m = 0.0;
+              double dm = 0.0;
+              double f[nSpace] = {0.0};
+              double df[nSpace] = {0.0};
+              double a[nSpace][nSpace] = {{0.0}};
+              double da[nSpace][nSpace] = {{0.0}};
+
+              evaluateCoefficients(q_v.data() + eN * nQuadraturePoints_element * nSpace + k * nSpace,
+                                   u,
+                                   m,
+                                   dm,
+                                   f,
+                                   df,
+                                   a,
+                                   da,
+                                   q_r.data()[eN * nQuadraturePoints_element + k]);
+
+              for (int i = 0; i < nDOF_test_element; i++)
+              {
+                  for (int I = 0; I < nSpace; I++)
+                  {
+                      elementResidual_u(i) += (f[I] - a[I][I] * grad_u[I]) * dV_ref(k) * u_test_ref(i);
+                  }
+              }
+          }
+
+          for (int i = 0; i < nDOF_test_element; i++)
+          {
+              int eN_i = eN * nDOF_test_element + i;
+              globalResidual(u_l2g(eN_i)) += elementResidual_u(i);
+          }
+      }
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     void evaluateCoefficients(const int rowptr[nSpace],
 			      const int colind[nnz],
 			      const double rho,
@@ -154,24 +336,73 @@ namespace proteus
       //slight compressibility
       rhom = rho*exp(beta*u);
       drhom = beta*rhom;
-      m = rhom*thetaW;
-      dm = -rhom*DthetaW_DpsiC+drhom*thetaW;
+      m = u;//rhom*thetaW;
+      dm = 1.0;//-rhom*DthetaW_DpsiC+drhom*thetaW;
       for (int I=0;I<nSpace;I++)
 	{
 	  f[I] = 0.0;
 	  df[I] = 0.0;
+
 	  for (int ii=rowptr[I]; ii < rowptr[I+1]; ii++)
 	    {
-	      f[I]  += rho2*KWr*KWs[ii]*gravity[colind[ii]];
-	      df[I] += -rho2*DKWr_DpsiC*KWs[ii]*gravity[colind[ii]];
-	      a[ii]  = rho*KWr*KWs[ii];
-	      da[ii] = -rho*DKWr_DpsiC*KWs[ii];
-	      as[ii]  = rho*KWs[ii];
-	      kr = KWr;
+		  double velocity = 0.001;
+		  double D= 0.0;	
+	      f[I]  = velocity *u;//rho2*KWr*KWs[ii]*gravity[colind[ii]];
+	      df[I] = velocity; //-rho2*DKWr_DpsiC*KWs[ii]*gravity[colind[ii]];
+	      a[ii]  = D; //KWr*KWs[ii]; //rho*KWr*KWs[ii];
+	      da[ii] = 0.0;//-rho*DKWr_DpsiC*KWs[ii];
+	      as[ii]  = 0.0;//rho*KWs[ii];
+	      kr = 0.0;//KWr;
 	      dkr=0.0;//mod picard DKWr_DpsiC;
 	    }
 	}
     }
+// 	void evaluateAdvectionDiffusionCoefficients(const int rowptr[nSpace],
+//                                             const int colind[nnz],
+//                                             const double rho,
+//                                             const double D,
+//                                             const double velocity[nSpace],
+//                                             const double source,
+//                                             const double& u,
+//                                             double& m,
+//                                             double& dm,
+//                                             double f[nSpace],
+//                                             double df[nSpace],
+//                                             double a[nnz],
+//                                             double da[nnz],
+//                                             double& r,
+//                                             double& dr)
+// {
+//     double rhom = rho;
+//     double drhom = 0.0; // Assuming incompressible flow for simplicity
+
+// 	//u is the scalar field (e.g., concentration or temperature).
+// 	//b is the advection velocity vector.
+// 	//a is the diffusion coefficient.
+// 	//r is a source term.
+
+//     // Assuming u represents a scalar field (e.g., concentration or temperature)
+//     m =  u;
+//     dm = ;
+
+//     for (int I = 0; I < nSpace; I++)
+//     {
+//         f[I] = 0.0;
+//         df[I] = 0.0;
+//         for (int ii = rowptr[I]; ii < rowptr[I+1]; ii++)
+//         {
+//             f[I]  += velocity[I] * u;
+//             df[I] += velocity[I];
+//             a[ii]  = D;
+//             da[ii] = 0.0; // Diffusivity assumed constant
+//         }
+//     }
+    
+//     // Source term
+//     r = source;
+//     dr = 0.0; // Assuming source term is independent of u for simplicity
+// }
+
 
     inline
     void evaluateInverseCoefficients(const int rowptr[nSpace],
