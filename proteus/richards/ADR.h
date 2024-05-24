@@ -258,134 +258,276 @@ namespace proteus
     return tmp; // Return the computed Jacobian contribution
 }
 
-
-
-
-
-
-
-
-    void calculateResidual(arguments_dict& args)
+inline
+void calculateBoundaryFlux(const xt::pyarray<double>& u_dof,
+                           const xt::pyarray<int>& u_l2g,
+                           const xt::pyarray<double>& u_trial_trace_ref,
+                           const xt::pyarray<double>& u_grad_trial_trace_ref,
+                           const xt::pyarray<double>& u_test_trace_ref,
+                           const xt::pyarray<int>& exteriorElementBoundariesArray,
+                           const xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray,
+                           const xt::pyarray<double>& dS_ref,
+                           const xt::pyarray<int>& isDOFBoundary_u,
+                           const xt::pyarray<double>& ebqe_bc_u_ext,
+                           const xt::pyarray<double>& ebqe_a,
+                           const xt::pyarray<double>& ebqe_v,
+                           int eN,
+                           xt::xarray<double>& elementResidual_u,
+                           int nExteriorElementBoundaries_global,
+                           int nDOF_trial_element,
+                           int nDOF_test_element,
+                           int nQuadraturePoints_elementBoundary,
+                           double metricTensorDetSqrt)
+{
+    for (int ebN = 0; ebN < nExteriorElementBoundaries_global; ebN++)
     {
-      xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
-      xt::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
-      xt::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
-      xt::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
-      xt::pyarray<double>& dV_ref = args.array<double>("dV_ref");
-      xt::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
-      xt::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
-      xt::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
-      xt::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
-      xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
-      xt::pyarray<double>& cfl = args.array<double>("cfl");
-      double Ct_sge = args.scalar<double>("Ct_sge");
-      double sc_uref = args.scalar<double>("sc_uref");
-      double sc_alpha = args.scalar<double>("sc_alpha");
-      double useMetrics = args.scalar<double>("useMetrics");
-      xt::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
-      xt::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
-      xt::pyarray<double>& dS_ref = args.array<double>("dS_ref");
-      xt::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
-      xt::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
-      xt::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
-      xt::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
-      xt::pyarray<double>& normal_ref = args.array<double>("normal_ref");
-      xt::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
-      int nElements_global = args.scalar<int>("nElements_global");
-      xt::pyarray<int>& u_l2g = args.array<int>("u_l2g");
-      xt::pyarray<double>& u_dof = args.array<double>("u_dof");
-      xt::pyarray<int>& sd_rowptr = args.array<int>("sd_rowptr");
-      xt::pyarray<int>& sd_colind = args.array<int>("sd_colind");
-      xt::pyarray<double>& q_a = args.array<double>("q_a");
-      xt::pyarray<double>& q_v = args.array<double>("q_v");
-      xt::pyarray<double>& q_r = args.array<double>("q_r");
-      int lag_shockCapturing = args.scalar<int>("lag_shockCapturing");
-      double shockCapturingDiffusion = args.scalar<double>("shockCapturingDiffusion");
-      xt::pyarray<double>& q_numDiff_u = args.array<double>("q_numDiff_u");
-      xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
-      int offset_u = args.scalar<int>("offset_u");
-      int stride_u = args.scalar<int>("stride_u");
-      xt::pyarray<double>& globalResidual = args.array<double>("globalResidual");
-      int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
-      xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
-      xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
-      xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
-      xt::pyarray<double>& ebqe_a = args.array<double>("ebqe_a");
-      xt::pyarray<double>& ebqe_v = args.array<double>("ebqe_v");
-      xt::pyarray<int>& isDOFBoundary_u = args.array<int>("isDOFBoundary_u");
-      xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
-      xt::pyarray<int>& isDiffusiveFluxBoundary_u = args.array<int>("isDiffusiveFluxBoundary_u");
-      xt::pyarray<int>& isAdvectiveFluxBoundary_u = args.array<int>("isAdvectiveFluxBoundary_u");
-      xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
-      xt::pyarray<double>& ebqe_bc_advectiveFlux_u_ext = args.array<double>("ebqe_bc_advectiveFlux_u_ext");
-      xt::pyarray<double>& ebqe_penalty_ext = args.array<double>("ebqe_penalty_ext");
-      const bool embeddedBoundary = args.scalar<int>("embeddedBoundary");
-      const double embeddedBoundary_penalty = args.scalar<double>("embeddedBoundary_penalty");
-      const double embeddedBoundary_ghost_penalty = args.scalar<double>("embedded_ghost_penalty");
-      xt::pyarray<double>& embeddedBoundary_sdf_nodes = args.array<double>("embeddedBoundary_sdf_nodes");
-      xt::pyarray<double>& embeddedBoundary_sdf_q = args.array<double>("embeddedBoundary_sdf_q");
-      xt::pyarray<double>& embeddedBoundary_normal_q = args.array<double>("embeddedBoundary_normal_q");
-      xt::pyarray<double>& embeddedBoundary_u_q = args.array<double>("embeddedBoundary_u_q");
-      xt::pyarray<double>& isActiveDOF = args.array<double>("isActiveDOF");
-      const double eb_adjoint_sigma = args.scalar<double>("eb_adjoint_sigma");
-      xt::pyarray<double>& x_ref = args.array<double>("x_ref");
-      xt::pyarray<int>& elementBoundariesArray = args.array<int>("elementBoundariesArray");
-      const int nElementBoundaries_owned = args.scalar<int>("nElementBoundaries_owned");
-      xt::pyarray<double>& elementBoundaryDiameter = args.array<double>("elementBoundaryDiameter");
-      xt::pyarray<double>& nodeDiametersArray = args.array<double>("nodeDiametersArray");
+        int ebNE_kb = exteriorElementBoundariesArray(ebN);
+        int ebN_local = elementBoundaryLocalElementBoundariesArray(ebNE_kb);
+        for (int kb = 0; kb < nQuadraturePoints_elementBoundary; kb++)
+        {
+            int ebN_local_kb = ebN_local * nQuadraturePoints_elementBoundary + kb;
+            int eN_nDOF_trial_element = eN * nDOF_trial_element;
 
-      xt::pyarray<double> elementIsActive = xt::zeros<double>({nElements_global});
+            double dS = metricTensorDetSqrt * dS_ref(kb);
 
-      for (int eN = 0; eN < nElements_global; eN++)
-      {
-          auto elementResidual_u = xt::zeros<double>({nDOF_test_element});
-          auto element_u = xt::zeros<double>({nDOF_trial_element});
-          //bool element_active = false;
-          //elementIsActive[eN] = false;
+            // Get the metric tensor
+            double jacInv_ext[nSpace * nSpace], G[nSpace * nSpace], G_dd_G, tr_G;
+            ck.calculateG(jacInv_ext, G, G_dd_G, tr_G);
 
-          for (int i = 0; i < nDOF_trial_element; i++)
-          {
-              int eN_i = eN * nDOF_trial_element + i;
-              element_u(i) = u_dof(u_l2g(eN_i));
-          }
+            // Compute shape and solution information
+            double u_grad_trial_trace[nDOF_trial_element * nSpace];
+            ck.gradTrialFromRef(&u_grad_trial_trace_ref(ebN_local_kb * nDOF_trial_element), jacInv_ext, u_grad_trial_trace);
 
-          for (int k = 0; k < nQuadraturePoints_element; k++)
-          {
-              double u = 0.0;
-              double grad_u[nSpace] = {0.0};
-              double m = 0.0;
-              double dm = 0.0;
-              double f[nSpace] = {0.0};
-              double df[nSpace] = {0.0};
-              double a[nSpace][nSpace] = {{0.0}};
-              double da[nSpace][nSpace] = {{0.0}};
+            // Solution and gradients
+            double u_ext, grad_u_ext[nSpace];
+            ck.valFromDOF(u_dof.data(), &u_l2g(eN_nDOF_trial_element), &u_trial_trace_ref(ebN_local_kb * nDOF_test_element), u_ext);
+            ck.gradFromDOF(u_dof.data(), &u_l2g(eN_nDOF_trial_element), u_grad_trial_trace, grad_u_ext);
 
-              evaluateCoefficients(q_v.data() + eN * nQuadraturePoints_element * nSpace + k * nSpace,
-                                   u,
-                                   m,
-                                   dm,
-                                   f,
-                                   df,
-                                   a,
-                                   da,
-                                   q_r.data()[eN * nQuadraturePoints_element + k]);
+            // Precalculate test function products with integration weights
+            double u_test_dS[nDOF_trial_element], u_grad_test_dS[nDOF_trial_element * nSpace];
+            for (int j = 0; j < nDOF_trial_element; j++)
+            {
+                u_test_dS[j] = u_test_trace_ref(ebN_local_kb * nDOF_test_element + j) * dS;
+                for (int I = 0; I < nSpace; I++)
+                {
+                    u_grad_test_dS[j * nSpace + I] = u_grad_trial_trace[j * nSpace + I] * dS;
+                }
+            }
 
-              for (int i = 0; i < nDOF_test_element; i++)
-              {
-                  for (int I = 0; I < nSpace; I++)
-                  {
-                      elementResidual_u(i) += (f[I] - a[I][I] * grad_u[I]) * dV_ref(k) * u_test_ref(i);
-                  }
-              }
-          }
+            // Load boundary values
+            double bc_u_ext = isDOFBoundary_u(ebNE_kb) * ebqe_bc_u_ext(ebNE_kb) + (1 - isDOFBoundary_u(ebNE_kb)) * u_ext;
 
-          for (int i = 0; i < nDOF_test_element; i++)
-          {
-              int eN_i = eN * nDOF_test_element + i;
-              globalResidual(u_l2g(eN_i)) += elementResidual_u(i);
-          }
-      }
+            // Calculate the PDE coefficients using the solution and the boundary values
+            double* a_ext = &ebqe_a(ebNE_kb * sd_rowptr[nSpace]);
+            double f_ext[nSpace], df_ext[nSpace], bc_f_ext[nSpace], bc_df_ext[nSpace];
+            for (int I = 0; I < nSpace; I++)
+            {
+                f_ext[I] = ebqe_v(ebNE_kb * nSpace + I) * u_ext;
+                df_ext[I] = ebqe_v(ebNE_kb * nSpace + I);
+                bc_f_ext[I] = ebqe_v(ebNE_kb * nSpace + I) * bc_u_ext;
+                bc_df_ext[I] = ebqe_v(ebNE_kb * nSpace + I);
+            }
+
+            // Compute the boundary integral contribution to the element residual
+            for (int i = 0; i < nDOF_test_element; i++)
+            {
+                for (int I = 0; I < nSpace; I++)
+                {
+                    elementResidual_u(i) += (f_ext[I] - a_ext[I] * grad_u_ext[I]) * u_test_dS[i] + bc_f_ext[I] * u_test_dS[i];
+                }
+            }
+        }
     }
+}
+
+void calculateResidual(const ResidualArgs& args)
+{
+    const auto& mesh_trial_ref = args.mesh_trial_ref;
+    const auto& mesh_grad_trial_ref = args.mesh_grad_trial_ref;
+    const auto& mesh_dof = args.mesh_dof;
+    const auto& mesh_l2g = args.mesh_l2g;
+    const auto& dV_ref = args.dV_ref;
+    const auto& u_trial_ref = args.u_trial_ref;
+    const auto& u_grad_trial_ref = args.u_grad_trial_ref;
+    const auto& u_test_ref = args.u_test_ref;
+    const auto& u_grad_test_ref = args.u_grad_test_ref;
+    const auto& elementDiameter = args.elementDiameter;
+    auto& globalResidual = args.globalResidual;
+    int nElements_global = args.nElements_global;
+    const auto& u_l2g = args.u_l2g;
+    const auto& u_dof = args.u_dof;
+    const auto& q_a = args.q_a;
+    const auto& q_v = args.q_v;
+    const auto& q_r = args.q_r;
+    bool computeBoundaryFlux = args.computeBoundaryFlux;
+
+    for (int eN = 0; eN < nElements_global; eN++)
+    {
+        std::vector<double> elementResidual_u(args.nDOF_test_element, 0.0);
+        std::vector<double> element_u(args.nDOF_trial_element, 0.0);
+
+        for (int i = 0; i < args.nDOF_trial_element; i++)
+        {
+            int eN_i = eN * args.nDOF_trial_element + i;
+            element_u[i] = u_dof[u_l2g[eN_i]];
+        }
+
+        for (int k = 0; k < args.nQuadraturePoints_element; k++)
+        {
+            double u = 0.0;
+            std::array<double, args.nSpace> grad_u = {0.0};
+            double m = 0.0;
+            double dm = 0.0;
+            std::array<double, args.nSpace> f = {0.0};
+            std::array<double, args.nSpace> df = {0.0};
+            std::array<std::array<double, args.nSpace>, args.nSpace> a = {{{0.0}}};
+            std::array<std::array<double, args.nSpace>, args.nSpace> da = {{{0.0}}};
+
+            // Calculate mapping
+            std::array<double, args.nSpace * args.nSpace> jac;
+            double jacDet;
+            std::array<double, args.nSpace * args.nSpace> jacInv;
+            double x, y, z;
+            calculateMapping_element(eN, k, mesh_dof.data(), mesh_l2g.data(), mesh_trial_ref.data(), mesh_grad_trial_ref.data(), jac.data(), jacDet, jacInv.data(), x, y, z);
+
+            // Get the physical integration weight
+            double dV = std::abs(jacDet) * dV_ref[k];
+
+            // Calculate the metric tensor and related quantities
+            std::array<double, args.nSpace * args.nSpace> G;
+            double G_dd_G, tr_G;
+            calculateG(jacInv.data(), G.data(), G_dd_G, tr_G);
+
+            // Get the trial function gradients
+            std::vector<double> u_grad_trial(args.nDOF_trial_element * args.nSpace);
+            gradTrialFromRef(&u_grad_trial_ref[k * args.nDOF_trial_element * args.nSpace], jacInv.data(), u_grad_trial.data());
+
+            // Get the solution
+            valFromElementDOF(element_u.data(), &u_trial_ref[k * args.nDOF_trial_element], u);
+
+            // Get the solution gradients
+            gradFromElementDOF(element_u.data(), u_grad_trial.data(), grad_u.data());
+
+            evaluateCoefficients(&q_v[eN * args.nQuadraturePoints_element * args.nSpace + k * args.nSpace],
+                                 u,
+                                 m,
+                                 dm,
+                                 f.data(),
+                                 df.data(),
+                                 a.data(),
+                                 da.data(),
+                                 q_r[eN * args.nQuadraturePoints_element + k]);
+
+            for (int i = 0; i < args.nDOF_test_element; i++)
+            {
+                for (int I = 0; I < args.nSpace; I++)
+                {
+                    elementResidual_u[i] += (f[I] - a[I][I] * grad_u[I]) * dV * u_test_ref[k * args.nDOF_test_element + i];
+                }
+            }
+        }
+
+		calculateBoundaryFlux(u_dof, u_l2g, u_trial_trace_ref, u_grad_trial_trace_ref, u_test_trace_ref, 
+                                  exteriorElementBoundariesArray, elementBoundaryLocalElementBoundariesArray, 
+                                  dS_ref, isDOFBoundary_u, ebqe_bc_u_ext, ebqe_a, ebqe_v, eN, elementResidual_u, 
+                                  nExteriorElementBoundaries_global, nDOF_trial_element, nDOF_test_element, 
+                                  nQuadraturePoints_elementBoundary, metricTensorDetSqrt);
+
+        
+        
+        for (int i = 0; i < args.nDOF_test_element; i++)
+        {
+            int eN_i = eN * args.nDOF_test_element + i;
+            globalResidual[u_l2g[eN_i]] += elementResidual_u[i];
+        }
+    }
+}
+
+void calculateBoundaryFluxJacobian(const xt::pyarray<double>& u_dof,
+                                   const xt::pyarray<int>& u_l2g,
+                                   const xt::pyarray<double>& u_trial_trace_ref,
+                                   const xt::pyarray<double>& u_grad_trial_trace_ref,
+                                   const xt::pyarray<double>& u_test_trace_ref,
+                                   const xt::pyarray<int>& exteriorElementBoundariesArray,
+                                   const xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray,
+                                   const xt::pyarray<double>& dS_ref,
+                                   const xt::pyarray<int>& isDOFBoundary_u,
+                                   const xt::pyarray<double>& ebqe_bc_u_ext,
+                                   const xt::pyarray<double>& ebqe_a,
+                                   const xt::pyarray<double>& ebqe_v,
+                                   const xt::pyarray<double>& ebqe_penalty_ext,
+                                   int eN,
+                                   xt::xarray<double>& elementJacobian_u_u,
+                                   int nExteriorElementBoundaries_global,
+                                   int nDOF_trial_element,
+                                   int nDOF_test_element,
+                                   int nQuadraturePoints_elementBoundary,
+                                   double metricTensorDetSqrt)
+{
+    for (int ebN = 0; ebN < nExteriorElementBoundaries_global; ebN++)
+    {
+        int ebNE_kb = exteriorElementBoundariesArray(ebN);
+        int ebN_local = elementBoundaryLocalElementBoundariesArray(ebNE_kb);
+        for (int kb = 0; kb < nQuadraturePoints_elementBoundary; kb++)
+        {
+            int ebN_local_kb = ebN_local * nQuadraturePoints_elementBoundary + kb;
+            int eN_nDOF_trial_element = eN * nDOF_trial_element;
+
+            double dS = metricTensorDetSqrt * dS_ref(kb);
+
+            // Get the metric tensor
+            double jacInv_ext[nSpace * nSpace], G[nSpace * nSpace], G_dd_G, tr_G;
+            ck.calculateG(jacInv_ext, G, G_dd_G, tr_G);
+
+            // Compute shape and solution information
+            double u_grad_trial_trace[nDOF_trial_element * nSpace];
+            ck.gradTrialFromRef(&u_grad_trial_trace_ref(ebN_local_kb * nDOF_trial_element), jacInv_ext, u_grad_trial_trace);
+
+            // Solution and gradients
+            double u_ext, grad_u_ext[nSpace];
+            ck.valFromDOF(u_dof.data(), &u_l2g(eN_nDOF_trial_element), &u_trial_trace_ref(ebN_local_kb * nDOF_test_element), u_ext);
+            ck.gradFromDOF(u_dof.data(), &u_l2g(eN_nDOF_trial_element), u_grad_trial_trace, grad_u_ext);
+
+            // Precalculate test function products with integration weights
+            double u_test_dS[nDOF_trial_element], u_grad_test_dS[nDOF_trial_element * nSpace];
+            for (int j = 0; j < nDOF_trial_element; j++)
+            {
+                u_test_dS[j] = u_test_trace_ref(ebN_local_kb * nDOF_test_element + j) * dS;
+                for (int I = 0; I < nSpace; I++)
+                {
+                    u_grad_test_dS[j * nSpace + I] = u_grad_trial_trace[j * nSpace + I] * dS;
+                }
+            }
+
+            // Load boundary values
+            double bc_u_ext = isDOFBoundary_u(ebNE_kb) * ebqe_bc_u_ext(ebNE_kb) + (1 - isDOFBoundary_u(ebNE_kb)) * u_ext;
+
+            // Calculate the PDE coefficients using the solution and the boundary values
+            double* a_ext = &ebqe_a(ebNE_kb * sd_rowptr[nSpace]);
+            double f_ext[nSpace], df_ext[nSpace], bc_f_ext[nSpace], bc_df_ext[nSpace];
+            for (int I = 0; I < nSpace; I++)
+            {
+                f_ext[I] = ebqe_v(ebNE_kb * nSpace + I) * u_ext;
+                df_ext[I] = ebqe_v(ebNE_kb * nSpace + I);
+                bc_f_ext[I] = ebqe_v(ebNE_kb * nSpace + I) * bc_u_ext;
+                bc_df_ext[I] = ebqe_v(ebNE_kb * nSpace + I);
+            }
+
+            // Compute the boundary integral contribution to the element Jacobian
+            for (int i = 0; i < nDOF_test_element; i++)
+            {
+                for (int j = 0; j < nDOF_trial_element; j++)
+                {
+                    for (int I = 0; I < nSpace; I++)
+                    {
+                        elementJacobian_u_u(i, j) += (df_ext[I] * u_grad_trial_trace[j * nSpace + I] - a_ext[I] * u_grad_trial_trace[j * nSpace + I]) * u_test_dS[i];
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 
 void calculateJacobian(arguments_dict& args)
@@ -452,7 +594,29 @@ void calculateJacobian(arguments_dict& args)
             double a[nSpace][nSpace] = {{0.0}};
             double da[nSpace][nSpace] = {{0.0}};
 
-            evaluateCoefficients(&q_v[eN * nQuadraturePoints_element * nSpace + k * nSpace],
+            // Calculate mapping
+            double jac[nSpace * nSpace], jacDet, jacInv[nSpace * nSpace];
+            double x, y, z;
+            ck.calculateMapping_element(eN, k, mesh_dof.data(), mesh_l2g.data(), mesh_trial_ref.data(), mesh_grad_trial_ref.data(), jac, jacDet, jacInv, x, y, z);
+
+            // Get the physical integration weight
+            double dV = fabs(jacDet) * dV_ref.data()[k];
+
+            // Calculate the metric tensor and related quantities
+            double G[nSpace * nSpace], G_dd_G, tr_G;
+            ck.calculateG(jacInv, G, G_dd_G, tr_G);
+
+            // Get the trial function gradients
+            double u_grad_trial[nDOF_trial_element * nSpace];
+            ck.gradTrialFromRef(&u_grad_trial_ref.data()[k * nDOF_trial_element * nSpace], jacInv, u_grad_trial);
+
+            // Get the solution
+            ck.valFromElementDOF(element_u.data(), &u_trial_ref.data()[k * nDOF_trial_element], u);
+
+            // Get the solution gradients
+            ck.gradFromElementDOF(element_u.data(), u_grad_trial, grad_u);
+
+            evaluateCoefficients(q_v.data() + eN * nQuadraturePoints_element * nSpace + k * nSpace,
                                  u,
                                  m,
                                  dm,
@@ -460,7 +624,7 @@ void calculateJacobian(arguments_dict& args)
                                  df,
                                  a,
                                  da,
-                                 q_r[eN * nQuadraturePoints_element + k]);
+                                 q_r.data()[eN * nQuadraturePoints_element + k]);
 
             for (int i = 0; i < nDOF_test_element; i++)
             {
@@ -468,11 +632,17 @@ void calculateJacobian(arguments_dict& args)
                 {
                     for (int I = 0; I < nSpace; I++)
                     {
-                        elementJacobian_u_u(i, j) += (df[I] * u_grad_trial_ref(k, j, I) - a[I][I] * u_grad_trial_ref(k, j, I)) * u_test_ref(k, i) * dV_ref(k);
+                        elementJacobian_u_u(i, j) += (df[I] * u_grad_trial[j * nSpace + I] - a[I][I] * u_grad_trial[j * nSpace + I]) * dV * u_test_ref.data()[k * nDOF_test_element + i];
                     }
                 }
             }
         }
+
+        calculateBoundaryFluxJacobian(u_dof, u_l2g, u_trial_trace_ref, u_grad_trial_trace_ref, u_test_trace_ref, 
+                                      exteriorElementBoundariesArray, elementBoundaryLocalElementBoundariesArray, 
+                                      dS_ref, isDOFBoundary_u, ebqe_bc_u_ext, ebqe_a, ebqe_v, ebqe_penalty_ext, 
+                                      eN, elementJacobian_u_u, nExteriorElementBoundaries_global, nDOF_trial_element, 
+                                      nDOF_test_element, nQuadraturePoints_elementBoundary, metricTensorDetSqrt);
 
         for (int i = 0; i < nDOF_test_element; i++)
         {
@@ -516,117 +686,121 @@ void calculateJacobian(arguments_dict& args)
 
 
 
-    void evaluateCoefficients(const int rowptr[nSpace],
-			      const int colind[nnz],
-			      const double rho,
-			      const double beta,
-			      const double gravity[nSpace],
-			      const double alpha,
-			      const double n_vg,
-			      const double thetaR,
-			      const double thetaSR,
-			      const double KWs[nnz],
-			      const double& u,
-			      double& m,
-			      double& dm,
-			      double f[nSpace],
-			      double df[nSpace],
-			      double a[nnz],
-			      double da[nnz],
-			      double as[nnz],
-			      double& kr,
-			      double& dkr)
-    {
-      const int nSpace2 = nSpace * nSpace;
-      double psiC;
-      double pcBar;
-      double pcBar_n;
-      double pcBar_nM1;
-      double pcBar_nM2;
-      double onePlus_pcBar_n;
-      double sBar;
-      double sqrt_sBar;
-      double DsBar_DpsiC;
-      double thetaW;
-      double DthetaW_DpsiC;
-      double vBar;
-      double vBar2;
-      double DvBar_DpsiC;
-      double KWr;
-      double DKWr_DpsiC;
-      double rho2 = rho * rho;
-      double thetaS;
-      double rhom;
-      double drhom;
-      double m_vg;
-      double pcBarStar;
-      double sqrt_sBarStar;
 
-      psiC = -u;
-      m_vg = 1.0 - 1.0 / n_vg;
-      thetaS = thetaR + thetaSR;
-      if (psiC > 0.0)
-	{
-	  pcBar = alpha * psiC;
-	  pcBarStar = pcBar;
-	  if (pcBar < 1.0e-8)
-	    pcBarStar = 1.0e-8;
-	  pcBar_nM2 = pow(pcBarStar, n_vg - 2);
-	  pcBar_nM1 = pcBar_nM2 * pcBar;
-	  pcBar_n   = pcBar_nM1 * pcBar;
-	  onePlus_pcBar_n = 1.0 + pcBar_n;
 
-	  sBar = pow(onePlus_pcBar_n, -m_vg);
-	  /* using -mn = 1-n */
-	  DsBar_DpsiC = alpha * (1.0 - n_vg) * (sBar/onePlus_pcBar_n)*pcBar_nM1;
 
-	  vBar = 1.0-pcBar_nM1*sBar;
-	  vBar2 = vBar*vBar;
-	  DvBar_DpsiC = -alpha*(n_vg-1.0)*pcBar_nM2*sBar - pcBar_nM1*DsBar_DpsiC;
 
-	  thetaW = thetaSR*sBar + thetaR;
-	  DthetaW_DpsiC = thetaSR * DsBar_DpsiC;
+    // void evaluateCoefficients(const int rowptr[nSpace],
+	// 		      const int colind[nnz],
+	// 		      const double rho,
+	// 		      const double beta,
+	// 		      const double gravity[nSpace],
+	// 		      const double alpha,
+	// 		      const double n_vg,
+	// 		      const double thetaR,
+	// 		      const double thetaSR,
+	// 		      const double KWs[nnz],
+	// 		      const double& u,
+	// 		      double& m,
+	// 		      double& dm,
+	// 		      double f[nSpace],
+	// 		      double df[nSpace],
+	// 		      double a[nnz],
+	// 		      double da[nnz],
+	// 		      double as[nnz],
+	// 		      double& kr,
+	// 		      double& dkr)
+    // {
+    //   const int nSpace2 = nSpace * nSpace;
+    //   double psiC;
+    //   double pcBar;
+    //   double pcBar_n;
+    //   double pcBar_nM1;
+    //   double pcBar_nM2;
+    //   double onePlus_pcBar_n;
+    //   double sBar;
+    //   double sqrt_sBar;
+    //   double DsBar_DpsiC;
+    //   double thetaW;
+    //   double DthetaW_DpsiC;
+    //   double vBar;
+    //   double vBar2;
+    //   double DvBar_DpsiC;
+    //   double KWr;
+    //   double DKWr_DpsiC;
+    //   double rho2 = rho * rho;
+    //   double thetaS;
+    //   double rhom;
+    //   double drhom;
+    //   double m_vg;
+    //   double pcBarStar;
+    //   double sqrt_sBarStar;
 
-	  sqrt_sBar = sqrt(sBar);
-	  sqrt_sBarStar = sqrt_sBar;
-	  if (sqrt_sBar < 1.0e-8)
-	    sqrt_sBarStar = 1.0e-8;
-	  KWr= sqrt_sBar*vBar2;
-	  DKWr_DpsiC= ((0.5/sqrt_sBarStar)*DsBar_DpsiC*vBar2
-		       +
-		       2.0*sqrt_sBar*vBar*DvBar_DpsiC);
-	}
-      else
-	{
-	  thetaW        = thetaS;
-	  DthetaW_DpsiC = 0.0;
-	  KWr           = 1.0;
-	  DKWr_DpsiC    = 0.0;
-	}
-      //slight compressibility
-      rhom = rho*exp(beta*u);
-      drhom = beta*rhom;
-      m = u;//rhom*thetaW;
-      dm = 1.0;//-rhom*DthetaW_DpsiC+drhom*thetaW;
-      for (int I=0;I<nSpace;I++)
-	{
-	  f[I] = 0.0;
-	  df[I] = 0.0;
+    //   psiC = -u;
+    //   m_vg = 1.0 - 1.0 / n_vg;
+    //   thetaS = thetaR + thetaSR;
+    //   if (psiC > 0.0)
+	// {
+	//   pcBar = alpha * psiC;
+	//   pcBarStar = pcBar;
+	//   if (pcBar < 1.0e-8)
+	//     pcBarStar = 1.0e-8;
+	//   pcBar_nM2 = pow(pcBarStar, n_vg - 2);
+	//   pcBar_nM1 = pcBar_nM2 * pcBar;
+	//   pcBar_n   = pcBar_nM1 * pcBar;
+	//   onePlus_pcBar_n = 1.0 + pcBar_n;
 
-	  for (int ii=rowptr[I]; ii < rowptr[I+1]; ii++)
-	    {
-		  double velocity = 0.001;
-		  double D= 0.0;	
-	      f[I]  = velocity *u;//rho2*KWr*KWs[ii]*gravity[colind[ii]];
-	      df[I] = velocity; //-rho2*DKWr_DpsiC*KWs[ii]*gravity[colind[ii]];
-	      a[ii]  = D; //KWr*KWs[ii]; //rho*KWr*KWs[ii];
-	      da[ii] = 0.0;//-rho*DKWr_DpsiC*KWs[ii];
-	      as[ii]  = 0.0;//rho*KWs[ii];
-	      kr = 0.0;//KWr;
-	      dkr=0.0;//mod picard DKWr_DpsiC;
-	    }
-	}
-    }
+	//   sBar = pow(onePlus_pcBar_n, -m_vg);
+	//   /* using -mn = 1-n */
+	//   DsBar_DpsiC = alpha * (1.0 - n_vg) * (sBar/onePlus_pcBar_n)*pcBar_nM1;
+
+	//   vBar = 1.0-pcBar_nM1*sBar;
+	//   vBar2 = vBar*vBar;
+	//   DvBar_DpsiC = -alpha*(n_vg-1.0)*pcBar_nM2*sBar - pcBar_nM1*DsBar_DpsiC;
+
+	//   thetaW = thetaSR*sBar + thetaR;
+	//   DthetaW_DpsiC = thetaSR * DsBar_DpsiC;
+
+	//   sqrt_sBar = sqrt(sBar);
+	//   sqrt_sBarStar = sqrt_sBar;
+	//   if (sqrt_sBar < 1.0e-8)
+	//     sqrt_sBarStar = 1.0e-8;
+	//   KWr= sqrt_sBar*vBar2;
+	//   DKWr_DpsiC= ((0.5/sqrt_sBarStar)*DsBar_DpsiC*vBar2
+	// 	       +
+	// 	       2.0*sqrt_sBar*vBar*DvBar_DpsiC);
+	// }
+    //   else
+	// {
+	//   thetaW        = thetaS;
+	//   DthetaW_DpsiC = 0.0;
+	//   KWr           = 1.0;
+	//   DKWr_DpsiC    = 0.0;
+	// }
+    //   //slight compressibility
+    //   rhom = rho*exp(beta*u);
+    //   drhom = beta*rhom;
+    //   m = u;//rhom*thetaW;
+    //   dm = 1.0;//-rhom*DthetaW_DpsiC+drhom*thetaW;
+    //   for (int I=0;I<nSpace;I++)
+	// {
+	//   f[I] = 0.0;
+	//   df[I] = 0.0;
+
+	//   for (int ii=rowptr[I]; ii < rowptr[I+1]; ii++)
+	//     {
+	// 	  double velocity = 0.001;
+	// 	  double D= 0.0;	
+	//       f[I]  = velocity *u;//rho2*KWr*KWs[ii]*gravity[colind[ii]];
+	//       df[I] = velocity; //-rho2*DKWr_DpsiC*KWs[ii]*gravity[colind[ii]];
+	//       a[ii]  = D; //KWr*KWs[ii]; //rho*KWr*KWs[ii];
+	//       da[ii] = 0.0;//-rho*DKWr_DpsiC*KWs[ii];
+	//       as[ii]  = 0.0;//rho*KWs[ii];
+	//       kr = 0.0;//KWr;
+	//       dkr=0.0;//mod picard DKWr_DpsiC;
+	//     }
+	// }
+    // }
 // 	void evaluateAdvectionDiffusionCoefficients(const int rowptr[nSpace],
 //                                             const int colind[nnz],
 //                                             const double rho,
@@ -893,911 +1067,911 @@ void calculateJacobian(arguments_dict& args)
 	fluxJacobian = 0.0;
     }
 
-    void calculateResidual(arguments_dict& args)
-    {
-      xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
-      xt::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
-      xt::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
-      xt::pyarray<double>& mesh_velocity_dof = args.array<double>("mesh_velocity_dof");
-      double MOVING_DOMAIN = args.scalar<double>("MOVING_DOMAIN");
-      xt::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
-      xt::pyarray<double>& dV_ref = args.array<double>("dV_ref");
-      xt::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
-      xt::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
-      xt::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
-      xt::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
-      xt::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
-      xt::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
-      xt::pyarray<double>& dS_ref = args.array<double>("dS_ref");
-      xt::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
-      xt::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
-      xt::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
-      xt::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
-      xt::pyarray<double>& normal_ref = args.array<double>("normal_ref");
-      xt::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
-      int nElements_global = args.scalar<int>("nElements_global");
-      xt::pyarray<double>& ebqe_penalty_ext = args.array<double>("ebqe_penalty_ext");
-      xt::pyarray<int>& elementMaterialTypes = args.array<int>("elementMaterialTypes");
-      xt::pyarray<int>& isSeepageFace = args.array<int>("isSeepageFace");
-      xt::pyarray<int>& a_rowptr = args.array<int>("a_rowptr");
-      xt::pyarray<int>& a_colind = args.array<int>("a_colind");
-      double rho = args.scalar<double>("rho");
-      double beta = args.scalar<double>("beta");
-      xt::pyarray<double>& gravity = args.array<double>("gravity");
-      xt::pyarray<double>& alpha = args.array<double>("alpha");
-      xt::pyarray<double>& n = args.array<double>("n");
-      xt::pyarray<double>& thetaR = args.array<double>("thetaR");
-      xt::pyarray<double>& thetaSR = args.array<double>("thetaSR");
-      xt::pyarray<double>& KWs = args.array<double>("KWs");
-      double useMetrics = args.scalar<double>("useMetrics");
-      double alphaBDF = args.scalar<double>("alphaBDF");
-      int lag_shockCapturing = args.scalar<int>("lag_shockCapturing");
-      double shockCapturingDiffusion = args.scalar<double>("shockCapturingDiffusion");
-      double sc_uref = args.scalar<double>("sc_uref");
-      double sc_alpha = args.scalar<double>("sc_alpha");
-      xt::pyarray<int>& u_l2g = args.array<int>("u_l2g");
-      xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
-      xt::pyarray<double>& u_dof = args.array<double>("u_dof");
-      xt::pyarray<double>& u_dof_old = args.array<double>("u_dof_old");
-      xt::pyarray<double>& velocity = args.array<double>("velocity");
-      xt::pyarray<double>& q_m = args.array<double>("q_m");
-      xt::pyarray<double>& q_u = args.array<double>("q_u");
-      xt::pyarray<double>& q_dV = args.array<double>("q_dV");
-      xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
-      xt::pyarray<double>& cfl = args.array<double>("cfl");
-      xt::pyarray<double>& q_numDiff_u = args.array<double>("q_numDiff_u");
-      xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
-      int offset_u = args.scalar<int>("offset_u");
-      int stride_u = args.scalar<int>("stride_u");
-      xt::pyarray<double>& globalResidual = args.array<double>("globalResidual");
-      int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
-      xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
-      xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
-      xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
-      xt::pyarray<double>& ebqe_velocity_ext = args.array<double>("ebqe_velocity_ext");
-      xt::pyarray<int>& isDOFBoundary_u = args.array<int>("isDOFBoundary_u");
-      xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
-      xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
-      xt::pyarray<double>& ebqe_bc_flux_ext = args.array<double>("ebqe_bc_flux_ext");
-      xt::pyarray<double>& ebqe_phi = args.array<double>("ebqe_phi");
-      double epsFact = args.scalar<double>("epsFact");
-      xt::pyarray<double>& ebqe_u = args.array<double>("ebqe_u");
-      xt::pyarray<double>& ebqe_flux = args.array<double>("ebqe_flux");
-      // PARAMETERS FOR EDGE BASED STABILIZATION
-      double cE = args.scalar<double>("cE");
-      double cK = args.scalar<double>("cK");
-      // PARAMETERS FOR LOG BASED ENTROPY FUNCTION
-      double uL = args.scalar<double>("uL");
-      double uR = args.scalar<double>("uR");
-      // PARAMETERS FOR EDGE VISCOSITY
-      int numDOFs = args.scalar<int>("numDOFs");
-      int NNZ = args.scalar<int>("NNZ");
-      xt::pyarray<int>& csrRowIndeces_DofLoops = args.array<int>("csrRowIndeces_DofLoops");
-      xt::pyarray<int>& csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops");
-      xt::pyarray<int>& csrRowIndeces_CellLoops = args.array<int>("csrRowIndeces_CellLoops");
-      xt::pyarray<int>& csrColumnOffsets_CellLoops = args.array<int>("csrColumnOffsets_CellLoops");
-      xt::pyarray<int>& csrColumnOffsets_eb_CellLoops = args.array<int>("csrColumnOffsets_eb_CellLoops");
-      // C matrices
-      xt::pyarray<double>& Cx = args.array<double>("Cx");
-      xt::pyarray<double>& Cy = args.array<double>("Cy");
-      xt::pyarray<double>& Cz = args.array<double>("Cz");
-      xt::pyarray<double>& CTx = args.array<double>("CTx");
-      xt::pyarray<double>& CTy = args.array<double>("CTy");
-      xt::pyarray<double>& CTz = args.array<double>("CTz");
-      xt::pyarray<double>& ML = args.array<double>("ML");
-      xt::pyarray<double>& delta_x_ij = args.array<double>("delta_x_ij");
-      // PARAMETERS FOR 1st or 2nd ORDER MPP METHOD
-      int LUMPED_MASS_MATRIX  = args.scalar<int>("LUMPED_MASS_MATRIX");
-      int STABILIZATION_TYPE = args.scalar<int>("STABILIZATION_TYPE");
-      int ENTROPY_TYPE = args.scalar<int>("ENTROPY_TYPE");
-      // FOR FCT
-      xt::pyarray<double>& dLow = args.array<double>("dLow");
-      xt::pyarray<double>& fluxMatrix = args.array<double>("fluxMatrix");
-      xt::pyarray<double>& uDotLow = args.array<double>("uDotLow");
-      xt::pyarray<double>& uLow = args.array<double>("uLow");
-      xt::pyarray<double>& dt_times_fH_minus_fL = args.array<double>("dt_times_fH_minus_fL");
-      xt::pyarray<double>& min_s_bc = args.array<double>("min_s_bc");
-      xt::pyarray<double>& max_s_bc = args.array<double>("max_s_bc");
-      // AUX QUANTITIES OF INTEREST
-      xt::pyarray<double>& quantDOFs = args.array<double>("quantDOFs");
-      xt::pyarray<double>& sLow = args.array<double>("sLow");
-      xt::pyarray<double>& sn = args.array<double>("sn");
+    // void calculateResidual(arguments_dict& args)
+    // {
+    //   xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
+    //   xt::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
+    //   xt::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
+    //   xt::pyarray<double>& mesh_velocity_dof = args.array<double>("mesh_velocity_dof");
+    //   double MOVING_DOMAIN = args.scalar<double>("MOVING_DOMAIN");
+    //   xt::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
+    //   xt::pyarray<double>& dV_ref = args.array<double>("dV_ref");
+    //   xt::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
+    //   xt::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
+    //   xt::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
+    //   xt::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
+    //   xt::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
+    //   xt::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
+    //   xt::pyarray<double>& dS_ref = args.array<double>("dS_ref");
+    //   xt::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
+    //   xt::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
+    //   xt::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
+    //   xt::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
+    //   xt::pyarray<double>& normal_ref = args.array<double>("normal_ref");
+    //   xt::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
+    //   int nElements_global = args.scalar<int>("nElements_global");
+    //   xt::pyarray<double>& ebqe_penalty_ext = args.array<double>("ebqe_penalty_ext");
+    //   xt::pyarray<int>& elementMaterialTypes = args.array<int>("elementMaterialTypes");
+    //   xt::pyarray<int>& isSeepageFace = args.array<int>("isSeepageFace");
+    //   xt::pyarray<int>& a_rowptr = args.array<int>("a_rowptr");
+    //   xt::pyarray<int>& a_colind = args.array<int>("a_colind");
+    //   double rho = args.scalar<double>("rho");
+    //   double beta = args.scalar<double>("beta");
+    //   xt::pyarray<double>& gravity = args.array<double>("gravity");
+    //   xt::pyarray<double>& alpha = args.array<double>("alpha");
+    //   xt::pyarray<double>& n = args.array<double>("n");
+    //   xt::pyarray<double>& thetaR = args.array<double>("thetaR");
+    //   xt::pyarray<double>& thetaSR = args.array<double>("thetaSR");
+    //   xt::pyarray<double>& KWs = args.array<double>("KWs");
+    //   double useMetrics = args.scalar<double>("useMetrics");
+    //   double alphaBDF = args.scalar<double>("alphaBDF");
+    //   int lag_shockCapturing = args.scalar<int>("lag_shockCapturing");
+    //   double shockCapturingDiffusion = args.scalar<double>("shockCapturingDiffusion");
+    //   double sc_uref = args.scalar<double>("sc_uref");
+    //   double sc_alpha = args.scalar<double>("sc_alpha");
+    //   xt::pyarray<int>& u_l2g = args.array<int>("u_l2g");
+    //   xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
+    //   xt::pyarray<double>& u_dof = args.array<double>("u_dof");
+    //   xt::pyarray<double>& u_dof_old = args.array<double>("u_dof_old");
+    //   xt::pyarray<double>& velocity = args.array<double>("velocity");
+    //   xt::pyarray<double>& q_m = args.array<double>("q_m");
+    //   xt::pyarray<double>& q_u = args.array<double>("q_u");
+    //   xt::pyarray<double>& q_dV = args.array<double>("q_dV");
+    //   xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
+    //   xt::pyarray<double>& cfl = args.array<double>("cfl");
+    //   xt::pyarray<double>& q_numDiff_u = args.array<double>("q_numDiff_u");
+    //   xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
+    //   int offset_u = args.scalar<int>("offset_u");
+    //   int stride_u = args.scalar<int>("stride_u");
+    //   xt::pyarray<double>& globalResidual = args.array<double>("globalResidual");
+    //   int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
+    //   xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
+    //   xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
+    //   xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
+    //   xt::pyarray<double>& ebqe_velocity_ext = args.array<double>("ebqe_velocity_ext");
+    //   xt::pyarray<int>& isDOFBoundary_u = args.array<int>("isDOFBoundary_u");
+    //   xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
+    //   xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
+    //   xt::pyarray<double>& ebqe_bc_flux_ext = args.array<double>("ebqe_bc_flux_ext");
+    //   xt::pyarray<double>& ebqe_phi = args.array<double>("ebqe_phi");
+    //   double epsFact = args.scalar<double>("epsFact");
+    //   xt::pyarray<double>& ebqe_u = args.array<double>("ebqe_u");
+    //   xt::pyarray<double>& ebqe_flux = args.array<double>("ebqe_flux");
+    //   // PARAMETERS FOR EDGE BASED STABILIZATION
+    //   double cE = args.scalar<double>("cE");
+    //   double cK = args.scalar<double>("cK");
+    //   // PARAMETERS FOR LOG BASED ENTROPY FUNCTION
+    //   double uL = args.scalar<double>("uL");
+    //   double uR = args.scalar<double>("uR");
+    //   // PARAMETERS FOR EDGE VISCOSITY
+    //   int numDOFs = args.scalar<int>("numDOFs");
+    //   int NNZ = args.scalar<int>("NNZ");
+    //   xt::pyarray<int>& csrRowIndeces_DofLoops = args.array<int>("csrRowIndeces_DofLoops");
+    //   xt::pyarray<int>& csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops");
+    //   xt::pyarray<int>& csrRowIndeces_CellLoops = args.array<int>("csrRowIndeces_CellLoops");
+    //   xt::pyarray<int>& csrColumnOffsets_CellLoops = args.array<int>("csrColumnOffsets_CellLoops");
+    //   xt::pyarray<int>& csrColumnOffsets_eb_CellLoops = args.array<int>("csrColumnOffsets_eb_CellLoops");
+    //   // C matrices
+    //   xt::pyarray<double>& Cx = args.array<double>("Cx");
+    //   xt::pyarray<double>& Cy = args.array<double>("Cy");
+    //   xt::pyarray<double>& Cz = args.array<double>("Cz");
+    //   xt::pyarray<double>& CTx = args.array<double>("CTx");
+    //   xt::pyarray<double>& CTy = args.array<double>("CTy");
+    //   xt::pyarray<double>& CTz = args.array<double>("CTz");
+    //   xt::pyarray<double>& ML = args.array<double>("ML");
+    //   xt::pyarray<double>& delta_x_ij = args.array<double>("delta_x_ij");
+    //   // PARAMETERS FOR 1st or 2nd ORDER MPP METHOD
+    //   int LUMPED_MASS_MATRIX  = args.scalar<int>("LUMPED_MASS_MATRIX");
+    //   int STABILIZATION_TYPE = args.scalar<int>("STABILIZATION_TYPE");
+    //   int ENTROPY_TYPE = args.scalar<int>("ENTROPY_TYPE");
+    //   // FOR FCT
+    //   xt::pyarray<double>& dLow = args.array<double>("dLow");
+    //   xt::pyarray<double>& fluxMatrix = args.array<double>("fluxMatrix");
+    //   xt::pyarray<double>& uDotLow = args.array<double>("uDotLow");
+    //   xt::pyarray<double>& uLow = args.array<double>("uLow");
+    //   xt::pyarray<double>& dt_times_fH_minus_fL = args.array<double>("dt_times_fH_minus_fL");
+    //   xt::pyarray<double>& min_s_bc = args.array<double>("min_s_bc");
+    //   xt::pyarray<double>& max_s_bc = args.array<double>("max_s_bc");
+    //   // AUX QUANTITIES OF INTEREST
+    //   xt::pyarray<double>& quantDOFs = args.array<double>("quantDOFs");
+    //   xt::pyarray<double>& sLow = args.array<double>("sLow");
+    //   xt::pyarray<double>& sn = args.array<double>("sn");
 
-      assert(a_rowptr.data()[nSpace] == nnz);
-      assert(a_rowptr.data()[nSpace] == nSpace);
-      //cek should this be read in?
-      double Ct_sge = 4.0;
+    //   assert(a_rowptr.data()[nSpace] == nnz);
+    //   assert(a_rowptr.data()[nSpace] == nSpace);
+    //   //cek should this be read in?
+    //   double Ct_sge = 4.0;
 
-      //loop over elements to compute volume integrals and load them into element and global residual
-      //
-      //eN is the element index
-      //eN_k is the quadrature point index for a scalar
-      //eN_k_nSpace is the quadrature point index for a vector
-      //eN_i is the element test function index
-      //eN_j is the element trial function index
-      //eN_k_j is the quadrature point index for a trial function
-      //eN_k_i is the quadrature point index for a trial function
-      for(int eN=0;eN<nElements_global;eN++)
-	{
-	  //declare local storage for element residual and initialize
-	  double elementResidual_u[nDOF_test_element];
-	  for (int i=0;i<nDOF_test_element;i++)
-	    {
-	      elementResidual_u[i]=0.0;
-	    }//i
-	  //loop over quadrature points and compute integrands
-	  for  (int k=0;k<nQuadraturePoints_element;k++)
-	    {
-	      //compute indeces and declare local storage
-	      int eN_k = eN*nQuadraturePoints_element+k,
-		eN_k_nSpace = eN_k*nSpace,
-		eN_nDOF_trial_element = eN*nDOF_trial_element;
-	      double u=0.0,grad_u[nSpace],grad_u_old[nSpace],
-		m=0.0,dm=0.0,
-		f[nSpace],df[nSpace],
-		a[nnz],da[nnz],as[nnz],
-		m_t=0.0,dm_t=0.0,
-		pdeResidual_u=0.0,
-		Lstar_u[nDOF_test_element],
-		subgridError_u=0.0,
-		tau=0.0,tau0=0.0,tau1=0.0,
-		numDiff0=0.0,numDiff1=0.0,
-		jac[nSpace*nSpace],
-		jacDet,
-		jacInv[nSpace*nSpace],
-		u_grad_trial[nDOF_trial_element*nSpace],
-		u_test_dV[nDOF_trial_element],
-		u_grad_test_dV[nDOF_test_element*nSpace],
-		dV,x,y,z,xt,yt,zt,
-		G[nSpace*nSpace],G_dd_G,tr_G,norm_Rv;
-	      //
-	      //compute solution and gradients at quadrature points
-	      //
-	      ck.calculateMapping_element(eN,
-					  k,
-					  mesh_dof.data(),
-					  mesh_l2g.data(),
-					  mesh_trial_ref.data(),
-					  mesh_grad_trial_ref.data(),
-					  jac,
-					  jacDet,
-					  jacInv,
-					  x,y,z);
-	      ck.calculateMappingVelocity_element(eN,
-						  k,
-						  mesh_velocity_dof.data(),
-						  mesh_l2g.data(),
-						  mesh_trial_ref.data(),
-						  xt,yt,zt);
-	      //get the physical integration weight
-	      dV = fabs(jacDet)*dV_ref.data()[k];
-	      q_dV.data()[eN_k] = dV;
-	      ck.calculateG(jacInv,G,G_dd_G,tr_G);
-	      //get the trial function gradients
-	      ck.gradTrialFromRef(&u_grad_trial_ref.data()[k*nDOF_trial_element*nSpace],jacInv,u_grad_trial);
-	      //get the solution
-	      ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_ref.data()[k*nDOF_trial_element],u);
-	      //get the solution gradients
-	      ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial,grad_u);
-	      //precalculate test function products with integration weights
-	      for (int j=0;j<nDOF_trial_element;j++)
-		{
-		  u_test_dV[j] = u_test_ref.data()[k*nDOF_trial_element+j]*dV;
-		  for (int I=0;I<nSpace;I++)
-		    {
-		      u_grad_test_dV[j*nSpace+I]   = u_grad_trial[j*nSpace+I]*dV;//cek warning won't work for Petrov-Galerkin
-		    }
-		}
-	      //
-	      //calculate pde coefficients at quadrature points
-	      //
-	      double Kr,dKr;
-	      evaluateCoefficients(a_rowptr.data(),
-				   a_colind.data(),
-				   rho,
-				   beta,
-				   gravity.data(),
-				   alpha.data()[elementMaterialTypes.data()[eN]],
-				   n.data()[elementMaterialTypes.data()[eN]],
-				   thetaR.data()[elementMaterialTypes.data()[eN]],
-				   thetaSR.data()[elementMaterialTypes.data()[eN]],
-				   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
-				   u,
-				   m,
-				   dm,
-				   f,
-				   df,
-				   a,
-				   da,
-				   as,
-				   Kr,
-				   dKr);
-	      //
-	      //calculate time derivative at quadrature points
-	      //
-	      ck.bdf(alphaBDF,
-		     q_m_betaBDF.data()[eN_k],
-		     m,
-		     dm,
-		     m_t,
-		     dm_t);
-	      /* // */
-	      /* //calculate subgrid error (strong residual and adjoint) */
-	      /* // */
-	      /* //calculate strong residual */
-	      /* pdeResidual_u = ck.Mass_strong(m_t) + ck.Advection_strong(df,grad_u); */
-	      /* //calculate adjoint */
-	      /* for (int i=0;i<nDOF_test_element;i++) */
-	      /*     { */
-	      /*       // int eN_k_i_nSpace = (eN_k*nDOF_trial_element+i)*nSpace; */
-	      /*       // Lstar_u[i]  = ck.Advection_adjoint(df,&u_grad_test_dV[eN_k_i_nSpace]); */
-	      /*       int i_nSpace = i*nSpace; */
-	      /*       Lstar_u[i]  = ck.Advection_adjoint(df,&u_grad_test_dV[i_nSpace]); */
-	      /*     } */
-	      /* //calculate tau and tau*Res */
-	      /* calculateSubgridError_tau(elementDiameter[eN],dm_t,df,cfl[eN_k],tau0); */
-	      /* calculateSubgridError_tau(Ct_sge, */
-	      /*                           G, */
-	      /*                           dm_t, */
-	      /*                           df, */
-	      /*                           tau1, */
-	      /*                           cfl[eN_k]); */
+    //   //loop over elements to compute volume integrals and load them into element and global residual
+    //   //
+    //   //eN is the element index
+    //   //eN_k is the quadrature point index for a scalar
+    //   //eN_k_nSpace is the quadrature point index for a vector
+    //   //eN_i is the element test function index
+    //   //eN_j is the element trial function index
+    //   //eN_k_j is the quadrature point index for a trial function
+    //   //eN_k_i is the quadrature point index for a trial function
+    //   for(int eN=0;eN<nElements_global;eN++)
+	// {
+	//   //declare local storage for element residual and initialize
+	//   double elementResidual_u[nDOF_test_element];
+	//   for (int i=0;i<nDOF_test_element;i++)
+	//     {
+	//       elementResidual_u[i]=0.0;
+	//     }//i
+	//   //loop over quadrature points and compute integrands
+	//   for  (int k=0;k<nQuadraturePoints_element;k++)
+	//     {
+	//       //compute indeces and declare local storage
+	//       int eN_k = eN*nQuadraturePoints_element+k,
+	// 	eN_k_nSpace = eN_k*nSpace,
+	// 	eN_nDOF_trial_element = eN*nDOF_trial_element;
+	//       double u=0.0,grad_u[nSpace],grad_u_old[nSpace],
+	// 	m=0.0,dm=0.0,
+	// 	f[nSpace],df[nSpace],
+	// 	a[nnz],da[nnz],as[nnz],
+	// 	m_t=0.0,dm_t=0.0,
+	// 	pdeResidual_u=0.0,
+	// 	Lstar_u[nDOF_test_element],
+	// 	subgridError_u=0.0,
+	// 	tau=0.0,tau0=0.0,tau1=0.0,
+	// 	numDiff0=0.0,numDiff1=0.0,
+	// 	jac[nSpace*nSpace],
+	// 	jacDet,
+	// 	jacInv[nSpace*nSpace],
+	// 	u_grad_trial[nDOF_trial_element*nSpace],
+	// 	u_test_dV[nDOF_trial_element],
+	// 	u_grad_test_dV[nDOF_test_element*nSpace],
+	// 	dV,x,y,z,xt,yt,zt,
+	// 	G[nSpace*nSpace],G_dd_G,tr_G,norm_Rv;
+	//       //
+	//       //compute solution and gradients at quadrature points
+	//       //
+	//       ck.calculateMapping_element(eN,
+	// 				  k,
+	// 				  mesh_dof.data(),
+	// 				  mesh_l2g.data(),
+	// 				  mesh_trial_ref.data(),
+	// 				  mesh_grad_trial_ref.data(),
+	// 				  jac,
+	// 				  jacDet,
+	// 				  jacInv,
+	// 				  x,y,z);
+	//       ck.calculateMappingVelocity_element(eN,
+	// 					  k,
+	// 					  mesh_velocity_dof.data(),
+	// 					  mesh_l2g.data(),
+	// 					  mesh_trial_ref.data(),
+	// 					  xt,yt,zt);
+	//       //get the physical integration weight
+	//       dV = fabs(jacDet)*dV_ref.data()[k];
+	//       q_dV.data()[eN_k] = dV;
+	//       ck.calculateG(jacInv,G,G_dd_G,tr_G);
+	//       //get the trial function gradients
+	//       ck.gradTrialFromRef(&u_grad_trial_ref.data()[k*nDOF_trial_element*nSpace],jacInv,u_grad_trial);
+	//       //get the solution
+	//       ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_ref.data()[k*nDOF_trial_element],u);
+	//       //get the solution gradients
+	//       ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial,grad_u);
+	//       //precalculate test function products with integration weights
+	//       for (int j=0;j<nDOF_trial_element;j++)
+	// 	{
+	// 	  u_test_dV[j] = u_test_ref.data()[k*nDOF_trial_element+j]*dV;
+	// 	  for (int I=0;I<nSpace;I++)
+	// 	    {
+	// 	      u_grad_test_dV[j*nSpace+I]   = u_grad_trial[j*nSpace+I]*dV;//cek warning won't work for Petrov-Galerkin
+	// 	    }
+	// 	}
+	//       //
+	//       //calculate pde coefficients at quadrature points
+	//       //
+	//       double Kr,dKr;
+	//       evaluateCoefficients(a_rowptr.data(),
+	// 			   a_colind.data(),
+	// 			   rho,
+	// 			   beta,
+	// 			   gravity.data(),
+	// 			   alpha.data()[elementMaterialTypes.data()[eN]],
+	// 			   n.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaR.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaSR.data()[elementMaterialTypes.data()[eN]],
+	// 			   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
+	// 			   u,
+	// 			   m,
+	// 			   dm,
+	// 			   f,
+	// 			   df,
+	// 			   a,
+	// 			   da,
+	// 			   as,
+	// 			   Kr,
+	// 			   dKr);
+	//       //
+	//       //calculate time derivative at quadrature points
+	//       //
+	//       ck.bdf(alphaBDF,
+	// 	     q_m_betaBDF.data()[eN_k],
+	// 	     m,
+	// 	     dm,
+	// 	     m_t,
+	// 	     dm_t);
+	//       /* // */
+	//       /* //calculate subgrid error (strong residual and adjoint) */
+	//       /* // */
+	//       /* //calculate strong residual */
+	//       /* pdeResidual_u = ck.Mass_strong(m_t) + ck.Advection_strong(df,grad_u); */
+	//       /* //calculate adjoint */
+	//       /* for (int i=0;i<nDOF_test_element;i++) */
+	//       /*     { */
+	//       /*       // int eN_k_i_nSpace = (eN_k*nDOF_trial_element+i)*nSpace; */
+	//       /*       // Lstar_u[i]  = ck.Advection_adjoint(df,&u_grad_test_dV[eN_k_i_nSpace]); */
+	//       /*       int i_nSpace = i*nSpace; */
+	//       /*       Lstar_u[i]  = ck.Advection_adjoint(df,&u_grad_test_dV[i_nSpace]); */
+	//       /*     } */
+	//       /* //calculate tau and tau*Res */
+	//       /* calculateSubgridError_tau(elementDiameter[eN],dm_t,df,cfl[eN_k],tau0); */
+	//       /* calculateSubgridError_tau(Ct_sge, */
+	//       /*                           G, */
+	//       /*                           dm_t, */
+	//       /*                           df, */
+	//       /*                           tau1, */
+	//       /*                           cfl[eN_k]); */
 
-	      /* tau = useMetrics*tau1+(1.0-useMetrics)*tau0; */
+	//       /* tau = useMetrics*tau1+(1.0-useMetrics)*tau0; */
 
-	      /* subgridError_u = -tau*pdeResidual_u; */
-	      /* // */
-	      /* //calculate shock capturing diffusion */
-	      /* // */
+	//       /* subgridError_u = -tau*pdeResidual_u; */
+	//       /* // */
+	//       /* //calculate shock capturing diffusion */
+	//       /* // */
 
 
-	      /* ck.calculateNumericalDiffusion(shockCapturingDiffusion,elementDiameter[eN],pdeResidual_u,grad_u,numDiff0);       */
-	      /* //ck.calculateNumericalDiffusion(shockCapturingDiffusion,G,pdeResidual_u,grad_u_old,numDiff1); */
-	      /* ck.calculateNumericalDiffusion(shockCapturingDiffusion,sc_uref, sc_alpha,G,G_dd_G,pdeResidual_u,grad_u,numDiff1); */
-	      /* q_numDiff_u[eN_k] = useMetrics*numDiff1+(1.0-useMetrics)*numDiff0; */
-	      //std::cout<<tau<<"   "<<q_numDiff_u[eN_k]<<std::endl;
-	      //
-	      //update element residual
-	      //
-	      for(int i=0;i<nDOF_test_element;i++)
-		{
-		  int eN_k_i=eN_k*nDOF_test_element+i,
-		    eN_k_i_nSpace = eN_k_i*nSpace,
-		    i_nSpace=i*nSpace;
+	//       /* ck.calculateNumericalDiffusion(shockCapturingDiffusion,elementDiameter[eN],pdeResidual_u,grad_u,numDiff0);       */
+	//       /* //ck.calculateNumericalDiffusion(shockCapturingDiffusion,G,pdeResidual_u,grad_u_old,numDiff1); */
+	//       /* ck.calculateNumericalDiffusion(shockCapturingDiffusion,sc_uref, sc_alpha,G,G_dd_G,pdeResidual_u,grad_u,numDiff1); */
+	//       /* q_numDiff_u[eN_k] = useMetrics*numDiff1+(1.0-useMetrics)*numDiff0; */
+	//       //std::cout<<tau<<"   "<<q_numDiff_u[eN_k]<<std::endl;
+	//       //
+	//       //update element residual
+	//       //
+	//       for(int i=0;i<nDOF_test_element;i++)
+	// 	{
+	// 	  int eN_k_i=eN_k*nDOF_test_element+i,
+	// 	    eN_k_i_nSpace = eN_k_i*nSpace,
+	// 	    i_nSpace=i*nSpace;
 
-		  elementResidual_u[i] += ck.Mass_weak(m_t,u_test_dV[i]) +
-		    ck.Advection_weak(f,&u_grad_test_dV[i_nSpace]) +
-		    ck.Diffusion_weak(a_rowptr.data(),a_colind.data(),a,grad_u,&u_grad_test_dV[i_nSpace]);
-		  /* +  */
-		  /*   ck.SubgridError(subgridError_u,Lstar_u[i]) +  */
-		  /*   ck.NumericalDiffusion(q_numDiff_u_last[eN_k],grad_u,&u_grad_test_dV[i_nSpace]);  */
-		}//i
-	      //
-	      q_m.data()[eN_k] = m;
-	      q_u.data()[eN_k] = u;
-	    }
-	  //
-	  //load element into global residual and save element residual
-	  //
-	  for(int i=0;i<nDOF_test_element;i++)
-	    {
-	      int eN_i=eN*nDOF_test_element+i;
+	// 	  elementResidual_u[i] += ck.Mass_weak(m_t,u_test_dV[i]) +
+	// 	    ck.Advection_weak(f,&u_grad_test_dV[i_nSpace]) +
+	// 	    ck.Diffusion_weak(a_rowptr.data(),a_colind.data(),a,grad_u,&u_grad_test_dV[i_nSpace]);
+	// 	  /* +  */
+	// 	  /*   ck.SubgridError(subgridError_u,Lstar_u[i]) +  */
+	// 	  /*   ck.NumericalDiffusion(q_numDiff_u_last[eN_k],grad_u,&u_grad_test_dV[i_nSpace]);  */
+	// 	}//i
+	//       //
+	//       q_m.data()[eN_k] = m;
+	//       q_u.data()[eN_k] = u;
+	//     }
+	//   //
+	//   //load element into global residual and save element residual
+	//   //
+	//   for(int i=0;i<nDOF_test_element;i++)
+	//     {
+	//       int eN_i=eN*nDOF_test_element+i;
 
-	      globalResidual.data()[offset_u+stride_u*u_l2g.data()[eN_i]] += elementResidual_u[i];
-	    }//i
-	}//elements
-      //
-      //loop over exterior element boundaries to calculate surface integrals and load into element and global residuals
-      //
-      //ebNE is the Exterior element boundary INdex
-      //ebN is the element boundary INdex
-      //eN is the element index
-      for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++)
-	{
-	  int ebN = exteriorElementBoundariesArray.data()[ebNE],
-	    eN  = elementBoundaryElementsArray.data()[ebN*2+0],
-	    ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+0],
-	    eN_nDOF_trial_element = eN*nDOF_trial_element;
-	  double elementResidual_u[nDOF_test_element];
-	  for (int i=0;i<nDOF_test_element;i++)
-	    {
-	      elementResidual_u[i]=0.0;
-	    }
-	  for  (int kb=0;kb<nQuadraturePoints_elementBoundary;kb++)
-	    {
-	      int ebNE_kb = ebNE*nQuadraturePoints_elementBoundary+kb,
-		ebNE_kb_nSpace = ebNE_kb*nSpace,
-		ebN_local_kb = ebN_local*nQuadraturePoints_elementBoundary+kb,
-		ebN_local_kb_nSpace = ebN_local_kb*nSpace;
-	      double u_ext=0.0,
-		grad_u_ext[nSpace],
-		m_ext=0.0,
-		dm_ext=0.0,
-		f_ext[nSpace],
-		df_ext[nSpace],
-		a_ext[nnz],
-		da_ext[nnz],
-		as_ext[nnz],
-		flux_ext=0.0,
-		bc_u_ext=0.0,
-		bc_grad_u_ext[nSpace],
-		bc_m_ext=0.0,
-		bc_dm_ext=0.0,
-		bc_f_ext[nSpace],
-		bc_df_ext[nSpace],
-		bc_a_ext[nnz],
-		bc_da_ext[nnz],
-		bc_as_ext[nnz],
-		jac_ext[nSpace*nSpace],
-		jacDet_ext,
-		jacInv_ext[nSpace*nSpace],
-		boundaryJac[nSpace*(nSpace-1)],
-		metricTensor[(nSpace-1)*(nSpace-1)],
-		metricTensorDetSqrt,
-		dS,
-		u_test_dS[nDOF_test_element],
-		u_grad_trial_trace[nDOF_trial_element*nSpace],
-		normal[3],x_ext,y_ext,z_ext,xt_ext,yt_ext,zt_ext,integralScaling,
-		G[nSpace*nSpace],G_dd_G,tr_G;
-	      //
-	      //calculate the solution and gradients at quadrature points
-	      //
-	      //compute information about mapping from reference element to physical element
-	      ck.calculateMapping_elementBoundary(eN,
-						  ebN_local,
-						  kb,
-						  ebN_local_kb,
-						  mesh_dof.data(),
-						  mesh_l2g.data(),
-						  mesh_trial_trace_ref.data(),
-						  mesh_grad_trial_trace_ref.data(),
-						  boundaryJac_ref.data(),
-						  jac_ext,
-						  jacDet_ext,
-						  jacInv_ext,
-						  boundaryJac,
-						  metricTensor,
-						  metricTensorDetSqrt,
-						  normal_ref.data(),
-						  normal,
-						  x_ext,y_ext,z_ext);
-	      ck.calculateMappingVelocity_elementBoundary(eN,
-							  ebN_local,
-							  kb,
-							  ebN_local_kb,
-							  mesh_velocity_dof.data(),
-							  mesh_l2g.data(),
-							  mesh_trial_trace_ref.data(),
-							  xt_ext,yt_ext,zt_ext,
-							  normal,
-							  boundaryJac,
-							  metricTensor,
-							  integralScaling);
-	      dS = ((1.0-MOVING_DOMAIN)*metricTensorDetSqrt + MOVING_DOMAIN*integralScaling)*dS_ref.data()[kb];
-	      //get the metric tensor
-	      //cek todo use symmetry
-	      ck.calculateG(jacInv_ext,G,G_dd_G,tr_G);
-	      //compute shape and solution information
-	      //shape
-	      ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace*nDOF_trial_element],jacInv_ext,u_grad_trial_trace);
-	      //solution and gradient
-	      ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_trace_ref.data()[ebN_local_kb*nDOF_test_element],u_ext);
-	      ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial_trace,grad_u_ext);
-	      //precalculate test function products with integration weights
-	      for (int j=0;j<nDOF_trial_element;j++)
-		{
-		  u_test_dS[j] = u_test_trace_ref.data()[ebN_local_kb*nDOF_test_element+j]*dS;
-		}
-	      //
-	      //load the boundary values
-	      //
-	      bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+(1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
-	      //
-	      //calculate the pde coefficients using the solution and the boundary values for the solution
-	      //
-	      double Kr, dKr;
-	      evaluateCoefficients(a_rowptr.data(),
-				   a_colind.data(),
-				   rho,
-				   beta,
-				   gravity.data(),
-				   alpha.data()[elementMaterialTypes.data()[eN]],
-				   n.data()[elementMaterialTypes.data()[eN]],
-				   thetaR.data()[elementMaterialTypes.data()[eN]],
-				   thetaSR.data()[elementMaterialTypes.data()[eN]],
-				   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
-				   u_ext,
-				   m_ext,
-				   dm_ext,
-				   f_ext,
-				   df_ext,
-				   a_ext,
-				   da_ext,
-				   as_ext,
-				   Kr,
-				   dKr);
-	      evaluateCoefficients(a_rowptr.data(),
-				   a_colind.data(),
-				   rho,
-				   beta,
-				   gravity.data(),
-				   alpha.data()[elementMaterialTypes.data()[eN]],
-				   n.data()[elementMaterialTypes.data()[eN]],
-				   thetaR.data()[elementMaterialTypes.data()[eN]],
-				   thetaSR.data()[elementMaterialTypes.data()[eN]],
-				   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
-				   bc_u_ext,
-				   bc_m_ext,
-				   bc_dm_ext,
-				   bc_f_ext,
-				   bc_df_ext,
-				   bc_a_ext,
-				   bc_da_ext,
-				   bc_as_ext,
-				   Kr,
-				   dKr);
-	      //
-	      //calculate the numerical fluxes
-	      //
-	      exteriorNumericalFlux(ebqe_bc_flux_ext[ebNE_kb],
-				    a_rowptr.data(),
-				    a_colind.data(),
-				    isSeepageFace.data()[ebNE],//tricky, this is a face flag not face quad
-				    isDOFBoundary_u.data()[ebNE_kb],
-				    normal,
-				    bc_u_ext,
-				    a_ext,
-				    grad_u_ext,
-				    u_ext,
-				    f_ext,
-				    ebqe_penalty_ext.data()[ebNE_kb],// penalty,
-				    flux_ext);
-	      ebqe_flux.data()[ebNE_kb] = flux_ext;
-	      ebqe_u.data()[ebNE_kb] = u_ext;
-	      //
-	      //update residuals
-	      //
-	      for (int i=0;i<nDOF_test_element;i++)
-		{
-		  int ebNE_kb_i = ebNE_kb*nDOF_test_element+i;
+	//       globalResidual.data()[offset_u+stride_u*u_l2g.data()[eN_i]] += elementResidual_u[i];
+	//     }//i
+	// }//elements
+    //   //
+    //   //loop over exterior element boundaries to calculate surface integrals and load into element and global residuals
+    //   //
+    //   //ebNE is the Exterior element boundary INdex
+    //   //ebN is the element boundary INdex
+    //   //eN is the element index
+    //   for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++)
+	// {
+	//   int ebN = exteriorElementBoundariesArray.data()[ebNE],
+	//     eN  = elementBoundaryElementsArray.data()[ebN*2+0],
+	//     ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+0],
+	//     eN_nDOF_trial_element = eN*nDOF_trial_element;
+	//   double elementResidual_u[nDOF_test_element];
+	//   for (int i=0;i<nDOF_test_element;i++)
+	//     {
+	//       elementResidual_u[i]=0.0;
+	//     }
+	//   for  (int kb=0;kb<nQuadraturePoints_elementBoundary;kb++)
+	//     {
+	//       int ebNE_kb = ebNE*nQuadraturePoints_elementBoundary+kb,
+	// 	ebNE_kb_nSpace = ebNE_kb*nSpace,
+	// 	ebN_local_kb = ebN_local*nQuadraturePoints_elementBoundary+kb,
+	// 	ebN_local_kb_nSpace = ebN_local_kb*nSpace;
+	//       double u_ext=0.0,
+	// 	grad_u_ext[nSpace],
+	// 	m_ext=0.0,
+	// 	dm_ext=0.0,
+	// 	f_ext[nSpace],
+	// 	df_ext[nSpace],
+	// 	a_ext[nnz],
+	// 	da_ext[nnz],
+	// 	as_ext[nnz],
+	// 	flux_ext=0.0,
+	// 	bc_u_ext=0.0,
+	// 	bc_grad_u_ext[nSpace],
+	// 	bc_m_ext=0.0,
+	// 	bc_dm_ext=0.0,
+	// 	bc_f_ext[nSpace],
+	// 	bc_df_ext[nSpace],
+	// 	bc_a_ext[nnz],
+	// 	bc_da_ext[nnz],
+	// 	bc_as_ext[nnz],
+	// 	jac_ext[nSpace*nSpace],
+	// 	jacDet_ext,
+	// 	jacInv_ext[nSpace*nSpace],
+	// 	boundaryJac[nSpace*(nSpace-1)],
+	// 	metricTensor[(nSpace-1)*(nSpace-1)],
+	// 	metricTensorDetSqrt,
+	// 	dS,
+	// 	u_test_dS[nDOF_test_element],
+	// 	u_grad_trial_trace[nDOF_trial_element*nSpace],
+	// 	normal[3],x_ext,y_ext,z_ext,xt_ext,yt_ext,zt_ext,integralScaling,
+	// 	G[nSpace*nSpace],G_dd_G,tr_G;
+	//       //
+	//       //calculate the solution and gradients at quadrature points
+	//       //
+	//       //compute information about mapping from reference element to physical element
+	//       ck.calculateMapping_elementBoundary(eN,
+	// 					  ebN_local,
+	// 					  kb,
+	// 					  ebN_local_kb,
+	// 					  mesh_dof.data(),
+	// 					  mesh_l2g.data(),
+	// 					  mesh_trial_trace_ref.data(),
+	// 					  mesh_grad_trial_trace_ref.data(),
+	// 					  boundaryJac_ref.data(),
+	// 					  jac_ext,
+	// 					  jacDet_ext,
+	// 					  jacInv_ext,
+	// 					  boundaryJac,
+	// 					  metricTensor,
+	// 					  metricTensorDetSqrt,
+	// 					  normal_ref.data(),
+	// 					  normal,
+	// 					  x_ext,y_ext,z_ext);
+	//       ck.calculateMappingVelocity_elementBoundary(eN,
+	// 						  ebN_local,
+	// 						  kb,
+	// 						  ebN_local_kb,
+	// 						  mesh_velocity_dof.data(),
+	// 						  mesh_l2g.data(),
+	// 						  mesh_trial_trace_ref.data(),
+	// 						  xt_ext,yt_ext,zt_ext,
+	// 						  normal,
+	// 						  boundaryJac,
+	// 						  metricTensor,
+	// 						  integralScaling);
+	//       dS = ((1.0-MOVING_DOMAIN)*metricTensorDetSqrt + MOVING_DOMAIN*integralScaling)*dS_ref.data()[kb];
+	//       //get the metric tensor
+	//       //cek todo use symmetry
+	//       ck.calculateG(jacInv_ext,G,G_dd_G,tr_G);
+	//       //compute shape and solution information
+	//       //shape
+	//       ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace*nDOF_trial_element],jacInv_ext,u_grad_trial_trace);
+	//       //solution and gradient
+	//       ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_trace_ref.data()[ebN_local_kb*nDOF_test_element],u_ext);
+	//       ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial_trace,grad_u_ext);
+	//       //precalculate test function products with integration weights
+	//       for (int j=0;j<nDOF_trial_element;j++)
+	// 	{
+	// 	  u_test_dS[j] = u_test_trace_ref.data()[ebN_local_kb*nDOF_test_element+j]*dS;
+	// 	}
+	//       //
+	//       //load the boundary values
+	//       //
+	//       bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+(1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
+	//       //
+	//       //calculate the pde coefficients using the solution and the boundary values for the solution
+	//       //
+	//       double Kr, dKr;
+	//       evaluateCoefficients(a_rowptr.data(),
+	// 			   a_colind.data(),
+	// 			   rho,
+	// 			   beta,
+	// 			   gravity.data(),
+	// 			   alpha.data()[elementMaterialTypes.data()[eN]],
+	// 			   n.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaR.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaSR.data()[elementMaterialTypes.data()[eN]],
+	// 			   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
+	// 			   u_ext,
+	// 			   m_ext,
+	// 			   dm_ext,
+	// 			   f_ext,
+	// 			   df_ext,
+	// 			   a_ext,
+	// 			   da_ext,
+	// 			   as_ext,
+	// 			   Kr,
+	// 			   dKr);
+	//       evaluateCoefficients(a_rowptr.data(),
+	// 			   a_colind.data(),
+	// 			   rho,
+	// 			   beta,
+	// 			   gravity.data(),
+	// 			   alpha.data()[elementMaterialTypes.data()[eN]],
+	// 			   n.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaR.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaSR.data()[elementMaterialTypes.data()[eN]],
+	// 			   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
+	// 			   bc_u_ext,
+	// 			   bc_m_ext,
+	// 			   bc_dm_ext,
+	// 			   bc_f_ext,
+	// 			   bc_df_ext,
+	// 			   bc_a_ext,
+	// 			   bc_da_ext,
+	// 			   bc_as_ext,
+	// 			   Kr,
+	// 			   dKr);
+	//       //
+	//       //calculate the numerical fluxes
+	//       //
+	//       exteriorNumericalFlux(ebqe_bc_flux_ext[ebNE_kb],
+	// 			    a_rowptr.data(),
+	// 			    a_colind.data(),
+	// 			    isSeepageFace.data()[ebNE],//tricky, this is a face flag not face quad
+	// 			    isDOFBoundary_u.data()[ebNE_kb],
+	// 			    normal,
+	// 			    bc_u_ext,
+	// 			    a_ext,
+	// 			    grad_u_ext,
+	// 			    u_ext,
+	// 			    f_ext,
+	// 			    ebqe_penalty_ext.data()[ebNE_kb],// penalty,
+	// 			    flux_ext);
+	//       ebqe_flux.data()[ebNE_kb] = flux_ext;
+	//       ebqe_u.data()[ebNE_kb] = u_ext;
+	//       //
+	//       //update residuals
+	//       //
+	//       for (int i=0;i<nDOF_test_element;i++)
+	// 	{
+	// 	  int ebNE_kb_i = ebNE_kb*nDOF_test_element+i;
 
-		  elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i]);
-		}//i
-	    }//kb
-	  //
-	  //update the element and global residual storage
-	  //
-	  for (int i=0;i<nDOF_test_element;i++)
-	    {
-	      int eN_i = eN*nDOF_test_element+i;
+	// 	  elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i]);
+	// 	}//i
+	//     }//kb
+	//   //
+	//   //update the element and global residual storage
+	//   //
+	//   for (int i=0;i<nDOF_test_element;i++)
+	//     {
+	//       int eN_i = eN*nDOF_test_element+i;
 
-	      globalResidual.data()[offset_u+stride_u*u_l2g.data()[eN_i]] += elementResidual_u[i];
-	    }//i
-	}//ebNE
-    }
+	//       globalResidual.data()[offset_u+stride_u*u_l2g.data()[eN_i]] += elementResidual_u[i];
+	//     }//i
+	// }//ebNE
+    // }
 
-    void calculateJacobian(arguments_dict& args)
-    {
-      xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
-      xt::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
-      xt::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
-      xt::pyarray<double>& mesh_velocity_dof = args.array<double>("mesh_velocity_dof");
-      double MOVING_DOMAIN = args.scalar<double>("MOVING_DOMAIN");
-      xt::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
-      xt::pyarray<double>& dV_ref = args.array<double>("dV_ref");
-      xt::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
-      xt::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
-      xt::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
-      xt::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
-      xt::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
-      xt::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
-      xt::pyarray<double>& dS_ref = args.array<double>("dS_ref");
-      xt::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
-      xt::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
-      xt::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
-      xt::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
-      xt::pyarray<double>& normal_ref = args.array<double>("normal_ref");
-      xt::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
-      int nElements_global = args.scalar<int>("nElements_global");
-      xt::pyarray<double>& ebqe_penalty_ext = args.array<double>("ebqe_penalty_ext");
-      xt::pyarray<int>& elementMaterialTypes = args.array<int>("elementMaterialTypes");
-      xt::pyarray<int>& isSeepageFace = args.array<int>("isSeepageFace");
-      xt::pyarray<int>& a_rowptr = args.array<int>("a_rowptr");
-      xt::pyarray<int>& a_colind = args.array<int>("a_colind");
-      double rho = args.scalar<double>("rho");
-      double beta = args.scalar<double>("beta");
-      xt::pyarray<double>& gravity = args.array<double>("gravity");
-      xt::pyarray<double>& alpha = args.array<double>("alpha");
-      xt::pyarray<double>& n = args.array<double>("n");
-      xt::pyarray<double>& thetaR = args.array<double>("thetaR");
-      xt::pyarray<double>& thetaSR = args.array<double>("thetaSR");
-      xt::pyarray<double>& KWs = args.array<double>("KWs");
-      double useMetrics = args.scalar<double>("useMetrics");
-      double alphaBDF = args.scalar<double>("alphaBDF");
-      int lag_shockCapturing = args.scalar<int>("lag_shockCapturing");
-      double shockCapturingDiffusion = args.scalar<double>("shockCapturingDiffusion");
-      xt::pyarray<int>& u_l2g = args.array<int>("u_l2g");
-      xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
-      xt::pyarray<double>& u_dof = args.array<double>("u_dof");
-      xt::pyarray<double>& velocity = args.array<double>("velocity");
-      xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
-      xt::pyarray<double>& cfl = args.array<double>("cfl");
-      xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
-      xt::pyarray<int>& csrRowIndeces_u_u = args.array<int>("csrRowIndeces_u_u");
-      xt::pyarray<int>& csrColumnOffsets_u_u = args.array<int>("csrColumnOffsets_u_u");
-      xt::pyarray<double>& globalJacobian = args.array<double>("globalJacobian");
-      int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
-      xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
-      xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
-      xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
-      xt::pyarray<double>& ebqe_velocity_ext = args.array<double>("ebqe_velocity_ext");
-      xt::pyarray<int>& isDOFBoundary_u = args.array<int>("isDOFBoundary_u");
-      xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
-      xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
-      xt::pyarray<double>& ebqe_bc_flux_ext = args.array<double>("ebqe_bc_flux_ext");
-      xt::pyarray<int>& csrColumnOffsets_eb_u_u = args.array<int>("csrColumnOffsets_eb_u_u");
-      int LUMPED_MASS_MATRIX = args.scalar<int>("LUMPED_MASS_MATRIX");
-      assert(a_rowptr.data()[nSpace] == nnz);
-      assert(a_rowptr.data()[nSpace] == nSpace);
-      double Ct_sge = 4.0;
+    // void calculateJacobian(arguments_dict& args)
+    // {
+    //   xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
+    //   xt::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
+    //   xt::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
+    //   xt::pyarray<double>& mesh_velocity_dof = args.array<double>("mesh_velocity_dof");
+    //   double MOVING_DOMAIN = args.scalar<double>("MOVING_DOMAIN");
+    //   xt::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
+    //   xt::pyarray<double>& dV_ref = args.array<double>("dV_ref");
+    //   xt::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
+    //   xt::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
+    //   xt::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
+    //   xt::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
+    //   xt::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
+    //   xt::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
+    //   xt::pyarray<double>& dS_ref = args.array<double>("dS_ref");
+    //   xt::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
+    //   xt::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
+    //   xt::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
+    //   xt::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
+    //   xt::pyarray<double>& normal_ref = args.array<double>("normal_ref");
+    //   xt::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
+    //   int nElements_global = args.scalar<int>("nElements_global");
+    //   xt::pyarray<double>& ebqe_penalty_ext = args.array<double>("ebqe_penalty_ext");
+    //   xt::pyarray<int>& elementMaterialTypes = args.array<int>("elementMaterialTypes");
+    //   xt::pyarray<int>& isSeepageFace = args.array<int>("isSeepageFace");
+    //   xt::pyarray<int>& a_rowptr = args.array<int>("a_rowptr");
+    //   xt::pyarray<int>& a_colind = args.array<int>("a_colind");
+    //   double rho = args.scalar<double>("rho");
+    //   double beta = args.scalar<double>("beta");
+    //   xt::pyarray<double>& gravity = args.array<double>("gravity");
+    //   xt::pyarray<double>& alpha = args.array<double>("alpha");
+    //   xt::pyarray<double>& n = args.array<double>("n");
+    //   xt::pyarray<double>& thetaR = args.array<double>("thetaR");
+    //   xt::pyarray<double>& thetaSR = args.array<double>("thetaSR");
+    //   xt::pyarray<double>& KWs = args.array<double>("KWs");
+    //   double useMetrics = args.scalar<double>("useMetrics");
+    //   double alphaBDF = args.scalar<double>("alphaBDF");
+    //   int lag_shockCapturing = args.scalar<int>("lag_shockCapturing");
+    //   double shockCapturingDiffusion = args.scalar<double>("shockCapturingDiffusion");
+    //   xt::pyarray<int>& u_l2g = args.array<int>("u_l2g");
+    //   xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
+    //   xt::pyarray<double>& u_dof = args.array<double>("u_dof");
+    //   xt::pyarray<double>& velocity = args.array<double>("velocity");
+    //   xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
+    //   xt::pyarray<double>& cfl = args.array<double>("cfl");
+    //   xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
+    //   xt::pyarray<int>& csrRowIndeces_u_u = args.array<int>("csrRowIndeces_u_u");
+    //   xt::pyarray<int>& csrColumnOffsets_u_u = args.array<int>("csrColumnOffsets_u_u");
+    //   xt::pyarray<double>& globalJacobian = args.array<double>("globalJacobian");
+    //   int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
+    //   xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
+    //   xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
+    //   xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
+    //   xt::pyarray<double>& ebqe_velocity_ext = args.array<double>("ebqe_velocity_ext");
+    //   xt::pyarray<int>& isDOFBoundary_u = args.array<int>("isDOFBoundary_u");
+    //   xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
+    //   xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
+    //   xt::pyarray<double>& ebqe_bc_flux_ext = args.array<double>("ebqe_bc_flux_ext");
+    //   xt::pyarray<int>& csrColumnOffsets_eb_u_u = args.array<int>("csrColumnOffsets_eb_u_u");
+    //   int LUMPED_MASS_MATRIX = args.scalar<int>("LUMPED_MASS_MATRIX");
+    //   assert(a_rowptr.data()[nSpace] == nnz);
+    //   assert(a_rowptr.data()[nSpace] == nSpace);
+    //   double Ct_sge = 4.0;
 
-      //
-      //loop over elements to compute volume integrals and load them into the element Jacobians and global Jacobian
-      //
-      for(int eN=0;eN<nElements_global;eN++)
-	{
-	  double  elementJacobian_u_u[nDOF_test_element][nDOF_trial_element];
-	  for (int i=0;i<nDOF_test_element;i++)
-	    {
-	      for (int j=0;j<nDOF_trial_element;j++)
-		{
-		  elementJacobian_u_u[i][j]=0.0;
-		}
-	    }
-	  for (int k=0;k<nQuadraturePoints_element;k++)
-	    {
-	      int eN_k = eN*nQuadraturePoints_element+k, //index to a scalar at a quadrature point
-		eN_k_nSpace = eN_k*nSpace,
-		eN_nDOF_trial_element = eN*nDOF_trial_element; //index to a vector at a quadrature point
+    //   //
+    //   //loop over elements to compute volume integrals and load them into the element Jacobians and global Jacobian
+    //   //
+    //   for(int eN=0;eN<nElements_global;eN++)
+	// {
+	//   double  elementJacobian_u_u[nDOF_test_element][nDOF_trial_element];
+	//   for (int i=0;i<nDOF_test_element;i++)
+	//     {
+	//       for (int j=0;j<nDOF_trial_element;j++)
+	// 	{
+	// 	  elementJacobian_u_u[i][j]=0.0;
+	// 	}
+	//     }
+	//   for (int k=0;k<nQuadraturePoints_element;k++)
+	//     {
+	//       int eN_k = eN*nQuadraturePoints_element+k, //index to a scalar at a quadrature point
+	// 	eN_k_nSpace = eN_k*nSpace,
+	// 	eN_nDOF_trial_element = eN*nDOF_trial_element; //index to a vector at a quadrature point
 
-	      //declare local storage
-	      double u=0.0,
-		grad_u[nSpace],
-		m=0.0,dm=0.0,
-		f[nSpace],df[nSpace],
-		a[nnz],da[nnz],as[nnz],
-		m_t=0.0,dm_t=0.0,
-		dpdeResidual_u_u[nDOF_trial_element],
-		Lstar_u[nDOF_test_element],
-		dsubgridError_u_u[nDOF_trial_element],
-		tau=0.0,tau0=0.0,tau1=0.0,
-		jac[nSpace*nSpace],
-		jacDet,
-		jacInv[nSpace*nSpace],
-		u_grad_trial[nDOF_trial_element*nSpace],
-		dV,
-		u_test_dV[nDOF_test_element],
-		u_grad_test_dV[nDOF_test_element*nSpace],
-		x,y,z,xt,yt,zt,
-		G[nSpace*nSpace],G_dd_G,tr_G;
-	      //
-	      //calculate solution and gradients at quadrature points
-	      //
-	      //get jacobian, etc for mapping reference element
-	      ck.calculateMapping_element(eN,
-					  k,
-					  mesh_dof.data(),
-					  mesh_l2g.data(),
-					  mesh_trial_ref.data(),
-					  mesh_grad_trial_ref.data(),
-					  jac,
-					  jacDet,
-					  jacInv,
-					  x,y,z);
-	      ck.calculateMappingVelocity_element(eN,
-						  k,
-						  mesh_velocity_dof.data(),
-						  mesh_l2g.data(),
-						  mesh_trial_ref.data(),
-						  xt,yt,zt);
-	      //get the physical integration weight
-	      dV = fabs(jacDet)*dV_ref.data()[k];
-	      ck.calculateG(jacInv,G,G_dd_G,tr_G);
-	      //get the trial function gradients
-	      ck.gradTrialFromRef(&u_grad_trial_ref.data()[k*nDOF_trial_element*nSpace],jacInv,u_grad_trial);
-	      //get the solution
-	      ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_ref.data()[k*nDOF_trial_element],u);
-	      //get the solution gradients
-	      ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial,grad_u);
-	      //precalculate test function products with integration weights
-	      for (int j=0;j<nDOF_trial_element;j++)
-		{
-		  u_test_dV[j] = u_test_ref.data()[k*nDOF_trial_element+j]*dV;
-		  for (int I=0;I<nSpace;I++)
-		    {
-		      u_grad_test_dV[j*nSpace+I]   = u_grad_trial[j*nSpace+I]*dV;//cek warning won't work for Petrov-Galerkin
-		    }
-		}
-	      //
-	      //calculate pde coefficients and derivatives at quadrature points
-	      //
-	      double Kr,dKr;
-	      evaluateCoefficients(a_rowptr.data(),
-				   a_colind.data(),
-				   rho,
-				   beta,
-				   gravity.data(),
-				   alpha.data()[elementMaterialTypes.data()[eN]],
-				   n.data()[elementMaterialTypes.data()[eN]],
-				   thetaR.data()[elementMaterialTypes.data()[eN]],
-				   thetaSR.data()[elementMaterialTypes.data()[eN]],
-				   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
-				   u,
-				   m,
-				   dm,
-				   f,
-				   df,
-				   a,
-				   da,
-				   as,
-				   Kr,
-				   dKr);
-	      //
-	      //calculate time derivatives
-	      //
-	      ck.bdf(alphaBDF,
-		     q_m_betaBDF.data()[eN_k],
-		     m,
-		     dm,
-		     m_t,
-		     dm_t);
-	      // //
-	      // //calculate subgrid error contribution to the Jacobian (strong residual, adjoint, jacobian of strong residual)
-	      // //
-	      // //calculate the adjoint times the test functions
-	      // for (int i=0;i<nDOF_test_element;i++)
-	      //     {
-	      //       // int eN_k_i_nSpace = (eN_k*nDOF_trial_element+i)*nSpace;
-	      //       // Lstar_u[i]=ck.Advection_adjoint(df,&u_grad_test_dV[eN_k_i_nSpace]);
-	      //       int i_nSpace = i*nSpace;
-	      //       Lstar_u[i]=ck.Advection_adjoint(df,&u_grad_test_dV[i_nSpace]);
-	      //     }
-	      // //calculate the Jacobian of strong residual
-	      // for (int j=0;j<nDOF_trial_element;j++)
-	      //     {
-	      //       //int eN_k_j=eN_k*nDOF_trial_element+j;
-	      //       //int eN_k_j_nSpace = eN_k_j*nSpace;
-	      //       int j_nSpace = j*nSpace;
-	      //       dpdeResidual_u_u[j]= ck.MassJacobian_strong(dm_t,u_trial_ref[k*nDOF_trial_element+j]) +
-	      //         ck.AdvectionJacobian_strong(df,&u_grad_trial[j_nSpace]);
-	      //     }
-	      // //tau and tau*Res
-	      // calculateSubgridError_tau(elementDiameter[eN],
-	      //                 dm_t,
-	      //                 df,
-	      //                 cfl[eN_k],
-	      //                 tau0);
-	      // calculateSubgridError_tau(Ct_sge,
-	      //                           G,
-	      //                 dm_t,
-	      //                 df,
-	      //                 tau1,
-	      //                     cfl[eN_k]);
-	      // tau = useMetrics*tau1+(1.0-useMetrics)*tau0;
-	      // for(int j=0;j<nDOF_trial_element;j++)
-	      //     dsubgridError_u_u[j] = -tau*dpdeResidual_u_u[j];
-	      for(int i=0;i<nDOF_test_element;i++)
-		{
-		  //int eN_k_i=eN_k*nDOF_test_element+i;
-		  //int eN_k_i_nSpace=eN_k_i*nSpace;
-		  for(int j=0;j<nDOF_trial_element;j++)
-		    {
-		      //int eN_k_j=eN_k*nDOF_trial_element+j;
-		      //int eN_k_j_nSpace = eN_k_j*nSpace;
-		      int j_nSpace = j*nSpace;
-		      int i_nSpace = i*nSpace;
-		      elementJacobian_u_u[i][j] += ck.MassJacobian_weak(dm_t,u_trial_ref.data()[k*nDOF_trial_element+j],u_test_dV[i]) +
-			ck.AdvectionJacobian_weak(df,u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]) +
-			ck.DiffusionJacobian_weak(a_rowptr.data(),a_colind.data(),a,da,
-						  grad_u,&u_grad_test_dV[i_nSpace],1.0,
-						  u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_trial[j_nSpace]);
-		      // +
-		      //     ck.SubgridErrorJacobian(dsubgridError_u_u[j],Lstar_u[i]) +
-		      //     ck.NumericalDiffusionJacobian(q_numDiff_u_last[eN_k],&u_grad_trial[j_nSpace],&u_grad_test_dV[i_nSpace]);
-		    }//j
-		}//i
-	    }//k
-	  //
-	  //load into element Jacobian into global Jacobian
-	  //
-	  for (int i=0;i<nDOF_test_element;i++)
-	    {
-	      int eN_i = eN*nDOF_test_element+i;
-	      for (int j=0;j<nDOF_trial_element;j++)
-		{
-		  int eN_i_j = eN_i*nDOF_trial_element+j;
-		  globalJacobian.data()[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_u_u[eN_i_j]] += elementJacobian_u_u[i][j];
-		}//j
-	    }//i
-	}//elements
-      //
-      //loop over exterior element boundaries to compute the surface integrals and load them into the global Jacobian
-      //
-      for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++)
-	{
-	  int ebN = exteriorElementBoundariesArray.data()[ebNE];
-	  int eN  = elementBoundaryElementsArray.data()[ebN*2+0],
-	    ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+0],
-	    eN_nDOF_trial_element = eN*nDOF_trial_element;
-	  for  (int kb=0;kb<nQuadraturePoints_elementBoundary;kb++)
-	    {
-	      int ebNE_kb = ebNE*nQuadraturePoints_elementBoundary+kb,
-		ebNE_kb_nSpace = ebNE_kb*nSpace,
-		ebN_local_kb = ebN_local*nQuadraturePoints_elementBoundary+kb,
-		ebN_local_kb_nSpace = ebN_local_kb*nSpace;
+	//       //declare local storage
+	//       double u=0.0,
+	// 	grad_u[nSpace],
+	// 	m=0.0,dm=0.0,
+	// 	f[nSpace],df[nSpace],
+	// 	a[nnz],da[nnz],as[nnz],
+	// 	m_t=0.0,dm_t=0.0,
+	// 	dpdeResidual_u_u[nDOF_trial_element],
+	// 	Lstar_u[nDOF_test_element],
+	// 	dsubgridError_u_u[nDOF_trial_element],
+	// 	tau=0.0,tau0=0.0,tau1=0.0,
+	// 	jac[nSpace*nSpace],
+	// 	jacDet,
+	// 	jacInv[nSpace*nSpace],
+	// 	u_grad_trial[nDOF_trial_element*nSpace],
+	// 	dV,
+	// 	u_test_dV[nDOF_test_element],
+	// 	u_grad_test_dV[nDOF_test_element*nSpace],
+	// 	x,y,z,xt,yt,zt,
+	// 	G[nSpace*nSpace],G_dd_G,tr_G;
+	//       //
+	//       //calculate solution and gradients at quadrature points
+	//       //
+	//       //get jacobian, etc for mapping reference element
+	//       ck.calculateMapping_element(eN,
+	// 				  k,
+	// 				  mesh_dof.data(),
+	// 				  mesh_l2g.data(),
+	// 				  mesh_trial_ref.data(),
+	// 				  mesh_grad_trial_ref.data(),
+	// 				  jac,
+	// 				  jacDet,
+	// 				  jacInv,
+	// 				  x,y,z);
+	//       ck.calculateMappingVelocity_element(eN,
+	// 					  k,
+	// 					  mesh_velocity_dof.data(),
+	// 					  mesh_l2g.data(),
+	// 					  mesh_trial_ref.data(),
+	// 					  xt,yt,zt);
+	//       //get the physical integration weight
+	//       dV = fabs(jacDet)*dV_ref.data()[k];
+	//       ck.calculateG(jacInv,G,G_dd_G,tr_G);
+	//       //get the trial function gradients
+	//       ck.gradTrialFromRef(&u_grad_trial_ref.data()[k*nDOF_trial_element*nSpace],jacInv,u_grad_trial);
+	//       //get the solution
+	//       ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_ref.data()[k*nDOF_trial_element],u);
+	//       //get the solution gradients
+	//       ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial,grad_u);
+	//       //precalculate test function products with integration weights
+	//       for (int j=0;j<nDOF_trial_element;j++)
+	// 	{
+	// 	  u_test_dV[j] = u_test_ref.data()[k*nDOF_trial_element+j]*dV;
+	// 	  for (int I=0;I<nSpace;I++)
+	// 	    {
+	// 	      u_grad_test_dV[j*nSpace+I]   = u_grad_trial[j*nSpace+I]*dV;//cek warning won't work for Petrov-Galerkin
+	// 	    }
+	// 	}
+	//       //
+	//       //calculate pde coefficients and derivatives at quadrature points
+	//       //
+	//       double Kr,dKr;
+	//       evaluateCoefficients(a_rowptr.data(),
+	// 			   a_colind.data(),
+	// 			   rho,
+	// 			   beta,
+	// 			   gravity.data(),
+	// 			   alpha.data()[elementMaterialTypes.data()[eN]],
+	// 			   n.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaR.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaSR.data()[elementMaterialTypes.data()[eN]],
+	// 			   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
+	// 			   u,
+	// 			   m,
+	// 			   dm,
+	// 			   f,
+	// 			   df,
+	// 			   a,
+	// 			   da,
+	// 			   as,
+	// 			   Kr,
+	// 			   dKr);
+	//       //
+	//       //calculate time derivatives
+	//       //
+	//       ck.bdf(alphaBDF,
+	// 	     q_m_betaBDF.data()[eN_k],
+	// 	     m,
+	// 	     dm,
+	// 	     m_t,
+	// 	     dm_t);
+	//       // //
+	//       // //calculate subgrid error contribution to the Jacobian (strong residual, adjoint, jacobian of strong residual)
+	//       // //
+	//       // //calculate the adjoint times the test functions
+	//       // for (int i=0;i<nDOF_test_element;i++)
+	//       //     {
+	//       //       // int eN_k_i_nSpace = (eN_k*nDOF_trial_element+i)*nSpace;
+	//       //       // Lstar_u[i]=ck.Advection_adjoint(df,&u_grad_test_dV[eN_k_i_nSpace]);
+	//       //       int i_nSpace = i*nSpace;
+	//       //       Lstar_u[i]=ck.Advection_adjoint(df,&u_grad_test_dV[i_nSpace]);
+	//       //     }
+	//       // //calculate the Jacobian of strong residual
+	//       // for (int j=0;j<nDOF_trial_element;j++)
+	//       //     {
+	//       //       //int eN_k_j=eN_k*nDOF_trial_element+j;
+	//       //       //int eN_k_j_nSpace = eN_k_j*nSpace;
+	//       //       int j_nSpace = j*nSpace;
+	//       //       dpdeResidual_u_u[j]= ck.MassJacobian_strong(dm_t,u_trial_ref[k*nDOF_trial_element+j]) +
+	//       //         ck.AdvectionJacobian_strong(df,&u_grad_trial[j_nSpace]);
+	//       //     }
+	//       // //tau and tau*Res
+	//       // calculateSubgridError_tau(elementDiameter[eN],
+	//       //                 dm_t,
+	//       //                 df,
+	//       //                 cfl[eN_k],
+	//       //                 tau0);
+	//       // calculateSubgridError_tau(Ct_sge,
+	//       //                           G,
+	//       //                 dm_t,
+	//       //                 df,
+	//       //                 tau1,
+	//       //                     cfl[eN_k]);
+	//       // tau = useMetrics*tau1+(1.0-useMetrics)*tau0;
+	//       // for(int j=0;j<nDOF_trial_element;j++)
+	//       //     dsubgridError_u_u[j] = -tau*dpdeResidual_u_u[j];
+	//       for(int i=0;i<nDOF_test_element;i++)
+	// 	{
+	// 	  //int eN_k_i=eN_k*nDOF_test_element+i;
+	// 	  //int eN_k_i_nSpace=eN_k_i*nSpace;
+	// 	  for(int j=0;j<nDOF_trial_element;j++)
+	// 	    {
+	// 	      //int eN_k_j=eN_k*nDOF_trial_element+j;
+	// 	      //int eN_k_j_nSpace = eN_k_j*nSpace;
+	// 	      int j_nSpace = j*nSpace;
+	// 	      int i_nSpace = i*nSpace;
+	// 	      elementJacobian_u_u[i][j] += ck.MassJacobian_weak(dm_t,u_trial_ref.data()[k*nDOF_trial_element+j],u_test_dV[i]) +
+	// 		ck.AdvectionJacobian_weak(df,u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]) +
+	// 		ck.DiffusionJacobian_weak(a_rowptr.data(),a_colind.data(),a,da,
+	// 					  grad_u,&u_grad_test_dV[i_nSpace],1.0,
+	// 					  u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_trial[j_nSpace]);
+	// 	      // +
+	// 	      //     ck.SubgridErrorJacobian(dsubgridError_u_u[j],Lstar_u[i]) +
+	// 	      //     ck.NumericalDiffusionJacobian(q_numDiff_u_last[eN_k],&u_grad_trial[j_nSpace],&u_grad_test_dV[i_nSpace]);
+	// 	    }//j
+	// 	}//i
+	//     }//k
+	//   //
+	//   //load into element Jacobian into global Jacobian
+	//   //
+	//   for (int i=0;i<nDOF_test_element;i++)
+	//     {
+	//       int eN_i = eN*nDOF_test_element+i;
+	//       for (int j=0;j<nDOF_trial_element;j++)
+	// 	{
+	// 	  int eN_i_j = eN_i*nDOF_trial_element+j;
+	// 	  globalJacobian.data()[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_u_u[eN_i_j]] += elementJacobian_u_u[i][j];
+	// 	}//j
+	//     }//i
+	// }//elements
+    //   //
+    //   //loop over exterior element boundaries to compute the surface integrals and load them into the global Jacobian
+    //   //
+    //   for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++)
+	// {
+	//   int ebN = exteriorElementBoundariesArray.data()[ebNE];
+	//   int eN  = elementBoundaryElementsArray.data()[ebN*2+0],
+	//     ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+0],
+	//     eN_nDOF_trial_element = eN*nDOF_trial_element;
+	//   for  (int kb=0;kb<nQuadraturePoints_elementBoundary;kb++)
+	//     {
+	//       int ebNE_kb = ebNE*nQuadraturePoints_elementBoundary+kb,
+	// 	ebNE_kb_nSpace = ebNE_kb*nSpace,
+	// 	ebN_local_kb = ebN_local*nQuadraturePoints_elementBoundary+kb,
+	// 	ebN_local_kb_nSpace = ebN_local_kb*nSpace;
 
-	      double u_ext=0.0,
-		grad_u_ext[nSpace],
-		m_ext=0.0,
-		dm_ext=0.0,
-		f_ext[nSpace],
-		df_ext[nSpace],
-		a_ext[nnz],
-		da_ext[nnz],
-		as_ext[nnz],
-		dflux_u_u_ext=0.0,
-		bc_u_ext=0.0,
-		//bc_grad_u_ext[nSpace],
-		bc_m_ext=0.0,
-		bc_dm_ext=0.0,
-		bc_f_ext[nSpace],
-		bc_df_ext[nSpace],
-		bc_a_ext[nnz],
-		bc_da_ext[nnz],
-		bc_as_ext[nnz],
-		fluxJacobian_u_u[nDOF_trial_element],
-		jac_ext[nSpace*nSpace],
-		jacDet_ext,
-		jacInv_ext[nSpace*nSpace],
-		boundaryJac[nSpace*(nSpace-1)],
-		metricTensor[(nSpace-1)*(nSpace-1)],
-		metricTensorDetSqrt,
-		dS,
-		u_test_dS[nDOF_test_element],
-		u_grad_trial_trace[nDOF_trial_element*nSpace],
-		normal[3],x_ext,y_ext,z_ext,xt_ext,yt_ext,zt_ext,integralScaling,
-		G[nSpace*nSpace],G_dd_G,tr_G;
-	      //
-	      //calculate the solution and gradients at quadrature points
-	      //
-	      ck.calculateMapping_elementBoundary(eN,
-						  ebN_local,
-						  kb,
-						  ebN_local_kb,
-						  mesh_dof.data(),
-						  mesh_l2g.data(),
-						  mesh_trial_trace_ref.data(),
-						  mesh_grad_trial_trace_ref.data(),
-						  boundaryJac_ref.data(),
-						  jac_ext,
-						  jacDet_ext,
-						  jacInv_ext,
-						  boundaryJac,
-						  metricTensor,
-						  metricTensorDetSqrt,
-						  normal_ref.data(),
-						  normal,
-						  x_ext,y_ext,z_ext);
-	      ck.calculateMappingVelocity_elementBoundary(eN,
-							  ebN_local,
-							  kb,
-							  ebN_local_kb,
-							  mesh_velocity_dof.data(),
-							  mesh_l2g.data(),
-							  mesh_trial_trace_ref.data(),
-							  xt_ext,yt_ext,zt_ext,
-							  normal,
-							  boundaryJac,
-							  metricTensor,
-							  integralScaling);
-	      dS = ((1.0-MOVING_DOMAIN)*metricTensorDetSqrt + MOVING_DOMAIN*integralScaling)*dS_ref.data()[kb];
-	      //dS = metricTensorDetSqrt*dS_ref.data()[kb];
-	      ck.calculateG(jacInv_ext,G,G_dd_G,tr_G);
-	      //compute shape and solution information
-	      //shape
-	      ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace*nDOF_trial_element],jacInv_ext,u_grad_trial_trace);
-	      //solution and gradients
-	      ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_trace_ref.data()[ebN_local_kb*nDOF_test_element],u_ext);
-	      ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial_trace,grad_u_ext);
-	      //precalculate test function products with integration weights
-	      for (int j=0;j<nDOF_trial_element;j++)
-		{
-		  u_test_dS[j] = u_test_trace_ref.data()[ebN_local_kb*nDOF_test_element+j]*dS;
-		}
-	      //
-	      //load the boundary values
-	      //
-	      bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+(1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
-	      //
-	      //calculate the internal and external trace of the pde coefficients
-	      //
-	      double Kr, dKr;
-	      evaluateCoefficients(a_rowptr.data(),
-				   a_colind.data(),
-				   rho,
-				   beta,
-				   gravity.data(),
-				   alpha.data()[elementMaterialTypes.data()[eN]],
-				   n.data()[elementMaterialTypes.data()[eN]],
-				   thetaR.data()[elementMaterialTypes.data()[eN]],
-				   thetaSR.data()[elementMaterialTypes.data()[eN]],
-				   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
-				   u_ext,
-				   m_ext,
-				   dm_ext,
-				   f_ext,
-				   df_ext,
-				   a_ext,
-				   da_ext,
-				   as_ext,
-				   Kr,
-				   dKr);
-	      evaluateCoefficients(a_rowptr.data(),
-				   a_colind.data(),
-				   rho,
-				   beta,
-				   gravity.data(),
-				   alpha.data()[elementMaterialTypes.data()[eN]],
-				   n.data()[elementMaterialTypes.data()[eN]],
-				   thetaR.data()[elementMaterialTypes.data()[eN]],
-				   thetaSR.data()[elementMaterialTypes.data()[eN]],
-				   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
-				   bc_u_ext,
-				   bc_m_ext,
-				   bc_dm_ext,
-				   bc_f_ext,
-				   bc_df_ext,
-				   bc_a_ext,
-				   bc_da_ext,
-				   bc_as_ext,
-				   Kr,
-				   dKr);
-	      //
-	      //calculate the flux jacobian
-	      //
-	      for (int j=0;j<nDOF_trial_element;j++)
-		{
-		  //int ebNE_kb_j = ebNE_kb*nDOF_trial_element+j;
-		  int ebN_local_kb_j=ebN_local_kb*nDOF_trial_element+j;
-		  exteriorNumericalFluxJacobian(a_rowptr.data(),
-						a_colind.data(),
-						isDOFBoundary_u.data()[ebNE_kb],
-						normal,
-						a_ext,
-						da_ext,
-						grad_u_ext,
-						&u_grad_trial_trace[j*nSpace],
-						df_ext,
-						u_trial_trace_ref.data()[ebN_local_kb*nDOF_test_element+j],
-						ebqe_penalty_ext.data()[ebNE_kb],//penalty,
-						fluxJacobian_u_u[j]);
-		}//j
-	      //
-	      //update the global Jacobian from the flux Jacobian
-	      //
-	      for (int i=0;i<nDOF_test_element;i++)
-		{
-		  int eN_i = eN*nDOF_test_element+i;
-		  //int ebNE_kb_i = ebNE_kb*nDOF_test_element+i;
-		  for (int j=0;j<nDOF_trial_element;j++)
-		    {
-		      int ebN_i_j = ebN*4*nDOF_test_X_trial_element + i*nDOF_trial_element + j;
-		      globalJacobian.data()[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j]*u_test_dS[i];
-		    }//j
-		}//i
-	    }//kb
-	}//ebNE
-    }//computeJacobian
+	//       double u_ext=0.0,
+	// 	grad_u_ext[nSpace],
+	// 	m_ext=0.0,
+	// 	dm_ext=0.0,
+	// 	f_ext[nSpace],
+	// 	df_ext[nSpace],
+	// 	a_ext[nnz],
+	// 	da_ext[nnz],
+	// 	as_ext[nnz],
+	// 	dflux_u_u_ext=0.0,
+	// 	bc_u_ext=0.0,
+	// 	//bc_grad_u_ext[nSpace],
+	// 	bc_m_ext=0.0,
+	// 	bc_dm_ext=0.0,
+	// 	bc_f_ext[nSpace],
+	// 	bc_df_ext[nSpace],
+	// 	bc_a_ext[nnz],
+	// 	bc_da_ext[nnz],
+	// 	bc_as_ext[nnz],
+	// 	fluxJacobian_u_u[nDOF_trial_element],
+	// 	jac_ext[nSpace*nSpace],
+	// 	jacDet_ext,
+	// 	jacInv_ext[nSpace*nSpace],
+	// 	boundaryJac[nSpace*(nSpace-1)],
+	// 	metricTensor[(nSpace-1)*(nSpace-1)],
+	// 	metricTensorDetSqrt,
+	// 	dS,
+	// 	u_test_dS[nDOF_test_element],
+	// 	u_grad_trial_trace[nDOF_trial_element*nSpace],
+	// 	normal[3],x_ext,y_ext,z_ext,xt_ext,yt_ext,zt_ext,integralScaling,
+	// 	G[nSpace*nSpace],G_dd_G,tr_G;
+	//       //
+	//       //calculate the solution and gradients at quadrature points
+	//       //
+	//       ck.calculateMapping_elementBoundary(eN,
+	// 					  ebN_local,
+	// 					  kb,
+	// 					  ebN_local_kb,
+	// 					  mesh_dof.data(),
+	// 					  mesh_l2g.data(),
+	// 					  mesh_trial_trace_ref.data(),
+	// 					  mesh_grad_trial_trace_ref.data(),
+	// 					  boundaryJac_ref.data(),
+	// 					  jac_ext,
+	// 					  jacDet_ext,
+	// 					  jacInv_ext,
+	// 					  boundaryJac,
+	// 					  metricTensor,
+	// 					  metricTensorDetSqrt,
+	// 					  normal_ref.data(),
+	// 					  normal,
+	// 					  x_ext,y_ext,z_ext);
+	//       ck.calculateMappingVelocity_elementBoundary(eN,
+	// 						  ebN_local,
+	// 						  kb,
+	// 						  ebN_local_kb,
+	// 						  mesh_velocity_dof.data(),
+	// 						  mesh_l2g.data(),
+	// 						  mesh_trial_trace_ref.data(),
+	// 						  xt_ext,yt_ext,zt_ext,
+	// 						  normal,
+	// 						  boundaryJac,
+	// 						  metricTensor,
+	// 						  integralScaling);
+	//       dS = ((1.0-MOVING_DOMAIN)*metricTensorDetSqrt + MOVING_DOMAIN*integralScaling)*dS_ref.data()[kb];
+	//       //dS = metricTensorDetSqrt*dS_ref.data()[kb];
+	//       ck.calculateG(jacInv_ext,G,G_dd_G,tr_G);
+	//       //compute shape and solution information
+	//       //shape
+	//       ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace*nDOF_trial_element],jacInv_ext,u_grad_trial_trace);
+	//       //solution and gradients
+	//       ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_trace_ref.data()[ebN_local_kb*nDOF_test_element],u_ext);
+	//       ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial_trace,grad_u_ext);
+	//       //precalculate test function products with integration weights
+	//       for (int j=0;j<nDOF_trial_element;j++)
+	// 	{
+	// 	  u_test_dS[j] = u_test_trace_ref.data()[ebN_local_kb*nDOF_test_element+j]*dS;
+	// 	}
+	//       //
+	//       //load the boundary values
+	//       //
+	//       bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+(1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
+	//       //
+	//       //calculate the internal and external trace of the pde coefficients
+	//       //
+	//       double Kr, dKr;
+	//       evaluateCoefficients(a_rowptr.data(),
+	// 			   a_colind.data(),
+	// 			   rho,
+	// 			   beta,
+	// 			   gravity.data(),
+	// 			   alpha.data()[elementMaterialTypes.data()[eN]],
+	// 			   n.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaR.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaSR.data()[elementMaterialTypes.data()[eN]],
+	// 			   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
+	// 			   u_ext,
+	// 			   m_ext,
+	// 			   dm_ext,
+	// 			   f_ext,
+	// 			   df_ext,
+	// 			   a_ext,
+	// 			   da_ext,
+	// 			   as_ext,
+	// 			   Kr,
+	// 			   dKr);
+	//       evaluateCoefficients(a_rowptr.data(),
+	// 			   a_colind.data(),
+	// 			   rho,
+	// 			   beta,
+	// 			   gravity.data(),
+	// 			   alpha.data()[elementMaterialTypes.data()[eN]],
+	// 			   n.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaR.data()[elementMaterialTypes.data()[eN]],
+	// 			   thetaSR.data()[elementMaterialTypes.data()[eN]],
+	// 			   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
+	// 			   bc_u_ext,
+	// 			   bc_m_ext,
+	// 			   bc_dm_ext,
+	// 			   bc_f_ext,
+	// 			   bc_df_ext,
+	// 			   bc_a_ext,
+	// 			   bc_da_ext,
+	// 			   bc_as_ext,
+	// 			   Kr,
+	// 			   dKr);
+	//       //
+	//       //calculate the flux jacobian
+	//       //
+	//       for (int j=0;j<nDOF_trial_element;j++)
+	// 	{
+	// 	  //int ebNE_kb_j = ebNE_kb*nDOF_trial_element+j;
+	// 	  int ebN_local_kb_j=ebN_local_kb*nDOF_trial_element+j;
+	// 	  exteriorNumericalFluxJacobian(a_rowptr.data(),
+	// 					a_colind.data(),
+	// 					isDOFBoundary_u.data()[ebNE_kb],
+	// 					normal,
+	// 					a_ext,
+	// 					da_ext,
+	// 					grad_u_ext,
+	// 					&u_grad_trial_trace[j*nSpace],
+	// 					df_ext,
+	// 					u_trial_trace_ref.data()[ebN_local_kb*nDOF_test_element+j],
+	// 					ebqe_penalty_ext.data()[ebNE_kb],//penalty,
+	// 					fluxJacobian_u_u[j]);
+	// 	}//j
+	//       //
+	//       //update the global Jacobian from the flux Jacobian
+	//       //
+	//       for (int i=0;i<nDOF_test_element;i++)
+	// 	{
+	// 	  int eN_i = eN*nDOF_test_element+i;
+	// 	  //int ebNE_kb_i = ebNE_kb*nDOF_test_element+i;
+	// 	  for (int j=0;j<nDOF_trial_element;j++)
+	// 	    {
+	// 	      int ebN_i_j = ebN*4*nDOF_test_X_trial_element + i*nDOF_trial_element + j;
+	// 	      globalJacobian.data()[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j]*u_test_dS[i];
+	// 	    }//j
+	// 	}//i
+	//     }//kb
+	// }//ebNE
+    // }//computeJacobian
     
     void FCTStep(arguments_dict& args)
     {
