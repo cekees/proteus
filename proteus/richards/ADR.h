@@ -40,7 +40,7 @@ namespace proteus
     virtual ~ADR_base(){}
     virtual void calculateResidual(arguments_dict& args)=0;
     virtual void calculateJacobian(arguments_dict& args)=0;
-    virtual void invert(arguments_dict& args)=0;
+    //virtual void invert(arguments_dict& args)=0;
     //virtual void FCTStep(arguments_dict& args)=0;
     //virtual void kth_FCT_step(arguments_dict& args)=0;
     //virtual void calculateResidual_entropy_viscosity(arguments_dict& args)=0;
@@ -66,15 +66,16 @@ namespace proteus
     inline
 
 
-	inline void evaluateCoefficients(const double* velocity,
-                                     const double& u,
-                                     double& m,
-                                     double& dm,
-                                     double f[nSpace],
-                                     double df[nSpace],
-                                     double a[nSpace][nSpace],
-                                     double da[nSpace][nSpace],
-                                     const double r)
+	inline 
+	void evaluateCoefficients(const double* velocity,
+                              const double& u,
+                              double& m,
+                              double& dm,
+                              double f[nSpace],
+                              double df[nSpace],
+							  double a[nSpace][nSpace],
+                              double da[nSpace][nSpace],
+                              const double r)
     {
       m = u;
       dm = 1.0;
@@ -91,6 +92,178 @@ namespace proteus
         }
       }
     }
+
+	/////////////////////////////////////////////////////
+	///////Dealing with boundary Conditions//////////////
+	/////////////////////////////////////////////////////
+
+	inline
+	void exteriorNumericalAdvectiveFlux(const int& isDOFBoundary_u,   // Flag indicating if this boundary is a Dirichlet boundary (1 if true)
+    									const int& isFluxBoundary_u,  // Flag indicating if this boundary is a Neumann boundary (1 if true)
+									    const double n[nSpace],       // Normal vector at the boundary
+    									const double& bc_u,           // Prescribed value of u at the boundary (for Dirichlet boundary conditions)
+										const double& bc_flux_u,      // Prescribed flux at the boundary (for Neumann boundary conditions)
+										const double& u,              // Value of the solution inside the domain, near the boundary
+										const double velocity[nSpace],// Velocity vector at the boundary
+										double& flux                  // Computed advective flux to be returned by the function
+									)
+	{
+    // Initialize the flow variable to compute the dot product of normal vector and velocity
+    double flow = 0.0;
+    for (int I = 0; I < nSpace; I++)
+        flow += n[I] * velocity[I];  // Compute flow as dot product of normal vector and velocity vector
+
+    // Check if the boundary is a Neumann boundary
+    if (isFluxBoundary_u == 1)
+    {
+        flux = bc_flux_u;  // Set flux to the prescribed Neumann boundary flux
+    }
+    // Check if the boundary is a Dirichlet boundary
+    else if (isDOFBoundary_u == 1)
+    {
+        // Set flux based on the direction of the flow
+        flux = (flow >= 0.0) ? u * flow : bc_u * flow;
+    }
+    // No specific boundary condition set
+    else
+    {
+        // Set flux based on the direction of the flow
+        flux = (flow >= 0.0) ? u * flow : 0.0;
+    }
+	}
+
+	inline
+	void exteriorNumericalAdvectiveFluxDerivative(const int& isDOFBoundary_u,   // Flag indicating if this boundary is a Dirichlet boundary (1 if true)
+											  const int& isFluxBoundary_u,  // Flag indicating if this boundary is a Neumann boundary (1 if true)
+										      const double n[nSpace],       // Normal vector at the boundary
+										      const double velocity[nSpace],// Velocity vector at the boundary
+											  double& dflux                 // Computed derivative of the numerical advective flux
+											)
+	{
+    // Calculate the flow as the dot product of the normal vector and the velocity vector
+    double flow = 0.0;
+    for (int I = 0; I < nSpace; I++)
+        flow += n[I] * velocity[I];
+
+    // Initialize dflux to 0.0 by default
+    dflux = 0.0;
+
+    // Check for Dirichlet boundary condition
+    if (isDOFBoundary_u == 1)
+    {
+        // Set dflux based on the direction of the flow
+        dflux = (flow >= 0.0) ? flow : 0.0;
+    }
+    // Check for Neumann boundary condition
+    else if (isFluxBoundary_u == 1)
+    {
+        dflux = 0.0; // Neumann boundary condition implies no change to dflux
+    }
+    // No specific boundary condition set
+    else
+    {
+        // Set dflux based on the direction of the flow
+        dflux = (flow >= 0.0) ? flow : 0.0;
+    }
+	}
+
+
+
+	inline
+	void exteriorNumericalDiffusiveFlux(int* rowptr,                    // Row pointer for accessing sparse matrix structure
+    									int* colind,                    // Column indices for accessing sparse matrix structure
+									 	const int& isDOFBoundary,       // Flag indicating if this boundary is a Dirichlet boundary (1 if true)
+										const int& isDiffusiveFluxBoundary, // Flag indicating if this boundary is a Neumann boundary (1 if true)
+										const double n[nSpace],         // Normal vector at the boundary
+										double* bc_a,                   // Diffusion coefficients for the boundary condition
+										const double& bc_u,             // Prescribed value of u at the boundary (for Dirichlet boundary conditions)
+										const double& bc_flux,          // Prescribed flux at the boundary (for Neumann boundary conditions)
+										double* a,                      // Diffusion coefficients inside the domain
+										const double grad_potential[nSpace], // Gradient of the potential inside the domain
+										const double& u,                // Value of the solution inside the domain, near the boundary
+										const double& penalty,          // Penalty parameter for enforcing Dirichlet boundary conditions
+										double& flux                    // Computed diffusive flux to be returned by the function		
+										)
+	{
+    if (isDiffusiveFluxBoundary == 1)
+    {
+        flux = bc_flux;  // Neumann boundary condition: set flux to prescribed flux
+        return;
+    }
+
+    if (isDOFBoundary == 1)
+    {
+        flux = 0.0;
+        double max_a = 0.0;
+
+        // Compute diffusive flux component for each spatial dimension
+        for (int I = 0; I < nSpace; I++)
+        {
+            double diffusiveVelocityComponent_I = 0.0;
+            for (int m = rowptr[I]; m < rowptr[I+1]; m++)
+            {
+                diffusiveVelocityComponent_I -= a[m] * grad_potential[colind[m]];
+                max_a = fmax(max_a, a[m]);
+            }
+            flux += diffusiveVelocityComponent_I * n[I];
+        }
+
+        // Add penalty flux to enforce Dirichlet boundary condition
+        double penaltyFlux = max_a * penalty * (u - bc_u);
+        flux += penaltyFlux;
+        return;
+    }
+
+    // No boundary condition set: output a warning and set flux to 0
+    	std::cerr << "warning, diffusion term with no boundary condition set, setting diffusive flux to 0.0" << std::endl;
+    	flux = 0.0;
+	}
+    inline
+	double ExteriorNumericalDiffusiveFluxJacobian(int* rowptr,                    // Row pointer for accessing sparse matrix structure
+   												  int* colind,                    // Column indices for accessing sparse matrix structure
+												  const int& isDOFBoundary,       // Flag indicating if this boundary is a Dirichlet boundary (1 if true)
+												  const int& isDiffusiveFluxBoundary, // Flag indicating if this boundary is a Neumann boundary (1 if true)
+												  const double n[nSpace],         // Normal vector at the boundary
+												  double* a,                      // Diffusion coefficients inside the domain
+												  const double& v,                // Test function value at the boundary
+												  const double grad_v[nSpace],    // Gradient of the test function at the boundary
+												  const double& penalty           // Penalty parameter for enforcing Dirichlet boundary conditions
+												  )
+{
+    double tmp = 0.0;
+    double max_a = 0.0;
+
+    // Check for Dirichlet boundary condition and not a Neumann boundary condition
+    if ((isDiffusiveFluxBoundary == 0) && (isDOFBoundary == 1))
+    {
+        // Loop over each spatial dimension
+        for (int I = 0; I < nSpace; I++)
+        {
+            double dvel_I = 0.0; // Initialize the diffusive velocity component for dimension I
+
+            // Inner loop over non-zero entries for dimension I
+            for (int m = rowptr[I]; m < rowptr[I + 1]; m++)
+            {
+                dvel_I -= a[m] * grad_v[colind[m]]; // Compute diffusive velocity component
+                max_a = fmax(max_a, a[m]); // Track the maximum diffusion coefficient
+            }
+
+            tmp += dvel_I * n[I]; // Accumulate the contribution from dimension I
+        }
+
+        // Add penalty term to the Jacobian contribution
+        tmp += max_a * penalty * v;
+    }
+
+    return tmp; // Return the computed Jacobian contribution
+}
+
+
+
+
+
+
+
 
     void calculateResidual(arguments_dict& args)
     {
@@ -215,6 +388,103 @@ namespace proteus
     }
 
 
+void calculateJacobian(arguments_dict& args)
+{
+    xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
+    xt::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
+    xt::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
+    xt::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
+    xt::pyarray<double>& dV_ref = args.array<double>("dV_ref");
+    xt::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
+    xt::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
+    xt::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
+    xt::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
+    xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
+    xt::pyarray<double>& cfl = args.array<double>("cfl");
+    double Ct_sge = args.scalar<double>("Ct_sge");
+    double sc_uref = args.scalar<double>("sc_uref");
+    double sc_alpha = args.scalar<double>("sc_alpha");
+    double useMetrics = args.scalar<double>("useMetrics");
+    xt::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
+    xt::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
+    xt::pyarray<double>& dS_ref = args.array<double>("dS_ref");
+    xt::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
+    xt::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
+    xt::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
+    xt::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
+    xt::pyarray<double>& normal_ref = args.array<double>("normal_ref");
+    xt::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
+    int nElements_global = args.scalar<int>("nElements_global");
+    xt::pyarray<int>& u_l2g = args.array<int>("u_l2g");
+    xt::pyarray<double>& u_dof = args.array<double>("u_dof");
+    xt::pyarray<int>& sd_rowptr = args.array<int>("sd_rowptr");
+    xt::pyarray<int>& sd_colind = args.array<int>("sd_colind");
+    xt::pyarray<double>& q_a = args.array<double>("q_a");
+    xt::pyarray<double>& q_v = args.array<double>("q_v");
+    xt::pyarray<double>& q_r = args.array<double>("q_r");
+    xt::pyarray<double>& q_numDiff_u = args.array<double>("q_numDiff_u");
+    xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
+    int lag_shockCapturing = args.scalar<int>("lag_shockCapturing");
+    double shockCapturingDiffusion = args.scalar<double>("shockCapturingDiffusion");
+    int offset_u = args.scalar<int>("offset_u");
+    int stride_u = args.scalar<int>("stride_u");
+    xt::pyarray<double>& globalJacobian = args.array<double>("globalJacobian");
+
+    for (int eN = 0; eN < nElements_global; eN++)
+    {
+        auto elementJacobian_u_u = xt::zeros<double>({nDOF_test_element, nDOF_trial_element});
+        auto element_u = xt::zeros<double>({nDOF_trial_element});
+
+        for (int i = 0; i < nDOF_trial_element; i++)
+        {
+            int eN_i = eN * nDOF_trial_element + i;
+            element_u(i) = u_dof(u_l2g(eN_i));
+        }
+
+        for (int k = 0; k < nQuadraturePoints_element; k++)
+        {
+            double u = 0.0;
+            double grad_u[nSpace] = {0.0};
+            double m = 0.0;
+            double dm = 0.0;
+            double f[nSpace] = {0.0};
+            double df[nSpace] = {0.0};
+            double a[nSpace][nSpace] = {{0.0}};
+            double da[nSpace][nSpace] = {{0.0}};
+
+            evaluateCoefficients(&q_v[eN * nQuadraturePoints_element * nSpace + k * nSpace],
+                                 u,
+                                 m,
+                                 dm,
+                                 f,
+                                 df,
+                                 a,
+                                 da,
+                                 q_r[eN * nQuadraturePoints_element + k]);
+
+            for (int i = 0; i < nDOF_test_element; i++)
+            {
+                for (int j = 0; j < nDOF_trial_element; j++)
+                {
+                    for (int I = 0; I < nSpace; I++)
+                    {
+                        elementJacobian_u_u(i, j) += (df[I] * u_grad_trial_ref(k, j, I) - a[I][I] * u_grad_trial_ref(k, j, I)) * u_test_ref(k, i) * dV_ref(k);
+                    }
+                }
+            }
+        }
+
+        for (int i = 0; i < nDOF_test_element; i++)
+        {
+            for (int j = 0; j < nDOF_trial_element; j++)
+            {
+                int eN_i = eN * nDOF_test_element + i;
+                int eN_j = eN * nDOF_trial_element + j;
+                globalJacobian(u_l2g(eN_i), u_l2g(eN_j)) += elementJacobian_u_u(i, j);
+            }
+        }
+    }
+}
 
 
 
