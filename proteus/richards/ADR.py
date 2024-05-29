@@ -11,7 +11,7 @@ from proteus.Transport import DOFBoundaryConditions, Quadrature
 from proteus.mprans import cArgumentsDict
 from proteus.LinearAlgebraTools import SparseMat
 from proteus import TimeIntegration
-from proteus.NonlinearSolvers import ExplicitLumpedMassMatrixForADR
+#from proteus.NonlinearSolvers import ExplicitLumpedMassMatrixForRichards
 
 class ThetaScheme(TimeIntegration.BackwardEuler):
     def __init__(self,transport,integrateInterpolationPoints=False):
@@ -204,8 +204,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
     """
     version of Re where element material type id's used in evals
     """
-    from proteus.ctransportCoefficients import conservativeHeadADRMualemVanGenuchtenHetEvaluateV2
-    from proteus.ctransportCoefficients import conservativeHeadADRMualemVanGenuchten_sd_het
+    #from proteus.ctransportCoefficients import conservativeHeadADRMualemVanGenuchtenHetEvaluateV2
+    #from proteus.ctransportCoefficients import conservativeHeadADRMualemVanGenuchten_sd_het
     def __init__(self,
                  nd,
                  Ksw_types,
@@ -1228,6 +1228,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["u_dof"] = self.u[0].dof
         argsDict["u_dof_old"] = self.u_dof_old
         argsDict["velocity"] = self.q['velocity']
+        argsDict["q_v"] = self.q['velocity']
+        argsDict["q_r"] = self.q[('u',0)]
+        #argsDict["q_v"] = self.q[('df',0,0)]
+        #argsDict["q_r"] = self.q[('r',0)]
         argsDict["q_m"] = self.timeIntegration.m_tmp[0]
         argsDict["q_u"] = self.q[('u',0)]
         argsDict["q_dV"] = self.q[('dV_u',0)]
@@ -1648,6 +1652,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["degree_polynomial"] = degree_polynomial
         argsDict["u_dof"] = self.u[0].dof
         argsDict["velocity"] = self.q['velocity']
+        argsDict["q_v"] = self.q['velocity']
+        argsDict["q_r"] = self.q[('u',0)]
+        
+        #argsDict["q_v"] = self.q[('f',0,0)]
+        #argsDict["q_r"] = self.q[('r',0)]
         argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
         argsDict["cfl"] = self.q[('cfl',0)]
         argsDict["q_numDiff_u_last"] = self.q[('cfl',0)]
