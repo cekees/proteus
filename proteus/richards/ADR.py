@@ -711,11 +711,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 assert self.coefficients.LUMPED_MASS_MATRIX, "If levelNonlinearSolver=ExplicitLumpedMassMatrix, use LUMPED_MASS_MATRIX=True"
         except:
             pass
-        if self.coefficients.LUMPED_MASS_MATRIX == True:
-            cond = self.coefficients.STABILIZATION_TYPE == 2
-            assert cond, "Use lumped mass matrix just with: STABILIZATION_TYPE=2 (smoothness based stab.)"
-            cond = 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == ExplicitLumpedMassMatrixForADR
-            assert cond, "Use levelNonlinearSolver=ExplicitLumpedMassMatrixForADR when the mass matrix is lumped"
+        #if self.coefficients.LUMPED_MASS_MATRIX == True:
+        #    cond = self.coefficients.STABILIZATION_TYPE == 2
+        #    assert cond, "Use lumped mass matrix just with: STABILIZATION_TYPE=2 (smoothness based stab.)"
+        #    cond = 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == ExplicitLumpedMassMatrixForADR
+        #    assert cond, "Use levelNonlinearSolver=ExplicitLumpedMassMatrixForADR when the mass matrix is lumped"
         if self.coefficients.FCT == True:
             cond = self.coefficients.STABILIZATION_TYPE > 0, "Use FCT just with STABILIZATION_TYPE>0; i.e., edge based stabilization"
         # END OF ASSERTS

@@ -1154,6 +1154,7 @@ namespace proteus
 	flux = bc_flux;
     }
 
+	inline
     void exteriorNumericalFluxJacobian(const int rowptr[nSpace],
 				       const int colind[nnz],
 				       const int isDOFBoundary,
@@ -1186,6 +1187,47 @@ namespace proteus
       else
 	fluxJacobian = 0.0;
     }
+
+// 	inline
+// 	void mass_lumping(int nElements_global,
+//                     int nDOF_test_element,
+//                     int nQuadraturePoints_element,
+//                     const xt::pyarray<double>& u_test_ref,
+//                     const xt::pyarray<double>& dV_ref,
+//                     xt::pyarray<double>& ML,
+//                     const xt::pyarray<int>& u_l2g)
+// {
+//     // Initialize the lumped mass matrix to zero
+//     for(int eN=0; eN<nElements_global; eN++)
+//     {
+//         for (int i=0; i<nDOF_test_element; i++)
+//         {
+//             int eN_i = eN * nDOF_test_element + i;
+//             ML.data()[eN_i] = 0.0;
+//         }
+//     }
+
+//     // Compute the lumped mass matrix
+//     for(int eN=0; eN<nElements_global; eN++)
+//     {
+//         for (int i=0; i<nDOF_test_element; i++)
+//         {
+//             int eN_i = eN * nDOF_test_element + i;
+//             double lumped_mass = 0.0;
+
+//             // Sum up the contributions for the lumped mass matrix
+//             for (int k=0; k<nQuadraturePoints_element; k++)
+//             {
+//                 int eN_k = eN * nQuadraturePoints_element + k;
+//                 lumped_mass += u_test_ref.data()[k * nDOF_test_element + i] * dV_ref.data()[k];
+//             }
+
+//             // Store the lumped mass in the global mass matrix
+//             ML.data()[eN_i] = lumped_mass;
+//         }
+//     }
+// }
+
 
     void calculateResidual(arguments_dict& args)
     {
@@ -1301,6 +1343,10 @@ namespace proteus
       assert(a_rowptr.data()[nSpace] == nSpace);
       //cek should this be read in?
       double Ct_sge = 4.0;
+	//   if (LUMPED_MASS_MATRIX ==1)
+    // {
+    //     mass_lumping(nElements_global, nDOF_test_element, nQuadraturePoints_element, u_test_ref, dV_ref, ML, u_l2g);
+    // }
 
       //loop over elements to compute volume integrals and load them into element and global residual
       //
@@ -1415,6 +1461,9 @@ namespace proteus
 		     dm,
 		     m_t,
 		     dm_t);
+		
+
+		
 	      /* // */
 	//       /* //calculate subgrid error (strong residual and adjoint) */
 	//       /* // */
@@ -1458,10 +1507,19 @@ namespace proteus
 		  int eN_k_i=eN_k*nDOF_test_element+i,
 		    eN_k_i_nSpace = eN_k_i*nSpace,
 		    i_nSpace=i*nSpace;
+			if (LUMPED_MASS_MATRIX==1)
+                {
+                    // Lumped mass matrix contribution
+                    globalResidual.data()[offset_u + stride_u*u_l2g.data()[eN*nDOF_test_element + i]] += u_test_dV[i] * m_t;
+                }
+                else
+                {
+                    elementResidual_u[i] += ck.Mass_weak(m_t, u_test_dV[i]);
+                }
 
-		  elementResidual_u[i] += ck.Mass_weak(m_t,u_test_dV[i]) +
-		    ck.Advection_weak(f,&u_grad_test_dV[i_nSpace]) +
-		    ck.Diffusion_weak(a_rowptr.data(),a_colind.data(),a,grad_u,&u_grad_test_dV[i_nSpace]);
+		  elementResidual_u[i] += ck.Advection_weak(f,&u_grad_test_dV[i_nSpace]) +
+		    					  ck.Diffusion_weak(a_rowptr.data(),a_colind.data(),a,grad_u,&u_grad_test_dV[i_nSpace]);
+								  //+ ck.Mass_weak(m_t,u_test_dV[i]) 
 		  /* +  */
 		//   /*   ck.SubgridError(subgridError_u,Lstar_u[i]) +  */
 		//   /*   ck.NumericalDiffusion(q_numDiff_u_last[eN_k],grad_u,&u_grad_test_dV[i_nSpace]);  */
@@ -1845,6 +1903,8 @@ namespace proteus
 		     dm,
 		     m_t,
 		     dm_t);
+
+		
 	      // //
 	//       // //calculate subgrid error contribution to the Jacobian (strong residual, adjoint, jacobian of strong residual)
 	//       // //
@@ -1890,11 +1950,13 @@ namespace proteus
 		      //int eN_k_j_nSpace = eN_k_j*nSpace;
 		      int j_nSpace = j*nSpace;
 		      int i_nSpace = i*nSpace;
-		      elementJacobian_u_u[i][j] += ck.MassJacobian_weak(dm_t,u_trial_ref.data()[k*nDOF_trial_element+j],u_test_dV[i]) +
-			ck.AdvectionJacobian_weak(df,u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]) +
-			ck.DiffusionJacobian_weak(a_rowptr.data(),a_colind.data(),a,da,
-			 			  grad_u,&u_grad_test_dV[i_nSpace],1.0,
-			 			  u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_trial[j_nSpace]);
+
+		      elementJacobian_u_u[i][j] +=  ck.MassJacobian_weak(dm_t,u_trial_ref.data()[k*nDOF_trial_element+j],u_test_dV[i]) +
+			  								ck.AdvectionJacobian_weak(df,u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]) +
+										    ck.DiffusionJacobian_weak(a_rowptr.data(),a_colind.data(),a,da,
+			 			  					grad_u,&u_grad_test_dV[i_nSpace],1.0,
+			 			  					u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_trial[j_nSpace]);
+											//+
 		      // +
 		      //     ck.SubgridErrorJacobian(dsubgridError_u_u[j],Lstar_u[i]) +
 		      //     ck.NumericalDiffusionJacobian(q_numDiff_u_last[eN_k],&u_grad_trial[j_nSpace],&u_grad_test_dV[i_nSpace]);
