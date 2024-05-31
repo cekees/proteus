@@ -13,23 +13,6 @@ namespace py = pybind11;
 #define POWER_SMOOTHNESS_INDICATOR 2
 #define IS_BETAij_ONE 0
 #define GLOBAL_FCT 0
-namespace proteus
-{
-  // Power entropy //
-  inline double ENTROPY(const double& phi, const double& phiL, const double& phiR){
-    return 1./2.*std::pow(fabs(phi),2.);
-  }
-  inline double DENTROPY(const double& phi, const double& phiL, const double& phiR){
-    return fabs(phi)*(phi>=0 ? 1 : -1);
-  }
-  // Log entropy // for level set from 0 to 1
-  inline double ENTROPY_LOG(const double& phi, const double& phiL, const double& phiR){
-    return std::log(fabs((phi-phiL)*(phiR-phi))+1E-14);
-  }
-  inline double DENTROPY_LOG(const double& phi, const double& phiL, const double& phiR){
-    return (phiL+phiR-2*phi)*((phi-phiL)*(phiR-phi)>=0 ? 1 : -1)/(fabs((phi-phiL)*(phiR-phi))+1E-14);
-  }
-}
 
 namespace proteus
 {
