@@ -600,23 +600,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.nElementBoundaryQuadraturePoints_global = (self.mesh.nElements_global*
                                                         self.mesh.nElementBoundaries_element*
                                                         self.nElementBoundaryQuadraturePoints_elementBoundary)
-#        if isinstance(self.u[0].femSpace,C0_AffineLinearOnSimplexWithNodalBasis):
-#            print self.nQuadraturePoints_element
-#            if self.nSpace_global == 3:
-#                assert(self.nQuadraturePoints_element == 5)
-#            elif self.nSpace_global == 2:
-#                assert(self.nQuadraturePoints_element == 6)
-#            elif self.nSpace_global == 1:
-#                assert(self.nQuadraturePoints_element == 3)
-#
-#            print self.nElementBoundaryQuadraturePoints_elementBoundary
-#            if self.nSpace_global == 3:
-#                assert(self.nElementBoundaryQuadraturePoints_elementBoundary == 4)
-#            elif self.nSpace_global == 2:
-#                assert(self.nElementBoundaryQuadraturePoints_elementBoundary == 4)
-#            elif self.nSpace_global == 1:
-#                assert(self.nElementBoundaryQuadraturePoints_elementBoundary == 1)
-
         #
         #storage dictionaries
         self.scalars_element = set()
@@ -702,22 +685,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # mql. Some ASSERTS to restrict the combination of the methods
         if self.coefficients.STABILIZATION_TYPE > 0:
             pass
-            #assert self.timeIntegration.isSSP == True, "If STABILIZATION_TYPE>0, use RKEV timeIntegration within VOF model"
-            #cond = 'levelNonlinearSolver' in dir(options) and (options.levelNonlinearSolver ==
-            #                                                   ExplicitLumpedMassMatrixForADR or options.levelNonlinearSolver == ExplicitConsistentMassMatrixForADR)
-            #assert cond, "If STABILIZATION_TYPE>0, use levelNonlinearSolver=ExplicitLumpedMassMatrixForADR or ExplicitConsistentMassMatrixForADR"
-        try:
-            if 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == ExplicitLumpedMassMatrixForADR:
-                assert self.coefficients.LUMPED_MASS_MATRIX, "If levelNonlinearSolver=ExplicitLumpedMassMatrix, use LUMPED_MASS_MATRIX=True"
-        except:
-            pass
-        #if self.coefficients.LUMPED_MASS_MATRIX == True:
-        #    cond = self.coefficients.STABILIZATION_TYPE == 2
-        #    assert cond, "Use lumped mass matrix just with: STABILIZATION_TYPE=2 (smoothness based stab.)"
-        #    cond = 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == ExplicitLumpedMassMatrixForADR
-        #    assert cond, "Use levelNonlinearSolver=ExplicitLumpedMassMatrixForADR when the mass matrix is lumped"
-        if self.coefficients.FCT == True:
-            cond = self.coefficients.STABILIZATION_TYPE > 0, "Use FCT just with STABILIZATION_TYPE>0; i.e., edge based stabilization"
+        #except:
+        #    pass
         # END OF ASSERTS
 
         # cek adding empty data member for low order numerical viscosity structures here for now
@@ -1299,11 +1268,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
             self.calculateResidual = self.ADR.calculateResidual
             self.calculateJacobian = self.ADR.calculateJacobian
-        else:
-            self.calculateResidual = self.ADR.calculateResidual_entropy_viscosity
-            self.calculateJacobian = self.ADR.calculateMassMatrix
-        if self.delta_x_ij is None:
-            self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
+        #else:
+        #    self.calculateResidual = self.ADR.calculateResidual_entropy_viscosity
+        #    self.calculateJacobian = self.ADR.calculateMassMatrix
+        #if self.delta_x_ij is None:
+        #    self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
         self.calculateResidual(argsDict)
         #self.q[('mt',0)][:] =self.timeIntegration.m_tmp[0]
         #self.q[('mt',0)] *= self.timeIntegration.alpha_bdf
@@ -1313,8 +1282,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             for cj in range(len(self.dirichletConditionsForceDOF)):#
                 for dofN,g in list(self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.items()):
                      r[self.offset[cj]+self.stride[cj]*dofN] = 0
-        if self.stabilization:
-            self.stabilization.accumulateSubgridMassHistory(self.q)
+        #if self.stabilization:
+        #    self.stabilization.accumulateSubgridMassHistory(self.q)
         logEvent("Global residual",level=9,data=r)
         self.nonlinear_function_evaluations += 1
         if self.globalResidualDummy is None:
