@@ -16,14 +16,14 @@
 #endif
 
 namespace py = pybind11;
-using proteus::ADR_base;
+using proteus::richards::ADR_base;
 
 PYBIND11_MODULE(cADR, m)
 {
     xt::import_numpy();
 
     py::class_<ADR_base>(m, "cADR_base")
-        .def(py::init(&proteus::newADR))
+      .def(py::init(&proteus::richards::newADR))
         .def("calculateResidual", &ADR_base::calculateResidual)
         .def("calculateJacobian", &ADR_base::calculateJacobian)
         .def("invert", &ADR_base::invert)

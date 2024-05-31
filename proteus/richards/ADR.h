@@ -15,6 +15,8 @@ namespace py = pybind11;
 #define GLOBAL_FCT 0
 namespace proteus
 {
+namespace richards
+{
   // Power entropy //
   inline double ENTROPY(const double& phi, const double& phiL, const double& phiR){
     return 1./2.*std::pow(fabs(phi),2.);
@@ -30,8 +32,11 @@ namespace proteus
     return (phiL+phiR-2*phi)*((phi-phiL)*(phiR-phi)>=0 ? 1 : -1)/(fabs((phi-phiL)*(phiR-phi))+1E-14);
   }
 }
+}
 
 namespace proteus
+{
+namespace richards
 {
   class ADR_base
   {
@@ -3792,32 +3797,39 @@ namespace proteus
 				    int CompKernelFlag)
   {
     if (nSpaceIn == 1)
-      return proteus::chooseAndAllocateDiscretization1D<ADR_base,ADR,CompKernel>(nSpaceIn,
-											   nQuadraturePoints_elementIn,
-											   nDOF_mesh_trial_elementIn,
-											   nDOF_trial_elementIn,
-											   nDOF_test_elementIn,
-											   nQuadraturePoints_elementBoundaryIn,
-											   CompKernelFlag);
+      {
+	assert(nSpaceIn == 1);
+	return proteus::chooseAndAllocateDiscretization1D<ADR_base,ADR,CompKernel>(nSpaceIn,
+										   nQuadraturePoints_elementIn,
+										   nDOF_mesh_trial_elementIn,
+										   nDOF_trial_elementIn,
+										   nDOF_test_elementIn,
+										   nQuadraturePoints_elementBoundaryIn,
+										   CompKernelFlag);
+      }
     else if (nSpaceIn == 2)
-      return proteus::chooseAndAllocateDiscretization2D<ADR_base,ADR,CompKernel>(nSpaceIn,
-											   nQuadraturePoints_elementIn,
-											   nDOF_mesh_trial_elementIn,
-											   nDOF_trial_elementIn,
-											   nDOF_test_elementIn,
-											   nQuadraturePoints_elementBoundaryIn,
-											   CompKernelFlag);
+      {
+	assert(nSpaceIn == 3);
+	return proteus::chooseAndAllocateDiscretization2D<ADR_base,ADR,CompKernel>(nSpaceIn,
+										   nQuadraturePoints_elementIn,
+										   nDOF_mesh_trial_elementIn,
+										   nDOF_trial_elementIn,
+										   nDOF_test_elementIn,
+										   nQuadraturePoints_elementBoundaryIn,
+										   CompKernelFlag);
+      }
     else
       {
 	assert(nSpaceIn == 3);
 	return proteus::chooseAndAllocateDiscretization<ADR_base,ADR,CompKernel>(nSpaceIn,
-											   nQuadraturePoints_elementIn,
-											   nDOF_mesh_trial_elementIn,
-											   nDOF_trial_elementIn,
-											   nDOF_test_elementIn,
-											   nQuadraturePoints_elementBoundaryIn,
-											   CompKernelFlag);
+										 nQuadraturePoints_elementIn,
+										 nDOF_mesh_trial_elementIn,
+										 nDOF_trial_elementIn,
+										 nDOF_test_elementIn,
+										 nQuadraturePoints_elementBoundaryIn,
+										 CompKernelFlag);
       }
   }
-};//proteus
+}//richards
+}//proteus
 #endif

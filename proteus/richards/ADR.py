@@ -392,20 +392,6 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
 #                                                                      c[('df',0,0)],
 #                                                                      c[('a',0,0)],
 #                                                                      c[('da',0,0,0)])
-        #mwf debug
-        if (np.isnan(c[('da',0,0,0)]).any() or
-            np.isnan(c[('a',0,0)]).any() or
-            np.isnan(c[('df',0,0)]).any() or
-            np.isnan(c[('f',0)]).any() or
-            np.isnan(c[('u',0)]).any() or
-            np.isnan(c[('m',0)]).any() or
-            np.isnan(c[('dm',0,0)]).any()):
-            import pdb
-            pdb.set_trace()
-
-#         #mwf debug
-#         if c[('u',0)].shape == self.q_shape:
-#             c[('visPerm',0)]=c[('a',0,0)][:,:,0,0]
 
 class LevelModel(proteus.Transport.OneLevelTransport):
     nCalls=0

@@ -15,6 +15,8 @@ namespace py = pybind11;
 #define GLOBAL_FCT 0
 namespace proteus
 {
+namespace richards
+{
   // Power entropy //
   inline double ENTROPY(const double& phi, const double& phiL, const double& phiR){
     return 1./2.*std::pow(fabs(phi),2.);
@@ -30,10 +32,11 @@ namespace proteus
     return (phiL+phiR-2*phi)*((phi-phiL)*(phiR-phi)>=0 ? 1 : -1)/(fabs((phi-phiL)*(phiR-phi))+1E-14);
   }
 }
-
+}
 namespace proteus
-
 {
+namespace richards
+{  
   class Richards_base
   {
     //The base class defining the interface
@@ -3240,5 +3243,6 @@ namespace proteus
 											   CompKernelFlag);
       }
   }
-};//proteus
+}//richards
+}//proteus
 #endif
