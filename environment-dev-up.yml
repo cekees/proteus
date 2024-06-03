@@ -1,4 +1,4 @@
-name: proteus-dev-up-240530
+name: proteus-dev-up-240603
 channels:
   - conda-forge
   - defaults

@@ -26,9 +26,4 @@ PYBIND11_MODULE(cADR, m)
       .def(py::init(&proteus::richards::newADR))
         .def("calculateResidual", &ADR_base::calculateResidual)
         .def("calculateJacobian", &ADR_base::calculateJacobian)
-        .def("invert", &ADR_base::invert)
-        .def("FCTStep", &ADR_base::FCTStep)
-        .def("kth_FCT_step", &ADR_base::kth_FCT_step)
-        .def("calculateResidual_entropy_viscosity", &ADR_base::calculateResidual_entropy_viscosity)
-        .def("calculateMassMatrix", &ADR_base::calculateMassMatrix);
 }
