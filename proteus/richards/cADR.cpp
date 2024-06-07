@@ -24,6 +24,6 @@ PYBIND11_MODULE(cADR, m)
 
     py::class_<ADR_base>(m, "cADR_base")
       .def(py::init(&proteus::richards::newADR))
-        .def("calculateResidual", &ADR_base::calculateResidual)
-        .def("calculateJacobian", &ADR_base::calculateJacobian)
+      .def("calculateResidual", &ADR_base::calculateResidual)
+      .def("calculateJacobian", &ADR_base::calculateJacobian);
 }

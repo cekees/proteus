@@ -95,18 +95,20 @@ def getDBC(x,flag):
         None
     else:
         return lambda x,t: 0.0
+    
 dirichletConditions = {0:getDBC}
 
 #Periodic Boundary Conditions
 eps=1.0e-8
-def getPDBC(x,flag):
-    if x[0] <= eps or x[0] >= (L[0]-eps):
-        return numpy.array([0.0,x[1],0.0])
 if ct.problem in [0,2]:
+    def getPDBC(x,flag):
+        if x[0] <= eps or x[0] >= (L[0]-eps):
+            return numpy.array([0.0,x[1],0.0])
     periodicDirichletConditions = {0:getPDBC}
 
 def zeroadv(x,flag):
-    None
+    return None
+
 advectiveFluxBoundaryConditions =  {0:zeroadv}
 
 fluxBoundaryConditions = {0:'outFlow'}

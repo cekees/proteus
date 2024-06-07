@@ -742,7 +742,7 @@ EXTENSIONS_TO_BUILD = [
         sources=['proteus/mprans/TADR.cpp'],
         depends=["proteus/mprans/TADR.h", "proteus/mprans/ArgumentsDict.h", "proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++14'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cMoveMesh',
@@ -1008,21 +1008,21 @@ def setup_extensions_in_sequential():
 def setup_extensions_in_parallel():
     import multiprocessing, logging
     mp = multiprocessing.get_context('fork')
-    logger = mp.log_to_stderr()
-    logger.setLevel(logging.INFO)
+    #logger = mp.log_to_stderr()
+    #logger.setLevel(logging.INFO)
     pool = mp.Pool(processes=int(os.getenv('N')))
     EXTENSIONS=[[e] for e in EXTENSIONS_TO_BUILD]
     pool.imap(setup_given_extensions, EXTENSIONS)
     pool.close()
     pool.join()
 
-import logging, multiprocessing
-logging.basicConfig(force=True,level=logging.INFO)
-mp = multiprocessing.get_context('fork')
-logger = mp.log_to_stderr()
-logger.setLevel(logging.INFO)
+#import logging, multiprocessing
+#logging.basicConfig(force=True,level=logging.INFO)
+#mp = multiprocessing.get_context('fork')
+#logger = mp.log_to_stderr()
+#logger.setLevel(logging.INFO)
 
-if "build_ext" in sys.argv:
+if "build_ext" in sys.argv and os.getenv('N') in [None,'1']:
     setup_extensions_in_parallel()
 else:
     setup_extensions_in_sequential()

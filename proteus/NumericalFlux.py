@@ -163,12 +163,8 @@ class NF_base(object):
                 for k in range(vt.nElementBoundaryQuadraturePoints_elementBoundary):
                     x = vt.ebqe['x'][ebNE,k]
                     try:
-                        #mwf now try to have flag for boundary type returned too
                         gReturn = getPointwiseBoundaryConditions[ci](x,materialFlag)
                         try:
-                            #mwf debug
-                            #import pdb
-                            #pdb.set_trace()
                             g = gReturn[0]
                             gFlag = gReturn[1]
                         except TypeError: #didn't return a tuple?
@@ -177,17 +173,16 @@ class NF_base(object):
                         p = None
                         if getPeriodicBoundaryConditions is not None and not parallelPeriodic:
                             p = getPeriodicBoundaryConditions[ci](x,materialFlag)
-                            self.isDOFBoundary[ci][ebNE,k]=gFlag #mql. if periodic BCs then set isDOFBoundary to 1
                         if p is not None:
                             pset.add(ptuple(p))
-                            #self.isDOFBoundary[ci][ebNE,k]=1
+                            self.isDOFBoundary[ci][ebNE,k]=1
                             if ptuple(p) in list(self.periodicBoundaryConditionsDictList[ci].keys()):#self.periodicBoundaryConditionsDictList[ci].has_key(ptuple(p)):
                                 i = list(self.periodicBoundaryConditionsDictList[ci].keys()).index(ptuple(p))
                                 key = list(self.periodicBoundaryConditionsDictList[ci].keys())[i]
                                 self.periodicBoundaryConditionsDictList[ci][key].append((ebNE,k))
                             else:
                                 self.periodicBoundaryConditionsDictList[ci][ptuple(p)]=[(ebNE,k)]
-                        if g is not None:
+                        elif g is not None:
                             self.isDOFBoundary[ci][ebNE,k]=gFlag
                             self.DOFBoundaryConditionsDictList[ci][(ebNE,k)] = g
                             self.DOFBoundaryPointDictList[ci][(ebNE,k)]=x
@@ -796,10 +791,12 @@ class Advection_DiagonalUpwind_Diffusion_IIPG_exterior(NF_base):
     hasInterior=False
     def __init__(self,vt,getPointwiseBoundaryConditions,
                  getAdvectiveFluxBoundaryConditions,
-                 getDiffusiveFluxBoundaryConditions):
+                 getDiffusiveFluxBoundaryConditions,
+                 getPeriodicBoundaryConditions=None):
         NF_base.__init__(self,vt,getPointwiseBoundaryConditions,
                  getAdvectiveFluxBoundaryConditions,
-                 getDiffusiveFluxBoundaryConditions)
+                 getDiffusiveFluxBoundaryConditions,
+                 getPeriodicBoundaryConditions)
         self.hasInterior=False
     def setDirichletValues(self,ebqe):
         for ci in range(self.nc):

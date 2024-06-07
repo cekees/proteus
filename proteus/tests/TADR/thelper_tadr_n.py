@@ -13,8 +13,9 @@ except:
 nd = ct.nd
 
 multilevelNonlinearSolver  = Newton
-if ct.STABILIZATION_TYPE==0: #SUPG
+if ct.STABILIZATION_TYPE<1: #SUPG
     levelNonlinearSolver = Newton
+    maxLineSearches = 0
     fullNewtonFlag = True
     updateJacobian = True
     timeIntegration = BackwardEuler_cfl
@@ -61,9 +62,9 @@ else:
     elementQuadrature = SimplexGaussQuadrature(nd,tadr_quad_order)
     elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,tadr_quad_order)
 
-#numericalFluxType = TADR.NumericalFlux
+numericalFluxType = TADR.NumericalFlux
 #numericalFluxType = DoNothing
-numericalFluxType = Advection_DiagonalUpwind_IIPG_exterior # PERIODIC
+#numericalFluxType = Advection_DiagonalUpwind_IIPG_exterior # PERIODIC
 
 shockCapturing = TADR.ShockCapturing(coefficients,nd,shockCapturingFactor=shockCapturingFactor_tadr,lag=lag_shockCapturing_tadr)
 
