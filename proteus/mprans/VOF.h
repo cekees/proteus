@@ -1513,7 +1513,7 @@ namespace proteus
                         else
                           {
                             elementJacobian_u_u[i][j] +=
-                              ck.MassJacobian_weak(dm_t,
+                              ck.MassJacobian_weak(1.0,
                                                    u_trial_ref.data()[k*nDOF_trial_element+j],
                                                    u_test_dV[i]);
                           }

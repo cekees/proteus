@@ -519,8 +519,8 @@ namespace proteus
                 {
                   f[I] -= MOVING_DOMAIN*m*mesh_velocity[I];
                   df[I] -= MOVING_DOMAIN*dm*mesh_velocity[I];
-                  fn[I] -= MOVING_DOMAIN*m*mesh_velocity[I];
-                  dfn[I] -= MOVING_DOMAIN*dm*mesh_velocity[I];
+                  fn[I] -= MOVING_DOMAIN*mn*mesh_velocity[I];
+                  dfn[I] -= MOVING_DOMAIN*dmn*mesh_velocity[I];
                 }
               //
               //calculate time derivative at quadrature points
@@ -613,8 +613,8 @@ namespace proteus
                                                  numDiff1);
                   q_numDiff_u.data()[eN_k] = useMetrics*numDiff1+(1.0-useMetrics)*numDiff0;
                 }
-              else if (STABILIZATION_TYPE==STABILIZATION::Galerkin)
-                calculateSubgridError_tau(elementDiameter.data()[eN],dm_t,df,cfl.data()[eN_k],tau0);
+              else
+                calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
 
               for(int i=0;i<nDOF_test_element;i++)
                 {
@@ -655,7 +655,6 @@ namespace proteus
                           STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or 
                           STABILIZATION_TYPE==STABILIZATION::Kuzmin)
                     {
-                      calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
                       // VECTOR OF ENTROPY RESIDUAL //
                       int eN_i=eN*nDOF_test_element+i;
                       if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) // EV stab
@@ -931,11 +930,16 @@ namespace proteus
               //after the closure of the quadrature loop
               for (int i=0;i<nDOF_test_element;i++)
                 {
-                  elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i]);
-                  if (STABILIZATION_TYPE == STABILIZATION::EntropyViscosity or 
+                  if (STABILIZATION_TYPE == STABILIZATION::Galerkin or 
+                      STABILIZATION_TYPE == STABILIZATION::VMS or 
+                      STABILIZATION_TYPE == STABILIZATION::TaylorGalerkinEV) 
+                    elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i]);
+                  else if (STABILIZATION_TYPE == STABILIZATION::EntropyViscosity or 
                       STABILIZATION_TYPE == STABILIZATION::SmoothnessIndicator or 
                       STABILIZATION_TYPE == STABILIZATION::Kuzmin)
                     {
+                      if (flux_ext < 0)
+                        elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i]);
                       int ebN_local_kb_i = ebN_local_kb*nDOF_test_element+i;
                       for (int j=0;j<nDOF_trial_element;j++)
                         fluxTransport[i][j] += dflux_u_u_ext*
@@ -964,9 +968,9 @@ namespace proteus
                     {
                       int ebN_i_j = ebN*4*nDOF_test_X_trial_element + i*nDOF_trial_element + j;
                       TransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] + csrColumnOffsets_eb_CellLoops.data()[ebN_i_j]]
-                        += 0.0*fluxTransport[j][i];
+                        += fluxTransport[j][i];
                       TransposeTransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] + csrColumnOffsets_eb_CellLoops.data()[ebN_i_j]]
-                        += 0.0*fluxTransport[i][j];
+                        += fluxTransport[i][j];
                     }//j
                 }
               else
