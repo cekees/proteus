@@ -316,7 +316,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  initialize=True,
                  physicalDiffusion=0.0):
 
-        self.variableNames = ['vof']
+        self.variableNames = ['u']
         self.LS_modelIndex = LS_model
         self.V_model = V_model
         self.RD_modelIndex = RD_model
@@ -891,7 +891,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # TODO how to handle redistancing calls for calculateCoefficients,calculateElementResidual etc
         self.globalResidualDummy = None
         compKernelFlag = 0
-        self.vof = cTADR_base(self.nSpace_global,
+        self.adr = cTADR_base(self.nSpace_global,
                              self.nQuadraturePoints_element,
                              self.u[0].femSpace.elementMaps.localFunctionSpace.dim,
                              self.u[0].femSpace.referenceFiniteElement.localFunctionSpace.dim,
@@ -961,11 +961,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.degree_polynomial = self.u[0].femSpace.order
         except:
             pass
-        self.calculateJacobian = self.vof.calculateJacobian
-        if (self.coefficients.STABILIZATION_TYPE <= 1):  # SUPG or Taylor Galerkin
-            self.calculateResidual = self.vof.calculateResidualElementBased            
-        else:
-            self.calculateResidual = self.vof.calculateResidualEdgeBased
             
     def FCTStep(self):
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
@@ -989,7 +984,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["max_u_bc"] = self.max_u_bc
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
-        self.vof.FCTStep(argsDict)
+        self.adr.FCTStep(argsDict)
         #self.timeIntegration.u[:] = limited_solution
         fromFreeToGlobal=0 #direction copying
         cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns(fromFreeToGlobal,
@@ -1239,7 +1234,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["max_u_bc"] = self.max_u_bc
         argsDict["quantDOFs"] = self.quantDOFs
         argsDict["physicalDiffusion"] = self.coefficients.physicalDiffusion                 
-        self.calculateResidual(argsDict)
+        self.adr.calculateResidual(argsDict)
 
         if self.forceStrongConditions:
             for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
@@ -1314,7 +1309,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0, 0)]
         argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
         argsDict["physicalDiffusion"] = self.coefficients.physicalDiffusion                 
-        self.calculateJacobian(argsDict)
+        self.adr.calculateJacobian(argsDict)
 
         # Load the Dirichlet conditions directly into residual
         if self.forceStrongConditions:

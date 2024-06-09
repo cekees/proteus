@@ -58,10 +58,9 @@ namespace proteus
     std::valarray<double> psi, eta, global_entropy_residual, boundary_integral;
     std::valarray<double> maxVel,maxEntRes;
     virtual ~TADR_base(){}
-    virtual void calculateResidualElementBased(arguments_dict& args)=0;
+    virtual void calculateResidual(arguments_dict& args)=0;
     virtual void calculateJacobian(arguments_dict& args)=0;
     virtual void FCTStep(arguments_dict& args)=0;
-    virtual void calculateResidualEdgeBased(arguments_dict& args)=0;
   };
 
   template<class CompKernelType,
@@ -254,7 +253,7 @@ namespace proteus
         }
     }
 
-    void calculateResidualElementBased(arguments_dict& args)
+    void calculateResidual(arguments_dict& args)
     {
       double dt = args.scalar<double>("dt");
       xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
@@ -656,6 +655,7 @@ namespace proteus
                           STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or 
                           STABILIZATION_TYPE==STABILIZATION::Kuzmin)
                     {
+                      calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
                       // VECTOR OF ENTROPY RESIDUAL //
                       int eN_i=eN*nDOF_test_element+i;
                       if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) // EV stab
@@ -744,12 +744,12 @@ namespace proteus
             ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+0],
             eN_nDOF_trial_element = eN*nDOF_trial_element;
           double elementResidual_u[nDOF_test_element],
-            fluxTransport[nDOF_test_element*nDOF_trial_element];
+            fluxTransport[nDOF_test_element][nDOF_trial_element];
           for (int i=0;i<nDOF_test_element;i++)
             {
               elementResidual_u[i]=0.0;
               for (int j=0;j<nDOF_trial_element;j++)
-                fluxTransport[i*nDOF_trial_element+j] = 0.0;
+                fluxTransport[i][j] = 0.0;
             }
           for  (int kb=0;kb<nQuadraturePoints_elementBoundary;kb++)
             {
@@ -938,7 +938,7 @@ namespace proteus
                     {
                       int ebN_local_kb_i = ebN_local_kb*nDOF_test_element+i;
                       for (int j=0;j<nDOF_trial_element;j++)
-                        fluxTransport[i*nDOF_trial_element+j] += dflux_u_u_ext*
+                        fluxTransport[i][j] += dflux_u_u_ext*
                           u_trial_trace_ref.data()[ebN_local_kb_i]*
                           u_test_dS[j];
                     }
@@ -964,9 +964,9 @@ namespace proteus
                     {
                       int ebN_i_j = ebN*4*nDOF_test_X_trial_element + i*nDOF_trial_element + j;
                       TransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] + csrColumnOffsets_eb_CellLoops.data()[ebN_i_j]]
-                        += fluxTransport[j*nDOF_trial_element+i];
+                        += 0.0*fluxTransport[j][i];
                       TransposeTransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] + csrColumnOffsets_eb_CellLoops.data()[ebN_i_j]]
-                        += fluxTransport[i*nDOF_test_element+j];
+                        += 0.0*fluxTransport[i][j];
                     }//j
                 }
               else
@@ -1344,7 +1344,10 @@ namespace proteus
                                                           &u_grad_trial[j_nSpace],
                                                           &u_grad_test_dV[i_nSpace]); //implicit
                         }
-                      else if (STABILIZATION_TYPE==STABILIZATION::TaylorGalerkinEV)
+                      else if (STABILIZATION_TYPE==STABILIZATION::TaylorGalerkinEV or 
+                               STABILIZATION_TYPE==STABILIZATION::EntropyViscosity or
+                               STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or 
+                               STABILIZATION_TYPE==STABILIZATION::Kuzmin)
                         {
                           elementJacobian_u_u[i][j] +=
                             ck.MassJacobian_weak(1.0,
@@ -1614,564 +1617,8 @@ namespace proteus
           }
         limited_solution.data()[i] = uLow.data()[i] + 1./lumped_mass_matrix.data()[i]*ith_Limiter_times_FluxCorrectionMatrix;
       }
-  }
-
-  void calculateResidualEdgeBased(arguments_dict& args)
-  {
-    double dt = args.scalar<double>("dt");
-    xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
-    xt::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
-    xt::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
-    xt::pyarray<double>& mesh_velocity_dof = args.array<double>("mesh_velocity_dof");
-    double MOVING_DOMAIN = args.scalar<double>("MOVING_DOMAIN");
-    xt::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
-    xt::pyarray<double>& dV_ref = args.array<double>("dV_ref");
-    xt::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
-    xt::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
-    xt::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
-    xt::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
-    xt::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
-    xt::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
-    xt::pyarray<double>& dS_ref = args.array<double>("dS_ref");
-    xt::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
-    xt::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
-    xt::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
-    xt::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
-    xt::pyarray<double>& normal_ref = args.array<double>("normal_ref");
-    xt::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
-    int nElements_global = args.scalar<int>("nElements_global");
-    double useMetrics = args.scalar<double>("useMetrics");
-    double alphaBDF = args.scalar<double>("alphaBDF");
-    int lag_shockCapturing = args.scalar<int>("lag_shockCapturing");
-    double shockCapturingDiffusion = args.scalar<double>("shockCapturingDiffusion");
-    double sc_uref = args.scalar<double>("sc_uref");
-    double sc_alpha = args.scalar<double>("sc_alpha");
-    xt::pyarray<int>& u_l2g = args.array<int>("u_l2g");
-    xt::pyarray<int>& r_l2g = args.array<int>("r_l2g");
-    xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
-    double degree_polynomial = args.scalar<double>("degree_polynomial");
-    xt::pyarray<double>& u_dof = args.array<double>("u_dof");
-    xt::pyarray<double>& u_dof_old = args.array<double>("u_dof_old");
-    xt::pyarray<double>& velocity = args.array<double>("velocity");
-    xt::pyarray<double>& q_m = args.array<double>("q_m");
-    xt::pyarray<double>& q_u = args.array<double>("q_u");
-    xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
-    xt::pyarray<double>& q_dV = args.array<double>("q_dV");
-    xt::pyarray<double>& q_dV_last = args.array<double>("q_dV_last");
-    xt::pyarray<double>& cfl = args.array<double>("cfl");
-    xt::pyarray<double>& edge_based_cfl = args.array<double>("edge_based_cfl");
-    xt::pyarray<double>& q_numDiff_u = args.array<double>("q_numDiff_u");
-    xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
-    int offset_u = args.scalar<int>("offset_u");
-    int stride_u = args.scalar<int>("stride_u");
-    xt::pyarray<double>& globalResidual = args.array<double>("globalResidual");
-    int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
-    xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
-    xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
-    xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
-    xt::pyarray<double>& ebqe_velocity_ext = args.array<double>("ebqe_velocity_ext");
-    xt::pyarray<int>& isDOFBoundary_u = args.array<int>("isDOFBoundary_u");
-    xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
-    xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
-    xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
-    xt::pyarray<double>& ebqe_phi = args.array<double>("ebqe_phi");
-    double epsFact = args.scalar<double>("epsFact");
-    xt::pyarray<double>& ebqe_u = args.array<double>("ebqe_u");
-    xt::pyarray<double>& ebqe_flux = args.array<double>("ebqe_flux");
-    int stage = args.scalar<int>("stage");
-    xt::pyarray<double>&  uTilde_dof = args.array<double>("uTilde_dof");
-    double cE = args.scalar<double>("cE");
-    double cMax = args.scalar<double>("cMax");
-    double cK = args.scalar<double>("cK");
-    double uL = args.scalar<double>("uL");
-    double uR = args.scalar<double>("uR");
-    int numDOFs = args.scalar<int>("numDOFs");
-    int NNZ = args.scalar<int>("NNZ");
-    xt::pyarray<int>& csrRowIndeces_DofLoops = args.array<int>("csrRowIndeces_DofLoops");
-    xt::pyarray<int>& csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops");
-    xt::pyarray<int>& csrRowIndeces_CellLoops = args.array<int>("csrRowIndeces_CellLoops");
-    xt::pyarray<int>& csrColumnOffsets_CellLoops = args.array<int>("csrColumnOffsets_CellLoops");
-    xt::pyarray<int>& csrColumnOffsets_eb_CellLoops = args.array<int>("csrColumnOffsets_eb_CellLoops");
-    xt::pyarray<double>& ML = args.array<double>("ML");
-    int LUMPED_MASS_MATRIX = args.scalar<int>("LUMPED_MASS_MATRIX");
-    STABILIZATION STABILIZATION_TYPE{args.scalar<int>("STABILIZATION_TYPE")};
-    ENTROPY ENTROPY_TYPE{args.scalar<int>("ENTROPY_TYPE")};
-    xt::pyarray<double>& uLow = args.array<double>("uLow");
-    xt::pyarray<double>& dLow = args.array<double>("dLow");
-    xt::pyarray<double>& dt_times_dH_minus_dL = args.array<double>("dt_times_dH_minus_dL");
-    xt::pyarray<double>& min_u_bc = args.array<double>("min_u_bc");
-    xt::pyarray<double>& max_u_bc = args.array<double>("max_u_bc");
-    xt::pyarray<double>& quantDOFs = args.array<double>("quantDOFs");
-    double physicalDiffusion = args.scalar<double>("physicalDiffusion");
-    // NOTE: This function follows a different (but equivalent) implementation of the smoothness based indicator than NCLS.h
-    // Allocate space for the transport matrices
-    // This is used for first order KUZMIN'S METHOD
-    TransportMatrix.resize(NNZ,0.0);
-    DiffusionMatrix.resize(NNZ,0.0);
-    TransposeTransportMatrix.resize(NNZ,0.0);
-    // compute entropy and init global_entropy_residual and boundary_integral
-    psi.resize(numDOFs,0.0);
-    eta.resize(numDOFs,0.0);
-    global_entropy_residual.resize(numDOFs,0.0);
-    boundary_integral.resize(numDOFs,0.0);
-
-    for (int i=0; i<numDOFs; i++)
-      {
-        // NODAL ENTROPY //
-        if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) //EV stab
-          {
-            eta[i] = ENTROPY_TYPE == ENTROPY::POWER ? EPOWER(u_dof_old.data()[i],uL,uR) : ELOG(u_dof_old.data()[i],uL,uR);
-            global_entropy_residual[i]=0.;
-          }
-        boundary_integral[i]=0.;
-      }
-
-    //////////////////////////////////////////////
-    // ** LOOP IN CELLS FOR CELL BASED TERMS ** //
-    //////////////////////////////////////////////
-    // HERE WE COMPUTE:
-    //    * Time derivative term. u_t
-    //    * cell based CFL (for reference)
-    //    * Entropy residual
-    //    * Transport matrices
-    for(int eN=0;eN<nElements_global;eN++)
-      {
-        //declare local storage for local contributions and initialize
-        double
-          elementResidual_u[nDOF_test_element],
-          element_entropy_residual[nDOF_test_element];
-        double  elementTransport[nDOF_test_element][nDOF_trial_element];
-        double  elementDiffusion[nDOF_test_element][nDOF_trial_element];
-        double  elementTransposeTransport[nDOF_test_element][nDOF_trial_element];
-        for (int i=0;i<nDOF_test_element;i++)
-          {
-            elementResidual_u[i]=0.0;
-            element_entropy_residual[i]=0.0;
-            for (int j=0;j<nDOF_trial_element;j++)
-              {
-                elementTransport[i][j]=0.0;
-                elementDiffusion[i][j]=0.0;
-                elementTransposeTransport[i][j]=0.0;
-              }
-          }
-        //loop over quadrature points and compute integrands
-        for  (int k=0;k<nQuadraturePoints_element;k++)
-          {
-            //compute indeces and declare local storage
-            int eN_k = eN*nQuadraturePoints_element+k,
-              eN_k_nSpace = eN_k*nSpace,
-              eN_nDOF_trial_element = eN*nDOF_trial_element;
-            double
-              // for entropy residual
-              aux_entropy_residual=0., DENTROPY_un, DENTROPY_uni,
-              //for mass matrix contributions
-              u=0.0, un=0.0, grad_un[nSpace], dfn[nSpace],
-              u_test_dV[nDOF_trial_element],
-              u_grad_trial[nDOF_trial_element*nSpace],
-              u_grad_test_dV[nDOF_test_element*nSpace],
-              //for general use
-              jac[nSpace*nSpace], jacDet, jacInv[nSpace*nSpace],
-              dV,x,y,z,xt,yt,zt;
-            //get the physical integration weight
-            ck.calculateMapping_element(eN,
-                                        k,
-                                        mesh_dof.data(),
-                                        mesh_l2g.data(),
-                                        mesh_trial_ref.data(),
-                                        mesh_grad_trial_ref.data(),
-                                        jac,
-                                        jacDet,
-                                        jacInv,
-                                        x,y,z);
-            ck.calculateMappingVelocity_element(eN,
-                                                k,
-                                                mesh_velocity_dof.data(),
-                                                mesh_l2g.data(),
-                                                mesh_trial_ref.data(),
-                                                xt,yt,zt);
-            dV = fabs(jacDet)*dV_ref.data()[k];
-            //get the solution (of Newton's solver). To compute time derivative term
-            ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_ref.data()[k*nDOF_trial_element],u);
-            //get the solution at quad point at tn and tnm1 for entropy viscosity
-            ck.valFromDOF(u_dof_old.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_ref.data()[k*nDOF_trial_element],un);
-            //get the solution gradients at tn for entropy viscosity
-            ck.gradTrialFromRef(&u_grad_trial_ref.data()[k*nDOF_trial_element*nSpace],jacInv,u_grad_trial);
-            ck.gradFromDOF(u_dof_old.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial,grad_un);
-
-            //precalculate test function products with integration weights for mass matrix terms
-            for (int j=0;j<nDOF_trial_element;j++)
-              {
-                u_test_dV[j] = u_test_ref.data()[k*nDOF_trial_element+j]*dV;
-                for (int I=0;I<nSpace;I++)
-                  u_grad_test_dV[j*nSpace+I] = u_grad_trial[j*nSpace+I]*dV;//cek warning won't work for Petrov-Galerkin
-              }
-
-            //calculate time derivative at quadrature points
-            if (q_dV_last.data()[eN_k] <= -100)
-              q_dV_last.data()[eN_k] = dV;
-            q_dV.data()[eN_k] = dV;
-            //
-            //moving mesh
-            //
-            double mesh_velocity[3];
-            mesh_velocity[0] = xt;
-            mesh_velocity[1] = yt;
-            mesh_velocity[2] = zt;
-            //relative velocity at tn
-            for (int I=0;I<nSpace;I++)
-              dfn[I] = velocity.data()[eN_k_nSpace+I]-MOVING_DOMAIN*mesh_velocity[I];
-
-            //////////////////////////////
-            // CALCULATE CELL BASED CFL //
-            //////////////////////////////
-            calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
-
-            //////////////////////////////////////////////
-            // CALCULATE ENTROPY RESIDUAL AT QUAD POINT //
-            //////////////////////////////////////////////
-            if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) // EV stab
-              {
-                for (int I=0;I<nSpace;I++)
-                  aux_entropy_residual += dfn[I]*grad_un[I];
-                DENTROPY_un = ENTROPY_TYPE==ENTROPY::POWER ? DEPOWER(un,uL,uR) : DELOG(un,uL,uR);
-              }
-            //////////////
-            // ith-LOOP //
-            //////////////
-            for(int i=0;i<nDOF_test_element;i++)
-              {
-                // VECTOR OF ENTROPY RESIDUAL //
-                int eN_i=eN*nDOF_test_element+i;
-                if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) // EV stab
-                  {
-                    int gi = offset_u+stride_u*u_l2g.data()[eN_i]; //global i-th index
-                    DENTROPY_uni = ENTROPY_TYPE == ENTROPY::POWER ? DEPOWER(u_dof_old.data()[gi],uL,uR) : DELOG(u_dof_old.data()[gi],uL,uR);
-                    element_entropy_residual[i] += (DENTROPY_un - DENTROPY_uni)*aux_entropy_residual*u_test_dV[i];
-                  }
-                elementResidual_u[i] += (u-un)*u_test_dV[i];
-                ///////////////
-                // j-th LOOP // To construct transport matrices
-                ///////////////
-                for(int j=0;j<nDOF_trial_element;j++)
-                  {
-                    int j_nSpace = j*nSpace;
-                    int i_nSpace = i*nSpace;
-                    elementTransport[i][j] +=
-                      ck.AdvectionJacobian_weak(dfn,
-                                                u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]);
-                    elementDiffusion[i][j] += ck.NumericalDiffusionJacobian(physicalDiffusion,
-                                                                            &u_grad_trial[j_nSpace],
-                                                                            &u_grad_test_dV[i_nSpace]);
-                    elementTransposeTransport[i][j] +=
-                      ck.AdvectionJacobian_weak(dfn,
-                                                u_trial_ref.data()[k*nDOF_trial_element+i],&u_grad_test_dV[j_nSpace]);
-                  }
-              }//i
-            //save solution for other models
-            q_u.data()[eN_k] = u;
-            q_m.data()[eN_k] = u;
-          }
-        /////////////////
-        // DISTRIBUTE // load cell based element into global residual
-        ////////////////
-        for(int i=0;i<nDOF_test_element;i++)
-          {
-            int eN_i=eN*nDOF_test_element+i;
-            int gi = offset_u+stride_u*u_l2g.data()[eN_i]; //global i-th index
-
-            // distribute global residual for (lumped) mass matrix
-            globalResidual.data()[gi] += elementResidual_u[i];
-            // distribute entropy_residual
-            if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) // EV Stab
-              global_entropy_residual[gi] += element_entropy_residual[i];
-
-            // distribute transport matrices
-            for (int j=0;j<nDOF_trial_element;j++)
-              {
-                int eN_i_j = eN_i*nDOF_trial_element+j;
-                TransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] +
-                                csrColumnOffsets_CellLoops.data()[eN_i_j]] += elementTransport[i][j];
-                DiffusionMatrix[csrRowIndeces_CellLoops.data()[eN_i] +
-                                csrColumnOffsets_CellLoops.data()[eN_i_j]] += elementDiffusion[i][j];
-                TransposeTransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] +
-                                         csrColumnOffsets_CellLoops.data()[eN_i_j]]
-                  += elementTransposeTransport[i][j];
-              }//j
-          }//i
-      }//elements
-
-    //////////////////////////////////////////////////////////////////////////////////////////
-    // ADD OUTFLOW BOUNDARY TERM TO TRANSPORT MATRICES AND COMPUTE INFLOW BOUNDARY INTEGRAL //
-    //////////////////////////////////////////////////////////////////////////////////////////
-    //   * Compute outflow boundary integral as a matrix; i.e., int_B[ (vel.normal)*wi*wj*dx]
-    for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++)
-      {
-        double min_u_bc_local = 1E10, max_u_bc_local = -1E10;
-        int ebN = exteriorElementBoundariesArray.data()[ebNE];
-        int eN  = elementBoundaryElementsArray.data()[ebN*2+0],
-          ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+0],
-          eN_nDOF_trial_element = eN*nDOF_trial_element;
-        double elementResidual_u[nDOF_test_element];
-        for (int i=0;i<nDOF_test_element;i++)
-          elementResidual_u[i]=0.0;
-        // loop on quad points
-        for  (int kb=0;kb<nQuadraturePoints_elementBoundary;kb++)
-          {
-            int ebNE_kb = ebNE*nQuadraturePoints_elementBoundary+kb,
-              ebNE_kb_nSpace = ebNE_kb*nSpace,
-              ebN_local_kb = ebN_local*nQuadraturePoints_elementBoundary+kb,
-              ebN_local_kb_nSpace = ebN_local_kb*nSpace;
-            double
-              u_ext=0.0, bc_u_ext=0.0,
-              dfn[nSpace],
-              flux_ext=0.0, dflux_ext=0.0,
-              fluxTransport[nDOF_trial_element],
-              jac_ext[nSpace*nSpace],
-              jacDet_ext,
-              jacInv_ext[nSpace*nSpace],
-              boundaryJac[nSpace*(nSpace-1)],
-              metricTensor[(nSpace-1)*(nSpace-1)],
-              metricTensorDetSqrt,
-              dS,
-              u_test_dS[nDOF_test_element],
-              normal[nSpace],x_ext,y_ext,z_ext,xt_ext,yt_ext,zt_ext,integralScaling;
-            // calculate mappings
-            ck.calculateMapping_elementBoundary(eN,
-                                                ebN_local,
-                                                kb,
-                                                ebN_local_kb,
-                                                mesh_dof.data(),
-                                                mesh_l2g.data(),
-                                                mesh_trial_trace_ref.data(),
-                                                mesh_grad_trial_trace_ref.data(),
-                                                boundaryJac_ref.data(),
-                                                jac_ext,
-                                                jacDet_ext,
-                                                jacInv_ext,
-                                                boundaryJac,
-                                                metricTensor,
-                                                metricTensorDetSqrt,
-                                                normal_ref.data(),
-                                                normal,
-                                                x_ext,y_ext,z_ext);
-            ck.calculateMappingVelocity_elementBoundary(eN,
-                                                        ebN_local,
-                                                        kb,
-                                                        ebN_local_kb,
-                                                        mesh_velocity_dof.data(),
-                                                        mesh_l2g.data(),
-                                                        mesh_trial_trace_ref.data(),
-                                                        xt_ext,yt_ext,zt_ext,
-                                                        normal,
-                                                        boundaryJac,
-                                                        metricTensor,
-                                                        integralScaling);
-            dS = ((1.0-MOVING_DOMAIN)*metricTensorDetSqrt + MOVING_DOMAIN*integralScaling)*dS_ref.data()[kb];
-            //compute shape and solution information
-            //cek todo: check if we're really supposed to be doing implict weak BC's
-            ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_trace_ref.data()[ebN_local_kb*nDOF_test_element],u_ext);
-            //precalculate test function products with integration weights
-            for (int j=0;j<nDOF_trial_element;j++)
-              u_test_dS[j] = u_test_trace_ref.data()[ebN_local_kb*nDOF_test_element+j]*dS;
-
-            //
-            //moving mesh
-            //
-            double mesh_velocity[3];
-            mesh_velocity[0] = xt_ext;
-            mesh_velocity[1] = yt_ext;
-            mesh_velocity[2] = zt_ext;
-            for (int I=0;I<nSpace;I++)
-              dfn[I] = ebqe_velocity_ext.data()[ebNE_kb_nSpace+I] - MOVING_DOMAIN*mesh_velocity[I];
-            //
-            //calculate the fluxes
-            //
-            double flow = 0.;
-            for (int I=0; I < nSpace; I++)
-              flow += normal[I]*dfn[I];
-            if (flow >= 0) //outflow. This is handled via the transport matrices. Then flux_ext=0 and dflux_ext!=0
-              {
-                dflux_ext = flow;
-                flux_ext = 0;
-                // save external u
-                ebqe_u.data()[ebNE_kb] = u_ext;
-              }
-            else // inflow. This is handled via the boundary integral. Then flux_ext!=0 and dflux_ext=0
-              {
-                dflux_ext = 0;
-                // save external u
-                ebqe_u.data()[ebNE_kb] = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+(1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
-                if (isDOFBoundary_u.data()[ebNE_kb] == 1)
-                  flux_ext = ebqe_bc_u_ext.data()[ebNE_kb]*flow;
-                else if (isFluxBoundary_u.data()[ebNE_kb] == 1)
-                  flux_ext = ebqe_bc_flux_u_ext.data()[ebNE_kb];
-                else
-                  {
-                    std::cout<<"warning: TADR open boundary with no external trace, setting to zero for inflow"<<std::endl;
-                    flux_ext = 0.0;
-                  }
-              }
-
-            for (int j=0;j<nDOF_trial_element;j++)
-              {
-                // elementResidual. This is to include the inflow boundary integral.
-                // NOTE: here I assume that we use a Galerkin approach st nDOF_test_element = nDOF_trial_element
-                elementResidual_u[j] += flux_ext*u_test_dS[j];
-                int ebN_local_kb_j=ebN_local_kb*nDOF_trial_element+j;
-                fluxTransport[j] = dflux_ext*u_trial_trace_ref.data()[ebN_local_kb_j];
-              }//j
-            ///////////////////////////////////////////////////////
-            // DISTRIBUTE OUTFLOW BOUNDARY TO TRANSPORT MATRICES //
-            ///////////////////////////////////////////////////////
-            for (int i=0;i<nDOF_test_element;i++)
-              {
-                int eN_i = eN*nDOF_test_element+i;
-                for (int j=0;j<nDOF_trial_element;j++)
-                  {
-                    int ebN_i_j = ebN*4*nDOF_test_X_trial_element + i*nDOF_trial_element + j;
-                    TransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] + csrColumnOffsets_eb_CellLoops.data()[ebN_i_j]]
-                      += fluxTransport[j]*u_test_dS[i];
-                    TransposeTransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] + csrColumnOffsets_eb_CellLoops.data()[ebN_i_j]]
-                      += fluxTransport[i]*u_test_dS[j];
-                  }//j
-              }//i
-            // local min/max at boundary
-            min_u_bc_local = fmin(ebqe_u.data()[ebNE_kb], min_u_bc_local);
-            max_u_bc_local = fmax(ebqe_u.data()[ebNE_kb], max_u_bc_local);
-          }//kb
-        // global min/max at boundary
-        for (int i=0;i<nDOF_test_element;i++)
-          {
-            int eN_i = eN*nDOF_test_element+i;
-            int gi = offset_u+stride_u*u_l2g.data()[eN_i]; //global i-th index
-            globalResidual.data()[gi] += dt*elementResidual_u[i];
-            boundary_integral[gi] += elementResidual_u[i];
-            min_u_bc[gi] = fmin(min_u_bc_local,min_u_bc[gi]);
-            max_u_bc[gi] = fmax(max_u_bc_local,max_u_bc[gi]);
-          }
-      }//ebNE
-    // END OF ADDING BOUNDARY TERM TO TRANSPORT MATRICES and COMPUTING BOUNDARY INTEGRAL //
-
-    /////////////////////////////////////////////////////////////////
-    // COMPUTE SMOOTHNESS INDICATOR and NORMALIZE ENTROPY RESIDUAL //
-    /////////////////////////////////////////////////////////////////
-    // NOTE: see NCLS.h for a different but equivalent implementation of this.
-    int ij = 0;
-    for (int i=0; i<numDOFs; i++)
-      {
-        double etaMaxi, etaMini;
-        if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) //EV
-          {
-            // For eta min and max
-            etaMaxi = fabs(eta[i]);
-            etaMini = fabs(eta[i]);
-          }
-        // for smoothness indicator //
-        double alpha_numerator = 0., alpha_denominator = 0.;
-        for (int offset=csrRowIndeces_DofLoops.data()[i]; offset<csrRowIndeces_DofLoops.data()[i+1]; offset++)
-          { // First loop in j (sparsity pattern)
-            int j = csrColumnOffsets_DofLoops.data()[offset];
-            if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) //EV Stabilization
-              {
-                // COMPUTE ETA MIN AND ETA MAX //
-                etaMaxi = fmax(etaMaxi,fabs(eta[j]));
-                etaMini = fmin(etaMini,fabs(eta[j]));
-              }
-            alpha_numerator += u_dof_old.data()[i]-u_dof_old.data()[j];
-            alpha_denominator += fabs(u_dof_old.data()[i]-u_dof_old.data()[j]);
-            //update ij
-            ij+=1;
-          }
-        if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) //EV Stab
-          {
-            // Normalize entropy residual
-            global_entropy_residual[i] *= etaMini == etaMaxi ? 0. : 2*cE/(etaMaxi-etaMini);
-            quantDOFs[i] = fabs(global_entropy_residual[i]);
-          }
-
-        double alphai = alpha_numerator/(alpha_denominator+1E-15);
-        quantDOFs[i] = alphai;
-
-        if (POWER_SMOOTHNESS_INDICATOR==0)
-          psi[i] = 1.0;
-        else
-          psi[i] = std::pow(alphai,POWER_SMOOTHNESS_INDICATOR); //NOTE: they use alpha^2 in the paper
-      }
-    /////////////////////////////////////////////
-    // ** LOOP IN DOFs FOR EDGE BASED TERMS ** //
-    /////////////////////////////////////////////
-    ij=0;
-    for (int i=0; i<numDOFs; i++)
-      {
-        double solni = u_dof_old.data()[i]; // solution at time tn for the ith DOF
-        double ith_dissipative_term = 0;
-        double ith_low_order_dissipative_term = 0;
-        double ith_flux_term = 0;
-        double dLii = 0.;
-
-        // loop over the sparsity pattern of the i-th DOF
-        for (int offset=csrRowIndeces_DofLoops.data()[i]; offset<csrRowIndeces_DofLoops.data()[i+1]; offset++)
-          {
-            int j = csrColumnOffsets_DofLoops.data()[offset];
-            double solnj = u_dof_old.data()[j]; // solution at time tn for the jth DOF
-            double dLowij, dLij, dEVij, dHij;
-
-            ith_flux_term += (TransportMatrix[ij]+physicalDiffusion*DiffusionMatrix[i,j])*solnj;
-            if (i != j) //NOTE: there is really no need to check for i!=j (see formula for ith_dissipative_term)
-              {
-                // artificial compression
-                double solij = 0.5*(solni+solnj);
-                double Compij = cK*fmax(solij*(1.0-solij),0.0)/(fabs(solni-solnj)+1E-14);
-                // first-order dissipative operator
-                dLowij = fmax(fabs(TransportMatrix[ij]),fabs(TransposeTransportMatrix[ij]));
-                //dLij = fmax(0.,fmax(psi[i]*TransportMatrix[ij], // Approach by S. Badia
-                //              psi[j]*TransposeTransportMatrix[ij]));
-                dLij = dLowij*fmax(psi[i],psi[j]); // Approach by JLG & BP
-                if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) //EV Stab
-                  {
-                    // high-order (entropy viscosity) dissipative operator
-                    dEVij = fmax(fabs(global_entropy_residual[i]),fabs(global_entropy_residual[j]));
-                    dHij = fmin(dLowij,dEVij) * fmax(1.0-Compij,0.0); // artificial compression
-                  }
-                else // smoothness based indicator
-                  {
-                    dHij = dLij * fmax(1.0-Compij,0.0); // artificial compression
-                  }
-                //dissipative terms
-                ith_dissipative_term += dHij*(solnj-solni);
-                ith_low_order_dissipative_term += dLowij*(solnj-solni);
-                //dHij - dLij. This matrix is needed during FCT step
-                dt_times_dH_minus_dL[ij] = dt*(dHij - dLowij);
-                dLii -= dLij;
-                dLow[ij] = dLowij;
-              }
-            else //i==j
-              {
-                // NOTE: this is incorrect. Indeed, dLii = -sum_{j!=i}(dLij) and similarly for dCii.
-                // However, it is irrelevant since during the FCT step we do (dL-dC)*(solnj-solni)
-                dt_times_dH_minus_dL[ij]=0;
-                dLow[ij]=0;
-              }
-            //update ij
-            ij+=1;
-          }
-        double mi = ML.data()[i];
-        // compute edge_based_cfl
-        edge_based_cfl.data()[i] = 2.*fabs(dLii)/mi;
-        uLow[i] = u_dof_old.data()[i] - dt/mi*(ith_flux_term
-                                               + boundary_integral[i]
-                                               - ith_low_order_dissipative_term);
-
-        // update residual
-        if (LUMPED_MASS_MATRIX==1)
-          globalResidual.data()[i] = u_dof_old.data()[i] - dt/mi*(ith_flux_term
-                                                                  + boundary_integral[i]
-                                                                  - ith_dissipative_term);
-        else
-          globalResidual.data()[i] += dt*(ith_flux_term - ith_dissipative_term);
-      }
-  }
-};//TADR
+    }//FCTStep
+  };//TADR
 
 inline TADR_base* newTADR(int nSpaceIn,
                           int nQuadraturePoints_elementIn,
