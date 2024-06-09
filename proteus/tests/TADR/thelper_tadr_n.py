@@ -13,13 +13,13 @@ except:
 nd = ct.nd
 
 multilevelNonlinearSolver  = Newton
-if ct.STABILIZATION_TYPE<1: #SUPG
+if ct.STABILIZATION_TYPE in ['Galerkin', 'VMS']: #SUPG
     levelNonlinearSolver = Newton
     maxLineSearches = 0
     fullNewtonFlag = True
     updateJacobian = True
     timeIntegration = BackwardEuler_cfl
-elif ct.STABILIZATION_TYPE==1: #TaylorGalerkin
+elif ct.STABILIZATION_TYPE=='TaylorGalerkinEV':
     levelNonlinearSolver = TwoStageNewton
     fullNewtonFlag = False
     updateJacobian = False

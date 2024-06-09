@@ -731,13 +731,6 @@ EXTENSIONS_TO_BUILD = [
         extra_compile_args=PROTEUS_OPT+['-std=c++14'],
         language='c++'),
     Extension(
-        'mprans.cADR',
-        sources=['proteus/mprans/ADR.cpp'],
-        depends=["proteus/mprans/ADR.h", "proteus/mprans/ArgumentsDict.h", "proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=['proteus/mprans']+get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
-        language='c++'),
-    Extension(
         'mprans.cTADR',
         sources=['proteus/mprans/TADR.cpp'],
         depends=["proteus/mprans/TADR.h", "proteus/mprans/ArgumentsDict.h", "proteus/ModelFactory.h","proteus/CompKernel.h"],

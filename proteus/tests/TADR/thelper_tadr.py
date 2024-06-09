@@ -16,9 +16,9 @@ ct=Context.Options([
     ("refinement",0,"Level of refinement"),
     ("unstructured",False,"Use unstructured mesh. Set to false for periodic BCs"),
     # Choice of numerical method #
-    ("STABILIZATION_TYPE",1,"0: SUPG, 1: EV, 2: smoothness based indicator"),
+    ("STABILIZATION_TYPE","Galerkin","Galerkin, VMS, TaylorGalerkinEV, EntropyViscosity, SmoothnessIndicator, Kuzmin, "),
     ("LUMPED_MASS_MATRIX",False,"Flag to lumped the mass matrix"),
-    ("ENTROPY_TYPE",1,"1: quadratic, 2: logarithmic"),
+    ("ENTROPY_TYPE","POWER","POWER, LOG"),
     ("FCT",True,"Use Flux Corrected Transport"),
     # Numerical parameters #
     ("cE",0.1,"Entropy viscosity constant"),

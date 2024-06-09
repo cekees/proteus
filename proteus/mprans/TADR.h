@@ -24,8 +24,8 @@ namespace py = pybind11;
 
 namespace proteus
 {
-  enum class STABILIZATION : int { None=-1, VMS=0, TaylorGalerkinEV=1, EntropyViscosity=2, SmoothnessIndicator=3, Kuzmin=4};
-  enum class ENTROPY : int { POWER, LOG};
+  enum class STABILIZATION : int { Galerkin=-1, VMS=0, TaylorGalerkinEV=1, EntropyViscosity=2, SmoothnessIndicator=3, Kuzmin=4};
+  enum class ENTROPY : int { POWER=0, LOG=1};
   // Power entropy //
   inline double EPOWER(const double& phi, const double& phiL, const double& phiR)
   {
@@ -613,7 +613,7 @@ namespace proteus
                                                  numDiff1);
                   q_numDiff_u.data()[eN_k] = useMetrics*numDiff1+(1.0-useMetrics)*numDiff0;
                 }
-              else if (STABILIZATION_TYPE==STABILIZATION::None)
+              else if (STABILIZATION_TYPE==STABILIZATION::Galerkin)
                 calculateSubgridError_tau(elementDiameter.data()[eN],dm_t,df,cfl.data()[eN_k],tau0);
 
               for(int i=0;i<nDOF_test_element;i++)
@@ -1317,7 +1317,7 @@ namespace proteus
                     {
                       int j_nSpace = j*nSpace;
                       int i_nSpace = i*nSpace;
-                      if (STABILIZATION_TYPE==STABILIZATION::None)
+                      if (STABILIZATION_TYPE==STABILIZATION::Galerkin)
                         {
                           elementJacobian_u_u[i][j] +=
                             ck.MassJacobian_weak(dm_t,
@@ -1373,7 +1373,7 @@ namespace proteus
       //
       //loop over exterior element boundaries to compute the surface integrals and load them into the global Jacobian
       //
-      if (STABILIZATION_TYPE==STABILIZATION::VMS or STABILIZATION_TYPE==STABILIZATION::None)
+      if (STABILIZATION_TYPE==STABILIZATION::VMS or STABILIZATION_TYPE==STABILIZATION::Galerkin)
         {
           for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++)
             {
