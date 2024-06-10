@@ -311,7 +311,6 @@ namespace proteus
       xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
       xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
       xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
-      xt::pyarray<double>& ebqe_phi = args.array<double>("ebqe_phi");
       double epsFact = args.scalar<double>("epsFact");
       xt::pyarray<double>& ebqe_u = args.array<double>("ebqe_u");
       xt::pyarray<double>& ebqe_flux = args.array<double>("ebqe_flux");
@@ -712,12 +711,13 @@ namespace proteus
           for(int i=0;i<nDOF_test_element;i++)
             {
               int eN_i=eN*nDOF_test_element+i;
-              globalResidual.data()[offset_u+stride_u*r_l2g.data()[eN_i]] += elementResidual_u[i];
+              int gi = offset_u+stride_u*u_l2g.data()[eN_i]; //global i-th index
+              globalResidual.data()[gi] += elementResidual_u[i];
               if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity or 
                   STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or 
                   STABILIZATION_TYPE==STABILIZATION::Kuzmin)
                 {
-                  int gi = offset_u+stride_u*u_l2g.data()[eN_i]; //global i-th index
+                  
                   // distribute entropy_residual
                   if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) // EV Stab
                     global_entropy_residual[gi] += element_entropy_residual[i];

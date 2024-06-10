@@ -1077,7 +1077,6 @@ class LevelModel(OneLevelTransport):
         argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u', 0)]
         argsDict["isFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag', 0)]
         argsDict["ebqe_bc_flux_u_ext"] = self.ebqe[('advectiveFlux_bc', 0)]
-        argsDict["ebqe_phi"] = self.coefficients.ebqe_phi
         argsDict["epsFact"] = self.coefficients.epsFact
         argsDict["ebqe_u"] = self.ebqe[('u', 0)]
         argsDict["ebqe_flux"] = self.ebqe[('advectiveFlux', 0)]

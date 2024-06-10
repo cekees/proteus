@@ -94,5 +94,4 @@ class MyCoefficients(TADR.Coefficients):
         self.rdModel = self.model
         self.q_v = np.zeros(self.model.q[('grad(u)',0)].shape,'d')
         self.ebqe_v = np.zeros(self.model.ebqe[('grad(u)',0)].shape,'d')
-        self.ebqe_phi = np.zeros(self.model.ebqe[('u',0)].shape,'d')#cek hack, we don't need this 
-        
+    

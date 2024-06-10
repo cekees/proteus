@@ -106,7 +106,7 @@ if ct.problem in [0,2]:
     periodicDirichletConditions = {0:getPDBC}
 
 def zeroadv(x,flag):
-    None
+    return None
 advectiveFluxBoundaryConditions =  {0:zeroadv}
 
 fluxBoundaryConditions = {0:'outFlow'}
