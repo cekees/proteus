@@ -542,7 +542,7 @@ namespace proteus
                     {
                       Hn += dfn[I]*grad_u_old[I];
                       HTilde += dfn[I]*grad_uTilde[I];
-                      dfn[I] = dfn[I]*un-MOVING_DOMAIN*m*mesh_velocity[I];//cek check this for moving domain
+                      fn[I] = dfn[I]*un-MOVING_DOMAIN*m*mesh_velocity[I];//cek check this for moving domain
                       H += dfn[I]*grad_u[I];
                       normVel += dfn[I]*df[I];
                       norm_grad_un += grad_u_old[I]*grad_u_old[I];
@@ -613,6 +613,13 @@ namespace proteus
                                                  numDiff1);
                   q_numDiff_u.data()[eN_k] = useMetrics*numDiff1+(1.0-useMetrics)*numDiff0;
                 }
+              else if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity)
+              {
+                for (int I=0;I<nSpace;I++)
+                  aux_entropy_residual += dfn[I]*grad_u_old[I];
+                DENTROPY_un = ENTROPY_TYPE==ENTROPY::POWER ? DEPOWER(un,uL,uR) : DELOG(un,uL,uR);
+                calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
+              }
               else
                 calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
 
@@ -910,7 +917,7 @@ namespace proteus
                 }
               ebqe_flux.data()[ebNE_kb] = flux_ext;
               //save for other models? cek need to be consistent with numerical flux
-              if(flux_ext >=0.0)
+              if(flux_ext >= 0.0)
                 ebqe_u.data()[ebNE_kb] = u_ext;
               else
                 ebqe_u.data()[ebNE_kb] = bc_u_ext;
@@ -938,13 +945,17 @@ namespace proteus
                       STABILIZATION_TYPE == STABILIZATION::SmoothnessIndicator or 
                       STABILIZATION_TYPE == STABILIZATION::Kuzmin)
                     {
-                      if (flux_ext < 0)
+                      if (dflux_u_u_ext > 0.0)
+                      { 
+                        int ebN_local_kb_i = ebN_local_kb*nDOF_test_element+i;
+                        for (int j=0;j<nDOF_trial_element;j++)
+                          fluxTransport[i][j] += dflux_u_u_ext*
+                            u_trial_trace_ref.data()[ebN_local_kb_i]*
+                            u_test_dS[j];
+                      }
+                      else
                         elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i]);
-                      int ebN_local_kb_i = ebN_local_kb*nDOF_test_element+i;
-                      for (int j=0;j<nDOF_trial_element;j++)
-                        fluxTransport[i][j] += dflux_u_u_ext*
-                          u_trial_trace_ref.data()[ebN_local_kb_i]*
-                          u_test_dS[j];
+
                     }
                 }//i
               // local min/max at boundary
