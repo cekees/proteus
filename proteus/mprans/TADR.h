@@ -677,6 +677,9 @@ namespace proteus
                         {
                           int j_nSpace = j*nSpace;
                           int i_nSpace = i*nSpace;
+                          //cek todo, see if we really need elementTransposeTransport
+                          // (can we just swap indices on local transport matrix?)
+                          //or event TransposeTransportMatrix (can we just use pointers?)
                           elementTransport[i][j] +=
                             ck.AdvectionJacobian_weak(dfn,
                                                       u_trial_ref.data()[k*nDOF_trial_element+j],
@@ -949,7 +952,7 @@ namespace proteus
                       { 
                         int ebN_local_kb_i = ebN_local_kb*nDOF_test_element+i;
                         for (int j=0;j<nDOF_trial_element;j++)
-                          fluxTransport[i][j] += dflux_u_u_ext*
+                          fluxTransport[j][i] += dflux_u_u_ext*
                             u_trial_trace_ref.data()[ebN_local_kb_i]*
                             u_test_dS[j];
                       }
@@ -979,9 +982,9 @@ namespace proteus
                     {
                       int ebN_i_j = ebN*4*nDOF_test_X_trial_element + i*nDOF_trial_element + j;
                       TransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] + csrColumnOffsets_eb_CellLoops.data()[ebN_i_j]]
-                        += fluxTransport[j][i];
-                      TransposeTransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] + csrColumnOffsets_eb_CellLoops.data()[ebN_i_j]]
                         += fluxTransport[i][j];
+                      TransposeTransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] + csrColumnOffsets_eb_CellLoops.data()[ebN_i_j]]
+                        += fluxTransport[j][i];
                     }//j
                 }
               else

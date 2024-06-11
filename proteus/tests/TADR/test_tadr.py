@@ -120,7 +120,7 @@ class TestTADR(object):
         with h5py.File("tadr_level_0"+tname+".h5",'r') as actual:
             expected_path = os.path.join(self._scriptdir,"comparison_files", "tadr_level_0"+tname+ "_u_t2.csv")
             #write comparison file
-            #(actual['u_t2'][:]).tofile(expected_path,sep=",")
+            (actual['u_t2'][:]).tofile(expected_path,sep=",")
             np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=10)
 
     def test_EV2(self):
