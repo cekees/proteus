@@ -37,7 +37,7 @@ hull_center = (0.5*hull_length,
 
 nLevels = 1
 
-he = L[0]/10.0
+he = L[0]/100.0#/1.5
 #he = hull_draft/1.0
 #he = hull_draft/6.0
 genMesh=True
