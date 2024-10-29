@@ -477,7 +477,6 @@ class Newton(NonlinearSolver):
            Parallel residual vector, :math:`r = b - F(u)`
         """
         from . import Viewers
-        memory()
         if self.linearSolver.computeEigenvalues:
             self.u0[:]=u
         r=self.solveInitialize(u,r,b)
@@ -496,7 +495,6 @@ class Newton(NonlinearSolver):
         self.norm_du_hist = []
         self.gammaK_max=0.0
         self.linearSolverFailed = False
-        logEvent(memory("Newton-PRELOOP",self.F.name),level=4)
         while (not self.converged(r) and
                not self.failed()):
             logEvent("  NumericalAnalytics NewtonIteration: %d, NewtonNorm: %12.5e"
@@ -506,7 +504,6 @@ class Newton(NonlinearSolver):
             if self.updateJacobian or self.fullNewton:
                 self.updateJacobian = False
                 self.F.getJacobian(self.J)
-                memory()
                 if self.linearSolver.computeEigenvalues:
                     logEvent("Calculating eigenvalues of J^t J")
                     self.JLast[:]=self.J
@@ -522,8 +519,6 @@ class Newton(NonlinearSolver):
                     self.kappa_current = self.norm_2_J_current*self.norm_2_Jinv_current
                     self.betaK_current = self.norm_2_Jinv_current
                 self.linearSolver.prepare(b=r,newton_its=self.its-1)
-                logEvent(memory("Newton-pepare",self.F.name),level=4)
-            memory()
             self.du[:]=0.0
             if not self.directSolver:
                 if self.EWtol:
@@ -535,13 +530,11 @@ class Newton(NonlinearSolver):
 
             if par_u is not None:
                 par_u.scatter_forward_insert()
-            logEvent(memory("Newton-solve",self.F.name),level=4)
             if linear:
                 r[:]=0
                 self.computeRates = False
             else:
                 self.computeResidual(u,r,b)
-            memory()
             if par_r is not None:
                 #no overlap
                 if not self.par_fullOverlap:
@@ -621,9 +614,7 @@ class Newton(NonlinearSolver):
                                                                                self.rtol_r))
                     if ls_its > 0:
                         logEvent("Linesearches = %i" % ls_its,level=3)
-            logEvent(memory("Newton-rest of loop",self.F.name),level=4)
         else:
-            memory()
             if self.linearSolver.computeEigenvalues:
                 try:
                     if self.betaK_0*self.etaK_0*self.gammaK_max <= 0.5:
@@ -670,23 +661,19 @@ class Newton(NonlinearSolver):
                     Viewers.newPlot()
                     Viewers.newWindow()
                 #raw_input("wait")
-                logEvent(memory("Newton-exit of loop",self.F.name),level=4)
             logEvent("  NumericalAnalytics NewtonIteration: %d, NewtonNorm: %12.5e"
                      %(self.its-1, self.norm_r), level=7)
             logEvent("   Newton it %d norm(r) = %12.5e  \t\t norm(r)/(rtol*norm(r0)+atol) = %12.5e"
                 % (self.its,self.norm_r,(self.norm_r/(self.rtol_r*self.norm_r0+self.atol_r))),level=1)
-            memory()
             if hasattr(self.F.coefficients,'FCT') and self.F.coefficients.FCT==True:
                 logEvent("FCT Step After Newton")
                 self.F.FCTStep()
                 u[:] = self.F.u[0].dof
-            logEvent(memory("Newton-FCT",self.F.name),level=4)
             return self.failedFlag
         logEvent("  NumericalAnalytics NewtonIteration: %d, NewtonNorm: %12.5e"
                  %(self.its-1, self.norm_r), level=7)
         logEvent("   Newton it %d norm(r) = %12.5e  \t\t norm(r)/(rtol*norm(r0)+atol) = %12.5e"
             % (self.its,self.norm_r,(self.norm_r/(self.rtol_r*self.norm_r0+self.atol_r))),level=1)
-        logEvent(memory("Newton",self.F.name),level=4)
 
 class AddedMassNewton(Newton):
     def solve(self,u,r=None,b=None,par_u=None,par_r=None):
@@ -1072,7 +1059,6 @@ class NewtonWithL2ProjectionForMassCorrection(Newton):
         """
 
         from . import Viewers
-        memory()
         if self.linearSolver.computeEigenvalues:
             self.u0[:]=u
         r=self.solveInitialize(u,r,b)
@@ -1144,7 +1130,6 @@ class NewtonWithL2ProjectionForMassCorrection(Newton):
         else:
             logEvent("   Newton it %d norm(r) = %12.5e  \t\t norm(r)/(rtol*norm(r0)+atol) = %12.5e"
                      % (self.its,self.norm_r,(self.norm_r/(self.rtol_r*self.norm_r0+self.atol_r))),level=1)
-            logEvent(memory("Newton",self.F.name),level=4)
             if (self.failedFlag == True):
                 return self.failedFlag
             else:
@@ -1185,7 +1170,6 @@ class NewtonWithL2ProjectionForMassCorrection(Newton):
 
         logEvent("   Newton it %d norm(r) = %12.5e  \t\t norm(r)/(rtol*norm(r0)+atol) = %12.5e"
             % (self.its,self.norm_r,(self.norm_r/(self.rtol_r*self.norm_r0+self.atol_r))),level=1)
-        logEvent(memory("Newton",self.F.name),level=4)
 
         # Nonlinear solved finished.
         # L2 projection of corrected VOF solution at quad points
@@ -2035,7 +2019,6 @@ class NewtonNS(NonlinearSolver):
         """
 
         from . import Viewers
-        memory()
         if self.linearSolver.computeEigenvalues:
             self.u0[:]=u
         r=self.solveInitialize(u,r,b)
@@ -2224,7 +2207,6 @@ class NewtonNS(NonlinearSolver):
         logEvent("   Final       Mom.  norm(r) = %12.5e   %12.5e" % (self.norm_mom_r,self.rtol_r*self.norm_mom_r0  + self.atol_r),level=1)
         logEvent("   Final       Cont. norm(r) = %12.5e   %12.5e" % (self.norm_cont_r,self.rtol_r*self.norm_mom_r0  + self.atol_r),level=1)
 
-        logEvent(memory("NSNewton",self.F.name),level=4)
 
 class SSPRKNewton(Newton):
     """

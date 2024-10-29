@@ -77,6 +77,7 @@ class SO_base(object):
             model.stepController.dt_model = self.dt_system
             model.stepController.set_dt_allLevels()
             model.stepController.t_model = self.t_system
+            model.setSubsteps([self.t_system])
     def initialize_dt_system(self,t0,tOut):
         self.its=0
         self.t_system_last = t0
