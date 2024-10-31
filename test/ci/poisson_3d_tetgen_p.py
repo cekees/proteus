@@ -1,5 +1,7 @@
 from proteus import *
 from proteus.default_p import *
+from proteus import Context, Comm
+
 """
 Heterogeneous Poisson's equation, -div(a(x)u) = f(x), on unit domain [0,1]x[0,1]x[0,1]
 """
@@ -17,6 +19,12 @@ Heterogeneous Poisson's equation, -div(a(x)u) = f(x), on unit domain [0,1]x[0,1]
 # Domain - mesh - quadrature
 #----------------------------------------------------
 #space dimension
+opts = Context.Options([
+    ("genMesh", True, "Generate mesh on the fly, otherwise mesh files must be written prior to job"),
+    ("Refinement", 0, "Refine the mesh this many times"),
+])
+
+name = "poisson_"+str(opts.Refinement)
 nd = 3
 
 hull_length = 0.5
@@ -37,10 +45,10 @@ hull_center = (0.5*hull_length,
 
 nLevels = 1
 
-he = L[0]/100.0#/1.5
+he = L[0]/10.0 * 0.5**opts.Refinement
 #he = hull_draft/1.0
 #he = hull_draft/6.0
-genMesh=True
+genMesh=opts.genMesh
 vessel = None
 #vessel = 'cube'
 #vessel = 'wigley'

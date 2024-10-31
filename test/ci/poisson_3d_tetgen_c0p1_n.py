@@ -16,12 +16,8 @@ femSpaces = {0:C0_AffineLinearOnSimplexWithNodalBasis}
 elementQuadrature = SimplexGaussQuadrature(nd,3)
 elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,3)
 
-triangleOptions="kpa{0:e}VAfeenq1.2/15o/120O9/7/499V".format((he**3)/6.0)
-#triangleOptions="VApq1.35q12feena%e" % ((he**3)/6.0,)
-genMesh=True
-domain.MeshOptions.triangleOptions=triangleOptions
-domain.MeshOptions.genMesh=genMesh
-
+#domain.MeshOptions.
+triangleOptions="VApq1.35q12feena%e" % ((he**3)/6.0,)
 logEvent("""Mesh generated using: tetgen -%s %s"""  % (triangleOptions,domain.polyfile+".poly"))
 
 #number of levels in mesh
@@ -69,7 +65,7 @@ if parallel:
     parallelPartitioningType = MeshParallelPartitioningTypes.node
     #parallelPartitioningType = MeshParallelPartitioningTypes.element
     #have to have a numerical flux in parallel
-    numericalFluxType = Advection_DiagonalUpwind_Diffusion_IIPG_exterior
+    numericalFluxType = Advection_DiagonalUpwind_Diffusion_SIPG_exterior
     #for true residual test or maxits
     linearSolverConvergenceTest = 'rits-true'
     #to allow multiple models to set different ksp options
