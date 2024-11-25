@@ -1785,7 +1785,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   /*
    * Close/release resources.
    */
-  H5Dclose(dset_id);
+  //H5Dclose(dset_id);
   //
   //end try out of core
   //
@@ -1799,7 +1799,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //test out of core
   //
-  if (rank == 0)
+  if (false)
     {
       hid_t       dataset_id;  /* identifiers */
       herr_t      status;
@@ -1871,87 +1871,149 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   map<int,long int> elementMaterialTypesMap;
   map<NodeTuple<3>,ElementNeighbors> elementBoundaryElementsMap;
   map<NodeTuple<2>,set<pair<int,int> > > edgeElementsMap;
+  set<int> node_collection;
+  //valarray<hsize_t> node_collection_array(nNodes_subdomain_max);
+  //valarray<int> old2new_subset(nNodes_subdomain_max);
+  vector<vector<int>> element_old_nodes_collection;
+  vector<vector<int>> element_new_nodes_collection;
+  vector<int> elements_collection;
+  vector<double> elementId_collection;
   //note any element index containers are in the old element numbering
+  int eN_start = 0;
   for (int ie = 0; ie < nElements_global; ie++)
     {
+      //could do this until we've accumulated a set in the old numbering of sufficient length, 
+      //then get the new node numbers for those old nodes, renumber, take ownership of elements
+      //then release memory and continue
+      //basic idea is to use only a part of old2new at a time.
+      //should be able to do with hdf5 or scatter
       int ne, nv, elementId(0);
       long double elementId_double;
       elementFile2 >> eatcomments >> ne;
       ne -= indexBase;
       assert(0 <= ne && ne < nElements_global && elementFile.good());
+      elements_collection.push_back(ne);
+      //instead of this, use map to find if any node on the element is on this subdomain
+      //then collect all old nodes not on the submain and do a scatter or h5-based comm
       for (int iv = 0; iv < simplexDim; iv++)
         {
           elementFile2 >> nv ;
           nv -= indexBase;
           assert(0 <= nv && nv < nNodes_global);
+          node_collection.insert(nv);
           element_nodes_old[iv] = nv;
           element_nodes_new[iv] = nodeNumbering_global_old2new[nv];
           element_nodes_new_array[iv] = element_nodes_new[iv];
         }
-      NodeTuple<4> nodeTuple(element_nodes_new_array);
-      for (int iv = 0; iv < simplexDim; iv++)
+      if (hasElementMarkers > 0)
         {
-          int nN_star_new = element_nodes_new[iv];
-          bool inSubdomain=false;
-          if (nN_star_new >= nodeOffsets_new[rank] && nN_star_new < nodeOffsets_new[rank+1])
-            {
-              inSubdomain = true;
-              //add all the element boundaries of this element
-              for (int ebN=0;ebN < 4 ; ebN++)
-                {
-                  int nodes[3] = { element_nodes_new[(ebN+1) % 4],
-                                   element_nodes_new[(ebN+2) % 4],
-                                   element_nodes_new[(ebN+3) % 4]};
-                  NodeTuple<3> nodeTuple(nodes);
-                  if(elementBoundaryElementsMap.find(nodeTuple) != elementBoundaryElementsMap.end())
-                    {
-                      if (elementBoundaryElementsMap[nodeTuple].right == -1 && ne != elementBoundaryElementsMap[nodeTuple].left)
-                        {
-                          elementBoundaryElementsMap[nodeTuple].right=ne;
-                          elementBoundaryElementsMap[nodeTuple].right_ebN_element=ebN;
-                        }
-                    }
-                  else
-                    {
-                      elementBoundaryElementsMap[nodeTuple] = ElementNeighbors(ne,ebN);
-                    }
-                }
-              //add all the edges of this element
-              for (int nNL=0,edN=0;nNL < 4 ; nNL++)
-                for(int nNR=nNL+1;nNR < 4;nNR++,edN++)
-                  {
-                    int nodes[2] = { element_nodes_new[nNL],
-                                     element_nodes_new[nNR]};
-                    NodeTuple<2> nodeTuple(nodes);
-                    edgeElementsMap[nodeTuple].insert(pair<int,int>(ne,edN));
-                  }
-              //add all the nodes to the node star
-              int nN_star_new_subdomain = nN_star_new - nodeOffsets_new[rank];
-              nodeElementsStar[nN_star_new_subdomain].insert(ne);
-              for (int jv = 0; jv < simplexDim; jv++)
-                {
-                  if (iv != jv)
-                    {
-                      int nN_point_new = element_nodes_new[jv];
-                      nodeStarNew[nN_star_new_subdomain].insert(nN_point_new);
-                    }
-                }
-            }
-          if (inSubdomain)
-            {
-              elementNodesArrayMap[ne] = element_nodes_new;
-            }
+          elementFile2 >> elementId_double;
+          elementId_collection.push_back(elementId_double);
         }
-      if (elementNodesArrayMap.find(ne) != elementNodesArrayMap.end())//this element contains a node owned by this subdomain
+      element_old_nodes_collection.push_back(element_nodes_old);
+      element_new_nodes_collection.push_back(element_nodes_new);
+      if (node_collection.size() >= nNodes_subdomain_max || ie == nElements_global-1)
         {
-          if (nodeTuple.nodes[1] >= nodeOffsets_new[rank] && nodeTuple.nodes[1] < nodeOffsets_new[rank+1])
-            elements_subdomain_owned.insert(ne);
-          if (hasElementMarkers > 0)
+          //create a node list to read from mapping
+          herr_t status;
+          valarray<hsize_t> node_collection_array(node_collection.size());
+          int i_nc=0;
+          for (set<int>::iterator nv=node_collection.begin();nv!=node_collection.end();nv++)
             {
-              elementFile2 >> elementId_double;
-              elementId = static_cast<long int>(elementId_double);
-              elementMaterialTypesMap[ne] = elementId;
+              node_collection_array[i_nc] = *nv;
+              i_nc++;
             }
+          status = H5Sselect_elements(filespace, H5S_SELECT_SET, node_collection.size(), &node_collection_array[0]);
+          hsize_t dims[1];
+          dims[0] = node_collection.size();
+          hid_t old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);  
+          status = H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_INDEPENDENT);
+          valarray<int> old2new_subset(node_collection.size());
+          status = H5Dread(dset_id, H5T_NATIVE_INT, old2new_subset_memspace_id, filespace, plist_id, &old2new_subset[0]);
+          map<int,int> old2new_subset_map;
+          for (int i=0;i<node_collection.size();i++)
+            old2new_subset_map[node_collection_array[i]] = old2new_subset[i];
+          for (int eN_test = eN_start; eN_test < ie+1;eN_test++)
+	    {
+	      ne = elements_collection[eN_test-eN_start];
+	      for (int iv = 0; iv < simplexDim; iv++)
+		{
+		  assert(old2new_subset_map[element_old_nodes_collection[eN_test-eN_start][iv]] == element_new_nodes_collection[eN_test-eN_start][iv]);
+		  element_nodes_new_array[iv] = old2new_subset_map[element_old_nodes_collection[eN_test-eN_start][iv]];
+		  element_nodes_new[iv] = element_nodes_new_array[iv];
+		}
+	      NodeTuple<4> nodeTuple(element_nodes_new_array);
+	      for (int iv = 0; iv < simplexDim; iv++)
+		{
+		  int nN_star_new = element_nodes_new[iv];
+		  bool inSubdomain=false;
+		  if (nN_star_new >= nodeOffsets_new[rank] && nN_star_new < nodeOffsets_new[rank+1])
+		    {
+		      inSubdomain = true;
+		      //add all the element boundaries of this element
+		      for (int ebN=0;ebN < 4 ; ebN++)
+			{
+			  int nodes[3] = { element_nodes_new[(ebN+1) % 4],
+			    element_nodes_new[(ebN+2) % 4],
+			    element_nodes_new[(ebN+3) % 4]};
+			  NodeTuple<3> nodeTuple(nodes);
+			  if(elementBoundaryElementsMap.find(nodeTuple) != elementBoundaryElementsMap.end())
+			    {
+			      if (elementBoundaryElementsMap[nodeTuple].right == -1 && ne != elementBoundaryElementsMap[nodeTuple].left)
+				{
+				  elementBoundaryElementsMap[nodeTuple].right=ne;
+				  elementBoundaryElementsMap[nodeTuple].right_ebN_element=ebN;
+				}
+			    }
+			  else
+			    {
+			      elementBoundaryElementsMap[nodeTuple] = ElementNeighbors(ne,ebN);
+			    }
+			}
+		      //add all the edges of this element
+		      for (int nNL=0,edN=0;nNL < 4 ; nNL++)
+			for(int nNR=nNL+1;nNR < 4;nNR++,edN++)
+			  {
+			    int nodes[2] = { element_nodes_new[nNL],
+			      element_nodes_new[nNR]};
+			    NodeTuple<2> nodeTuple(nodes);
+			    edgeElementsMap[nodeTuple].insert(pair<int,int>(ne,edN));
+			  }
+		      //add all the nodes to the node star
+		      int nN_star_new_subdomain = nN_star_new - nodeOffsets_new[rank];
+		      nodeElementsStar[nN_star_new_subdomain].insert(ne);
+		      for (int jv = 0; jv < simplexDim; jv++)
+			{
+			  if (iv != jv)
+			    {
+			      int nN_point_new = element_nodes_new[jv];
+			      nodeStarNew[nN_star_new_subdomain].insert(nN_point_new);
+			    }
+			}
+		    }
+		  if (inSubdomain)
+		    {
+		      elementNodesArrayMap[ne] = element_nodes_new;
+		    }
+		}
+	      if (elementNodesArrayMap.find(ne) != elementNodesArrayMap.end())//this element contains a node owned by this subdomain
+		{
+		  if (nodeTuple.nodes[1] >= nodeOffsets_new[rank] && nodeTuple.nodes[1] < nodeOffsets_new[rank+1])
+		    elements_subdomain_owned.insert(ne);
+		  if (hasElementMarkers > 0)
+		    {
+		      elementId = static_cast<long int>(elementId_collection[eN_test-eN_start]);
+		      elementMaterialTypesMap[ne] = elementId;
+		    }
+		}
+            }
+          std::cout<<"Done checking patch "<<rank<<'\t'<<node_collection.size()<<std::endl;
+          eN_start = ie+1;
+          node_collection.clear();
+          elements_collection.clear();
+          elementId_collection.clear();
+          element_old_nodes_collection.clear();
+          element_new_nodes_collection.clear();
         }
       elementFile2 >> eatline;
     }
