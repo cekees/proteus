@@ -1537,14 +1537,16 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   newMesh.nNodes_element = simplexDim;
   newMesh.nNodes_elementBoundary = simplexDim-1;
   newMesh.nElementBoundaries_element = simplexDim;
+  //cek todo: review the situation with tetgen and triangle atribs and markers
   if (hasVertexAttributes > 0)
     {
       std::cerr<<"WARNING Tetgen nodes hasAttributes= "<<hasVertexAttributes
                <<" > 0 will treat first value as integer id for boundary!!"<<std::endl;
       hasVertexMarkers = 1;
     }
-  //don't need to read anymore from nodes for now
+  //don't need to read anymore from .nodes for now
   //leaving file open because we'll pick up here to read the node coordinates
+  //after partioning, which just requires topology information
   //
   //offsets provide the lower and upper bounds for the global numbering
   //first we just partition the nodes among the MPI ranks, approximately equally, ignoring connectivity
@@ -1556,7 +1558,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
         int(nNodes_global)/size + (int(nNodes_global)%size > sdN);
     }
   int nNodes_subdomain_old = nodeOffsets_old[rank+1] - nodeOffsets_old[rank];
-
   //
   //2. Determine nodal connectivity (nodeStarArray) for nodes on subdomain
   //
@@ -1600,7 +1601,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           bool inSubdomain=false;
           if (nN_star >= nodeOffsets_old[rank] && nN_star < nodeOffsets_old[rank+1])
             {
-              //this node is owned by the subdomain so
               inSubdomain = true;
               for (int jv = 0; jv < simplexDim; jv++)
                 {
@@ -1624,18 +1624,19 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   PetscLogEventBegin(repartition_nodes_event,0,0,0,0);
   //done reading element file for first time; will need to read again after node partitioning
   //build compact data structure for nodeStar
+  //cek todo: should be able to remove these, but I get a sig 11
   valarray<int> nodeStarOffsets(nNodes_subdomain_old+1);
   nodeStarOffsets[0] = 0;
   for (int nN=1;nN<nNodes_subdomain_old+1;nN++)
     nodeStarOffsets[nN] = nodeStarOffsets[nN-1] + nodeStar[nN-1].size();
-  valarray<int> nodeStarArray(nodeStarOffsets[nNodes_subdomain_old]);
-  for (int nN=0,offset=0;nN<nNodes_subdomain_old;nN++)
-    for (set<int>::iterator nN_star=nodeStar[nN].begin();nN_star!=nodeStar[nN].end();nN_star++,offset++)
-      nodeStarArray[offset] = *nN_star;
+  //valarray<int> nodeStarArray(nodeStarOffsets[nNodes_subdomain_old]);
+  //for (int nN=0,offset=0;nN<nNodes_subdomain_old;nN++)
+  //  for (set<int>::iterator nN_star=nodeStar[nN].begin();nN_star!=nodeStar[nN].end();nN_star++,offset++)
+  //    nodeStarArray[offset] = *nN_star;
   //find maximum number of nodes in any star
   int max_nNodeNeighbors_node=0;
   for (int nN=0;nN<nNodes_subdomain_old;nN++)
-    max_nNodeNeighbors_node=max(max_nNodeNeighbors_node,nodeStarOffsets[nN+1]-nodeStarOffsets[nN]);
+    max_nNodeNeighbors_node=max(max_nNodeNeighbors_node,static_cast<int>(nodeStar[nN].size()));
   //build connectivity data structures for PETSc
   PetscBool isInitialized;
   PetscInitialized(&isInitialized);
@@ -1649,17 +1650,14 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   for (int sd=0;sd<size;sd++)
     partition_weights[sd] = 1.0/double(size);
   nodeNeighborsOffsets_subdomain[0] = 0;
-  //I think we can simplify this now that nodeStarArray is local to the subdomain, could just use nodeStar instead of nodeStarArray
-  //cek todo: verify this is true and remove nodeStarArray if so
   for (int nN = 0,offset=0; nN < nNodes_subdomain_old; nN++)
     {
-      for (int offset_subdomain = nodeStarOffsets[nN];
-           offset_subdomain < nodeStarOffsets[nN+1];
-           offset_subdomain++)
+      for (auto nN_star=nodeStar[nN].begin(); nN_star!=nodeStar[nN].end(); nN_star++,offset++)
         {
-          nodeNeighbors_subdomain[offset++] = nodeStarArray[offset_subdomain];
+          nodeNeighbors_subdomain[offset] = *nN_star;
         }
       nodeNeighborsOffsets_subdomain[nN+1]=offset;
+      //cek todo: test removing sort--C++ sets are sorted in assending order
       sort(&nodeNeighbors_subdomain[nodeNeighborsOffsets_subdomain[nN]],&nodeNeighbors_subdomain[nodeNeighborsOffsets_subdomain[nN+1]]);
       //weight nodes by size of star
       int weight= (nodeNeighborsOffsets_subdomain[nN+1] - nodeNeighborsOffsets_subdomain[nN]);
@@ -1678,6 +1676,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                 MPI_INT,
                 MPI_MAX,
                 PROTEUS_COMM_WORLD);
+  //cek todo: replace with logging and do pre/post repartioning
   if (rank ==  0)
     std::cout<<"Max nNodes_subdomain "<<nNodes_subdomain_max<<" nNodes_global "<<nNodes_global<<std::endl;
   ierr = MatCreateMPIAdj(PROTEUS_COMM_WORLD,
@@ -1688,6 +1687,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                          weights_subdomain,
                          &petscAdjacency);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   //const double max_rss_gb(0.75*3.25);//half max mem per  core  on topaz
+  //cek todo: make this an input
   const double max_rss_gb(10.0);
   ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done allocating MPIAdj");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   MatPartitioning petscPartition;
@@ -1721,15 +1721,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   // out of core creation of global old2new mapping
   //
   MPI_Info info  = MPI_INFO_NULL;
-  hid_t plist_id = H5Pcreate(H5P_FILE_ACCESS);
-  H5Pset_fapl_mpio(plist_id, PROTEUS_COMM_WORLD, info);
+  hid_t nodes_plist_id = H5Pcreate(H5P_FILE_ACCESS);
+  H5Pset_fapl_mpio(nodes_plist_id, PROTEUS_COMM_WORLD, info);
   const char* H5FILE_NAME("mappings.h5");
-  hid_t file_id = H5Fcreate(H5FILE_NAME, H5F_ACC_TRUNC, H5P_DEFAULT, plist_id);
-  H5Pclose(plist_id);
+  hid_t file_id = H5Fcreate(H5FILE_NAME, H5F_ACC_TRUNC, H5P_DEFAULT, nodes_plist_id);
+  H5Pclose(nodes_plist_id);
   hsize_t nodes_global_count[]={nNodes_global};
   const hsize_t ARRAY_RANK(1);
   hid_t nodes_filespace_id = H5Screate_simple(ARRAY_RANK, nodes_global_count, NULL);
-  hid_t dset_id = H5Dcreate(file_id, "nodeNumbering_old2new", H5T_NATIVE_INT, nodes_filespace_id,
+  hid_t nodes_dataset_id = H5Dcreate(file_id, "nodeNumbering_old2new", H5T_NATIVE_INT, nodes_filespace_id,
                             H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
   hsize_t nodes_subdomain_count[]={nNodes_subdomain_old};
   hsize_t nodes_subdomain_offset[]={nodeOffsets_old[rank]};
@@ -1737,10 +1737,14 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   H5Sselect_hyperslab(nodes_filespace_id, H5S_SELECT_SET, nodes_subdomain_offset, NULL, nodes_subdomain_count, NULL);
   const PetscInt* nodes_subdomain_old2new_array;
   ISGetIndices(nodeNumberingIS_subdomain_old2new, &nodes_subdomain_old2new_array);
-  plist_id = H5Pcreate(H5P_DATASET_XFER);
-  herr_t status = H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_COLLECTIVE);
-  status = H5Dwrite(dset_id, H5T_NATIVE_INT, nodes_memspace_id, nodes_filespace_id,
-		    plist_id, nodes_subdomain_old2new_array);
+  nodes_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  herr_t status = H5Pset_dxpl_mpio(nodes_plist_id, H5FD_MPIO_COLLECTIVE);
+  status = H5Dwrite(nodes_dataset_id, H5T_NATIVE_INT, 
+                    nodes_memspace_id, nodes_filespace_id,
+		                nodes_plist_id, nodes_subdomain_old2new_array);
+  //H5Dclose(nodes_dataset_id);
+  H5Sclose(nodes_memspace_id);
+  //H5Sclose(nodes_filespace_id);
   //write inverse permulation (new2old)
   hid_t nodes_new2old_filespace_id = H5Screate_simple(ARRAY_RANK, nodes_global_count, NULL);
   hid_t nodes_new2old_dataset_id = H5Dcreate(file_id, "nodeNumbering_new2old", H5T_NATIVE_INT, 
@@ -1756,12 +1760,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       new_node_indices[i] = nodes_subdomain_old2new_array[i];//new node indices where we are writing to
       old_node_indices[i] = nodeOffsets_old[rank]+i;//old node numbers at those locations
     }
-  status = H5Sselect_elements(nodes_new2old_filespace_id, H5S_SELECT_SET, nNodes_subdomain_old, &new_node_indices[0]);
+  status = H5Sselect_elements(nodes_new2old_filespace_id, H5S_SELECT_SET, 
+                              nNodes_subdomain_old, &new_node_indices[0]);
   status = H5Dwrite(nodes_new2old_dataset_id, H5T_NATIVE_INT, 
-                    nodes_new2old_memspace_id, nodes_new2old_filespace_id, plist_id, &old_node_indices[0]);
+                    nodes_new2old_memspace_id, nodes_new2old_filespace_id, 
+                    nodes_plist_id, &old_node_indices[0]);
   ISRestoreIndices(nodeNumberingIS_subdomain_old2new, &nodes_subdomain_old2new_array);
   H5Dclose(nodes_new2old_dataset_id);
   H5Sclose(nodes_new2old_memspace_id);
+  H5Sclose(nodes_new2old_filespace_id);
   //
   //test out of core
   //
@@ -1882,13 +1889,14 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
             {
               node_collection_array[i_nc] = *nv;
             }
-          status = H5Sselect_elements(nodes_filespace_id, H5S_SELECT_SET, node_collection.size(), &node_collection_array[0]);
+          status = H5Sselect_elements(nodes_filespace_id, H5S_SELECT_SET, 
+                                      node_collection.size(), &node_collection_array[0]);
           hsize_t dims[] = {node_collection.size()};
           hid_t old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);
-          status = H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_INDEPENDENT);
+          status = H5Pset_dxpl_mpio(nodes_plist_id, H5FD_MPIO_INDEPENDENT);
           valarray<int> nodes_old2new_subset(node_collection.size());
-          status = H5Dread(dset_id, H5T_NATIVE_INT, old2new_subset_memspace_id, nodes_filespace_id, 
-                           plist_id, &nodes_old2new_subset[0]);
+          status = H5Dread(nodes_dataset_id, H5T_NATIVE_INT, old2new_subset_memspace_id, nodes_filespace_id, 
+                           nodes_plist_id, &nodes_old2new_subset[0]);
           map<int,int> nodes_old2new_subset_map;
           for (int i=0;i<node_collection.size();i++)
             nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
@@ -1984,6 +1992,8 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
         }
       elementFile2 >> eatline;
     }
+  H5Sclose(nodes_filespace_id);
+  H5Dclose(nodes_dataset_id);
   elementFile2.close();
   int nElements_owned_subdomain(elements_subdomain_owned.size()),
     nElements_owned_new=0;
