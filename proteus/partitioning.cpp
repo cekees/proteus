@@ -1461,7 +1461,8 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
   return 0;
 }
 
-int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char* filebase, int indexBase, Mesh& newMesh, int nNodes_overlap)
+int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char* filebase, int indexBase, 
+                                  Mesh& newMesh, int nNodes_overlap, double memHardLimit)
 {
   using namespace std;
   PetscErrorCode ierr;
@@ -1507,7 +1508,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   std::string elementFileName = std::string(filebase) + ".ele" ;
   std::string elementBoundaryFileName  = std::string(filebase) + ".face" ;
   std::string edgeFileName  = std::string(filebase) + ".edge" ;
-
   //
   //1. Build default nodal partition
   //
@@ -1538,7 +1538,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   newMesh.nNodes_elementBoundary = simplexDim-1;
   newMesh.nElementBoundaries_element = simplexDim;
   //cek todo: review the situation with tetgen and triangle atribs and markers
-  if (hasVertexAttributes > 0)
+  if (hasVertexAttributes > 0 && rank==0)
     {
       std::cerr<<"WARNING Tetgen nodes hasAttributes= "<<hasVertexAttributes
                <<" > 0 will treat first value as integer id for boundary!!"<<std::endl;
@@ -1558,6 +1558,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
         int(nNodes_global)/size + (int(nNodes_global)%size > sdN);
     }
   int nNodes_subdomain_old = nodeOffsets_old[rank+1] - nodeOffsets_old[rank];
+  int nNodes_subdomain_max = int(nNodes_global)/size + (int(nNodes_global)%size > 0);
   //
   //2. Determine nodal connectivity (nodeStarArray) for nodes on subdomain
   //
@@ -1577,9 +1578,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   assert(nElements_global > 0);
   assert(nNodesPerSimplex == simplexDim);
   newMesh.nElements_global = nElements_global;
-  vector<int> element_nodes_old(4);
+  valarray<int> element_nodes_old(4);
   vector<set<int>> nodeStar(nNodes_subdomain_old);
-  map<int,vector<int>> elements_old;
+  map<int,valarray<int>> elements_old;
   for (int ie = 0; ie < nElements_global; ie++)
     {
       int ne, nv;
@@ -1623,16 +1624,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   PetscLogEventRegister("Repart nodes",0,&repartition_nodes_event);
   PetscLogEventBegin(repartition_nodes_event,0,0,0,0);
   //done reading element file for first time; will need to read again after node partitioning
-  //build compact data structure for nodeStar
-  //cek todo: should be able to remove these, but I get a sig 11
-  valarray<int> nodeStarOffsets(nNodes_subdomain_old+1);
-  nodeStarOffsets[0] = 0;
-  for (int nN=1;nN<nNodes_subdomain_old+1;nN++)
-    nodeStarOffsets[nN] = nodeStarOffsets[nN-1] + nodeStar[nN-1].size();
-  //valarray<int> nodeStarArray(nodeStarOffsets[nNodes_subdomain_old]);
-  //for (int nN=0,offset=0;nN<nNodes_subdomain_old;nN++)
-  //  for (set<int>::iterator nN_star=nodeStar[nN].begin();nN_star!=nodeStar[nN].end();nN_star++,offset++)
-  //    nodeStarArray[offset] = *nN_star;
+  //build compact data structure for nodeStar, and
   //find maximum number of nodes in any star
   int max_nNodeNeighbors_node=0;
   for (int nN=0;nN<nNodes_subdomain_old;nN++)
@@ -1650,6 +1642,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   for (int sd=0;sd<size;sd++)
     partition_weights[sd] = 1.0/double(size);
   nodeNeighborsOffsets_subdomain[0] = 0;
+  bool test=false;
   for (int nN = 0,offset=0; nN < nNodes_subdomain_old; nN++)
     {
       for (auto nN_star=nodeStar[nN].begin(); nN_star!=nodeStar[nN].end(); nN_star++,offset++)
@@ -1657,8 +1650,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           nodeNeighbors_subdomain[offset] = *nN_star;
         }
       nodeNeighborsOffsets_subdomain[nN+1]=offset;
-      //cek todo: test removing sort--C++ sets are sorted in assending order
-      sort(&nodeNeighbors_subdomain[nodeNeighborsOffsets_subdomain[nN]],&nodeNeighbors_subdomain[nodeNeighborsOffsets_subdomain[nN+1]]);
+      if (test)//make sure nodeNeighbors are sorted in ascending order ()
+      {
+        valarray<int> neighbors(nodeNeighborsOffsets_subdomain[nN+1]-nodeNeighborsOffsets_subdomain[nN]);
+        for (int i=0;i<neighbors.size();i++)
+          neighbors[i] = nodeNeighbors_subdomain[nodeNeighborsOffsets_subdomain[nN]+i];
+        sort(&nodeNeighbors_subdomain[nodeNeighborsOffsets_subdomain[nN]],&nodeNeighbors_subdomain[nodeNeighborsOffsets_subdomain[nN+1]]);
+        for (int i=0;i<neighbors.size();i++)
+          assert(neighbors[i] == nodeNeighbors_subdomain[nodeNeighborsOffsets_subdomain[nN]+i]);
+      }
       //weight nodes by size of star
       int weight= (nodeNeighborsOffsets_subdomain[nN+1] - nodeNeighborsOffsets_subdomain[nN]);
       vertex_weights_subdomain[nN] = weight;
@@ -1669,16 +1669,8 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //3. Generate new nodal partition using PETSc interface to graph partitioners
   //
   Mat petscAdjacency;
-  int nNodes_subdomain_max=0;
-  MPI_Allreduce(&nNodes_subdomain_old,
-                &nNodes_subdomain_max,
-                1,
-                MPI_INT,
-                MPI_MAX,
-                PROTEUS_COMM_WORLD);
-  //cek todo: replace with logging and do pre/post repartioning
   if (rank ==  0)
-    std::cout<<"Max nNodes_subdomain "<<nNodes_subdomain_max<<" nNodes_global "<<nNodes_global<<std::endl;
+    std::cout<<"First partitioning: Max nNodes_subdomain "<<nNodes_subdomain_max<<" nNodes_global "<<nNodes_global<<std::endl;
   ierr = MatCreateMPIAdj(PROTEUS_COMM_WORLD,
                          nNodes_subdomain_old,
                          nNodes_global,
@@ -1686,9 +1678,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                          nodeNeighbors_subdomain,
                          weights_subdomain,
                          &petscAdjacency);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-  //const double max_rss_gb(0.75*3.25);//half max mem per  core  on topaz
-  //cek todo: make this an input
-  const double max_rss_gb(10.0);
+  const double max_rss_gb(memHardLimit/1024.0);
   ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done allocating MPIAdj");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   MatPartitioning petscPartition;
   ierr = MatPartitioningCreate(PROTEUS_COMM_WORLD,&petscPartition);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
@@ -1705,47 +1695,60 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //determine the number of nodes per subdomain in new partitioning
   valarray<int> nNodes_subdomain_new(size);
   ISPartitioningCount(nodePartitioningIS_new,size,&nNodes_subdomain_new[0]);
-
   //need new offsets for subdomain to global numbering
   valarray<int> nodeOffsets_new(size+1);
   nodeOffsets_new[0] = 0;
+  nNodes_subdomain_max = 0;
   for (int sdN = 0; sdN < size; sdN++)
     {
       nodeOffsets_new[sdN+1] = nodeOffsets_new[sdN] + nNodes_subdomain_new[sdN];
+      nNodes_subdomain_max=max(nNodes_subdomain_max, nNodes_subdomain_new[sdN]);
     }
-
+  if (rank ==  0)
+    std::cout<<"Final partitioning: Max nNodes_subdomain "<<nNodes_subdomain_max<<" nNodes_global "<<nNodes_global<<std::endl;
   //get the new node numbers for nodes on this subdomain
   IS nodeNumberingIS_subdomain_old2new;
   ISPartitioningToNumbering(nodePartitioningIS_new,&nodeNumberingIS_subdomain_old2new);
+  ierr=ISDestroy(&nodePartitioningIS_new);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  const PetscInt* nodes_subdomain_old2new_array;
+  ISGetIndices(nodeNumberingIS_subdomain_old2new, &nodes_subdomain_old2new_array);
   //
   // out of core creation of global old2new mapping
   //
-  MPI_Info info  = MPI_INFO_NULL;
-  hid_t nodes_plist_id = H5Pcreate(H5P_FILE_ACCESS);
-  H5Pset_fapl_mpio(nodes_plist_id, PROTEUS_COMM_WORLD, info);
+  //create the mappings file
+  hid_t mappings_plist_id = H5Pcreate(H5P_FILE_ACCESS);
+  H5Pset_fapl_mpio(mappings_plist_id, PROTEUS_COMM_WORLD, MPI_INFO_NULL);
   const char* H5FILE_NAME("mappings.h5");
-  hid_t file_id = H5Fcreate(H5FILE_NAME, H5F_ACC_TRUNC, H5P_DEFAULT, nodes_plist_id);
-  H5Pclose(nodes_plist_id);
+  hid_t file_id = H5Fcreate(H5FILE_NAME, H5F_ACC_TRUNC, H5P_DEFAULT, mappings_plist_id);
+  //leave file open until we are done with it
+  H5Pclose(mappings_plist_id);
+  //
+  //write old2new
+  //
   hsize_t nodes_global_count[]={nNodes_global};
   const hsize_t ARRAY_RANK(1);
-  hid_t nodes_filespace_id = H5Screate_simple(ARRAY_RANK, nodes_global_count, NULL);
-  hid_t nodes_dataset_id = H5Dcreate(file_id, "nodeNumbering_old2new", H5T_NATIVE_INT, nodes_filespace_id,
-                            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+  hid_t nodes_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, nodes_global_count, NULL);
+  hid_t nodes_old2new_dataset_id = H5Dcreate(file_id, "nodeNumbering_old2new", H5T_NATIVE_INT, 
+                                             nodes_old2new_filespace_id,
+                                             H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
   hsize_t nodes_subdomain_count[]={nNodes_subdomain_old};
   hsize_t nodes_subdomain_offset[]={nodeOffsets_old[rank]};
-  hid_t nodes_memspace_id = H5Screate_simple(ARRAY_RANK, nodes_subdomain_count, NULL);
-  H5Sselect_hyperslab(nodes_filespace_id, H5S_SELECT_SET, nodes_subdomain_offset, NULL, nodes_subdomain_count, NULL);
-  const PetscInt* nodes_subdomain_old2new_array;
-  ISGetIndices(nodeNumberingIS_subdomain_old2new, &nodes_subdomain_old2new_array);
-  nodes_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  herr_t status = H5Pset_dxpl_mpio(nodes_plist_id, H5FD_MPIO_COLLECTIVE);
-  status = H5Dwrite(nodes_dataset_id, H5T_NATIVE_INT, 
-                    nodes_memspace_id, nodes_filespace_id,
-		                nodes_plist_id, nodes_subdomain_old2new_array);
-  //H5Dclose(nodes_dataset_id);
-  H5Sclose(nodes_memspace_id);
-  //H5Sclose(nodes_filespace_id);
-  //write inverse permulation (new2old)
+  hid_t nodes_old2new_memspace_id = H5Screate_simple(ARRAY_RANK, nodes_subdomain_count, NULL);
+  H5Sselect_hyperslab(nodes_old2new_filespace_id, H5S_SELECT_SET, 
+                      nodes_subdomain_offset, NULL, 
+                      nodes_subdomain_count, NULL);
+  hid_t nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  herr_t status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
+  status = H5Dwrite(nodes_old2new_dataset_id, H5T_NATIVE_INT, 
+                    nodes_old2new_memspace_id, nodes_old2new_filespace_id,
+		                nodes_old2new_plist_id, nodes_subdomain_old2new_array);
+  H5Pclose(nodes_old2new_plist_id);
+  H5Dclose(nodes_old2new_dataset_id);
+  H5Sclose(nodes_old2new_memspace_id);
+  H5Sclose(nodes_old2new_filespace_id);
+  //
+  //write new2old
+  //
   hid_t nodes_new2old_filespace_id = H5Screate_simple(ARRAY_RANK, nodes_global_count, NULL);
   hid_t nodes_new2old_dataset_id = H5Dcreate(file_id, "nodeNumbering_new2old", H5T_NATIVE_INT, 
                                               nodes_new2old_filespace_id,
@@ -1762,20 +1765,22 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     }
   status = H5Sselect_elements(nodes_new2old_filespace_id, H5S_SELECT_SET, 
                               nNodes_subdomain_old, &new_node_indices[0]);
+  hid_t nodes_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  status = H5Pset_dxpl_mpio(nodes_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
   status = H5Dwrite(nodes_new2old_dataset_id, H5T_NATIVE_INT, 
                     nodes_new2old_memspace_id, nodes_new2old_filespace_id, 
-                    nodes_plist_id, &old_node_indices[0]);
-  ISRestoreIndices(nodeNumberingIS_subdomain_old2new, &nodes_subdomain_old2new_array);
+                    nodes_new2old_plist_id, &old_node_indices[0]);
+  H5Pclose(nodes_new2old_plist_id);
   H5Dclose(nodes_new2old_dataset_id);
   H5Sclose(nodes_new2old_memspace_id);
   H5Sclose(nodes_new2old_filespace_id);
+  ISRestoreIndices(nodeNumberingIS_subdomain_old2new, &nodes_subdomain_old2new_array);
   //
   //test out of core
   //
   IS nodeNumberingIS_global_old2new;
-  const PetscInt *nodeNumbering_global_old2new;//cek todo: check restore call
+  const PetscInt *nodeNumbering_global_old2new;
   valarray<int> nodeNumbering_global_new2old;
-  bool test=false;
   if (test)
     {
       ISAllGather(nodeNumberingIS_subdomain_old2new,&nodeNumberingIS_global_old2new);
@@ -1785,12 +1790,14 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
         nodeNumbering_global_new2old[nodeNumbering_global_old2new[nN]] = nN;
       herr_t status;
       valarray<int> nodeNumbering_old2new_read(nNodes_global);
-      hid_t nodeNumbering_old2new_dataset_id = H5Dopen2(file_id, "/nodeNumbering_old2new", H5P_DEFAULT);
+      hid_t nodeNumbering_old2new_dataset_id = H5Dopen1(file_id, "/nodeNumbering_old2new");
       status = H5Dread(nodeNumbering_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                        &nodeNumbering_old2new_read[0]);
       status = H5Dclose(nodeNumbering_old2new_dataset_id);
       for (int i=0;i<nNodes_global;i++)
-        assert(nodeNumbering_global_old2new[i] == nodeNumbering_old2new_read[i]);
+        {
+          assert(nodeNumbering_global_old2new[i] == nodeNumbering_old2new_read[i]);
+        }
       std::cout<<"==================out of core old2new nodes is correct!===================="<<std::endl;
       hid_t nodeNumbering_new2old_dataset_id = H5Dopen2(file_id, "/nodeNumbering_new2old", H5P_DEFAULT);
       valarray<int> nodeNumbering_new2old_read(nNodes_global);
@@ -1798,11 +1805,14 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                        &nodeNumbering_new2old_read[0]);
       status = H5Dclose(nodeNumbering_new2old_dataset_id);
       for (int i=0;i<nNodes_global;i++)
+      {
         assert(nodeNumbering_global_new2old[i] == nodeNumbering_new2old_read[i]);
+      }
       std::cout<<"==================out of core new2old nodes is correct!===================="<<std::endl;
-      ISRestoreIndices(nodeNumberingIS_global_old2new,&nodeNumbering_global_old2new);
-      ISDestroy(&nodeNumberingIS_global_old2new);
+      nodeNumbering_global_new2old.resize(0);
     }
+  ierr=ISDestroy(&nodeNumberingIS_subdomain_old2new);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+
   PetscLogEventEnd(repartition_nodes_event,0,0,0,0);
   int receive_element_mask_event;
   PetscLogEventRegister("Recv. ele mask",0,&receive_element_mask_event);
@@ -1835,21 +1845,20 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   assert(nNodesPerSimplex == simplexDim);
   //cek todo: check that these are all necessary
   set<int> elements_subdomain_owned;
-  vector<int> element_nodes_new(4);
-  int element_nodes_new_array[4];
+  valarray<int> element_nodes_new(4);
   vector<set<int>> nodeElementsStar(nNodes_subdomain_new[rank]);
   vector<set<int>> nodeStarNew(nNodes_subdomain_new[rank]);
-  map<int,vector<int>> elementNodesArrayMap;
+  map<int,valarray<int>> elementNodesArrayMap;
   map<int,long int> elementMaterialTypesMap;
   map<NodeTuple<3>,ElementNeighbors> elementBoundaryElementsMap;
   map<NodeTuple<2>,set<pair<int,int>>> edgeElementsMap;
   set<int> node_collection;
-  vector<vector<int>> element_old_nodes_collection;
+  vector<valarray<int>> element_old_nodes_collection;
   vector<int> elements_collection;
   vector<double> elementId_collection;
-  map<int, int> node_old2new_map;
+  map<int, int> nodes_old2new_subdomain_map;
   //note any element index containers are in the old element numbering
-  int eN_c_start = 0;
+  int eN_c_start = 0;//start of the collection of elements we are currently processing
   for (int ie = 0; ie < nElements_global; ie++)
     {
       //
@@ -1885,25 +1894,37 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           herr_t status;
           valarray<hsize_t> node_collection_array(node_collection.size());
 	        int i_nc=0;
-          for (set<int>::iterator nv=node_collection.begin();nv!=node_collection.end();nv++,i_nc++)
+          for (auto nv=node_collection.begin();nv!=node_collection.end();nv++,i_nc++)
             {
               node_collection_array[i_nc] = *nv;
             }
-          status = H5Sselect_elements(nodes_filespace_id, H5S_SELECT_SET, 
+          nodes_old2new_dataset_id = H5Dopen1(file_id,"/nodeNumbering_old2new");
+          nodes_old2new_filespace_id = H5Dget_space(nodes_old2new_dataset_id);
+          status = H5Sselect_elements(nodes_old2new_filespace_id, H5S_SELECT_SET, 
                                       node_collection.size(), &node_collection_array[0]);
           hsize_t dims[] = {node_collection.size()};
-          hid_t old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);
-          status = H5Pset_dxpl_mpio(nodes_plist_id, H5FD_MPIO_INDEPENDENT);
+          hid_t nodes_old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);
+          nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+          status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_INDEPENDENT);
           valarray<int> nodes_old2new_subset(node_collection.size());
-          status = H5Dread(nodes_dataset_id, H5T_NATIVE_INT, old2new_subset_memspace_id, nodes_filespace_id, 
-                           nodes_plist_id, &nodes_old2new_subset[0]);
+          status = H5Dread(nodes_old2new_dataset_id, H5T_NATIVE_INT, 
+                           nodes_old2new_subset_memspace_id, nodes_old2new_filespace_id, 
+                           nodes_old2new_plist_id, &nodes_old2new_subset[0]);
+          H5Pclose(nodes_old2new_plist_id);
+          H5Sclose(nodes_old2new_subset_memspace_id);
+          H5Sclose(nodes_old2new_filespace_id);
+          H5Dclose(nodes_old2new_dataset_id);
           map<int,int> nodes_old2new_subset_map;
           for (int i=0;i<node_collection.size();i++)
+          {
             nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
+          }
 	        if (test)
 	        {
 	          for (int i=0;i<node_collection.size();i++)
+            {
 		          assert(nodes_old2new_subset_map[node_collection_array[i]] == nodeNumbering_global_old2new[node_collection_array[i]]);
+            }
 	        }
           for (int eN_c = eN_c_start; eN_c < ie+1;eN_c++)
             {
@@ -1911,10 +1932,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
               for (int iv = 0; iv < simplexDim; iv++)
                 {
                   element_nodes_old[iv] = element_old_nodes_collection[eN_c-eN_c_start][iv];
-                  element_nodes_new_array[iv] = nodes_old2new_subset_map[element_nodes_old[iv]];
-                  element_nodes_new[iv] = element_nodes_new_array[iv];
+                  element_nodes_new[iv] = nodes_old2new_subset_map[element_nodes_old[iv]];
                 }
-              NodeTuple<4> nodeTuple(element_nodes_new_array);
+              NodeTuple<4> nodeTuple(&element_nodes_new[0]);
               for (int iv = 0; iv < simplexDim; iv++)
                 {
                   int nN_star_new = element_nodes_new[iv];
@@ -1922,10 +1942,8 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                   if (nN_star_new >= nodeOffsets_new[rank] && nN_star_new < nodeOffsets_new[rank+1])
                     {
                       inSubdomain = true;
-                      //make sure the old2new map has all the owned nodes and ghost nodes for later use
-                      //that means will still have to check for ownership (unless we make two lists)
                       for (int iv=0; iv < simplexDim; iv++)
-                        node_old2new_map[element_nodes_old[iv]] = element_nodes_new[iv];
+                        nodes_old2new_subdomain_map[element_nodes_old[iv]] = element_nodes_new[iv];
                       //add all the element boundaries of this element
                       for (int ebN=0;ebN < 4 ; ebN++)
                         {
@@ -1992,8 +2010,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
         }
       elementFile2 >> eatline;
     }
-  H5Sclose(nodes_filespace_id);
-  H5Dclose(nodes_dataset_id);
   elementFile2.close();
   int nElements_owned_subdomain(elements_subdomain_owned.size()),
     nElements_owned_new=0;
@@ -2004,6 +2020,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   PetscLogEventRegister("Mark/send eles",0,&build_subdomains_send_marked_elements_event);
   PetscLogEventBegin(build_subdomains_send_marked_elements_event,0,0,0,0);
   ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done marking elements");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  //cek todo: fix PETsc and memory log messages
   //
   //done with the element file
   //
@@ -2070,24 +2087,24 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //write this subdomain to the mapping file
   //
   hsize_t e_dims[]={nElements_global};
-  hid_t e_filespace_id = H5Screate_simple(ARRAY_RANK, e_dims, NULL);
-  hid_t e_dataspace_id = H5Dcreate(file_id, "elementNumbering_new2old", H5T_NATIVE_INT, e_filespace_id,
-                                   H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  H5Sclose(e_filespace_id);
+  hid_t e_new2old_filespace_id = H5Screate_simple(ARRAY_RANK, e_dims, NULL);
+  hid_t e_new2old_dataset_id = H5Dcreate(file_id, "elementNumbering_new2old", H5T_NATIVE_INT, 
+                                           e_new2old_filespace_id,
+                                           H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
   hsize_t e_count[]={nElements_subdomain_new[rank]};
   hsize_t e_offset[]={elementOffsets_new[rank]};
-  hid_t e_memspace_id = H5Screate_simple(ARRAY_RANK, e_count, NULL);
-  e_filespace_id = H5Dget_space(e_dataspace_id);
-  H5Sselect_hyperslab(e_filespace_id, H5S_SELECT_SET, e_offset, NULL, e_count, NULL);
-  hid_t e_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  H5Pset_dxpl_mpio(e_plist_id, H5FD_MPIO_COLLECTIVE);
-  status = H5Dwrite(e_dataspace_id, H5T_NATIVE_INT, e_memspace_id, e_filespace_id,
-                    e_plist_id, &elementNumbering_subdomain_new2old[0]);
+  hid_t e_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, e_count, NULL);
+  H5Sselect_hyperslab(e_new2old_filespace_id, H5S_SELECT_SET, e_offset, NULL, e_count, NULL);
+  hid_t e_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  H5Pset_dxpl_mpio(e_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
+  status = H5Dwrite(e_new2old_dataset_id, H5T_NATIVE_INT, 
+                    e_new2old_memspace_id, e_new2old_filespace_id,
+                    e_new2old_plist_id, &elementNumbering_subdomain_new2old[0]);
+  H5Pclose(e_new2old_plist_id);
+  H5Dclose(e_new2old_dataset_id);
+  H5Sclose(e_new2old_memspace_id);
+  H5Sclose(e_new2old_filespace_id);
   //do old2new map too, can't use hyperslab
-  hid_t e_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, e_dims, NULL);
-  hid_t e_old2new_dataspace_id = H5Dcreate(file_id, "elementNumbering_old2new", H5T_NATIVE_INT, e_old2new_filespace_id,
-                                           H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  H5Sclose(e_old2new_filespace_id);
   valarray<hsize_t> old_element_indices(nElements_subdomain_new[rank]);
   valarray<int> new_element_indices(nElements_subdomain_new[rank]);
   for (int i=0;i<nElements_subdomain_new[rank];i++)
@@ -2095,14 +2112,24 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       old_element_indices[i] = elementNumbering_subdomain_new2old[i];
       new_element_indices[i] = elementOffsets_new[rank]+i;
     }
+  hid_t e_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, e_dims, NULL);
+  hid_t e_old2new_dataset_id = H5Dcreate(file_id, "elementNumbering_old2new", H5T_NATIVE_INT, 
+                                         e_old2new_filespace_id,
+                                         H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
   hid_t e_old2new_memspace_id = H5Screate_simple(ARRAY_RANK, e_count, NULL);
-  e_old2new_filespace_id = H5Dget_space(e_old2new_dataspace_id);
   status = H5Sselect_elements(e_old2new_filespace_id, H5S_SELECT_SET, 
                               nElements_subdomain_new[rank], &old_element_indices[0]);
-  status = H5Dwrite(e_old2new_dataspace_id, H5T_NATIVE_INT, e_old2new_memspace_id, 
-                    e_old2new_filespace_id, e_plist_id, &new_element_indices[0]);
-  
-  //now get maps for all the elements on the subdomain, not just owned
+  hid_t e_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  H5Pset_dxpl_mpio(e_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
+  status = H5Dwrite(e_old2new_dataset_id, H5T_NATIVE_INT, 
+                    e_old2new_memspace_id, e_old2new_filespace_id, 
+                    e_old2new_plist_id, &new_element_indices[0]);
+  H5Pclose(e_old2new_plist_id);
+  H5Sclose(e_old2new_memspace_id);
+  //leaving dataset and filespace open for next block
+  //
+  //now get maps for all the elements on the subdomain, not just owned elements
+  //
   valarray<hsize_t> old_element_indices_subdomain(elementNodesArrayMap.size());
   valarray<int> new_element_indices_subdomain(elementNodesArrayMap.size());
   int eN_old_subdomain = 0;
@@ -2114,9 +2141,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                               elementNodesArrayMap.size(), &old_element_indices_subdomain[0]);
   hsize_t e_subdomain_count[]={elementNodesArrayMap.size()};
   hid_t e_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, e_subdomain_count, NULL);
-  status = H5Dread(e_old2new_dataspace_id, H5T_NATIVE_INT, e_old2new_subdomain_memspace_id, 
-                    e_old2new_filespace_id, e_plist_id, &new_element_indices_subdomain[0]);
+  hid_t e_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  status = H5Pset_dxpl_mpio(e_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);
+  status = H5Dread(e_old2new_dataset_id, H5T_NATIVE_INT, 
+                   e_old2new_subdomain_memspace_id, e_old2new_filespace_id, 
+                   e_old2new_subdomain_plist_id, &new_element_indices_subdomain[0]);
+  H5Pclose(e_old2new_subdomain_plist_id);
+  H5Sclose(e_old2new_subdomain_memspace_id);
   H5Sclose(e_old2new_filespace_id);
+  H5Dclose(e_old2new_dataset_id);
   map<int,int> elementNumbering_old2new_subdomain_map;
   map<int,int> elementNumbering_new2old_subdomain_map;
   for (int i=0;i<elementNodesArrayMap.size();i++)
@@ -2124,13 +2157,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       elementNumbering_old2new_subdomain_map[old_element_indices_subdomain[i]] = new_element_indices_subdomain[i];
       elementNumbering_new2old_subdomain_map[new_element_indices_subdomain[i]] = old_element_indices_subdomain[i];
     }
-  //use Petsc IS to get global new2old numbering
-  //will need to remove this
-  IS elementNumberingIS_subdomain_new2old;
-  const PetscInt *elementNumbering_global_new2old;//needs to be restored
-  valarray<int> elementNumbering_global_old2new;
   if (test)
   {
+    //these were needed inside the last test section, which was in a loop, so release now
+    ISRestoreIndices(nodeNumberingIS_global_old2new,&nodeNumbering_global_old2new);
+    ierr=ISDestroy(&nodeNumberingIS_global_old2new);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+    //set up global element numbering
+    IS elementNumberingIS_subdomain_new2old;
+    const PetscInt *elementNumbering_global_new2old;//needs to be restored
+    valarray<int> elementNumbering_global_old2new(nElements_global);
     ISCreateGeneral(PROTEUS_COMM_WORLD,elements_subdomain_owned.size(),
                     &elementNumbering_subdomain_new2old[0],PETSC_COPY_VALUES,
                     &elementNumberingIS_subdomain_new2old);
@@ -2138,37 +2173,41 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     ISAllGather(elementNumberingIS_subdomain_new2old,&elementNumberingIS_global_new2old);
     ISGetIndices(elementNumberingIS_global_new2old,&elementNumbering_global_new2old);
     //construct reverse mapping
-    elementNumbering_global_old2new.resize(nElements_global);
     for (int eN = 0; eN < nElements_global; eN++)
       {
         elementNumbering_global_old2new[elementNumbering_global_new2old[eN]] = eN;
       }
-    hid_t dataset_id;
-    herr_t status;
-    valarray<int> dset_data(nElements_global);
-    dataset_id = H5Dopen2(file_id, "/elementNumbering_old2new", H5P_DEFAULT);
-    status = H5Dread(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                      &dset_data[0]);
-    status = H5Dclose(dataset_id);
+    //check old2new
+    valarray<int> elementNumbering_global_old2new_read(nElements_global);
+    hid_t e_old2new_dataset_id = H5Dopen1(file_id, "/elementNumbering_old2new");
+    status = H5Dread(e_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                      &elementNumbering_global_old2new_read[0]);
+    status = H5Dclose(e_old2new_dataset_id);
     for (int i=0;i<nElements_global;i++)
-      assert(elementNumbering_global_old2new[i] == dset_data[i]);
+      assert(elementNumbering_global_old2new[i] == elementNumbering_global_old2new_read[i]);
     std::cout<<"==================out of core elements old2new is correct!===================="<<std::endl;
     for (auto it = elementNodesArrayMap.begin(); it != elementNodesArrayMap.end(); it++)
-      assert(elementNumbering_old2new_subdomain_map[it->first] == dset_data[it->first]);
+      assert(elementNumbering_old2new_subdomain_map[it->first] == 
+             elementNumbering_global_old2new_read[it->first]);
     std::cout<<"==================out of core elements old2new map is correct!===================="<<std::endl;
-    dataset_id = H5Dopen2(file_id, "/elementNumbering_new2old", H5P_DEFAULT);
-    status = H5Dread(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                     &dset_data[0]);
-    status = H5Dclose(dataset_id);
+    //check new2old
+    valarray<int> elementNumbering_global_new2old_read(nElements_global);
+    hid_t e_new2old_dataset_id = H5Dopen1(file_id, "/elementNumbering_new2old");
+    status = H5Dread(e_new2old_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                     &elementNumbering_global_new2old_read[0]);
+    status = H5Dclose(e_new2old_dataset_id);
     for (int i=0;i<nElements_global;i++)
-      assert(elementNumbering_global_new2old[i] == dset_data[i]);
+      assert(elementNumbering_global_new2old[i] == elementNumbering_global_new2old_read[i]);
     std::cout<<"==================out of core elements new2old is correct!===================="<<std::endl;
     for (size_t i=0;i< new_element_indices_subdomain.size(); i++)
     {
       int eN = new_element_indices_subdomain[i];
-      assert(elementNumbering_new2old_subdomain_map[eN] == dset_data[eN]);
+      assert(elementNumbering_new2old_subdomain_map[eN] == elementNumbering_global_new2old_read[eN]);
     }
     std::cout<<"==================out of core elements new2old map is correct!===================="<<std::endl;
+    ISRestoreIndices(elementNumberingIS_global_new2old,&elementNumbering_global_new2old);
+    ierr=ISDestroy(&elementNumberingIS_global_new2old);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+    ierr=ISDestroy(&elementNumberingIS_subdomain_new2old);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   }
   PetscLogEventEnd(build_subdomains_global_numbering_elements_event,0,0,0,0);
   ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done allocating element numbering new2old/old2new");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
@@ -2206,7 +2245,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   set<int> elementBoundaries_subdomain_owned;
   vector<set<int>> nodeElementBoundariesStar(nNodes_subdomain_new[rank]);
   map<int,int> elementBoundaryMaterialTypesMap;
-  map<int,vector<int>> elementBoundariesMap;
+  map<int,valarray<int>> elementBoundariesMap;
   set<int> supportedElementBoundaries;
   set<int> elementBoundaries_subdomain;
   for (int ieb = 0; ieb < nElementBoundaries_global; ieb++)
@@ -2223,26 +2262,25 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       //grab the element boundaries for the node if the node is owned by the subdomain
       //this will miss the element boundaries on the "outside boundary" of the star, which we'll grab later
       //
-      //cek todo: rename node_old2new_map so it is clear it has all the subdomain nodes (owned and ghost)
       int nn0_new = -1;
-      if (node_old2new_map.find(nn0) != node_old2new_map.end())
-        nn0_new = node_old2new_map[nn0];
+      if (nodes_old2new_subdomain_map.find(nn0) != nodes_old2new_subdomain_map.end())
+        nn0_new = nodes_old2new_subdomain_map[nn0];
       if (nn0_new >= nodeOffsets_new[rank] && nn0_new < nodeOffsets_new[rank+1])
         {
           nodeElementBoundariesStar[nn0_new-nodeOffsets_new[rank]].insert(neb);
           supportedElementBoundaries.insert(neb);
         }
       int nn1_new = -2;
-      if (node_old2new_map.find(nn1) != node_old2new_map.end())
-        nn1_new = node_old2new_map[nn1];
+      if (nodes_old2new_subdomain_map.find(nn1) != nodes_old2new_subdomain_map.end())
+        nn1_new = nodes_old2new_subdomain_map[nn1];
       if (nn1_new >= nodeOffsets_new[rank] && nn1_new < nodeOffsets_new[rank+1])
         {
           nodeElementBoundariesStar[nn1_new-nodeOffsets_new[rank]].insert(neb);
           supportedElementBoundaries.insert(neb);
         }
       int nn2_new = -3;
-      if (node_old2new_map.find(nn2) != node_old2new_map.end())
-        nn2_new = node_old2new_map[nn2];
+      if (nodes_old2new_subdomain_map.find(nn2) != nodes_old2new_subdomain_map.end())
+        nn2_new = nodes_old2new_subdomain_map[nn2];
       if (nn2_new >= nodeOffsets_new[rank] && nn2_new < nodeOffsets_new[rank+1])
         {
           nodeElementBoundariesStar[nn2_new-nodeOffsets_new[rank]].insert(neb);
@@ -2250,7 +2288,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
         }
       //if any of the new nodes is negative, then this face does not belong to an element in the subdomain
       //so the check on nodes[1] will always be false
-      int nodes[3] = {nn0_new,nn1_new,nn2_new};
+      const int nodes[3] = {nn0_new,nn1_new,nn2_new};
       NodeTuple<3> nodeTuple(nodes);
       elementBoundaryFile >> eatline;
       if (elementBoundaryElementsMap.find(nodeTuple) != elementBoundaryElementsMap.end())//this element boundary is on an element in the subdomain
@@ -2269,7 +2307,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           else
             {
               //initialize
-              vector<int> elementBoundaries_element(4,-1);
+              valarray<int> elementBoundaries_element(-1,4);
               elementBoundariesMap[eN_left] = elementBoundaries_element;
               //assign
               elementBoundariesMap[eN_left][elementBoundaryElementsMap[nodeTuple].left_ebN_element] = neb;
@@ -2284,7 +2322,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
               else
                 {
                   //initialize
-                  vector<int> elementBoundaries_element(4,-1);
+                  valarray<int> elementBoundaries_element(-1, 4);
                   elementBoundariesMap[eN_right] = elementBoundaries_element;
                   //assign
                   elementBoundariesMap[eN_right][elementBoundaryElementsMap[nodeTuple].right_ebN_element] = neb;
@@ -2365,27 +2403,21 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t eb_dims[]={nElementBoundaries_global};
   hid_t eb_new2old_filespace_id = H5Screate_simple(ARRAY_RANK, eb_dims, NULL);
   hid_t eb_new2old_dataset_id = H5Dcreate(file_id, "elementBoundaryNumbering_new2old", H5T_NATIVE_INT, 
-                                    eb_new2old_filespace_id,
-                                    H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  H5Sclose(eb_new2old_filespace_id);
+                                          eb_new2old_filespace_id,
+                                          H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
   hsize_t eb_count[] = {nElementBoundaries_subdomain_new[rank]};
   hsize_t eb_offset[] = {elementBoundaryOffsets_new[rank]};
   hid_t eb_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, eb_count, NULL);
-  eb_new2old_filespace_id = H5Dget_space(eb_new2old_dataset_id);
   H5Sselect_hyperslab(eb_new2old_filespace_id, H5S_SELECT_SET, eb_offset, NULL, eb_count, NULL);
-  hid_t eb_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  H5Pset_dxpl_mpio(eb_plist_id, H5FD_MPIO_COLLECTIVE);
+  hid_t eb_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  H5Pset_dxpl_mpio(eb_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
   status = H5Dwrite(eb_new2old_dataset_id, H5T_NATIVE_INT, eb_new2old_memspace_id, eb_new2old_filespace_id,
-                    eb_plist_id, &elementBoundaryNumbering_new2old[0]);
+                    eb_new2old_plist_id, &elementBoundaryNumbering_new2old[0]);
+  H5Pclose(eb_new2old_plist_id);
   H5Sclose(eb_new2old_memspace_id);
   H5Sclose(eb_new2old_filespace_id);
   H5Dclose(eb_new2old_dataset_id);
   //do old2new map too, can't use hyperslab
-  hid_t eb_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, eb_dims, NULL);
-  hid_t eb_old2new_dataset_id = H5Dcreate(file_id, "elementBoundaryNumbering_old2new", H5T_NATIVE_INT, 
-                                            eb_old2new_filespace_id,
-                                            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  H5Sclose(eb_old2new_filespace_id);
   valarray<hsize_t> old_elementBoundary_indices(nElementBoundaries_subdomain_new[rank]);
   valarray<int> new_elementBoundary_indices(nElementBoundaries_subdomain_new[rank]);
   for (int i=0;i<nElementBoundaries_subdomain_new[rank];i++)
@@ -2393,17 +2425,22 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       old_elementBoundary_indices[i] = elementBoundaryNumbering_new2old[i];
       new_elementBoundary_indices[i] = elementBoundaryOffsets_new[rank]+i;
     }
+  hid_t eb_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, eb_dims, NULL);
+  hid_t eb_old2new_dataset_id = H5Dcreate(file_id, "elementBoundaryNumbering_old2new", H5T_NATIVE_INT, 
+                                            eb_old2new_filespace_id,
+                                            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
   hid_t eb_old2new_memspace_id = H5Screate_simple(ARRAY_RANK, eb_count, NULL);
-  eb_old2new_filespace_id = H5Dget_space(eb_old2new_dataset_id);
   status = H5Sselect_elements(eb_old2new_filespace_id, H5S_SELECT_SET, 
                               nElementBoundaries_subdomain_new[rank], &old_elementBoundary_indices[0]);
+  hid_t eb_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  H5Pset_dxpl_mpio(eb_old2new_plist_id, H5FD_MPIO_COLLECTIVE);  
   status = H5Dwrite(eb_old2new_dataset_id, H5T_NATIVE_INT, 
-                    eb_old2new_memspace_id, eb_old2new_filespace_id, eb_plist_id, &new_elementBoundary_indices[0]);
-  //H5Pclose(eb_plist_id);
+                    eb_old2new_memspace_id, eb_old2new_filespace_id, 
+                    eb_old2new_plist_id, &new_elementBoundary_indices[0]);
+  H5Pclose(eb_new2old_plist_id);
   H5Sclose(eb_old2new_memspace_id);
-  //H5Dclose(eb_old2new_dataset_id);
-  
   //now get maps for all the elements on the subdomain, not just owned
+  //
   valarray<hsize_t> old_elementBoundary_indices_subdomain(elementBoundaries_subdomain.size());
   valarray<int> new_elementBoundary_indices_subdomain(elementBoundaries_subdomain.size());
   int ebN_subdomain = 0;
@@ -2418,12 +2455,16 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                               &old_elementBoundary_indices_subdomain[0]);
   hsize_t eb_subdomain_count[]={elementBoundaries_subdomain.size()};
   hid_t eb_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, eb_subdomain_count, NULL);
+  hid_t eb_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  H5Pset_dxpl_mpio(eb_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);  
   status = H5Dread(eb_old2new_dataset_id, H5T_NATIVE_INT, 
                    eb_old2new_subdomain_memspace_id, eb_old2new_filespace_id, 
-                   eb_plist_id, &new_elementBoundary_indices_subdomain[0]);
+                   eb_old2new_subdomain_plist_id, &new_elementBoundary_indices_subdomain[0]);
+  H5Pclose(eb_old2new_subdomain_plist_id);
+  H5Sclose(eb_old2new_subdomain_memspace_id);
   H5Sclose(eb_old2new_filespace_id);
   H5Dclose(eb_old2new_dataset_id);
-  H5Sclose(eb_old2new_subdomain_memspace_id);
+  
   map<int,int> elementBoundaryNumbering_old2new_subdomain_map;
   map<int,int> elementBoundaryNumbering_new2old_subdomain_map;
   for (int i=0;i<elementBoundaries_subdomain.size();i++)
@@ -2433,16 +2474,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     }
   IS elementBoundaryNumberingIS_subdomain_new2old;
   ISCreateGeneral(PROTEUS_COMM_WORLD,elementBoundaries_subdomain_owned.size(),&elementBoundaryNumbering_new2old[0],PETSC_COPY_VALUES,&elementBoundaryNumberingIS_subdomain_new2old);
-  IS elementBoundaryNumberingIS_global_new2old;
-  const PetscInt *elementBoundaryNumbering_global_new2old;
-  valarray<int> elementBoundaryNumbering_global_old2new;
   if (test)
   {
+    IS elementBoundaryNumberingIS_global_new2old;
+    const PetscInt *elementBoundaryNumbering_global_new2old;
+    valarray<int> elementBoundaryNumbering_global_old2new(nElementBoundaries_global);
     ISAllGather(elementBoundaryNumberingIS_subdomain_new2old,&elementBoundaryNumberingIS_global_new2old);
     elementBoundaryNumbering_global_old2new.resize(newMesh.nElementBoundaries_global);
     ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Allocating elementBoudnary old2new/new2old");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
     ISGetIndices(elementBoundaryNumberingIS_global_new2old,&elementBoundaryNumbering_global_new2old);
-    elementBoundaryNumbering_global_old2new.resize(nElementBoundaries_global);
     for (int i=0;i<nElementBoundaries_global;i++)
     {
       elementBoundaryNumbering_global_old2new[elementBoundaryNumbering_global_new2old[i]]=i;
@@ -2450,36 +2490,36 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     
     herr_t status;
     valarray<int> elementBoundaryNumbering_old2new_read(nElementBoundaries_global);
-    eb_old2new_dataset_id = H5Dopen2(file_id, "/elementBoundaryNumbering_old2new", H5P_DEFAULT);
+    eb_old2new_dataset_id = H5Dopen1(file_id, "/elementBoundaryNumbering_old2new");
     status = H5Dread(eb_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                      &elementBoundaryNumbering_old2new_read[0]);
-      status = H5Dclose(eb_old2new_dataset_id);
-      for (int i=0;i<nElementBoundaries_global;i++)
-        assert(elementBoundaryNumbering_global_old2new[i] == elementBoundaryNumbering_old2new_read[i]);
-      std::cout<<"==================out of core old2new elementBoundaries is correct!===================="<<std::endl;
-      hid_t eb_new2old_dataset_id = H5Dopen2(file_id, "/elementBoundaryNumbering_new2old", H5P_DEFAULT);
-      valarray<int> elementBoundaryNumbering_new2old_read(nElementBoundaries_global);
-      status = H5Dread(eb_new2old_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                       &elementBoundaryNumbering_new2old_read[0]);
-      status = H5Dclose(eb_new2old_dataset_id);
-      for (int i=0;i<nElementBoundaries_global;i++)
-        assert(elementBoundaryNumbering_global_new2old[i] == elementBoundaryNumbering_new2old_read[i]);
-      std::cout<<"==================out of core new2old elementBoundaries is correct!===================="<<std::endl;
-      for (int i=0;i<elementBoundaries_subdomain.size();i++)
-      {
-        int ebN = old_elementBoundary_indices_subdomain[i];
-        assert(elementBoundaryNumbering_global_old2new[ebN] == elementBoundaryNumbering_old2new_subdomain_map[ebN]);
-      }
-      std::cout<<"==================out of core elementBoundaries old2new subdomain_map is correct!===================="<<std::endl;
-      for (int i=0;i<elementBoundaries_subdomain.size();i++)
-      {
-        int ebN = new_elementBoundary_indices_subdomain[i];
-        assert(elementBoundaryNumbering_global_new2old[ebN] == elementBoundaryNumbering_new2old_subdomain_map[ebN]);
-      }
-      std::cout<<"==================out of core elementBoundaries new2old subdomain_map is correct!===================="<<std::endl;
+    status = H5Dclose(eb_old2new_dataset_id);
+    for (int i=0;i<nElementBoundaries_global;i++)
+      assert(elementBoundaryNumbering_global_old2new[i] == elementBoundaryNumbering_old2new_read[i]);
+    std::cout<<"==================out of core old2new elementBoundaries is correct!===================="<<std::endl;
+    hid_t eb_new2old_dataset_id = H5Dopen1(file_id, "/elementBoundaryNumbering_new2old");
+    valarray<int> elementBoundaryNumbering_new2old_read(nElementBoundaries_global);
+    status = H5Dread(eb_new2old_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                     &elementBoundaryNumbering_new2old_read[0]);
+    status = H5Dclose(eb_new2old_dataset_id);
+    for (int i=0;i<nElementBoundaries_global;i++)
+      assert(elementBoundaryNumbering_global_new2old[i] == elementBoundaryNumbering_new2old_read[i]);
+    std::cout<<"==================out of core new2old elementBoundaries is correct!===================="<<std::endl;
+    for (int i=0;i<elementBoundaries_subdomain.size();i++)
+    {
+      int ebN = old_elementBoundary_indices_subdomain[i];
+      assert(elementBoundaryNumbering_global_old2new[ebN] == elementBoundaryNumbering_old2new_subdomain_map[ebN]);
+    }
+    std::cout<<"==================out of core elementBoundaries old2new subdomain_map is correct!===================="<<std::endl;
+    for (int i=0;i<elementBoundaries_subdomain.size();i++)
+    {
+      int ebN = new_elementBoundary_indices_subdomain[i];
+      assert(elementBoundaryNumbering_global_new2old[ebN] == elementBoundaryNumbering_new2old_subdomain_map[ebN]);
+    }
+    std::cout<<"==================out of core elementBoundaries new2old subdomain_map is correct!===================="<<std::endl;
     ISRestoreIndices(elementBoundaryNumberingIS_global_new2old,&elementBoundaryNumbering_global_new2old);
-    ISDestroy(&elementBoundaryNumberingIS_subdomain_new2old);
-    ISDestroy(&elementBoundaryNumberingIS_global_new2old);
+    ierr=ISDestroy(&elementBoundaryNumberingIS_subdomain_new2old);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+    ierr=ISDestroy(&elementBoundaryNumberingIS_global_new2old);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   } 
   PetscLogEventEnd(build_subdomains_faces_event,0,0,0,0);
   ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done allocating elementBoudnary old2new/new2old");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
@@ -2513,7 +2553,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   set<int> edges_subdomain_owned;
   vector<set<int> > nodeEdgesStar(nNodes_subdomain_new[rank]);
   map<int,int> edgeMaterialTypesMap;
-  map<int,vector<int> > elementEdgesMap;
+  map<int,valarray<int> > elementEdgesMap;
   map<int,pair<int,int> > edgeNodesMap;
   set<int> supportedEdges;
   for (int ied = 0; ied < nEdges_global; ied++)
@@ -2527,16 +2567,16 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       nn1 -= indexBase;
       assert(0 <= ned && ned < nEdges_global && edgeFile.good());
       int nn0_new = -1;
-      if (node_old2new_map.find(nn0) != node_old2new_map.end())
-        nn0_new = node_old2new_map[nn0];
+      if (nodes_old2new_subdomain_map.find(nn0) != nodes_old2new_subdomain_map.end())
+        nn0_new = nodes_old2new_subdomain_map[nn0];
       if (nn0_new >= nodeOffsets_new[rank] && nn0_new < nodeOffsets_new[rank+1])
         {
           nodeEdgesStar.at(nn0_new-nodeOffsets_new[rank]).insert(ned);
           supportedEdges.insert(ned);
         }
       int nn1_new = -2;
-      if(node_old2new_map.find(nn1) != node_old2new_map.end())
-        nn1_new = node_old2new_map[nn1];
+      if(nodes_old2new_subdomain_map.find(nn1) != nodes_old2new_subdomain_map.end())
+        nn1_new = nodes_old2new_subdomain_map[nn1];
       if (nn1_new >= nodeOffsets_new[rank] && nn1_new < nodeOffsets_new[rank+1])
         {
           nodeEdgesStar.at(nn1_new-nodeOffsets_new[rank]).insert(ned);
@@ -2545,7 +2585,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       int nodes[2] = {nn0_new,nn1_new};
       NodeTuple<2> nodeTuple(nodes);
       edgeFile >> eatline;
-      //since the node_old2new_map has all the nodes on the subdomain, the node tuple will be correct for edges on the subdomain
       if (edgeElementsMap.find(nodeTuple) != edgeElementsMap.end())//this edge is on an element in the subdomain
         {
           if (nodeTuple.nodes[0] >= nodeOffsets_new[rank] && nodeTuple.nodes[0] < nodeOffsets_new[rank+1])
@@ -2555,7 +2594,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           edgeNodesMap[ned].second = nodeTuple.nodes[1];
           if (ihasEdgeMarkers > 0)
             edgeMaterialTypesMap[ned]=edId;
-          for (set<pair<int,int> >::iterator elementp=edgeElementsMap[nodeTuple].begin();
+          for (auto elementp=edgeElementsMap[nodeTuple].begin();
                elementp != edgeElementsMap[nodeTuple].end();
                elementp++)
             {
@@ -2566,7 +2605,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                 }
               else
                 {
-                  std::vector<int> init(6,-1);
+                  std::valarray<int> init(-1,6);
                   elementEdgesMap[eN] = init;
                   elementEdgesMap[eN][elementp->second] = ned;
                 }
@@ -2578,13 +2617,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     nEdges_owned_new=0;
   MPI_Allreduce(&nEdges_owned_subdomain,&nEdges_owned_new,1,MPI_INT,MPI_SUM,PROTEUS_COMM_WORLD);
   assert(nEdges_owned_new == nEdges_global);
-  //ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done reading edges");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done reading edges");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   //done with edge file
   //
   //just as with faces, we need to add edges along outer boundaries of star
   //not sure if we need to collect nodeEdges star above anymore, since we're doing this
   //
-  for (map<int,vector<int> >::iterator edgesp=elementEdgesMap.begin();
+  for (auto edgesp=elementEdgesMap.begin();
        edgesp!=elementEdgesMap.end();
        edgesp++)
     {
@@ -2613,7 +2652,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   valarray<int> nodeEdgesArray(nodeEdgeOffsets[nNodes_subdomain_new[rank]]);
   for (int nN=0,offset=0; nN < nNodes_subdomain_new[rank]; nN++)
     {
-      for (set<int>::iterator edN_star = nodeEdgesStar.at(nN).begin();
+      for (auto edN_star = nodeEdgesStar.at(nN).begin();
            edN_star != nodeEdgesStar.at(nN).end();
            edN_star++,offset++)
         {
@@ -2654,26 +2693,24 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //write this subdomain to the mapping file
   //
   hsize_t ed_dims[]={nEdges_global};
-  hid_t ed_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
-  hid_t ed_dataspace_id = H5Dcreate(file_id, "edgeNumbering_new2old", H5T_NATIVE_INT, ed_filespace_id,
-                                    H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  H5Sclose(ed_filespace_id);
+  hid_t ed_new2old_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
+  hid_t ed_new2old_dataset_id = H5Dcreate(file_id, "edgeNumbering_new2old", H5T_NATIVE_INT, 
+                                          ed_new2old_filespace_id,
+                                          H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
   hsize_t ed_count[]={nEdges_subdomain_new[rank]};
   hsize_t ed_offset[]={edgeOffsets_new[rank]};
-  hid_t ed_memspace_id = H5Screate_simple(ARRAY_RANK, ed_count, NULL);
-  ed_filespace_id = H5Dget_space(ed_dataspace_id);
-  H5Sselect_hyperslab(ed_filespace_id, H5S_SELECT_SET, ed_offset, NULL, ed_count, NULL);
-  hid_t ed_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  H5Pset_dxpl_mpio(ed_plist_id, H5FD_MPIO_COLLECTIVE);
-  status = H5Dwrite(ed_dataspace_id, H5T_NATIVE_INT, 
-                    ed_memspace_id, ed_filespace_id,
-                    ed_plist_id, &edgeNumbering_new2old[0]);
+  hid_t ed_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, ed_count, NULL);
+  H5Sselect_hyperslab(ed_new2old_filespace_id, H5S_SELECT_SET, ed_offset, NULL, ed_count, NULL);
+  hid_t ed_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  H5Pset_dxpl_mpio(ed_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
+  status = H5Dwrite(ed_new2old_dataset_id, H5T_NATIVE_INT, 
+                    ed_new2old_memspace_id, ed_new2old_filespace_id,
+                    ed_new2old_plist_id, &edgeNumbering_new2old[0]);
+  H5Pclose(ed_new2old_plist_id);
+  H5Sclose(ed_new2old_memspace_id);
+  H5Sclose(ed_new2old_filespace_id);
+  H5Dclose(ed_new2old_dataset_id);
   //do old2new map too, can't use hyperslab
-  hid_t ed_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
-  hid_t ed_old2new_dataspace_id = H5Dcreate(file_id, "edgeNumbering_old2new", H5T_NATIVE_INT, 
-                                            ed_old2new_filespace_id,
-                                            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  H5Sclose(ed_old2new_filespace_id);
   valarray<hsize_t> old_edge_indices(nEdges_subdomain_new[rank]);
   valarray<int> new_edge_indices(nEdges_subdomain_new[rank]);
   for (int i=0;i<nEdges_subdomain_new[rank];i++)
@@ -2681,14 +2718,23 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       old_edge_indices[i] = edgeNumbering_new2old[i];
       new_edge_indices[i] = edgeOffsets_new[rank]+i;
     }
+  hid_t ed_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
+  hid_t ed_old2new_dataspace_id = H5Dcreate(file_id, "edgeNumbering_old2new", H5T_NATIVE_INT, 
+                                            ed_old2new_filespace_id,
+                                            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
   hid_t ed_old2new_memspace_id = H5Screate_simple(ARRAY_RANK, ed_count, NULL);
   ed_old2new_filespace_id = H5Dget_space(ed_old2new_dataspace_id);
   status = H5Sselect_elements(ed_old2new_filespace_id, H5S_SELECT_SET, 
                               nEdges_subdomain_new[rank], &old_edge_indices[0]);
+  hid_t ed_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  H5Pset_dxpl_mpio(ed_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
   status = H5Dwrite(ed_old2new_dataspace_id, H5T_NATIVE_INT, 
                     ed_old2new_memspace_id, ed_old2new_filespace_id, 
-                    ed_plist_id, &new_edge_indices[0]);
-  
+                    ed_old2new_plist_id, &new_edge_indices[0]);
+  H5Pclose(ed_old2new_plist_id);
+  H5Sclose(ed_old2new_memspace_id);
+  //leave dataset and filespace open for next block
+  //
   //now get maps for all the edges on the subdomain, not just owned
   valarray<hsize_t> old_edge_indices_subdomain(edgeNodesMap.size());
   valarray<int> new_edge_indices_subdomain(edgeNodesMap.size());
@@ -2701,9 +2747,16 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                               edgeNodesMap.size(), &old_edge_indices_subdomain[0]);
   hsize_t ed_subdomain_count[]={edgeNodesMap.size()};
   hid_t ed_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, ed_subdomain_count, NULL);
+  hid_t ed_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  H5Pset_dxpl_mpio(ed_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);
   status = H5Dread(ed_old2new_dataspace_id, H5T_NATIVE_INT, ed_old2new_subdomain_memspace_id, 
-                    ed_old2new_filespace_id, ed_plist_id, &new_edge_indices_subdomain[0]);
+                   ed_old2new_filespace_id, 
+                   ed_old2new_subdomain_plist_id, &new_edge_indices_subdomain[0]);
+  H5Pclose(ed_old2new_subdomain_plist_id);
+  H5Sclose(ed_old2new_subdomain_memspace_id);
   H5Sclose(ed_old2new_filespace_id);
+  H5Dclose(ed_old2new_dataspace_id);
+
   map<int,int> edgeNumbering_old2new_subdomain_map;
   map<int,int> edgeNumbering_new2old_subdomain_map;
   for (int i=0;i<edgeNodesMap.size();i++)
@@ -2711,8 +2764,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       edgeNumbering_old2new_subdomain_map[old_edge_indices_subdomain[i]] = new_edge_indices_subdomain[i];
       edgeNumbering_new2old_subdomain_map[new_edge_indices_subdomain[i]] = old_edge_indices_subdomain[i];
     }
-  //skip this global numbering creation
-  valarray<int> edgeNumbering_global_old2new;
   if (test)
   {
     IS edgeNumberingIS_subdomain_new2old;
@@ -2721,29 +2772,48 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     ISAllGather(edgeNumberingIS_subdomain_new2old,&edgeNumberingIS_global_new2old);
     const PetscInt *edgeNumbering_global_new2old;
     ISGetIndices(edgeNumberingIS_global_new2old,&edgeNumbering_global_new2old);
-    edgeNumbering_global_old2new.resize(newMesh.nEdges_global);
+    valarray<int> edgeNumbering_global_old2new(newMesh.nEdges_global);
     ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Setting edgeNumering old2new/new2old");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
     for (int edN=0;edN<newMesh.nEdges_global;edN++)
       {
         edgeNumbering_global_old2new[edgeNumbering_global_new2old[edN]] = edN;
       }
+
+    herr_t status;
+    valarray<int> edgeNumbering_old2new_read(nEdges_global);
+    hid_t ed_old2new_dataset_id = H5Dopen1(file_id, "/edgeNumbering_old2new");
+    status = H5Dread(ed_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                     &edgeNumbering_old2new_read[0]);
+    status = H5Dclose(ed_old2new_dataset_id);
+    for (int i=0;i<nEdges_global;i++)
+      assert(edgeNumbering_global_old2new[i] == edgeNumbering_old2new_read[i]);
+    std::cout<<"==================out of core old2new edges is correct!===================="<<std::endl;
+    hid_t ed_new2old_dataset_id = H5Dopen1(file_id, "/edgeNumbering_new2old");
+    valarray<int> edgeNumbering_new2old_read(nEdges_global);
+    status = H5Dread(ed_new2old_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                     &edgeNumbering_new2old_read[0]);
+    status = H5Dclose(ed_new2old_dataset_id);
+    for (int i=0;i<nEdges_global;i++)
+      assert(edgeNumbering_global_new2old[i] == edgeNumbering_new2old_read[i]);
+    std::cout<<"==================out of core new2old edges is correct!===================="<<std::endl;
+
     for (auto it = edgeNodesMap.begin(); it != edgeNodesMap.end(); ++it)
     {
-      std::cout<<rank<<" ed old2new map check"<<it->first<<" "<<edgeNumbering_old2new_subdomain_map[it->first]<<" "<<edgeNumbering_global_old2new[it->first]<<std::endl;
       assert(edgeNumbering_global_old2new[it->first] == edgeNumbering_old2new_subdomain_map[it->first]);
     }
-    std::cout<<"==================out of core edgeNumbering old2new is correct!===================="<<std::endl;
-    for (auto i = 0; i < edgeNodesMap.size(); i++)
+    std::cout<<"==================out of core edgeNumbering old2new subdomain is correct!===================="<<std::endl;
+    for (int i = 0; i < edgeNodesMap.size(); i++)
     {
       int edN = new_edge_indices_subdomain[i];
-      std::cout<<rank<<" ed new2old map check"<<edN<<" "<<edgeNumbering_new2old_subdomain_map[edN]<<" "<<edgeNumbering_global_new2old[edN]<<std::endl;
       assert(edgeNumbering_global_new2old[edN] == edgeNumbering_new2old_subdomain_map[edN]);
     }
-    std::cout<<"==================out of core edgeNumbering new2old is correct!===================="<<std::endl;
+    std::cout<<"==================out of core edgeNumbering new2old subdomain is correct!===================="<<std::endl;
     ISRestoreIndices(edgeNumberingIS_global_new2old,&edgeNumbering_global_new2old);
-    ISDestroy(&edgeNumberingIS_subdomain_new2old);
-    ISDestroy(&edgeNumberingIS_global_new2old);
+    ierr=ISDestroy(&edgeNumberingIS_subdomain_new2old);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+    ierr=ISDestroy(&edgeNumberingIS_global_new2old);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   }
+  //done with mappings file
+  H5Fclose(file_id);
   ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done allocating edgeNumering old2new/new2old");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   //
   //6. Figure out what is in the node stars but not locally owned, create ghost information
@@ -2790,7 +2860,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
             edges_overlap.insert(edN_star_new);
         }
     }//nodes on this processor
-  elementNumbering_global_old2new.resize(0);
   //cek debugging, edge overlap seems to be messed up. Check global node tuples of edges vs global edge numbers
   assert(edges_overlap.size() + nEdges_subdomain_new[rank] == edgeNodesMap.size());
   //
@@ -2798,12 +2867,14 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   int nN_subdomain = nNodes_subdomain_new[rank];
   map<int,int> nodes_overlap_global2subdomainMap;
-  for (set<int>::iterator nN_globalp=nodes_overlap.begin();nN_globalp != nodes_overlap.end(); nN_globalp++,nN_subdomain++)
+  for (auto nN_globalp=nodes_overlap.begin();nN_globalp != nodes_overlap.end(); nN_globalp++,nN_subdomain++)
     nodes_overlap_global2subdomainMap[*nN_globalp] = nN_subdomain;
   //
   //7. add any addtional overlap, skip for now
   //
-
+  //cek todo: re-enable additional overlap with out of core global maps
+  assert(nNodes_overlap<2);
+  //
   PetscLogEventEnd(build_subdomains_edges_event,0,0,0,0);
   int build_subdomains_renumber_event;
   PetscLogEventRegister("Subd's renumber",0,&build_subdomains_renumber_event);
@@ -2811,9 +2882,11 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //8. Build subdomain meshes in new numbering, assumes memory not allocated in subdomain mesh
   //
-  if(rank==0){
-    std::cerr<<"USER WARNING: In order to avoid a segmentation fault, you need to have supplied the 'f' flag to the triangleOptions input."<<std::endl;
-    std::cerr<<"USER WARNING: In order to avoid an edge assertion error, you need to have supplied the 'ee' flag to the triangleOptions input."<<std::endl;
+  if(rank==0)
+  {
+    std::cerr<<"USER WARNING: You are partioning in parallel directly from Tetgen files (parun -F ...). "<<std::endl;
+    std::cerr<<"USER WARNING: You must use the 'f' and 'ee' flags in the triangleOptions input to avoid errors."<<std::endl;
+    std::cerr<<"USER WARNING: You may have done so, but the tetgen options are not stored in the Tetgen files, so we can't know."<<std::endl;
   }
 
   if (newMesh.subdomainp == NULL)
@@ -2848,9 +2921,8 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       nv -= indexBase;
       assert(0 <= nv && nv < nNodes_global && vertexFile.good());
       int nN_global_new = -1;
-      //recall, node_old2new_map containts all the nodes on the subdomain
-      if (node_old2new_map.find(nv) != node_old2new_map.end())
-        nN_global_new = node_old2new_map[nv];
+      if (nodes_old2new_subdomain_map.find(nv) != nodes_old2new_subdomain_map.end())
+        nN_global_new = nodes_old2new_subdomain_map[nv];
       //local
       if (nN_global_new >= nodeOffsets_new[rank] && nN_global_new < nodeOffsets_new[rank+1])
         {
@@ -2878,10 +2950,8 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       vertexFile >> eatline;
     }//end iv
   vertexFile.close();
-  ISDestroy(&nodePartitioningIS_new);
-  ISDestroy(&nodeNumberingIS_subdomain_old2new);
   //done with vertex file (and all file reads at this point)
-  //ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done reading vertices");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done reading vertices");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 
   newMesh.subdomainp->elementNodesArray = new int[newMesh.subdomainp->nElements_global*newMesh.subdomainp->nNodes_element];
   newMesh.subdomainp->elementMaterialTypes = new int[newMesh.subdomainp->nElements_global];
@@ -2920,7 +2990,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           newMesh.subdomainp->elementNodesArray[eN*newMesh.subdomainp->nNodes_element + nN]= nN_subdomain;
         }
     }
-  ISDestroy(&elementNumberingIS_subdomain_new2old);
   //
   //element boundaries
   //
@@ -3009,182 +3078,19 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       newMesh.subdomainp->edgeNodesArray[edN_subdomain*2+0] = nodeNumbering_global2subdomainMap[edgep->second.first];
       newMesh.subdomainp->edgeNodesArray[edN_subdomain*2+1] = nodeNumbering_global2subdomainMap[edgep->second.second];
     }
-  edgeNumbering_global_old2new.resize(0);
   //
   //end edges
   //
 
   //now build rest of subdomain mesh connectivity information etc
-  bool callOld=true;
-  if(callOld)
-    constructElementBoundaryElementsArrayWithGivenElementBoundaryAndEdgeNumbers_tetrahedron(*newMesh.subdomainp);
-  else
-    {
-      //const int DEFAULT_ELEMENT_MATERIAL=0;
-      const int DEFAULT_NODE_MATERIAL=-1;
-      const int INTERIOR_NODE_MATERIAL=0;
-      const int EXTERIOR_NODE_MATERIAL=1;
-      const int INTERIOR_ELEMENT_BOUNDARY_MATERIAL=0;
-      const int EXTERIOR_ELEMENT_BOUNDARY_MATERIAL=1;
-
-      newMesh.subdomainp->nNodes_elementBoundary = 3;
-      newMesh.subdomainp->nElementBoundaries_element = 4;
-      assert(newMesh.subdomainp->elementBoundariesArray);
-      using namespace std;
-      //double start,stop;
-      map<NodeTuple<3>,
-          ElementNeighbors> elementBoundaryElements;
-      map<NodeTuple<3>,
-          int> elementBoundaryIds;
-      for(int eN=0;eN<newMesh.subdomainp->nElements_global;eN++)
-        for(int ebN=0;ebN<newMesh.subdomainp->nElementBoundaries_element;ebN++)
-          {
-            int ebN_global = newMesh.subdomainp->elementBoundariesArray[eN*newMesh.subdomainp->nElementBoundaries_element+ebN];
-            int nodes[3];
-            nodes[0] = newMesh.subdomainp->elementNodesArray[eN*4+((ebN+1)%4)];
-            nodes[1] = newMesh.subdomainp->elementNodesArray[eN*4+((ebN+2)%4)];
-            nodes[2] = newMesh.subdomainp->elementNodesArray[eN*4+((ebN+3)%4)];
-            NodeTuple<3> ebt(nodes);
-            if(elementBoundaryElements.find(ebt) != elementBoundaryElements.end())
-              {
-                elementBoundaryElements[ebt].right=eN;
-                elementBoundaryElements[ebt].right_ebN_element=ebN;
-                assert(elementBoundaryIds[ebt] == ebN_global);
-              }
-            else
-              {
-                elementBoundaryElements.insert(elementBoundaryElements.end(),make_pair(ebt,ElementNeighbors(eN,ebN)));
-                elementBoundaryIds.insert(elementBoundaryIds.end(),make_pair(ebt,ebN_global));
-              }
-          }
-      newMesh.subdomainp->nElementBoundaries_global = elementBoundaryElements.size();
-      set<int> interiorElementBoundaries,exteriorElementBoundaries;
-      newMesh.subdomainp->elementBoundaryNodesArray =  new int[newMesh.subdomainp->nElementBoundaries_global*newMesh.subdomainp->nNodes_elementBoundary];
-      newMesh.subdomainp->elementBoundaryElementsArray = new int[newMesh.subdomainp->nElementBoundaries_global*2];
-      newMesh.subdomainp->elementBoundaryLocalElementBoundariesArray = new int[newMesh.subdomainp->nElementBoundaries_global*2];
-      newMesh.subdomainp->elementNeighborsArray = new int[newMesh.subdomainp->nElements_global*newMesh.subdomainp->nElementBoundaries_element];
-      for(map<NodeTuple<3>,ElementNeighbors>::iterator eb=elementBoundaryElements.begin();
-          eb != elementBoundaryElements.end();
-          eb++)
-        {
-          int ebN = elementBoundaryIds[eb->first];
-          newMesh.subdomainp->elementBoundaryNodesArray[ebN*3 + 0] = eb->first.nodes[0];
-          newMesh.subdomainp->elementBoundaryNodesArray[ebN*3 + 1] = eb->first.nodes[1];
-          newMesh.subdomainp->elementBoundaryNodesArray[ebN*3 + 2] = eb->first.nodes[2];
-
-          newMesh.subdomainp->elementBoundaryElementsArray[ebN*2 + 0] = eb->second.left;
-          newMesh.subdomainp->elementBoundaryLocalElementBoundariesArray[ebN*2 + 0] = eb->second.left_ebN_element;
-          newMesh.subdomainp->elementBoundaryElementsArray[ebN*2 + 1] = eb->second.right;
-          newMesh.subdomainp->elementBoundaryLocalElementBoundariesArray[ebN*2 + 1] = eb->second.right_ebN_element;
-          newMesh.subdomainp->elementNeighborsArray[eb->second.left*newMesh.subdomainp->nElementBoundaries_element + eb->second.left_ebN_element] = eb->second.right;
-          if(eb->second.right != -1)
-            {
-              interiorElementBoundaries.insert(ebN);
-              newMesh.subdomainp->elementNeighborsArray[eb->second.right*newMesh.subdomainp->nElementBoundaries_element + eb->second.right_ebN_element] = eb->second.left;
-            }
-          else
-            exteriorElementBoundaries.insert(ebN);
-          assert(newMesh.subdomainp->elementBoundariesArray[eb->second.left*newMesh.subdomainp->nElementBoundaries_element + eb->second.left_ebN_element] == ebN);
-          if (eb->second.right != -1)
-            {
-              assert(newMesh.subdomainp->elementBoundariesArray[eb->second.right*newMesh.subdomainp->nElementBoundaries_element + eb->second.right_ebN_element] == ebN);
-            }
-        }
-      newMesh.subdomainp->nInteriorElementBoundaries_global = interiorElementBoundaries.size();
-      newMesh.subdomainp->interiorElementBoundariesArray = new int[newMesh.subdomainp->nInteriorElementBoundaries_global];
-      newMesh.subdomainp->nExteriorElementBoundaries_global = exteriorElementBoundaries.size();
-      newMesh.subdomainp->exteriorElementBoundariesArray = new int[newMesh.subdomainp->nExteriorElementBoundaries_global];
-      int ebNI=0,ebNE=0;
-      for (set<int>::iterator ebN=interiorElementBoundaries.begin();ebN != interiorElementBoundaries.end(); ebN++,ebNI++)
-        newMesh.subdomainp->interiorElementBoundariesArray[ebNI] = *ebN;
-      for (set<int>::iterator ebN=exteriorElementBoundaries.begin();ebN != exteriorElementBoundaries.end(); ebN++,ebNE++)
-        newMesh.subdomainp->exteriorElementBoundariesArray[ebNE] = *ebN;
-      set<NodeTuple<2> > edges;
-      for (int eN=0;eN<newMesh.subdomainp->nElements_global;eN++)
-        {
-          int nodes[2];
-          for (int nN_L=0;nN_L<newMesh.subdomainp->nNodes_element;nN_L++)
-            for (int nN_R=nN_L+1;nN_R<newMesh.subdomainp->nNodes_element;nN_R++)
-              {
-                nodes[0] = newMesh.subdomainp->elementNodesArray[eN*4+nN_L];
-                nodes[1] = newMesh.subdomainp->elementNodesArray[eN*4+nN_R];
-                edges.insert(NodeTuple<2>(nodes));
-              }
-        }
-      assert(newMesh.subdomainp->nEdges_global == int(edges.size()));
-      vector<set<int> > nodeStar(newMesh.subdomainp->nNodes_global);
-      for (int edgeN=0;edgeN<newMesh.subdomainp->nEdges_global;edgeN++)
-        {
-          nodeStar[newMesh.subdomainp->edgeNodesArray[edgeN*2+0]].insert(newMesh.subdomainp->edgeNodesArray[edgeN*2+1]);
-          nodeStar[newMesh.subdomainp->edgeNodesArray[edgeN*2+1]].insert(newMesh.subdomainp->edgeNodesArray[edgeN*2+0]);
-        }
-      newMesh.subdomainp->nodeStarOffsets = new int[newMesh.subdomainp->nNodes_global+1];
-      newMesh.subdomainp->nodeStarOffsets[0] = 0;
-      for (int nN=1;nN<newMesh.subdomainp->nNodes_global+1;nN++)
-        newMesh.subdomainp->nodeStarOffsets[nN] = newMesh.subdomainp->nodeStarOffsets[nN-1] + nodeStar[nN-1].size();
-      newMesh.subdomainp->nodeStarArray = new int[newMesh.subdomainp->nodeStarOffsets[newMesh.subdomainp->nNodes_global]];
-      for (int nN=0,offset=0;nN<newMesh.subdomainp->nNodes_global;nN++)
-        for (set<int>::iterator nN_star=nodeStar[nN].begin();nN_star!=nodeStar[nN].end();nN_star++,offset++)
-          newMesh.subdomainp->nodeStarArray[offset] = *nN_star;
-      //stop = CurrentTime();
-      newMesh.subdomainp->max_nNodeNeighbors_node=0;
-      for (int nN=0;nN<newMesh.subdomainp->nNodes_global;nN++)
-        newMesh.subdomainp->max_nNodeNeighbors_node=max(newMesh.subdomainp->max_nNodeNeighbors_node,newMesh.subdomainp->nodeStarOffsets[nN+1]-newMesh.subdomainp->nodeStarOffsets[nN]);
-      //mwf repeat for node-->elements arrays
-      vector<set<int> > nodeElementsStar(newMesh.subdomainp->nNodes_global);
-      for (int eN = 0; eN < newMesh.subdomainp->nElements_global; eN++)
-        {
-          for (int nN = 0; nN < newMesh.subdomainp->nNodes_element; nN++)
-            nodeElementsStar[newMesh.subdomainp->elementNodesArray[eN*newMesh.subdomainp->nNodes_element+nN]].insert(eN);
-        }
-      newMesh.subdomainp->nodeElementOffsets = new int[newMesh.subdomainp->nNodes_global+1];
-      newMesh.subdomainp->nodeElementOffsets[0] = 0;
-      for (int nN = 0; nN < newMesh.subdomainp->nNodes_global; nN++)
-        newMesh.subdomainp->nodeElementOffsets[nN+1] = newMesh.subdomainp->nodeElementOffsets[nN]+nodeElementsStar[nN].size();
-      newMesh.subdomainp->nodeElementsArray  = new int[newMesh.subdomainp->nodeElementOffsets[newMesh.subdomainp->nNodes_global]];
-      for (int nN=0,offset=0; nN < newMesh.subdomainp->nNodes_global; nN++)
-        {
-          for (set<int>::iterator eN_star = nodeElementsStar[nN].begin(); eN_star != nodeElementsStar[nN].end();
-               eN_star++,offset++)
-            {
-              newMesh.subdomainp->nodeElementsArray[offset] = *eN_star;
-            }
-        }
-      //mwf end node-->elements construction
-      newMesh.subdomainp->elementBoundaryMaterialTypes = new int[newMesh.subdomainp->nElementBoundaries_global];
-      //if nodeMaterial is DEFAULT, go ahead and set to interior or exterior
-      //depending on which boundary node belongs to.
-      //If node on at least one exterior boundary then it's exterior
-      for (int ebNE = 0; ebNE < newMesh.subdomainp->nExteriorElementBoundaries_global; ebNE++)
-        {
-          int ebN = newMesh.subdomainp->exteriorElementBoundariesArray[ebNE];
-          newMesh.subdomainp->elementBoundaryMaterialTypes[ebN] = EXTERIOR_ELEMENT_BOUNDARY_MATERIAL;
-          for (int nN_local = 0; nN_local < newMesh.subdomainp->nNodes_elementBoundary; nN_local++)
-            {
-              int nN = newMesh.subdomainp->elementBoundaryNodesArray[ebN*newMesh.subdomainp->nNodes_elementBoundary+nN_local];
-              if (newMesh.subdomainp->nodeMaterialTypes[nN] == DEFAULT_NODE_MATERIAL)
-                newMesh.subdomainp->nodeMaterialTypes[nN] = EXTERIOR_NODE_MATERIAL;
-            }
-        }
-      for (int ebNI = 0; ebNI < newMesh.subdomainp->nInteriorElementBoundaries_global; ebNI++)
-        {
-          int ebN = newMesh.subdomainp->interiorElementBoundariesArray[ebNI];
-          newMesh.subdomainp->elementBoundaryMaterialTypes[ebN] = INTERIOR_ELEMENT_BOUNDARY_MATERIAL;
-          for (int nN_local = 0; nN_local < newMesh.subdomainp->nNodes_elementBoundary; nN_local++)
-            {
-              int nN = newMesh.subdomainp->elementBoundaryNodesArray[ebN*newMesh.subdomainp->nNodes_elementBoundary+nN_local];
-              if (newMesh.subdomainp->nodeMaterialTypes[nN] == DEFAULT_NODE_MATERIAL)
-                newMesh.subdomainp->nodeMaterialTypes[nN] = INTERIOR_NODE_MATERIAL;
-            }
-        }
-    }
+  constructElementBoundaryElementsArrayWithGivenElementBoundaryAndEdgeNumbers_tetrahedron(*newMesh.subdomainp);
   //build local geometric info
   allocateGeometricInfo_tetrahedron(*newMesh.subdomainp);
   computeGeometricInfo_tetrahedron(*newMesh.subdomainp);
   if (hasElementBoundaryMarkers)
     {
       assert(newMesh.subdomainp->elementBoundariesArray != NULL);
-      for (map<int,int>::iterator ebmp = elementBoundaryMaterialTypesMap.begin(); ebmp != elementBoundaryMaterialTypesMap.end();ebmp++)
+      for (auto ebmp = elementBoundaryMaterialTypesMap.begin(); ebmp != elementBoundaryMaterialTypesMap.end();ebmp++)
         {
           int ebN_global_new = elementBoundaryNumbering_old2new_subdomain_map[ebmp->first];
           assert(elementBoundaryNumbering_global2subdomainMap.find(ebN_global_new) != elementBoundaryNumbering_global2subdomainMap.end());
@@ -3202,7 +3108,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
               }
           }
     }
-  elementBoundaryNumbering_global_old2new.resize(0);
   ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done with material types");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   PetscLogEventEnd(build_subdomains_renumber_event,0,0,0,0);
   int build_subdomains_cleanup_event;
@@ -3251,8 +3156,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   for (int i=0; i< newMesh.subdomainp->nEdges_global; i++)
     newMesh.edgeNumbering_subdomain2global[i] = edgeNumbering_subdomain2global[i];
   //cleanup
-  H5Fclose(file_id);
-  /* out of core */
   PetscLogEventEnd(build_subdomains_cleanup_event,0,0,0,0);
   PetscLogStagePop();
   PetscLogView(PETSC_VIEWER_STDOUT_WORLD);
@@ -3517,9 +3420,8 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
   /*
    * Set up file access property list with parallel I/O access
    */
-  MPI_Info info  = MPI_INFO_NULL;
   hid_t plist_id = H5Pcreate(H5P_FILE_ACCESS);
-  H5Pset_fapl_mpio(plist_id, PROTEUS_COMM_WORLD, info);
+  H5Pset_fapl_mpio(plist_id, PROTEUS_COMM_WORLD, MPI_INFO_NULL);
 
   /*
    * Create a new file collectively and release property list identifier.

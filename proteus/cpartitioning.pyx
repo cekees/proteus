@@ -64,7 +64,7 @@ def convertPUMIPartitionToPython(Comm comm, cmeshTools.CMesh cmesh, cmeshTools.C
         np.asarray(<int[:cmesh.mesh.subdomainp.nEdges_global]> cmesh.mesh.edgeNumbering_subdomain2global)
     )
 
-def partitionNodesFromTetgenFiles(Comm comm, object filebase, int indexBase, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
+def partitionNodesFromTetgenFiles(Comm comm, object filebase, int indexBase, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh, double memHardLimit):
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     if not isinstance(filebase, bytes):
         filebase = filebase.encode()
@@ -72,7 +72,8 @@ def partitionNodesFromTetgenFiles(Comm comm, object filebase, int indexBase, int
                                     <const char*>(<char*>filebase),
                                     indexBase,
                                     cmesh.mesh,
-                                    nLayersOfOverlap)
+                                    nLayersOfOverlap,
+                                    memHardLimit)
     return (
         np.asarray(<int[:comm.size+1]> cmesh.mesh.elementOffsets_subdomain_owned),
         np.asarray(<int[:cmesh.mesh.subdomainp.nElements_global]> cmesh.mesh.elementNumbering_subdomain2global),

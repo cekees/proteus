@@ -12,7 +12,7 @@ import os
 from xml.etree import ElementTree as ET
 from .Archiver import *
 from .LinearAlgebraTools import ParVec_petsc4py
-from .Profiling import logEvent,memory
+from .Profiling import logEvent,memory, memHardLimit
 from . import Domain
 from . import Comm
 from subprocess import check_call, check_output
@@ -676,7 +676,8 @@ class Mesh(object):
                                                                                                                 base,
                                                                                                                 nLayersOfOverlap,
                                                                                                                 self.cmesh,
-                                                                                                                self.subdomainMesh.cmesh)
+                                                                                                                self.subdomainMesh.cmesh,
+                                                                                                                memHardLimit)
             elif isinstance(self,TriangularMesh):
                     (self.elementOffsets_subdomain_owned,
                      self.elementNumbering_subdomain2global,
@@ -708,7 +709,8 @@ class Mesh(object):
                                                                                                    base,
                                                                                                    nLayersOfOverlap,
                                                                                                    self.cmesh,
-                                                                                                   self.subdomainMesh.cmesh)
+                                                                                                   self.subdomainMesh.cmesh,
+                                                                                                   memHardLimit)
         #
         logEvent(memory("partitionMesh 3","MeshTools"),level=4)
         self.buildFromCNoArrays(self.cmesh)
