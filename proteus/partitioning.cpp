@@ -1,4 +1,5 @@
 #include "partitioning.h"
+#include "PyEmbeddedFunctions.h"
 
 namespace proteus
 {
@@ -1517,6 +1518,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //read nodes for tetgen format
   //first just read the number of nodes and whether or not there are node tags
+  logEvent("Building default partitioning",5);
   int read_elements_event;
   PetscLogEventRegister("Read eles",0,&read_elements_event);
   PetscLogEventBegin(read_elements_event,0,0,0,0);
@@ -1559,11 +1561,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     }
   int nNodes_subdomain_old = nodeOffsets_old[rank+1] - nodeOffsets_old[rank];
   int nNodes_subdomain_max = int(nNodes_global)/size + (int(nNodes_global)%size > 0);
+  char log_buffer[100];
+  sprintf(log_buffer,"First partitioning: Max nNodes_subdomain %d nNodes_global %d",nNodes_subdomain_max,nNodes_global);
+  logEvent(log_buffer,5);
   //
   //2. Determine nodal connectivity (nodeStarArray) for nodes on subdomain
   //
   //connectivty commes from the topology (elements) file. We just grab the elements
   //that contain currently owned nodes
+  logEvent("Determining nodal connectivity to construct new partitioning",5);
   std::ifstream elementFile(elementFileName.c_str());
   if (!elementFile.good())
     {
@@ -1668,9 +1674,8 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //3. Generate new nodal partition using PETSc interface to graph partitioners
   //
+  logEvent("Constructing new nodal partition",5);
   Mat petscAdjacency;
-  if (rank ==  0)
-    std::cout<<"First partitioning: Max nNodes_subdomain "<<nNodes_subdomain_max<<" nNodes_global "<<nNodes_global<<std::endl;
   ierr = MatCreateMPIAdj(PROTEUS_COMM_WORLD,
                          nNodes_subdomain_old,
                          nNodes_global,
@@ -1704,8 +1709,8 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       nodeOffsets_new[sdN+1] = nodeOffsets_new[sdN] + nNodes_subdomain_new[sdN];
       nNodes_subdomain_max=max(nNodes_subdomain_max, nNodes_subdomain_new[sdN]);
     }
-  if (rank ==  0)
-    std::cout<<"Final partitioning: Max nNodes_subdomain "<<nNodes_subdomain_max<<" nNodes_global "<<nNodes_global<<std::endl;
+  sprintf(log_buffer,"Final partitioning: Max nNodes_subdomain %d nNodes_global %d",nNodes_subdomain_max,nNodes_global);
+  logEvent(log_buffer,5);
   //get the new node numbers for nodes on this subdomain
   IS nodeNumberingIS_subdomain_old2new;
   ISPartitioningToNumbering(nodePartitioningIS_new,&nodeNumberingIS_subdomain_old2new);
@@ -1716,6 +1721,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   // out of core creation of global old2new mapping
   //
   //create the mappings file
+  logEvent("Writing/reading node numberings to hdf5",5);
   hid_t mappings_plist_id = H5Pcreate(H5P_FILE_ACCESS);
   H5Pset_fapl_mpio(mappings_plist_id, PROTEUS_COMM_WORLD, MPI_INFO_NULL);
   const char* H5FILE_NAME("mappings.h5");
@@ -1821,6 +1827,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //4. To build subdomain meshes, go through and collect elements containing
   //   the locally owned nodes. Assign processor ownership of elements
   //
+  logEvent("Collecting elements containing locally owned nodes (element support of the subdomain nodes)",5);
   PetscLogEventEnd(receive_element_mask_event,0,0,0,0);
   ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done with masks");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   int build_subdomains_reread_elements_event;
@@ -2058,6 +2065,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //5. Generate global element numbering corresponding to new subdomain ownership
   //
+  logEvent("Generating global element numbering corresponding to new subdomain ownership",5);
   valarray<int> nElements_subdomain_new(size),
     elementOffsets_new(size+1);
   for (int sdN = 0; sdN < size; sdN++)
@@ -2086,6 +2094,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //write this subdomain to the mapping file
   //
+  logEvent("Writing/reading element numberings to hdf5",5);
   hsize_t e_dims[]={nElements_global};
   hid_t e_new2old_filespace_id = H5Screate_simple(ARRAY_RANK, e_dims, NULL);
   hid_t e_new2old_dataset_id = H5Dcreate(file_id, "elementNumbering_new2old", H5T_NATIVE_INT, 
@@ -2220,7 +2229,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //first read element boundaries to create nodeElementBoundariesArray
   //for all element boundaries on this subdomain, which we'll use to
   //grab element boundaries from the bit array
-
+  logEvent("Generating global face numbering and ownership corresponding to new subdomain ownership",5);
   std::ifstream elementBoundaryFile(elementBoundaryFileName.c_str());
 
   if (!elementBoundaryFile.good())
@@ -2400,6 +2409,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //write this subdomain to the mapping file
   //
+  logEvent("Writing/reading elementBoundary (face) numberings to hdf5",5);
   hsize_t eb_dims[]={nElementBoundaries_global};
   hid_t eb_new2old_filespace_id = H5Screate_simple(ARRAY_RANK, eb_dims, NULL);
   hid_t eb_new2old_dataset_id = H5Dcreate(file_id, "elementBoundaryNumbering_new2old", H5T_NATIVE_INT, 
@@ -2530,6 +2540,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //4c,5c. Repeate the process for edges
   //
+  logEvent("Generating global edge numbering and ownership corresponding to new subdomain ownership",5);
   std::ifstream edgeFile(edgeFileName.c_str());
 
   if (!edgeFile.good())
@@ -2692,6 +2703,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //write this subdomain to the mapping file
   //
+  logEvent("Writing/reading edge numberings to hdf5",5);
   hsize_t ed_dims[]={nEdges_global};
   hid_t ed_new2old_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
   hid_t ed_new2old_dataset_id = H5Dcreate(file_id, "edgeNumbering_new2old", H5T_NATIVE_INT, 
@@ -2818,6 +2830,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //6. Figure out what is in the node stars but not locally owned, create ghost information
   //
+  logEvent("Creating ghost information",5);
   set<int> elements_overlap,nodes_overlap,elementBoundaries_overlap,edges_overlap;
   for (int nN = 0; nN < nNodes_subdomain_new[rank]; nN++)
     {
@@ -2874,6 +2887,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //cek todo: re-enable additional overlap with out of core global maps
   assert(nNodes_overlap<2);
+  logEvent("Skipping additiona of addtional overlap--only minimal overlap supported by this partioning function for now",5);
   //
   PetscLogEventEnd(build_subdomains_edges_event,0,0,0,0);
   int build_subdomains_renumber_event;
@@ -2882,13 +2896,10 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //8. Build subdomain meshes in new numbering, assumes memory not allocated in subdomain mesh
   //
-  if(rank==0)
-  {
-    std::cerr<<"USER WARNING: You are partioning in parallel directly from Tetgen files (parun -F ...). "<<std::endl;
-    std::cerr<<"USER WARNING: You must use the 'f' and 'ee' flags in the triangleOptions input to avoid errors."<<std::endl;
-    std::cerr<<"USER WARNING: You may have done so, but the tetgen options are not stored in the Tetgen files, so we can't know."<<std::endl;
-  }
-
+  logEvent("USER WARNING: You are partioning in parallel directly from Tetgen files (parun -F ...). ",5);
+  logEvent("USER WARNING: You must use the 'f' and 'ee' flags in the triangleOptions input to avoid errors.",5);
+  logEvent("USER WARNING: You may have done so, but the tetgen options are not stored in the Tetgen files, so we can't know.",5);
+  logEvent("Creating final subdomain mesh data structures",5);
   if (newMesh.subdomainp == NULL)
     newMesh.subdomainp = new Mesh();
   newMesh.subdomainp->nElements_global = nElements_subdomain_new[rank] + elements_overlap.size();
@@ -3114,6 +3125,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   PetscLogEventRegister("Cleanup",0,&build_subdomains_cleanup_event);
   PetscLogEventBegin(build_subdomains_cleanup_event,0,0,0,0);
   //transfer information about owned nodes and elements to mesh
+  logEvent("Cleaning up after partitioning",5);
   if (newMesh.nodeOffsets_subdomain_owned)
     delete [] newMesh.nodeOffsets_subdomain_owned;
   if (newMesh.elementOffsets_subdomain_owned)
