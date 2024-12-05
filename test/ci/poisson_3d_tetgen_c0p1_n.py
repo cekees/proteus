@@ -16,8 +16,11 @@ femSpaces = {0:C0_AffineLinearOnSimplexWithNodalBasis}
 elementQuadrature = SimplexGaussQuadrature(nd,3)
 elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,3)
 
-#domain.MeshOptions.
-triangleOptions="VApq1.35q12feena%e" % ((he**3)/6.0,)
+triangleOptions="kpa{0:e}VAfeenq1.2/15o/120O9/7/499V".format((he**3)/6.0)
+#triangleOptions="VApq1.35q12feena%e" % ((he**3)/6.0,)
+genMesh=True
+domain.MeshOptions.triangleOptions=triangleOptions
+domain.MeshOptions.genMesh=genMesh
 logEvent("""Mesh generated using: tetgen -%s %s"""  % (triangleOptions,domain.polyfile+".poly"))
 
 #number of levels in mesh
