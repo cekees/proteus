@@ -32,7 +32,7 @@ shockCapturing = None
 multilevelNonlinearSolver  = Newton
 levelNonlinearSolver = Newton
 #linear problem so force 1 iteration allowed
-maxNonlinearIts = 2
+maxNonlinearIts = 1
 maxLineSearches = 1
 fullNewtonFlag = True
 #absolute nonlinear solver residual tolerance
