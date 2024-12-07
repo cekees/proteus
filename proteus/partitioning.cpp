@@ -1780,7 +1780,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   H5Dclose(nodes_new2old_dataset_id);
   H5Sclose(nodes_new2old_memspace_id);
   H5Sclose(nodes_new2old_filespace_id);
-  ISRestoreIndices(nodeNumberingIS_subdomain_old2new, &nodes_subdomain_old2new_array);
   //
   //test out of core
   //
@@ -1817,7 +1816,43 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       std::cout<<"==================out of core new2old nodes is correct!===================="<<std::endl;
       nodeNumbering_global_new2old.resize(0);
     }
-  ierr=ISDestroy(&nodeNumberingIS_subdomain_old2new);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  //cek todo: put this in the right place and use integers not doubles
+  Vec nodeNumbering_old2new_petsc;
+  ierr = VecCreateMPI(PROTEUS_COMM_WORLD, nNodes_subdomain_old, nNodes_global, &nodeNumbering_old2new_petsc);
+  CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  valarray<PetscInt> indices(nNodes_subdomain_old);
+  valarray<PetscInt> ix(nNodes_subdomain_old);
+  valarray<PetscScalar> y(nNodes_subdomain_old);
+  for (int i=0;i<nNodes_subdomain_old;i++)
+    {
+      indices[i] = i+nodeOffsets_old[rank];
+      ix[i]=i;
+      y[i]=static_cast<PetscScalar>(nodes_subdomain_old2new_array[i]);
+    }
+  ISLocalToGlobalMapping mapping;
+  PetscInt bs(1);
+  ierr = ISLocalToGlobalMappingCreate(PROTEUS_COMM_WORLD, bs, nNodes_subdomain_old, &indices[0], PETSC_USE_POINTER, &mapping);
+  CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = VecSetLocalToGlobalMapping(nodeNumbering_old2new_petsc, mapping);
+  CHKERRABORT(PROTEUS_COMM_WORLD, ierr);  
+  ierr = VecSetValuesLocal(nodeNumbering_old2new_petsc, nNodes_subdomain_old, &ix[0], &y[0], INSERT_VALUES);
+  CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = VecAssemblyBegin(nodeNumbering_old2new_petsc);
+  CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = VecAssemblyEnd(nodeNumbering_old2new_petsc);
+  CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  if (test)
+    {
+      PetscScalar* test_local;
+      VecGetArray(nodeNumbering_old2new_petsc,&test_local);
+      for (int i=0;i<nNodes_subdomain_old;i++)
+	{
+	  assert(test_local[i] == static_cast<PetscScalar>(nodes_subdomain_old2new_array[i]));
+	}
+      VecRestoreArray(nodeNumbering_old2new_petsc,&test_local);
+    }
+  //ISRestoreIndices(nodeNumberingIS_subdomain_old2new, &nodes_subdomain_old2new_array);
+  //ierr=ISDestroy(&nodeNumberingIS_subdomain_old2new);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 
   PetscLogEventEnd(repartition_nodes_event,0,0,0,0);
   int receive_element_mask_event;
@@ -1865,7 +1900,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   vector<double> elementId_collection;
   map<int, int> nodes_old2new_subdomain_map;
   //note any element index containers are in the old element numbering
-  int eN_c_start = 0;//start of the collection of elements we are currently processing
+  int eN_c_start = 0;//start of the collection of elements we are currently processing  
   for (int ie = 0; ie < nElements_global; ie++)
     {
       //
@@ -1895,44 +1930,116 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           elementId_collection.push_back(elementId_double);
         }
       element_old_nodes_collection.push_back(element_nodes_old);
-      if (node_collection.size() >= nNodes_subdomain_max || ie == nElements_global-1)
+      //      if (node_collection.size() >= nNodes_subdomain_max || ie == nElements_global-1)
+      if (elements_collection.size() == nElements_global/size || ie == nElements_global-1)
         {
           //create a node list to read from old2new mapping
-          herr_t status;
-          valarray<hsize_t> node_collection_array(node_collection.size());
-	        int i_nc=0;
-          for (auto nv=node_collection.begin();nv!=node_collection.end();nv++,i_nc++)
-            {
-              node_collection_array[i_nc] = static_cast<hsize_t>(*nv);
-            }
-          nodes_old2new_dataset_id = H5Dopen1(file_id,"/nodeNumbering_old2new");
-          nodes_old2new_filespace_id = H5Dget_space(nodes_old2new_dataset_id);
-          status = H5Sselect_elements(nodes_old2new_filespace_id, H5S_SELECT_SET, 
-                                      node_collection.size(), &node_collection_array[0]);
-          hsize_t dims[] = {static_cast<hsize_t>(node_collection.size())};
-          hid_t nodes_old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);
-          nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
-          status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_INDEPENDENT);
-          valarray<int> nodes_old2new_subset(node_collection.size());
-          status = H5Dread(nodes_old2new_dataset_id, H5T_NATIVE_INT, 
-                           nodes_old2new_subset_memspace_id, nodes_old2new_filespace_id, 
-                           nodes_old2new_plist_id, &nodes_old2new_subset[0]);
-          H5Pclose(nodes_old2new_plist_id);
-          H5Sclose(nodes_old2new_subset_memspace_id);
-          H5Sclose(nodes_old2new_filespace_id);
-          H5Dclose(nodes_old2new_dataset_id);
+	  valarray<int> nodes_old2new_subset(node_collection.size());
           map<int,int> nodes_old2new_subset_map;
-          for (int i=0;i<node_collection.size();i++)
-          {
-            nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
-          }
-	        if (test)
-	        {
-	          for (int i=0;i<node_collection.size();i++)
-            {
-		          assert(nodes_old2new_subset_map[node_collection_array[i]] == nodeNumbering_global_old2new[node_collection_array[i]]);
-            }
-	        }
+	  bool test_scatter=true;
+	  if (test_scatter)
+	    {
+	      Vec node_old2new_collection_petsc;
+	      ierr = VecCreateMPI(PROTEUS_COMM_WORLD, node_collection.size(), PETSC_DETERMINE,&node_old2new_collection_petsc);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      PetscInt collection_low, collection_high;
+	      ierr = VecGetOwnershipRange(node_old2new_collection_petsc, &collection_low, &collection_high);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      valarray<PetscInt> node_collection_array(node_collection.size());
+	      valarray<PetscInt> iy_collection(node_collection.size());
+              int i_nc=0;
+	      for (auto nv=node_collection.begin();nv!=node_collection.end();nv++,i_nc++)
+		{
+		  node_collection_array[i_nc] = static_cast<PetscInt>(*nv);
+		  iy_collection[i_nc] = i_nc + collection_low;
+		}
+	      //ierr = VecCreateSeq(PROTEUS_COMM_WORLD, node_collection.size(),&node_old2new_collection_petsc);
+	      IS old_ix,iy;
+	      ierr = ISCreateGeneral(PROTEUS_COMM_WORLD, node_collection.size(), &node_collection_array[0],
+				     PETSC_USE_POINTER, &old_ix);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      ierr = ISCreateGeneral(PROTEUS_COMM_WORLD, node_collection.size(), &iy_collection[0],
+				     PETSC_USE_POINTER, &iy);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      VecScatter old2new_collection_scatter;
+	      ierr = VecScatterCreate(nodeNumbering_old2new_petsc, old_ix,
+				      node_old2new_collection_petsc, iy,
+				      &old2new_collection_scatter);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      ierr = VecScatterBegin(old2new_collection_scatter,
+				     nodeNumbering_old2new_petsc, node_old2new_collection_petsc,
+				     INSERT_VALUES, SCATTER_FORWARD);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+
+	      ierr = VecScatterEnd(old2new_collection_scatter,
+				   nodeNumbering_old2new_petsc, node_old2new_collection_petsc,
+				   INSERT_VALUES, SCATTER_FORWARD);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      PetscScalar* nodes_old2new_subset_array;
+	      ierr = VecGetArray(node_old2new_collection_petsc, &nodes_old2new_subset_array);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      for (int i=0;i<node_collection.size();i++)
+		{
+		  nodes_old2new_subset[i] = nodes_old2new_subset_array[i];
+		}
+	      ierr = VecRestoreArray(node_old2new_collection_petsc, &nodes_old2new_subset_array);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      ierr = VecDestroy(&node_old2new_collection_petsc);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      ierr = VecScatterDestroy(&old2new_collection_scatter);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      ierr = ISDestroy(&old_ix);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      ierr = ISDestroy(&iy);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      for (int i=0;i<node_collection.size();i++)
+		{
+		  nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
+		}
+	      if (test)
+		{
+		  for (int i=0;i<node_collection.size();i++)
+		    {
+		      assert(nodes_old2new_subset_map[node_collection_array[i]] == nodeNumbering_global_old2new[node_collection_array[i]]);
+		    }
+		}
+	    }
+	  else
+	    {
+	      herr_t status;
+	      valarray<hsize_t> node_collection_array(node_collection.size());
+	      int i_nc=0;
+	      for (auto nv=node_collection.begin();nv!=node_collection.end();nv++,i_nc++)
+		{
+		  node_collection_array[i_nc] = static_cast<hsize_t>(*nv);
+		}
+	      nodes_old2new_dataset_id = H5Dopen1(file_id,"/nodeNumbering_old2new");
+	      nodes_old2new_filespace_id = H5Dget_space(nodes_old2new_dataset_id);
+	      status = H5Sselect_elements(nodes_old2new_filespace_id, H5S_SELECT_SET, 
+					  node_collection.size(), &node_collection_array[0]);
+	      hsize_t dims[] = {static_cast<hsize_t>(node_collection.size())};
+	      hid_t nodes_old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);
+	      nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+	      status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
+	      status = H5Dread(nodes_old2new_dataset_id, H5T_NATIVE_INT, 
+			       nodes_old2new_subset_memspace_id, nodes_old2new_filespace_id, 
+			       nodes_old2new_plist_id, &nodes_old2new_subset[0]);
+	      H5Pclose(nodes_old2new_plist_id);
+	      H5Sclose(nodes_old2new_subset_memspace_id);
+	      H5Sclose(nodes_old2new_filespace_id);
+	      H5Dclose(nodes_old2new_dataset_id);
+	      for (int i=0;i<node_collection.size();i++)
+		{
+		  nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
+		}
+	      if (test)
+		{
+		  for (int i=0;i<node_collection.size();i++)
+		    {
+		      assert(nodes_old2new_subset_map[node_collection_array[i]] == nodeNumbering_global_old2new[node_collection_array[i]]);
+		    }
+		}
+	    }
           for (int eN_c = eN_c_start; eN_c < ie+1;eN_c++)
             {
               ne = elements_collection[eN_c-eN_c_start];
@@ -2151,7 +2258,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t e_subdomain_count[]={static_cast<hsize_t>(elementNodesArrayMap.size())};
   hid_t e_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, e_subdomain_count, NULL);
   hid_t e_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  status = H5Pset_dxpl_mpio(e_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);
+  status = H5Pset_dxpl_mpio(e_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);
   status = H5Dread(e_old2new_dataset_id, H5T_NATIVE_INT, 
                    e_old2new_subdomain_memspace_id, e_old2new_filespace_id, 
                    e_old2new_subdomain_plist_id, &new_element_indices_subdomain[0]);
@@ -2466,7 +2573,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t eb_subdomain_count[]={static_cast<hsize_t>(elementBoundaries_subdomain.size())};
   hid_t eb_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, eb_subdomain_count, NULL);
   hid_t eb_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  H5Pset_dxpl_mpio(eb_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);  
+  H5Pset_dxpl_mpio(eb_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);  
   status = H5Dread(eb_old2new_dataset_id, H5T_NATIVE_INT, 
                    eb_old2new_subdomain_memspace_id, eb_old2new_filespace_id, 
                    eb_old2new_subdomain_plist_id, &new_elementBoundary_indices_subdomain[0]);
@@ -2760,7 +2867,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t ed_subdomain_count[]={static_cast<hsize_t>(edgeNodesMap.size())};
   hid_t ed_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, ed_subdomain_count, NULL);
   hid_t ed_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  H5Pset_dxpl_mpio(ed_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);
+  H5Pset_dxpl_mpio(ed_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);
   status = H5Dread(ed_old2new_dataspace_id, H5T_NATIVE_INT, ed_old2new_subdomain_memspace_id, 
                    ed_old2new_filespace_id, 
                    ed_old2new_subdomain_plist_id, &new_edge_indices_subdomain[0]);
