@@ -1818,21 +1818,39 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     }
   //cek todo: put this in the right place and use integers not doubles
   Vec nodeNumbering_old2new_petsc;
-  ierr = VecCreateMPI(PROTEUS_COMM_WORLD, nNodes_global, nNodes_subdomain_new[rank], &nodeNumbering_old2new_petsc);
+  ierr = VecCreateMPI(PROTEUS_COMM_WORLD, nNodes_subdomain_old, nNodes_global, &nodeNumbering_old2new_petsc);
   CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-  valarray<PetscInt> ix;
-  valarray<PetscScalar> y;
-  for (int i=0;i<nNodes_subdomain_new[rank];i++)
+  valarray<PetscInt> indices(nNodes_subdomain_old);
+  valarray<PetscInt> ix(nNodes_subdomain_old);
+  valarray<PetscScalar> y(nNodes_subdomain_old);
+  for (int i=0;i<nNodes_subdomain_old;i++)
     {
+      indices[i] = i+nodeOffsets_old[rank];
       ix[i]=i;
       y[i]=static_cast<PetscScalar>(nodes_subdomain_old2new_array[i]);
     }
-  ierr = VecSetValuesLocal(nodeNumbering_old2new_petsc, nNodes_subdomain_new[rank], &ix[0], &y[0], INSERT_VALUES);
+  ISLocalToGlobalMapping mapping;
+  PetscInt bs(1);
+  ierr = ISLocalToGlobalMappingCreate(PROTEUS_COMM_WORLD, bs, nNodes_subdomain_old, &indices[0], PETSC_USE_POINTER, &mapping);
+  CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = VecSetLocalToGlobalMapping(nodeNumbering_old2new_petsc, mapping);
+  CHKERRABORT(PROTEUS_COMM_WORLD, ierr);  
+  ierr = VecSetValuesLocal(nodeNumbering_old2new_petsc, nNodes_subdomain_old, &ix[0], &y[0], INSERT_VALUES);
   CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   ierr = VecAssemblyBegin(nodeNumbering_old2new_petsc);
   CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   ierr = VecAssemblyEnd(nodeNumbering_old2new_petsc);
   CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  if (test)
+    {
+      PetscScalar* test_local;
+      VecGetArray(nodeNumbering_old2new_petsc,&test_local);
+      for (int i=0;i<nNodes_subdomain_old;i++)
+	{
+	  assert(test_local[i] == static_cast<PetscScalar>(nodes_subdomain_old2new_array[i]));
+	}
+      VecRestoreArray(nodeNumbering_old2new_petsc,&test_local);
+    }
   //ISRestoreIndices(nodeNumberingIS_subdomain_old2new, &nodes_subdomain_old2new_array);
   //ierr=ISDestroy(&nodeNumberingIS_subdomain_old2new);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 
@@ -1882,7 +1900,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   vector<double> elementId_collection;
   map<int, int> nodes_old2new_subdomain_map;
   //note any element index containers are in the old element numbering
-  int eN_c_start = 0;//start of the collection of elements we are currently processing
+  int eN_c_start = 0;//start of the collection of elements we are currently processing  
   for (int ie = 0; ie < nElements_global; ie++)
     {
       //
@@ -1912,7 +1930,8 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           elementId_collection.push_back(elementId_double);
         }
       element_old_nodes_collection.push_back(element_nodes_old);
-      if (node_collection.size() >= nNodes_subdomain_max || ie == nElements_global-1)
+      //      if (node_collection.size() >= nNodes_subdomain_max || ie == nElements_global-1)
+      if (elements_collection.size() == nElements_global/size || ie == nElements_global-1)
         {
           //create a node list to read from old2new mapping
 	  valarray<int> nodes_old2new_subset(node_collection.size());
@@ -1920,35 +1939,49 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 	  bool test_scatter=true;
 	  if (test_scatter)
 	    {
+	      Vec node_old2new_collection_petsc;
+	      ierr = VecCreateMPI(PROTEUS_COMM_WORLD, node_collection.size(), PETSC_DETERMINE,&node_old2new_collection_petsc);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      PetscInt collection_low, collection_high;
+	      ierr = VecGetOwnershipRange(node_old2new_collection_petsc, &collection_low, &collection_high);
+	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 	      valarray<PetscInt> node_collection_array(node_collection.size());
 	      valarray<PetscInt> iy_collection(node_collection.size());
               int i_nc=0;
 	      for (auto nv=node_collection.begin();nv!=node_collection.end();nv++,i_nc++)
 		{
 		  node_collection_array[i_nc] = static_cast<PetscInt>(*nv);
-		  iy_collection[i_nc] = i_nc;
+		  iy_collection[i_nc] = i_nc + collection_low;
 		}
-	      Vec node_old2new_collection_petsc;
-	      ierr = VecCreateMPI(PROTEUS_COMM_WORLD, node_collection.size(), PETSC_DETERMINE,&node_old2new_collection_petsc);
-	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+	      //ierr = VecCreateSeq(PROTEUS_COMM_WORLD, node_collection.size(),&node_old2new_collection_petsc);
 	      IS old_ix,iy;
-	      ierr = ISCreateGeneral(PROTEUS_COMM_WORLD, node_collection.size(), &node_collection_array[0], PETSC_USE_POINTER, &old_ix);
+	      ierr = ISCreateGeneral(PROTEUS_COMM_WORLD, node_collection.size(), &node_collection_array[0],
+				     PETSC_USE_POINTER, &old_ix);
 	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	      ierr = ISCreateGeneral(PROTEUS_COMM_WORLD, node_collection.size(), &iy_collection[0], PETSC_USE_POINTER, &iy);
+	      ierr = ISCreateGeneral(PROTEUS_COMM_WORLD, node_collection.size(), &iy_collection[0],
+				     PETSC_USE_POINTER, &iy);
 	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 	      VecScatter old2new_collection_scatter;
-	      ierr = VecScatterCreate(nodeNumbering_old2new_petsc, old_ix, node_old2new_collection_petsc, iy, &old2new_collection_scatter);
+	      ierr = VecScatterCreate(nodeNumbering_old2new_petsc, old_ix,
+				      node_old2new_collection_petsc, iy,
+				      &old2new_collection_scatter);
 	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	      ierr = VecScatterBegin(old2new_collection_scatter, nodeNumbering_old2new_petsc, node_old2new_collection_petsc, INSERT_VALUES, SCATTER_FORWARD);
+	      ierr = VecScatterBegin(old2new_collection_scatter,
+				     nodeNumbering_old2new_petsc, node_old2new_collection_petsc,
+				     INSERT_VALUES, SCATTER_FORWARD);
 	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 
-	      ierr = VecScatterEnd(old2new_collection_scatter, nodeNumbering_old2new_petsc, node_old2new_collection_petsc, INSERT_VALUES, SCATTER_FORWARD);
+	      ierr = VecScatterEnd(old2new_collection_scatter,
+				   nodeNumbering_old2new_petsc, node_old2new_collection_petsc,
+				   INSERT_VALUES, SCATTER_FORWARD);
 	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 	      PetscScalar* nodes_old2new_subset_array;
 	      ierr = VecGetArray(node_old2new_collection_petsc, &nodes_old2new_subset_array);
 	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	      for (int i=i;i<node_collection.size();i++)
-		nodes_old2new_subset[i] = nodes_old2new_subset_array[i];
+	      for (int i=0;i<node_collection.size();i++)
+		{
+		  nodes_old2new_subset[i] = nodes_old2new_subset_array[i];
+		}
 	      ierr = VecRestoreArray(node_old2new_collection_petsc, &nodes_old2new_subset_array);
 	      CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 	      ierr = VecDestroy(&node_old2new_collection_petsc);
