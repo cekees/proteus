@@ -1731,14 +1731,14 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //write old2new
   //
-  hsize_t nodes_global_count[]={nNodes_global};
+  hsize_t nodes_global_count[]={static_cast<hsize_t>(nNodes_global)};
   const hsize_t ARRAY_RANK(1);
   hid_t nodes_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, nodes_global_count, NULL);
   hid_t nodes_old2new_dataset_id = H5Dcreate(file_id, "nodeNumbering_old2new", H5T_NATIVE_INT, 
                                              nodes_old2new_filespace_id,
                                              H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  hsize_t nodes_subdomain_count[]={nNodes_subdomain_old};
-  hsize_t nodes_subdomain_offset[]={nodeOffsets_old[rank]};
+  hsize_t nodes_subdomain_count[]={static_cast<hsize_t>(nNodes_subdomain_old)};
+  hsize_t nodes_subdomain_offset[]={static_cast<hsize_t>(nodeOffsets_old[rank])};
   hid_t nodes_old2new_memspace_id = H5Screate_simple(ARRAY_RANK, nodes_subdomain_count, NULL);
   H5Sselect_hyperslab(nodes_old2new_filespace_id, H5S_SELECT_SET, 
                       nodes_subdomain_offset, NULL, 
@@ -1766,7 +1766,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   valarray<int> old_node_indices(nNodes_subdomain_old);
   for (int i=0;i<nNodes_subdomain_old;i++)
     {
-      new_node_indices[i] = nodes_subdomain_old2new_array[i];//new node indices where we are writing to
+      new_node_indices[i] = static_cast<hsize_t>(nodes_subdomain_old2new_array[i]);//new node indices where we are writing to
       old_node_indices[i] = nodeOffsets_old[rank]+i;//old node numbers at those locations
     }
   status = H5Sselect_elements(nodes_new2old_filespace_id, H5S_SELECT_SET, 
@@ -1903,13 +1903,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 	        int i_nc=0;
           for (auto nv=node_collection.begin();nv!=node_collection.end();nv++,i_nc++)
             {
-              node_collection_array[i_nc] = *nv;
+              node_collection_array[i_nc] = static_cast<hsize_t>(*nv);
             }
           nodes_old2new_dataset_id = H5Dopen1(file_id,"/nodeNumbering_old2new");
           nodes_old2new_filespace_id = H5Dget_space(nodes_old2new_dataset_id);
           status = H5Sselect_elements(nodes_old2new_filespace_id, H5S_SELECT_SET, 
                                       node_collection.size(), &node_collection_array[0]);
-          hsize_t dims[] = {node_collection.size()};
+          hsize_t dims[] = {static_cast<hsize_t>(node_collection.size())};
           hid_t nodes_old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);
           nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
           status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_INDEPENDENT);
@@ -2095,13 +2095,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //write this subdomain to the mapping file
   //
   logEvent("Writing/reading element numberings to hdf5",5);
-  hsize_t e_dims[]={nElements_global};
+  hsize_t e_dims[]={static_cast<hsize_t>(nElements_global)};
   hid_t e_new2old_filespace_id = H5Screate_simple(ARRAY_RANK, e_dims, NULL);
   hid_t e_new2old_dataset_id = H5Dcreate(file_id, "elementNumbering_new2old", H5T_NATIVE_INT, 
                                            e_new2old_filespace_id,
                                            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  hsize_t e_count[]={nElements_subdomain_new[rank]};
-  hsize_t e_offset[]={elementOffsets_new[rank]};
+  hsize_t e_count[]={static_cast<hsize_t>(nElements_subdomain_new[rank])};
+  hsize_t e_offset[]={static_cast<hsize_t>(elementOffsets_new[rank])};
   hid_t e_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, e_count, NULL);
   H5Sselect_hyperslab(e_new2old_filespace_id, H5S_SELECT_SET, e_offset, NULL, e_count, NULL);
   hid_t e_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
@@ -2114,11 +2114,11 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   H5Sclose(e_new2old_memspace_id);
   H5Sclose(e_new2old_filespace_id);
   //do old2new map too, can't use hyperslab
-  valarray<hsize_t> old_element_indices(nElements_subdomain_new[rank]);
+  valarray<hsize_t> old_element_indices(static_cast<hsize_t>(nElements_subdomain_new[rank]));
   valarray<int> new_element_indices(nElements_subdomain_new[rank]);
   for (int i=0;i<nElements_subdomain_new[rank];i++)
     {
-      old_element_indices[i] = elementNumbering_subdomain_new2old[i];
+      old_element_indices[i] = static_cast<hsize_t>(elementNumbering_subdomain_new2old[i]);
       new_element_indices[i] = elementOffsets_new[rank]+i;
     }
   hid_t e_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, e_dims, NULL);
@@ -2139,7 +2139,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //now get maps for all the elements on the subdomain, not just owned elements
   //
-  valarray<hsize_t> old_element_indices_subdomain(elementNodesArrayMap.size());
+  valarray<hsize_t> old_element_indices_subdomain(static_cast<hsize_t>(elementNodesArrayMap.size()));
   valarray<int> new_element_indices_subdomain(elementNodesArrayMap.size());
   int eN_old_subdomain = 0;
   for (auto it = elementNodesArrayMap.begin(); it != elementNodesArrayMap.end(); it++, eN_old_subdomain++)
@@ -2148,7 +2148,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     }
   status = H5Sselect_elements(e_old2new_filespace_id, H5S_SELECT_SET, 
                               elementNodesArrayMap.size(), &old_element_indices_subdomain[0]);
-  hsize_t e_subdomain_count[]={elementNodesArrayMap.size()};
+  hsize_t e_subdomain_count[]={static_cast<hsize_t>(elementNodesArrayMap.size())};
   hid_t e_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, e_subdomain_count, NULL);
   hid_t e_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
   status = H5Pset_dxpl_mpio(e_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);
@@ -2410,13 +2410,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //write this subdomain to the mapping file
   //
   logEvent("Writing/reading elementBoundary (face) numberings to hdf5",5);
-  hsize_t eb_dims[]={nElementBoundaries_global};
+  hsize_t eb_dims[]={static_cast<hsize_t>(nElementBoundaries_global)};
   hid_t eb_new2old_filespace_id = H5Screate_simple(ARRAY_RANK, eb_dims, NULL);
   hid_t eb_new2old_dataset_id = H5Dcreate(file_id, "elementBoundaryNumbering_new2old", H5T_NATIVE_INT, 
                                           eb_new2old_filespace_id,
                                           H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  hsize_t eb_count[] = {nElementBoundaries_subdomain_new[rank]};
-  hsize_t eb_offset[] = {elementBoundaryOffsets_new[rank]};
+  hsize_t eb_count[] = {static_cast<hsize_t>(nElementBoundaries_subdomain_new[rank])};
+  hsize_t eb_offset[] = {static_cast<hsize_t>(elementBoundaryOffsets_new[rank])};
   hid_t eb_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, eb_count, NULL);
   H5Sselect_hyperslab(eb_new2old_filespace_id, H5S_SELECT_SET, eb_offset, NULL, eb_count, NULL);
   hid_t eb_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
@@ -2458,12 +2458,12 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
        it != elementBoundaries_subdomain.end(); 
        it++, ebN_subdomain++)
     {
-      old_elementBoundary_indices_subdomain[ebN_subdomain] = *it;
+      old_elementBoundary_indices_subdomain[ebN_subdomain] = static_cast<hsize_t>(*it);
     }
   status = H5Sselect_elements(eb_old2new_filespace_id, H5S_SELECT_SET, 
                               elementBoundaries_subdomain.size(), 
                               &old_elementBoundary_indices_subdomain[0]);
-  hsize_t eb_subdomain_count[]={elementBoundaries_subdomain.size()};
+  hsize_t eb_subdomain_count[]={static_cast<hsize_t>(elementBoundaries_subdomain.size())};
   hid_t eb_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, eb_subdomain_count, NULL);
   hid_t eb_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
   H5Pset_dxpl_mpio(eb_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);  
@@ -2704,13 +2704,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //write this subdomain to the mapping file
   //
   logEvent("Writing/reading edge numberings to hdf5",5);
-  hsize_t ed_dims[]={nEdges_global};
+  hsize_t ed_dims[]={static_cast<hsize_t>(nEdges_global)};
   hid_t ed_new2old_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
   hid_t ed_new2old_dataset_id = H5Dcreate(file_id, "edgeNumbering_new2old", H5T_NATIVE_INT, 
                                           ed_new2old_filespace_id,
                                           H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-  hsize_t ed_count[]={nEdges_subdomain_new[rank]};
-  hsize_t ed_offset[]={edgeOffsets_new[rank]};
+  hsize_t ed_count[]={static_cast<hsize_t>(nEdges_subdomain_new[rank])};
+  hsize_t ed_offset[]={static_cast<hsize_t>(edgeOffsets_new[rank])};
   hid_t ed_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, ed_count, NULL);
   H5Sselect_hyperslab(ed_new2old_filespace_id, H5S_SELECT_SET, ed_offset, NULL, ed_count, NULL);
   hid_t ed_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
@@ -2723,11 +2723,11 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   H5Sclose(ed_new2old_filespace_id);
   H5Dclose(ed_new2old_dataset_id);
   //do old2new map too, can't use hyperslab
-  valarray<hsize_t> old_edge_indices(nEdges_subdomain_new[rank]);
+  valarray<hsize_t> old_edge_indices(static_cast<hsize_t>(nEdges_subdomain_new[rank]));
   valarray<int> new_edge_indices(nEdges_subdomain_new[rank]);
   for (int i=0;i<nEdges_subdomain_new[rank];i++)
     {
-      old_edge_indices[i] = edgeNumbering_new2old[i];
+      old_edge_indices[i] = static_cast<hsize_t>(edgeNumbering_new2old[i]);
       new_edge_indices[i] = edgeOffsets_new[rank]+i;
     }
   hid_t ed_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
@@ -2753,11 +2753,11 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   int edN_old_subdomain = 0;
   for (auto it = edgeNodesMap.begin(); it != edgeNodesMap.end(); it++, edN_old_subdomain++)
     {
-      old_edge_indices_subdomain[edN_old_subdomain] = it->first;
+      old_edge_indices_subdomain[edN_old_subdomain] = static_cast<hsize_t>(it->first);
     }
   status = H5Sselect_elements(ed_old2new_filespace_id, H5S_SELECT_SET, 
                               edgeNodesMap.size(), &old_edge_indices_subdomain[0]);
-  hsize_t ed_subdomain_count[]={edgeNodesMap.size()};
+  hsize_t ed_subdomain_count[]={static_cast<hsize_t>(edgeNodesMap.size())};
   hid_t ed_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, ed_subdomain_count, NULL);
   hid_t ed_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
   H5Pset_dxpl_mpio(ed_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);
