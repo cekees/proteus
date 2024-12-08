@@ -1,10 +1,9 @@
 #!/bin/bash
-
 #SBATCH -N NUM_NODES
 #SBATCH -n TASKS_PER_NODE
-#SBATCH -t 2:00:00
+#SBATCH -t 8:00:00
 #SBATCH -p PARTITION_NAME 
-#SBATCH -A hpc_ceds3d624
+#SBATCH -A hpc_ceds2d_2hp
 #SBATCH -J "poisson test"
 #SBATCH -o poisson-%j.out	
 #SBATCH -e poisson-%j.err
