@@ -114,7 +114,7 @@ EXTENSIONS_TO_BUILD = [
               PROTEUS_SCOREC_INCLUDE_DIRS,
               library_dirs=PROTEUS_SCOREC_LIB_DIRS,
               libraries=PROTEUS_SCOREC_LIBS,
-              extra_compile_args=['-std=c++17']+PROTEUS_SCOREC_EXTRA_COMPILE_ARGS+PROTEUS_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
+              extra_compile_args=['-std=c++17']+PROTEUS_SCOREC_EXTRA_COMPILE_ARGS+PROTEUS_EXTRA_COMPILE_ARGS+PROTEUS_OPT+['-O1'],
               extra_link_args=PROTEUS_SCOREC_EXTRA_LINK_ARGS+PROTEUS_EXTRA_LINK_ARGS),
     Extension(
         'mprans.cArgumentsDict',

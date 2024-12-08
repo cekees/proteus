@@ -4,7 +4,7 @@
 #SBATCH -n TASKS_PER_NODE
 #SBATCH -t 2:00:00
 #SBATCH -p PARTITION_NAME 
-#SBATCH -A loni_ceds3d624
+#SBATCH -A hpc_ceds3d624
 #SBATCH -J "poisson test"
 #SBATCH -o poisson-%j.out	
 #SBATCH -e poisson-%j.err
