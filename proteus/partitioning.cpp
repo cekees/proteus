@@ -1623,6 +1623,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
         }
       elementFile >> eatline;
     }//end ie
+  elements_old.clear();
   elementFile.close();
   //cek todo: track c++ containers and put inside scope to reduce dynamic memory usage
   PetscLogEventEnd(read_elements_event,0,0,0,0);
@@ -1671,6 +1672,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       for (int k=nodeNeighborsOffsets_subdomain[nN];k<nodeNeighborsOffsets_subdomain[nN+1];k++)
         weights_subdomain[k] = weight;
     }
+  nodeStar.clear();
   //
   //3. Generate new nodal partition using PETSc interface to graph partitioners
   //
@@ -2157,6 +2159,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           nodeElementsArray[offset] = *eN_star;
         }
     }
+  nodeElementsStar.clear();
   //construct compact nodeStarArray
   valarray<int> nodeStarOffsetsNew(nNodes_subdomain_new[rank]+1);
   nodeStarOffsetsNew[0] = 0;
@@ -2170,6 +2173,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           nodeStarArrayNew[offset] = *nN_star;
         }
     }
+  nodeStarNew.clear();
   PetscLogEventEnd(build_subdomains_send_marked_elements_event,0,0,0,0);
   int build_subdomains_global_numbering_elements_event;
   PetscLogEventRegister("Global ele nmbr",0,&build_subdomains_global_numbering_elements_event);
@@ -2189,6 +2193,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     }
   valarray<int> nElements_subdomain_new_send = nElements_subdomain_new;
   MPI_Allreduce(&nElements_subdomain_new_send[0],&nElements_subdomain_new[0],size,MPI_INT,MPI_SUM,PROTEUS_COMM_WORLD);
+  sprintf(log_buffer,"Final partitioning: Max nElements_subdomain %d nElements_global %d",nElements_subdomain_new.max(),nElements_global);
+  logEvent(log_buffer,5);
+
   //construct new offsets for elements
   elementOffsets_new[0] = 0;
   for (int sdN = 0; sdN < size; sdN++)
@@ -2206,7 +2213,8 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //write this subdomain to the mapping file
   //
-  logEvent("Writing/reading element numberings to hdf5",5);
+  ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Writing element numberings to hdf5");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  logEvent("Writing element numberings to hdf5",5);
   mappings_plist_id = H5Pcreate(H5P_FILE_ACCESS);
   status = H5Pset_fapl_mpio(mappings_plist_id, PROTEUS_COMM_WORLD, MPI_INFO_NULL);
   assert(status >= 0);
@@ -2227,13 +2235,16 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Dwrite(e_new2old_dataset_id, H5T_NATIVE_INT, 
                     e_new2old_memspace_id, e_new2old_filespace_id,
                     e_new2old_plist_id, &elementNumbering_subdomain_new2old[0]);
+  H5Dflush(e_new2old_dataset_id);
   H5Pclose(e_new2old_plist_id);
   H5Dclose(e_new2old_dataset_id);
   H5Sclose(e_new2old_memspace_id);
   H5Sclose(e_new2old_filespace_id);
-  //do old2new map too, can't use hyperslab
   valarray<hsize_t> old_element_indices(static_cast<hsize_t>(nElements_subdomain_new[rank]));
   valarray<int> new_element_indices(nElements_subdomain_new[rank]);
+  ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"new2old done; now old2new");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  //do old2new map too, can't use hyperslab
+  ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"old2new index valarrays done");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   for (int i=0;i<nElements_subdomain_new[rank];i++)
     {
       old_element_indices[i] = static_cast<hsize_t>(elementNumbering_subdomain_new2old[i]);
@@ -2259,6 +2270,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //now get maps for all the elements on the subdomain, not just owned elements
   //
+  ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Reading numberings from hdf5 to get subdomain map");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  logEvent("Reading element numberings from hdf5 to get subdomain map",5);
+
   valarray<hsize_t> old_element_indices_subdomain(static_cast<hsize_t>(elementNodesArrayMap.size()));
   valarray<int> new_element_indices_subdomain(elementNodesArrayMap.size());
   int eN_old_subdomain = 0;
@@ -2283,6 +2297,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   H5Dclose(e_old2new_dataset_id);
   H5Sclose(e_old2new_filespace_id);
   H5Fclose(file_id);
+  ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Constructing element subdomain maps");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   map<int,int> elementNumbering_old2new_subdomain_map;
   map<int,int> elementNumbering_new2old_subdomain_map;
   for (int i=0;i<elementNodesArrayMap.size();i++)
@@ -4006,6 +4021,7 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
             }
         }
     }
+  elementBoundaryElementsMap.clear();
   //done reading element boundaries
   elementBoundaryFile.close();
   //ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done reading element boundaries");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
@@ -4176,6 +4192,7 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
             }
         }
     }//end iv
+  edgeElementsMap.clear();
   edgeFile.close();
   int nEdges_owned_subdomain=edges_subdomain_owned.size(),
     nEdges_owned_new=0;
@@ -4454,6 +4471,8 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
           newMesh.subdomainp->elementNodesArray[eN*newMesh.subdomainp->nNodes_element + nN]= nN_subdomain;
         }
     }
+  elementNodesArrayMap.clear();
+  elementMaterialTypesMap.clear();
   ISRestoreIndices(elementNumberingIS_global_new2old,&elementNumbering_global_new2old);
   ISDestroy(&elementNumberingIS_subdomain_new2old);
   ISDestroy(&elementNumberingIS_global_new2old);
