@@ -1,8 +1,8 @@
 #!/bin/bash
 
-num_nodes=(1  2   4   8   16   32   64   84)
-num_procs=(64 128 256 512 1024 2048 4096 5376) 
-part_name=(single workq workq workq workq workq workq workq) 
+num_nodes=(4) #(1 2 4 8 16 32 64 84)
+num_procs=(256) #(64 128 256 512 1024 2048 4096 5376) 
+part_name=(workq) #(single workq workq workq workq workq workq workq) 
 i=0
 while [ $i -lt ${#num_nodes[*]} ]; do
     	

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -N NUM_NODES
 #SBATCH -n TASKS_PER_NODE
-#SBATCH -t 8:00:00
+#SBATCH -t 12:00:00
 #SBATCH -p PARTITION_NAME 
 #SBATCH -A hpc_ceds2d_2hp
 #SBATCH -J "poisson test"

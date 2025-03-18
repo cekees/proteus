@@ -3,7 +3,6 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - compilers
   - python
   - numpy
   - setuptools
@@ -12,5 +11,5 @@ dependencies:
   - cmake
   - cython
   - swig
+  - pybind11
   - ncurses
-  - xtensor-python
