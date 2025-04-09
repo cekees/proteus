@@ -442,20 +442,36 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             import pdb
             pdb.set_trace()
     
-   
     def postStep(self, t, firstStep=False):
         import os
-        try:
-        # Attempt to access and sum the seepage flux
-            s_now = float(np.sum(self.model.anb_seepage_flux_n))
-            with open("seepage_flux.txt", "a") as f:
-                if os.stat("seepage_flux.txt").st_size == 0:
-                    f.write("time, seepage_flux\n")
-                # Write the time and seepage flux to the file
+        #from proteus import Comm
+        comm = Comm.get()
+        if comm.isMaster():
+            try:
+                # Attempt to access and sum the seepage flux
+                s_now = float(np.sum(self.model.anb_seepage_flux_n))
+                with open("seepage_flux.txt", "a") as f:
+                    if os.stat("seepage_flux.txt").st_size == 0:
+                        f.write("time,seepage_flux\n")
+                    f.write(f"{t:.6f},{s_now:.6f}\n")
+            except Exception as e:
+                logEvent(f"[postStep] Skipped logging seepage: {e}")
+   
+    
+   
+    # def postStep(self, t, firstStep=False):
+    #     import os
+    #     try:
+    #     # Attempt to access and sum the seepage flux
+    #         s_now = float(np.sum(self.model.anb_seepage_flux_n))
+    #         with open("seepage_flux.txt", "a") as f:
+    #             if os.stat("seepage_flux.txt").st_size == 0:
+    #                 f.write("time, seepage_flux\n")
+    #             # Write the time and seepage flux to the file
                 
-                f.write(f"{t:.6f}, {s_now:.6f}\n")
-        except Exception as e:
-            logEvent(f"[postStep] Skipped logging seepage: {e}")
+    #             f.write(f"{t:.6f}, {s_now:.6f}\n")
+    #     except Exception as e:
+    #         logEvent(f"[postStep] Skipped logging seepage: {e}")
         
     # #    #anb_seepage_flux_n[:]= self.anb_seepage_flux
     # #    #anb_seepage_flux_n[:]= self.anb_seepage_flux
