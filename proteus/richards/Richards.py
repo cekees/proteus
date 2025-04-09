@@ -206,8 +206,6 @@ class RKEV(TimeIntegration.SSP):
                 setattr(self, flag, val)
                 if flag == 'timeOrder':
                     self.resetOrder(self.timeOrder)
-    
-
 
 class Coefficients(proteus.TransportCoefficients.TC_base):
     """
@@ -241,9 +239,10 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  # FOR ARTIFICIAL COMPRESSION
                  cK=1.0,
                  # OUTPUT quantDOFs
-                 outputQuantDOFs=False, ):
+                 outputQuantDOFs=False,
+                  ):
         self.anb_seepage_flux= 0.00
-        #self.anb_seepage_flux_n =0.0
+        self.anb_seepage_flux_n =0.0
         variableNames=['pressure_head']
         nc=1
         mass={0:{0:'nonlinear'}}
@@ -321,6 +320,9 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.forceStrongConditions = True
         self.cE = cE
         self.outputQuantDOFs = outputQuantDOFs
+        #For seepage anb
+        self.model = None 
+
         TC_base.__init__(self,
                          nc,
                          mass,
@@ -332,6 +334,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                          variableNames,
                          sparseDiffusionTensors = sparseDiffusionTensors,
                          useSparseDiffusion = True)
+        
 
     def initializeMesh(self,mesh):
         from proteus.SubsurfaceTransportCoefficients import BlockHeterogeneousCoefficients
@@ -438,12 +441,27 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             np.isnan(c[('dm',0,0)]).any()):
             import pdb
             pdb.set_trace()
+    
    
-    # def postStep(self, t, firstStep=False):
+    def postStep(self, t, firstStep=False):
+        import os
+        try:
+        # Attempt to access and sum the seepage flux
+            s_now = float(np.sum(self.model.anb_seepage_flux_n))
+            with open("seepage_flux.txt", "a") as f:
+                if os.stat("seepage_flux.txt").st_size == 0:
+                    f.write("time, seepage_flux\n")
+                # Write the time and seepage flux to the file
+                
+                f.write(f"{t:.6f}, {s_now:.6f}\n")
+        except Exception as e:
+            logEvent(f"[postStep] Skipped logging seepage: {e}")
+        
     # #    #anb_seepage_flux_n[:]= self.anb_seepage_flux
-    #     with open('seepage_stab_0', "a") as f:
-    # #        f.write("\n Time"+ ",\t" +"Seepage\n")
-    #         f.write(repr(t)+ ",\t")# +repr(np.sum(self.LevelModel.anb_seepage_flux_n)))
+    # #    #anb_seepage_flux_n[:]= self.anb_seepage_flux
+    #     with open('seepage_stab_0.txt', "a") as f:
+    #        # f.write("\n Time"+ ",\t" +"Seepage\n")
+    #         f.write(repr(t)+ ",\t") # +repr(np.sum(self.LevelModel.anb_seepage_flux_n)))
         
 class LevelModel(proteus.Transport.OneLevelTransport):
     nCalls=0
@@ -516,6 +534,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.diffusiveFluxBoundaryConditionsSetterDictDict = diffusiveFluxBoundaryConditionsSetterDictDict
         #determine whether  the stabilization term is nonlinear
         self.stabilizationIsNonlinear = False
+        #anb add 
+        self.coefficients.model = self 
+
         #cek come back
         if self.stabilization != None:
             for ci in range(self.nc):
@@ -1398,12 +1419,20 @@ class LevelModel(proteus.Transport.OneLevelTransport):
 
         #logEvent("Hi, this is Arnob", self.anb_seepage_flux_n[0])
         #print("Seepage Flux from Python file",  np.sum(self.anb_seepage_flux_n))
-        seepage_text_variable= np.sum(self.anb_seepage_flux_n)
+        #seepage_text_variable= np.sum(self.anb_seepage_flux_n)
+        #t_now = float(self.timeIntegration.t)
+        #s_now = float(np.sum(self.anb_seepage_flux_n))
+
+        #with open("seepage_stab_0.txt", "a") as f:
+        #    f.write(f"t={t_now:.6f}, s={s_now:.6e}\n")
+
         
-        #with open('seepage_stab_0',"a" ) as f:
+        #with open('seepage_stab_0.txt',"a" ) as f:
             #f.write("\n Time"+ ",\t" +"Seepage\n")
-            #f.write(repr(self.coefficients.t)+ ",\t" +repr(seepage_text_variable), "\n")
+        #    f.write(f"{self.timeIntegration.t:.6f},\t{float(seepage_text_variable):.6e}\n")
+#            f.write(repr(self.coefficients.t)+ ",\t" +repr(seepage_text_variable), "\n")
             #f.write(repr(seepage_text_variable)+ "\n")
+
         if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
             self.calculateResidual = self.richards.calculateResidual
             self.calculateJacobian = self.richards.calculateJacobian
@@ -1585,6 +1614,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["sLow"] = self.sLow
         argsDict["sn"] = self.sn
         argsDict["limited_solution"]= limited_solution
+        argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
        
 
         self.richards.invert(argsDict)
@@ -1710,10 +1740,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #self.nonlinear_function_evaluations += 1
         #if self.globalResidualDummy is None:
         #    self.globalResidualDummy = numpy.zeros(r.shape,'d')
-    # def postStep(self, t, firstStep=False):
-    #     with open('seepage_flux_nnnn', "a") as f:
-    #         f.write("\n Time"+ ",\t" +"Seepage\n")
-    #         f.write(repr(t)+ ",\t" +repr(self.coefficients.anb_seepage_flux))
+    def postStep(self, t, firstStep=False):
+        with open('seepage_flux_nnnn', "a") as f:
+            f.write("\n Time"+ ",\t" +"Seepage\n")
+            f.write(repr(t)+ ",\t" +repr(self.coefficients.anb_seepage_flux))
     def getJacobian(self,jacobian):
         if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
             cfemIntegrals.zeroJacobian_CSR(self.nNonzerosInJacobian,

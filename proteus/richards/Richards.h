@@ -2146,17 +2146,7 @@ double computeIthLimitedFluxCorrection(int i,
 		      grad_u[I] += Phi[j]*u_grad_trial[j*nSpace+I];
 		      u_grad_test_dV[j*nSpace+I] = u_grad_trial[j*nSpace+I]*dV;//cek warning won't work for Petrov-Galerkin
 		    }
-		}
-
-
-
-
-		// Store the computed gradient for the current quadrature point
-		// for (int I = 0; I < nSpace; I++)
-		// {
-    	// q_grad_u[eN_k_nSpace + I] = grad_u[I];  // Store grad_u for this quadrature point
-		// }
-                
+		}       
 	      //
 	      //calculate pde coefficients at quadrature points
 	      //
@@ -2319,271 +2309,237 @@ double computeIthLimitedFluxCorrection(int i,
 	    }//i
 	}//elements
 
-      /* ////////////////////////////////////////////////////////////////////////////////////////// */
-      /* // ADD OUTFLOW BOUNDARY TERM TO TRANSPORT MATRICES AND COMPUTE INFLOW BOUNDARY INTEGRAL // */
-      /* ////////////////////////////////////////////////////////////////////////////////////////// */
-      /* //   * Compute outflow boundary integral as a matrix; i.e., int_B[ (vel.normal)*wi*wj*dx] */
-      //This is comment undone to calculate flux under Stabilization_type=2
-	//    for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++) 
-    //      { 
-    //        double min_u_bc_local = 1E10, max_u_bc_local = -1E10; 
-    //        int ebN = exteriorElementBoundariesArray[ebNE]; 
-    //        int eN  = elementBoundaryElementsArray[ebN*2+0], 
-    //          ebN_local = elementBoundaryLocalElementBoundariesArray[ebN*2+0], 
-    //          eN_nDOF_trial_element = eN*nDOF_trial_element; 
-    //        double elementResidual_u[nDOF_test_element]; 
-    //        for (int i=0;i<nDOF_test_element;i++) 
-    //          elementResidual_u[i]=0.0; 
-    //        // loop on quad points 
-    //        for  (int kb=0;kb<nQuadraturePoints_elementBoundary;kb++) 
-    //          { 
-    //            int ebNE_kb = ebNE*nQuadraturePoints_elementBoundary+kb, 
-    //              ebNE_kb_nSpace = ebNE_kb*nSpace, 
-    //              ebN_local_kb = ebN_local*nQuadraturePoints_elementBoundary+kb, 
-    //              ebN_local_kb_nSpace = ebN_local_kb*nSpace; 
-    //            double u=0.0,
-    //              u_ext=0.0, bc_u_ext=0.0, 
-	// 			 grad_u_ext[nSpace],
-    //              porosity_times_velocity[nSpace], 
-    //              flux_ext=0.0, dflux_ext=0.0, 
-    //              fluxTransport[nDOF_trial_element], 
-    //              jac_ext[nSpace*nSpace], 
-    //              jacDet_ext, 
-    //              jacInv_ext[nSpace*nSpace], 
-    //              boundaryJac[nSpace*(nSpace-1)], 
-    //              metricTensor[(nSpace-1)*(nSpace-1)], 
-    //              metricTensorDetSqrt, 
-	// 			 //arnob adding the variable
-	// 			 //u_grad_trial_trace[nDOF_trial_element*nSpace],
-	// 			 a_ext[nnz],
-	// 			 da_ext[nnz],
-	// 			 as_ext[nnz],
+    //   /* ////////////////////////////////////////////////////////////////////////////////////////// */
+    //   /* // ADD OUTFLOW BOUNDARY TERM TO TRANSPORT MATRICES AND COMPUTE INFLOW BOUNDARY INTEGRAL // */
+    //   /* ////////////////////////////////////////////////////////////////////////////////////////// */
+    //   /* //   * Compute outflow boundary integral as a matrix; i.e., int_B[ (vel.normal)*wi*wj*dx] */
+    //   //This is comment undone to calculate flux under Stabilization_type=2
 
-	// 			 m_ext=0.0,
-	// 			 dm_ext=0.0,
+	    for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++) 
+          { 
+            double min_u_bc_local = 1E10, max_u_bc_local = -1E10; 
+            int ebN = exteriorElementBoundariesArray[ebNE]; 
+            int eN  = elementBoundaryElementsArray[ebN*2+0], 
+              ebN_local = elementBoundaryLocalElementBoundariesArray[ebN*2+0], 
+              eN_nDOF_trial_element = eN*nDOF_trial_element; 
+             double elementResidual_u[nDOF_test_element]; 
+            for (int i=0;i<nDOF_test_element;i++) 
+             elementResidual_u[i]=0.0; 
+           // loop on quad points 
+           for  (int kb=0;kb<nQuadraturePoints_elementBoundary;kb++) 
+             { 
+               int ebNE_kb = ebNE*nQuadraturePoints_elementBoundary+kb, 
+                 ebNE_kb_nSpace = ebNE_kb*nSpace, 
+                 ebN_local_kb = ebN_local*nQuadraturePoints_elementBoundary+kb, 
+                 ebN_local_kb_nSpace = ebN_local_kb*nSpace; 
+               double u=0.0,
+                 u_ext=0.0, bc_u_ext=0.0, 
+				 grad_u_ext[nSpace],
+                 porosity_times_velocity[nSpace], 
+                 flux_ext=0.0, dflux_ext=0.0, 
+                 fluxTransport[nDOF_trial_element], 
+                 jac_ext[nSpace*nSpace], 
+                 jacDet_ext, 
+                 jacInv_ext[nSpace*nSpace], 
+                 boundaryJac[nSpace*(nSpace-1)], 
+                 metricTensor[(nSpace-1)*(nSpace-1)], 
+                 metricTensorDetSqrt, 
+				 //arnob adding the variable
+				 //u_grad_trial_trace[nDOF_trial_element*nSpace],
+				 a_ext[nnz],
+				 da_ext[nnz],
+				 as_ext[nnz],
 
-	// 			 f_ext[nSpace],df_ext[nSpace],
-	// 			 bc_m_ext=0.0,bc_dm_ext=0.0,
+				 m_ext=0.0,
+				 dm_ext=0.0,
 
-	// 			 //bc_u_ext=0.0,
-	// 			 bc_f_ext[nSpace],bc_df_ext[nSpace],bc_a_ext[nnz],bc_da_ext[nnz],bc_as_ext[nnz],
+				 f_ext[nSpace],df_ext[nSpace],
+				 bc_m_ext=0.0,bc_dm_ext=0.0,
 
-    //              dS, 
-    //              u_test_dS[nDOF_test_element], u_grad_trial_trace[nDOF_trial_element*nSpace],
-    //              normal[nSpace],x_ext,y_ext,z_ext,xt_ext,yt_ext,zt_ext,integralScaling,porosity_ext, 
-	// 			 G[nSpace*nSpace],G_dd_G,tr_G;
-    //            // calculate mappings 
-    //            ck.calculateMapping_elementBoundary(eN, 
-    //                                                ebN_local, 
-    //                                                kb, 
-    //                                                ebN_local_kb, 
-    //                                                mesh_dof.data(), 
-    //                                                mesh_l2g.data(), 
-    //                                                mesh_trial_trace_ref.data(), 
-    //                                                mesh_grad_trial_trace_ref.data(), 
-    //                                                boundaryJac_ref.data(), 
-    //                                                jac_ext, 
-    //                                                jacDet_ext, 
-    //                                                jacInv_ext, 
-    //                                                boundaryJac, 
-    //                                                metricTensor, 
-    //                                                metricTensorDetSqrt, 
-    //                                                normal_ref.data(), 
-    //                                                normal, 
-    //                                                x_ext,y_ext,z_ext); 
-    //            ck.calculateMappingVelocity_elementBoundary(eN, 
-    //                                                        ebN_local, 
-    //                                                        kb, 
-    //                                                        ebN_local_kb, 
-    //                                                        mesh_velocity_dof.data(), 
-    //                                                        mesh_l2g.data(), 
-    //                                                        mesh_trial_trace_ref.data(), 
-    //                                                        xt_ext,yt_ext,zt_ext, 
-    //                                                        normal, 
-    //                                                        boundaryJac, 
-    //                                                        metricTensor, 
-    //                                                        integralScaling); 
-    //            dS = ((1.0-MOVING_DOMAIN)*metricTensorDetSqrt + MOVING_DOMAIN*integralScaling)*dS_ref[kb]; 
+				 //bc_u_ext=0.0,
+				 bc_f_ext[nSpace],bc_df_ext[nSpace],bc_a_ext[nnz],bc_da_ext[nnz],bc_as_ext[nnz],
 
-	// 		   //calculate the numerical fluxes
-	//       	   //get the metric tensor
-	//       //cek todo use symmetry
-	//       		ck.calculateG(jacInv_ext,G,G_dd_G,tr_G);
-	//       //compute shape and solution information
-	//       //shape
-	//       		ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace*nDOF_trial_element],jacInv_ext,u_grad_trial_trace);
+                 dS, 
+                 u_test_dS[nDOF_test_element], u_grad_trial_trace[nDOF_trial_element*nSpace],
+                 normal[nSpace],x_ext,y_ext,z_ext,xt_ext,yt_ext,zt_ext,integralScaling,porosity_ext, 
+				 G[nSpace*nSpace],G_dd_G,tr_G;
+               // calculate mappings 
+               ck.calculateMapping_elementBoundary(eN, 
+                                                   ebN_local, 
+                                                   kb, 
+                                                   ebN_local_kb, 
+                                                   mesh_dof.data(), 
+                                                   mesh_l2g.data(), 
+                                                   mesh_trial_trace_ref.data(), 
+                                                   mesh_grad_trial_trace_ref.data(), 
+                                                   boundaryJac_ref.data(), 
+                                                   jac_ext, 
+                                                   jacDet_ext, 
+                                                   jacInv_ext, 
+                                                   boundaryJac, 
+                                                   metricTensor, 
+                                                   metricTensorDetSqrt, 
+                                                   normal_ref.data(), 
+                                                   normal, 
+                                                   x_ext,y_ext,z_ext); 
+               ck.calculateMappingVelocity_elementBoundary(eN, 
+                                                           ebN_local, 
+                                                           kb, 
+                                                           ebN_local_kb, 
+                                                           mesh_velocity_dof.data(), 
+                                                           mesh_l2g.data(), 
+                                                           mesh_trial_trace_ref.data(), 
+                                                           xt_ext,yt_ext,zt_ext, 
+                                                           normal, 
+                                                           boundaryJac, 
+                                                           metricTensor, 
+                                                           integralScaling); 
+               dS = ((1.0-MOVING_DOMAIN)*metricTensorDetSqrt + MOVING_DOMAIN*integralScaling)*dS_ref[kb]; 
 
-
-    //            //compute shape and solution information 
+			   //calculate the numerical fluxes
+	      	   //get the metric tensor
+	      //cek todo use symmetry
+	      		ck.calculateG(jacInv_ext,G,G_dd_G,tr_G);
+	      //compute shape and solution information
+	      //shape
+	      		ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace*nDOF_trial_element],jacInv_ext,u_grad_trial_trace);
 
 
-    //            ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_trace_ref.data()[ebN_local_kb*nDOF_test_element],u_ext); 
-	// 		   ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial_trace,grad_u_ext);
+               //compute shape and solution information 
+
+
+               ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_trace_ref.data()[ebN_local_kb*nDOF_test_element],u_ext); 
+			   ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial_trace,grad_u_ext);
 			   
 
 
-    //            //precalculate test function products with integration weights 
-    //            for (int j=0;j<nDOF_trial_element;j++) 
-    //              u_test_dS[j] = u_test_trace_ref[ebN_local_kb*nDOF_test_element+j]*dS; 
+               //precalculate test function products with integration weights 
+               for (int j=0;j<nDOF_trial_element;j++) 
+                 u_test_dS[j] = u_test_trace_ref[ebN_local_kb*nDOF_test_element+j]*dS; 
 
-	// 		   bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+(1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
+			   bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+(1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
 
-	// 		   //arnob addition
-	// 		   double Kr, dKr;
-	//       	   evaluateCoefficients(a_rowptr.data(),
-	// 			   a_colind.data(),
-	// 			   rho,
-	// 			   beta,
-	// 			   gravity.data(),
-	// 			   alpha.data()[elementMaterialTypes.data()[eN]],
-	// 			   n.data()[elementMaterialTypes.data()[eN]],
-	// 			   thetaR.data()[elementMaterialTypes.data()[eN]],
-	// 			   thetaSR.data()[elementMaterialTypes.data()[eN]],
-	// 			   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
-	// 			   u_ext,
-	// 			   m_ext,
-	// 			   dm_ext,
-	// 			   f_ext,
-	// 			   df_ext,
-	// 			   a_ext,
-	// 			   da_ext,
-	// 			   as_ext,
-	// 			   Kr,
-	// 			   dKr);
-	//       	   evaluateCoefficients(a_rowptr.data(),
-	// 			   a_colind.data(),
-	// 			   rho,
-	// 			   beta,
-	// 			   gravity.data(),
-	// 			   alpha.data()[elementMaterialTypes.data()[eN]],
-	// 			   n.data()[elementMaterialTypes.data()[eN]],
-	// 			   thetaR.data()[elementMaterialTypes.data()[eN]],
-	// 			   thetaSR.data()[elementMaterialTypes.data()[eN]],
-	// 			   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
-	// 			   bc_u_ext,
-	// 			   bc_m_ext,
-	// 			   bc_dm_ext,
-	// 			   bc_f_ext,
-	// 			   bc_df_ext,
-	// 			   bc_a_ext,
-	// 			   bc_da_ext,
-	// 			   bc_as_ext,
-	// 			   Kr,
-	// 			   dKr);
-
-
-	// 		   exteriorNumericalFlux(ebqe_bc_flux_ext[ebNE_kb],
-	// 			    a_rowptr.data(),
-	// 			    a_colind.data(),
-	// 			    isSeepageFace.data()[ebNE],//tricky, this is a face flag not face quad
-	// 			    isDOFBoundary_u.data()[ebNE_kb],
-	// 			    normal,
-	// 			    bc_u_ext,
-	// 			    a_ext,
-	// 			    grad_u_ext,
-	// 			    u_ext,
-	// 			    f_ext,
-	// 			    ebqe_penalty_ext.data()[ebNE_kb],// penalty,
-	// 			    flux_ext);
-	//       		ebqe_flux.data()[ebNE_kb] = flux_ext;
-	//       		ebqe_u.data()[ebNE_kb] = u_ext;
-
-	// 			//std::cout<<"flux_ext "<<flux_ext<<std::endl;
-	// 			//std::cout<<"dS "<< dS <<std::endl;		
-
-	// 		   anb_seepage_flux= seepagefluxcalculator(anb_seepage_flux,
-	// 						  						  isSeepageFace.data()[ebNE],
-	// 						  						  dS,
-	// 						  						  flux_ext);
-	// 			//std::cout<<"The seepage flux is "<<anb_seepage_flux<<std::endl;
-	// 			anb_seepage_flux_n.data()[0]= anb_seepage_flux;
-				
-	// 			//anb_seepage_flux= anb_seepage_flux;
-	// 			if (anb_seepage_flux>0)
-	// 			{
-	// 				std::cout<<"The seepage flux is "<<anb_seepage_flux<<std::endl;
-	// 			}
-				
-				
-	// 			//}	
-				  
-	// 			//else{
-					
-	// 			//}  
-
-	// 			//anb_seepage_flux += dS* flux_ext;
-	// 			//double anb_seepage_flux_n = args.scalar<double>("anb_seepage_flux_n");
-	// 			//anb_seepage_flux_n=0.0;
-
-	// 			//anb_seepage_flux_n= anb_seepage_flux;
-				
+			   //arnob addition
+			   double Kr, dKr;
+	      	   evaluateCoefficients(a_rowptr.data(),
+				   a_colind.data(),
+				   rho,
+				   beta,
+				   gravity.data(),
+				   alpha.data()[elementMaterialTypes.data()[eN]],
+				   n.data()[elementMaterialTypes.data()[eN]],
+				   thetaR.data()[elementMaterialTypes.data()[eN]],
+				   thetaSR.data()[elementMaterialTypes.data()[eN]],
+				   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
+				   u_ext,
+				   m_ext,
+				   dm_ext,
+				   f_ext,
+				   df_ext,
+				   a_ext,
+				   da_ext,
+				   as_ext,
+				   Kr,
+				   dKr);
+	      	   evaluateCoefficients(a_rowptr.data(),
+				   a_colind.data(),
+				   rho,
+				   beta,
+				   gravity.data(),
+				   alpha.data()[elementMaterialTypes.data()[eN]],
+				   n.data()[elementMaterialTypes.data()[eN]],
+				   thetaR.data()[elementMaterialTypes.data()[eN]],
+				   thetaSR.data()[elementMaterialTypes.data()[eN]],
+				   &KWs.data()[elementMaterialTypes.data()[eN]*nnz],
+				   bc_u_ext,
+				   bc_m_ext,
+				   bc_dm_ext,
+				   bc_f_ext,
+				   bc_df_ext,
+				   bc_a_ext,
+				   bc_da_ext,
+				   bc_as_ext,
+				   Kr,
+				   dKr);
 
 
-	// 			//if (isSeepageFace)
-	// 			//{
-	// 			//	anb_seepage_flux+= dS* flux_ext;
-	// 			//	std::cout<<"The seepage flux is "<<anb_seepage_flux<<std::endl;
+			   exteriorNumericalFlux(ebqe_bc_flux_ext[ebNE_kb],
+				    a_rowptr.data(),
+				    a_colind.data(),
+				    isSeepageFace.data()[ebNE],//tricky, this is a face flag not face quad
+				    isDOFBoundary_u.data()[ebNE_kb],
+				    normal,
+				    bc_u_ext,
+				    a_ext,
+				    grad_u_ext,
+				    u_ext,
+				    f_ext,
+				    ebqe_penalty_ext.data()[ebNE_kb],// penalty,
+				    flux_ext);
+	      		ebqe_flux.data()[ebNE_kb] = flux_ext;
+	      		ebqe_u.data()[ebNE_kb] = u_ext;
 
-					
+				//std::cout<<"flux_ext "<<flux_ext<<std::endl;
+				//std::cout<<"dS "<< dS <<std::endl;		
 
-				
-
-	// 			//anb_seepage_flux+= dS* flux_ext;
-	// 			//if (anb_seepage_flux >0){
-	// 			//	std::cout<<"The seepage flux is "<<anb_seepage_flux<<std::endl;
-	// 			//}
-				
-	      
+			   anb_seepage_flux= seepagefluxcalculator(anb_seepage_flux,
+							  						  isSeepageFace.data()[ebNE],
+							  						  dS,
+							  						  flux_ext);
+				//std::cout<<"The seepage flux is "<<anb_seepage_flux<<std::endl;
+				anb_seepage_flux_n.data()[0]= anb_seepage_flux;
+				     
 
 			   
-    //            //VRANS 
-    //            porosity_ext = 1.0; 
-    //            // 
-    //            //moving mesh 
-    //            // 
-    //            double mesh_velocity[3]; 
-    //            mesh_velocity[0] = xt_ext; 
-    //            mesh_velocity[1] = yt_ext; 
-    //            mesh_velocity[2] = zt_ext; 
-    //            //std::cout<<"mesh_velocity ext"<<std::endl; 
-    //            for (int I=0;I<nSpace;I++) 
-    //              porosity_times_velocity[I] = porosity_ext*(ebqe_velocity_ext[ebNE_kb_nSpace+I] - MOVING_DOMAIN*mesh_velocity[I]); 
-    //            // 
-    //            //calculate the fluxes 
-    //            // 
-    //           // double flow = 0.; 
-    //           // for (int I=0; I < nSpace; I++) 
-    //           //   flow += normal[I]*porosity_times_velocity[I];
-	// 			 //std::cout<<"normal "<< flow <<std::endl; 
-	// 			 //std::cout<<"porosity_times_velocity[I] "<< porosity_times_velocity <<std::endl; 
-	// 		//std::cout<<"flux ext is "<< flow <<std::endl; 
+            //    //VRANS 
+            //    porosity_ext = 1.0; 
+            //    // 
+            //    //moving mesh 
+            //    // 
+            //    double mesh_velocity[3]; 
+            //    mesh_velocity[0] = xt_ext; 
+            //    mesh_velocity[1] = yt_ext; 
+            //    mesh_velocity[2] = zt_ext; 
+            //    //std::cout<<"mesh_velocity ext"<<std::endl; 
+            //    for (int I=0;I<nSpace;I++) 
+            //      porosity_times_velocity[I] = porosity_ext*(ebqe_velocity_ext[ebNE_kb_nSpace+I] - MOVING_DOMAIN*mesh_velocity[I]); 
+            //    // 
+               //calculate the fluxes 
+               // 
+              // double flow = 0.; 
+              // for (int I=0; I < nSpace; I++) 
+              //   flow += normal[I]*porosity_times_velocity[I];
+				 //std::cout<<"normal "<< flow <<std::endl; 
+				 //std::cout<<"porosity_times_velocity[I] "<< porosity_times_velocity <<std::endl; 
+			//std::cout<<"flux ext is "<< flow <<std::endl; 
 						   
 
-    //            //cek todo, fix boundary conditions 
-    //           // if (flow >= 0 && isFluxBoundary_u[ebNE_kb] != 1 )  //outflow. This is handled via the transport matrices. Then flux_ext=0 and dflux_ext!=0 
-    //           //   { 
-    //           //     dflux_ext = flow; 
-    //           //     flux_ext = 0; 
-    //            //    // save external u 
-    //            //    ebqe_u[ebNE_kb] = u_ext; 
-    //            //  } 
-    //            //else // inflow. This is handled via the boundary integral. Then flux_ext!=0 and dflux_ext=0 
-    //              //{ 
-    //                //dflux_ext = 0; 
-    //                // save external u 
-    //                //ebqe_u[ebNE_kb] = isDOFBoundary_u[ebNE_kb]*ebqe_bc_u_ext[ebNE_kb]+(1-isDOFBoundary_u[ebNE_kb])*u_ext; 
-    //                //if (isDOFBoundary_u[ebNE_kb] == 1) 
-    //                 // flux_ext = ebqe_bc_u_ext[ebNE_kb]*flow; 
-    //                //else if (isFluxBoundary_u[ebNE_kb] == 1) 
-    //                  //flux_ext = ebqe_bc_flux_u_ext[ebNE_kb];
-	// 				// flux_ext = ebqe_bc_u_ext[ebNE_kb]; 
-    //                //else 
-    //                //  { 
-    //                //    std::cout<<"warning: VOF open boundary with no external trace, setting to zero for inflow"<<std::endl; 
-    //                //    flux_ext = 0.0; 
-    //                //  } 
+               //cek todo, fix boundary conditions 
+              // if (flow >= 0 && isFluxBoundary_u[ebNE_kb] != 1 )  //outflow. This is handled via the transport matrices. Then flux_ext=0 and dflux_ext!=0 
+              //   { 
+              //     dflux_ext = flow; 
+              //     flux_ext = 0; 
+               //    // save external u 
+               //    ebqe_u[ebNE_kb] = u_ext; 
+               //  } 
+               //else // inflow. This is handled via the boundary integral. Then flux_ext!=0 and dflux_ext=0 
+                 //{ 
+                   //dflux_ext = 0; 
+                   // save external u 
+                   //ebqe_u[ebNE_kb] = isDOFBoundary_u[ebNE_kb]*ebqe_bc_u_ext[ebNE_kb]+(1-isDOFBoundary_u[ebNE_kb])*u_ext; 
+                   //if (isDOFBoundary_u[ebNE_kb] == 1) 
+                    // flux_ext = ebqe_bc_u_ext[ebNE_kb]*flow; 
+                   //else if (isFluxBoundary_u[ebNE_kb] == 1) 
+                     //flux_ext = ebqe_bc_flux_u_ext[ebNE_kb];
+					// flux_ext = ebqe_bc_u_ext[ebNE_kb]; 
+                   //else 
+                   //  { 
+                   //    std::cout<<"warning: VOF open boundary with no external trace, setting to zero for inflow"<<std::endl; 
+                   //    flux_ext = 0.0; 
+                   //  } 
 
-    //              //} 
+                 } 
+				}
 
 	// 			 //anb_seepage_flux+= dS*flow;
 	// 			 //std::cout<<"Seepage Flux is "<<anb_seepage_flux<<std::endl;
@@ -2625,7 +2581,7 @@ double computeIthLimitedFluxCorrection(int i,
     //   /*         min_u_bc[gi] = fmin(min_u_bc_local,min_u_bc[gi]); */
     //   /*         max_u_bc[gi] = fmax(max_u_bc_local,max_u_bc[gi]); */
     //   /*       } */
-    //      }//ebNE */
+    //     }//ebNE */
     //   // END OF ADDING BOUNDARY TERM TO TRANSPORT MATRICES and COMPUTING BOUNDARY INTEGRAL //
 
       /////////////////////////////////////////////////////////////////
