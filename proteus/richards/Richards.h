@@ -3076,59 +3076,129 @@ double computeIthLimitedFluxCorrection(int i,
       //  globalResidual[i] = solni + 1.0/mi*ith_Limiter_times_FluxCorrectionMatrix;
       }
     }
-   
-    void invert(arguments_dict& args)
-    {
-      xt::pyarray<int>& a_rowptr = args.array<int>("a_rowptr");
-      xt::pyarray<int>& a_colind = args.array<int>("a_colind");
-      double rho = args.scalar<double>("rho");
-      double beta = args.scalar<double>("beta");
-      xt::pyarray<double>& gravity = args.array<double>("gravity");
-      xt::pyarray<double>& alpha = args.array<double>("alpha");
-      xt::pyarray<double>& n = args.array<double>("n");
-      xt::pyarray<double>& thetaR = args.array<double>("thetaR");
-	  xt::pyarray<double>& thetaSR = args.array<double>("thetaSR");
-      xt::pyarray<double>& KWs = args.array<double>("KWs");
-      //xt::pyarray<double>& globalResidual = args.array<double>("globalResidual");
-      //xt::pyarray<double>& u_dof = args.array<double>("u_dof");
-      xt::pyarray<int>& elementMaterialTypes = args.array<int>("elementMaterialTypes");	
-      int numDOFs = args.scalar<int>("numDOFs");
-	  xt::pyarray<double>& uLow = args.array<double>("uLow");
-	  xt::pyarray<double>& limited_solution = args.array<double>("limited_solution");
 
-      for (int i=0; i<numDOFs; i++)
+       
+	void invert(arguments_dict& args)
 	{
-	  double dm,f[nSpace],df[nSpace],a[nnz],da[nnz];
-	  double mMin = rho*thetaR.data()[elementMaterialTypes.data()[0]];
-	  double mMax = rho*(thetaR.data()[elementMaterialTypes.data()[0]] + thetaSR.data()[elementMaterialTypes.data()[0]]);
-	//   if (u_dof.data()[i] < mMin-0.001 || u_dof.data()[i]  > mMax+0.001)
-	//     {
-	//       std::cout<<"mass out of bounds "<<mMin<<'\t'<<u_dof.data()[i]<<'\t'<<mMax<<std::endl;
-	//     }
-	  if (limited_solution.data()[i] < mMin-0.001 || limited_solution.data()[i]  > mMax+0.001)
-	    {
-	      std::cout<<"mass out of bounds "<<mMin<<'\t'<<limited_solution.data()[i]<<'\t'<<mMax<<std::endl;
-	    }
-	  evaluateInverseCoefficients(a_rowptr.data(),
-				      a_colind.data(),
-				      rho,
-				      beta,
-				      gravity.data(),
-				      alpha.data()[elementMaterialTypes.data()[0]],//cek hack, only for 1 material
-				      n.data()[elementMaterialTypes.data()[0]],
-				      thetaR.data()[elementMaterialTypes.data()[0]],
-				      thetaSR.data()[elementMaterialTypes.data()[0]],
-				      &KWs.data()[elementMaterialTypes.data()[0]*nnz],	
-					  uLow.data()[i],	      
-				      //globalResidual.data()[i],//output
-				      limited_solution.data()[i],//input
-				      dm,
-				      f,
-				      df,
-				      a,
-				      da);
+			xt::pyarray<int>& a_rowptr = args.array<int>("a_rowptr");
+			xt::pyarray<int>& a_colind = args.array<int>("a_colind");
+			double rho = args.scalar<double>("rho");
+			double beta = args.scalar<double>("beta");
+			xt::pyarray<double>& gravity = args.array<double>("gravity");
+			xt::pyarray<double>& alpha = args.array<double>("alpha");
+			xt::pyarray<double>& n = args.array<double>("n");
+			xt::pyarray<double>& thetaR = args.array<double>("thetaR");
+			xt::pyarray<double>& thetaSR = args.array<double>("thetaSR");
+			xt::pyarray<double>& KWs = args.array<double>("KWs");
+			xt::pyarray<int>& elementMaterialTypes = args.array<int>("elementMaterialTypes");
+			int numDOFs = args.scalar<int>("numDOFs");
+			//bool isFCT = args.scalar<bool>("isFCT");
+			bool isFCT = args.scalar<int>("isFCT") != 0;
+	
+			// Select inputs
+			xt::pyarray<double>* input_solution;
+			xt::pyarray<double>* secondary_input;
+			xt::pyarray<double>* globalResidual = nullptr;
+	
+			if (isFCT)
+			{
+				input_solution = &args.array<double>("limited_solution");
+				secondary_input = &args.array<double>("uLow");
+			}
+			else
+			{
+				input_solution = &args.array<double>("u_dof");
+				globalResidual = &args.array<double>("globalResidual");
+				secondary_input = globalResidual;  // For non-FCT, use globalResidual in place of uLow
+			}
+	
+			for (int i = 0; i < numDOFs; i++)
+			{
+				double dm, f[nSpace], df[nSpace], a[nnz], da[nnz];
+				double mMin = rho * thetaR.data()[elementMaterialTypes.data()[0]];
+				double mMax = rho * (thetaR.data()[elementMaterialTypes.data()[0]] + thetaSR.data()[elementMaterialTypes.data()[0]]);
+	
+				if ((*input_solution).data()[i] < mMin - 0.001 || (*input_solution).data()[i] > mMax + 0.001)
+				{
+				std::cout << "mass out of bounds " << mMin << '\t' << (*input_solution).data()[i] << '\t' << mMax << std::endl;
+				}
+	
+				evaluateInverseCoefficients(a_rowptr.data(),
+										a_colind.data(),
+										rho,
+										beta,
+										gravity.data(),
+										alpha.data()[elementMaterialTypes.data()[0]],
+										n.data()[elementMaterialTypes.data()[0]],
+										thetaR.data()[elementMaterialTypes.data()[0]],
+										thetaSR.data()[elementMaterialTypes.data()[0]],
+										&KWs.data()[elementMaterialTypes.data()[0] * nnz],
+										(*secondary_input).data()[i],    // uLow if FCT; globalResidual if non-FCT
+										(*input_solution).data()[i],     // limited_solution or u_dof
+										dm,
+										f, 
+										df, 
+										a, 
+										da);
+	
+			}
 	}
-    }
+	
+
+   
+    // void invert(arguments_dict& args)
+    // {
+    //   xt::pyarray<int>& a_rowptr = args.array<int>("a_rowptr");
+    //   xt::pyarray<int>& a_colind = args.array<int>("a_colind");
+    //   double rho = args.scalar<double>("rho");
+    //   double beta = args.scalar<double>("beta");
+    //   xt::pyarray<double>& gravity = args.array<double>("gravity");
+    //   xt::pyarray<double>& alpha = args.array<double>("alpha");
+    //   xt::pyarray<double>& n = args.array<double>("n");
+    //   xt::pyarray<double>& thetaR = args.array<double>("thetaR");
+	//   xt::pyarray<double>& thetaSR = args.array<double>("thetaSR");
+    //   xt::pyarray<double>& KWs = args.array<double>("KWs");
+    //   //xt::pyarray<double>& globalResidual = args.array<double>("globalResidual");
+    //   //xt::pyarray<double>& u_dof = args.array<double>("u_dof");
+    //   xt::pyarray<int>& elementMaterialTypes = args.array<int>("elementMaterialTypes");	
+    //   int numDOFs = args.scalar<int>("numDOFs");
+	//   xt::pyarray<double>& uLow = args.array<double>("uLow");
+	//   xt::pyarray<double>& limited_solution = args.array<double>("limited_solution");
+	//   bool isFCT = args.scalar<bool>("isFCT");
+
+    //   for (int i=0; i<numDOFs; i++)
+	// {
+	//   double dm,f[nSpace],df[nSpace],a[nnz],da[nnz];
+	//   double mMin = rho*thetaR.data()[elementMaterialTypes.data()[0]];
+	//   double mMax = rho*(thetaR.data()[elementMaterialTypes.data()[0]] + thetaSR.data()[elementMaterialTypes.data()[0]]);
+	// //   if (u_dof.data()[i] < mMin-0.001 || u_dof.data()[i]  > mMax+0.001)
+	// //     {
+	// //       std::cout<<"mass out of bounds "<<mMin<<'\t'<<u_dof.data()[i]<<'\t'<<mMax<<std::endl;
+	// //     }
+	//   if (limited_solution.data()[i] < mMin-0.001 || limited_solution.data()[i]  > mMax+0.001)
+	//     {
+	//       std::cout<<"mass out of bounds "<<mMin<<'\t'<<limited_solution.data()[i]<<'\t'<<mMax<<std::endl;
+	//     }
+	//   evaluateInverseCoefficients(a_rowptr.data(),
+	// 			      a_colind.data(),
+	// 			      rho,
+	// 			      beta,
+	// 			      gravity.data(),
+	// 			      alpha.data()[elementMaterialTypes.data()[0]],//cek hack, only for 1 material
+	// 			      n.data()[elementMaterialTypes.data()[0]],
+	// 			      thetaR.data()[elementMaterialTypes.data()[0]],
+	// 			      thetaSR.data()[elementMaterialTypes.data()[0]],
+	// 			      &KWs.data()[elementMaterialTypes.data()[0]*nnz],	
+	// 				  uLow.data()[i],	      
+	// 			      //globalResidual.data()[i],//output
+	// 			      limited_solution.data()[i],//input
+	// 			      dm,
+	// 			      f,
+	// 			      df,
+	// 			      a,
+	// 			      da);
+	// }
+    // }
 
     void calculateMassMatrix(arguments_dict& args)
     {
