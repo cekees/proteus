@@ -442,11 +442,16 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             import pdb
             pdb.set_trace()
     
-    def postStep(self, t, firstStep=False):
+    # def postStep(self, t, firstStep=False):
+    #     comm = Comm.get()
+    #     if comm.isMaster():
+    #         with open("seepage_flux_try.txt", "a") as f:
+    #             f.write(f"{t:.6f}"+ ",\t ")
+    
     #    #anb_seepage_flux_n[:]= self.anb_seepage_flux
-        with open('seepage_flux_try.txt"', "a") as f:
+    #    with open("seepage_flux_try.txt", "a") as f:
     #        f.write("\n Time"+ ",\t" +"Seepage\n")
-            f.write(f"{t:.6f}"+ ",\t ")
+    #        f.write(f"{t:.6f}"+ ",\t ")
     
 #    def postStep(self, t, firstStep=False):
 #        import os
@@ -1472,14 +1477,31 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #    f.write(f"{self.timeIntegration.t:.6f},\t{float(seepage_text_variable):.6e}\n")
 #            f.write(repr(self.coefficients.t)+ ",\t" +repr(seepage_text_variable), "\n")
             #f.write(repr(seepage_text_variable)+ "\n")
-        seepage_flux_value = np.sum(self.anb_seepage_flux_n) #self.anb_seepage_flux_n[0]
-        with open("seepage_flux_try.txt", "a") as f:
-            f.write(f"{self.timeIntegration.t:.6f}, {seepage_flux_value:.6f}\n")
-                          
-#        seepage_flux.append(seepage_flux_value)
         
-#        comm = Comm.get()
-#        if comm.isMaster():
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+
+        seepage_flux_value = np.sum(self.anb_seepage_flux_n)
+        if seepage_flux_value > 0.0:
+        # Each processor writes its own flux with its rank
+            with open("seepage_flux_try.txt", "a") as f:
+                f.write(f"Rank {rank}:, {self.timeIntegration.t:.6f}, {seepage_flux_value:.8f}\n")
+
+
+       
+        # seepage_flux_value = np.sum(self.anb_seepage_flux_n) #self.anb_seepage_flux_n[0]
+        
+        # with open("seepage_flux_try.txt", "a") as f:
+        #    f.write(f"{seepage_flux_value:.8f}\n")
+                          
+        #seepage_flux.append(seepage_flux_value)
+        
+        # comm = Comm.get()
+        # if comm.isMaster():
+        #     with open("seepage_flux_try.txt", "a") as f:
+        #         f.write(f"{seepage_flux_value:.6f}\n")
+                
             #seepage_flux_value = np.sum(self.anb_seepage_flux_n) #self.anb_seepage_flux_n[0]
             #logEvent(f"Seepage flux at t={self.timeIntegration.t:.6f} is {seepage_flux_value:.6e}", level=2)
 #            with open("seepage_flux_vs_time.txt", "a") as f:
