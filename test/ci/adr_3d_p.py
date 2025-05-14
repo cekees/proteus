@@ -1,5 +1,7 @@
 from proteus import *
 from proteus.default_p import *
+from proteus import Context, Comm
+
 """
 Heterogeneous Poisson's equation, -div(a(x)u) = f(x), on unit domain [0,1]x[0,1]x[0,1]
 """
@@ -22,6 +24,12 @@ LevelModelType = ADR.LevelModel
 # Domain - mesh - quadrature
 #----------------------------------------------------
 #space dimension
+opts = Context.Options([
+    ("genMesh", True, "Generate mesh on the fly, otherwise mesh files must be written prior to job"),
+    ("Refinement", 0, "Refine the mesh this many times"),
+])
+
+name = "adr_"+str(opts.Refinement)
 nd = 3
 
 hull_length = 0.5
@@ -42,15 +50,15 @@ hull_center = (0.5*hull_length,
 
 nLevels = 1
 
-he = L[0]/10.0
+he =  L[0] / ( ( 20 * 1.26**opts.Refinement) )
 #he = hull_draft/1.0
 #he = hull_draft/6.0
-genMesh=True#False
+genMesh=opts.genMesh
 vessel = None
 #vessel = 'cube'
 #vessel = 'wigley'
 boundaryTags = { 'bottom': 1, 'front':2, 'right':3, 'back': 4, 'left':5, 'top':6, 'obstacle':7}
-if vessel is 'wigley-gmsh':
+if vessel == 'wigley-gmsh':
     domain = Domain.MeshTetgenDomain(fileprefix="mesh")
     domain.boundaryTags = boundaryTags
 else:
@@ -85,7 +93,7 @@ else:
     regions=[[x_ll[0]+0.5*L[0],x_ll[1]+0.5*L[1],x_ll[2]+0.5*L[2]]]
     regionFlags=[1.0]
     holes=[]
-    if vessel is 'wigley':
+    if vessel == 'wigley':
         from math import log
         he_hull = log(64.0*he+1.0)/64.0
         #print he,he_hull
@@ -161,7 +169,7 @@ else:
         #for v in vertices: print v
         #for f in facets: print f
         holes.append(hull_center)
-    if vessel is 'cube':
+    if vessel == 'cube':
         nStart = len(vertices)
         vertices.append([hull_center[0] - 0.5*hull_length,
                          hull_center[1] - 0.5*hull_beam,
@@ -217,10 +225,18 @@ else:
                                                  holes=holes)
     #go ahead and add a boundary tags member 
     domain.boundaryTags = boundaryTags
+    from proteus import Comm
+    comm = Comm.get()
     if vessel:
-        domain.writePoly("mesh_"+vessel)
+        polyfile="mesh_"+vessel
     else:
-        domain.writePoly("meshNoVessel")
+        polyfile="meshNoVessel"
+    if comm.isMaster():
+        domain.writePoly(polyfile)
+    else:
+        domain.polyfile=polyfile
+    comm.barrier()
+domain.MeshOptions.genMesh=genMesh
 restrictFineSolutionToAllMeshes=False
 parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.node
 nLayersOfOverlapForParallel = 0
@@ -274,13 +290,8 @@ class u5Ex(object):
 def getDBC5(x,flag):
     if flag in [boundaryTags['bottom'],boundaryTags['top'],boundaryTags['front'],boundaryTags['back'],boundaryTags['left']]:
         return lambda x,t: u5Ex().uOfXT(x,t)
-
 def getAdvFluxBC5(x,flag):
-    if flag == boundaryTags['right']:
-        return lambda x,t: 0.0
-    elif flag == 0:
-        return lambda x,t: 0.0
-
+    pass
 #specify flux on (x=1,y,z)
 def getDiffFluxBC5(x,flag):
     if flag == boundaryTags['right']:
@@ -309,8 +320,8 @@ aOfX = {0:a5}; fOfX = {0:f5}
 #one component
 nc = 1
 #load analytical solution, dirichlet conditions, flux boundary conditions into the expected variables
-analyticalSolution = {0:u5Ex()}
-analyticalSolutionVelocity = {0:velEx(analyticalSolution[0],aOfX[0])}
+#analyticalSolution = {0:u5Ex()}
+#analyticalSolutionVelocity = {0:velEx(analyticalSolution[0],aOfX[0])}
 #
 dirichletConditions = {0:getDBC5}
 advectiveFluxBoundaryConditions =  {0:getAdvFluxBC5}

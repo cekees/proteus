@@ -632,7 +632,7 @@ namespace proteus
       xt::pyarray<double>& ebqe_penalty_ext = args.array<double>("ebqe_penalty_ext");
       const bool embeddedBoundary = args.scalar<int>("embeddedBoundary");
       const double embeddedBoundary_penalty = args.scalar<double>("embeddedBoundary_penalty");
-      const double embeddedBoundary_ghost_penalty = args.scalar<double>("embedded_ghost_penalty");
+      const double embeddedBoundary_ghost_penalty = args.scalar<double>("embeddedBoundary_ghost_penalty");
       xt::pyarray<double>& embeddedBoundary_sdf_nodes = args.array<double>("embeddedBoundary_sdf_nodes");
       xt::pyarray<double>& embeddedBoundary_sdf_q = args.array<double>("embeddedBoundary_sdf_q");
       xt::pyarray<double>& embeddedBoundary_normal_q = args.array<double>("embeddedBoundary_normal_q");
@@ -1359,7 +1359,7 @@ namespace proteus
       xt::pyarray<double>& ebqe_penalty_ext = args.array<double>("ebqe_penalty_ext");
       const bool embeddedBoundary = args.scalar<int>("embeddedBoundary");
       const double embeddedBoundary_penalty = args.scalar<double>("embeddedBoundary_penalty");
-      const double embeddedBoundary_ghost_penalty = args.scalar<double>("embedded_ghost_penalty");
+      const double embeddedBoundary_ghost_penalty = args.scalar<double>("embeddedBoundary_ghost_penalty");
       xt::pyarray<double>& embeddedBoundary_sdf_nodes = args.array<double>("embeddedBoundary_sdf_nodes");
       xt::pyarray<double>& embeddedBoundary_sdf_q = args.array<double>("embeddedBoundary_sdf_q");
       xt::pyarray<double>& embeddedBoundary_normal_q = args.array<double>("embeddedBoundary_normal_q");

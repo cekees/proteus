@@ -114,7 +114,7 @@ else:
             return 8 + i*n_points_draft+j
         for i in range(n_points_length-1):
             for j in range(n_points_draft-1):
-                if i < n_points_length/2:
+                if i < n_points_length//2:
                     facets.append([[vN_right(i,j),vN_right(i+1,j+1),vN_right(i+1,j)]])
                     facetFlags.append(boundaryTags['obstacle'])
                     facets.append([[vN_right(i,j),vN_right(i,j+1),vN_right(i+1,j+1)]])

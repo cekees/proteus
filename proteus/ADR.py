@@ -69,7 +69,7 @@ class ShockCapturing(ShockCapturing_base):
             self.numDiff_last=[]
             for ci in range(self.nc):
                 self.numDiff_last.append(self.numDiff[ci].copy())
-        log("VOF: max numDiff %e" % (globalMax(self.numDiff_last[0].max()),))
+        #log("VOF: max numDiff %e" % (globalMax(self.numDiff_last[0].max()),))
 
 class NumericalFlux_IIPG(proteus.NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG_exterior):
     def __init__(self,vt,getPointwiseBoundaryConditions,
@@ -599,12 +599,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
         argsDict["mesh_dof"] = self.mesh.nodeArray
         argsDict["mesh_l2g"] = self.mesh.elementNodesArray
+        argsDict["x_ref"] = self.elementQuadraturePoints
         argsDict["dV_ref"] = self.elementQuadratureWeights[('u',0)]
         argsDict["u_trial_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_trial_ref"] = self.u[0].femSpace.grad_psi
         argsDict["u_test_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_test_ref"] = self.u[0].femSpace.grad_psi
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
+        argsDict["elementBoundaryDiameter"] = self.mesh.elementBoundaryDiametersArray
+        argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["cfl"] = self.q[('cfl',0)]
         argsDict["Ct_sge"] = self.shockCapturing.shockCapturingFactor
         argsDict["sc_uref"] = self.coefficients.sc_uref
@@ -620,6 +623,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["nElements_global"] = self.mesh.nElements_global
+        argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
         argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
         argsDict["u_dof"] = self.u[0].dof
         argsDict["sd_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
@@ -637,6 +641,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
+        argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
         argsDict["ebqe_a"] = self.ebqe[('a',0,0)]
         argsDict["ebqe_v"] = self.ebqe[('df',0,0)]
@@ -652,16 +657,16 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["embeddedBoundary_penalty"] = self.coefficients.embeddedBoundary_penalty
         argsDict["embeddedBoundary_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
         argsDict["embeddedBoundary_sdf_nodes"] = self.coefficients.embeddedBoundary_sdf_nodes
-        argsDict["embeddedBoundary_sdf"] = self.q['embeddedBoundary_sdf']
-        argsDict["embeddedBoundary_normal"] = self.q['embeddedBoundary_normal']
-        argsDict["embeddedBoundary_u"] = self.q['embeddedBoundary_u']
+        argsDict["embeddedBoundary_sdf_q"] = self.q['embeddedBoundary_sdf']
+        argsDict["embeddedBoundary_normal_q"] = self.q['embeddedBoundary_normal']
+        argsDict["embeddedBoundary_u_q"] = self.q['embeddedBoundary_u']
         argsDict["isActiveDOF"] = self.isActiveDOF
         self.adr.calculateResidual(argsDict)
-        self.u[0].dof[:] = np.where(self.isActiveDOF == 1.0, self.u[0].dof,0.0)
-        r*=self.isActiveDOF
+        #self.u[0].dof[:] = np.where(self.isActiveDOF == 1.0, self.u[0].dof,0.0)
+        #r*=self.isActiveDOF
         log("Global residual",level=9,data=r)
-        self.coefficients.massConservationError = fabs(globalSum(sum(r.flat[:self.mesh.nElements_owned])))
-        log("   Mass Conservation Error",level=3,data=self.coefficients.massConservationError)
+        #self.coefficients.massConservationError = fabs(globalSum(sum(r.flat[:self.mesh.nElements_owned])))
+        #log("   Mass Conservation Error",level=3,data=self.coefficients.massConservationError)
         self.nonlinear_function_evaluations += 1
     def getJacobian(self,jacobian):
         #import superluWrappers
@@ -673,12 +678,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
         argsDict["mesh_dof"] = self.mesh.nodeArray
         argsDict["mesh_l2g"] = self.mesh.elementNodesArray
+        argsDict["x_ref"] = self.elementQuadraturePoints
         argsDict["dV_ref"] = self.elementQuadratureWeights[('u',0)]
         argsDict["u_trial_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_trial_ref"] = self.u[0].femSpace.grad_psi
         argsDict["u_test_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_test_ref"] = self.u[0].femSpace.grad_psi
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
+        argsDict["elementBoundaryDiameter"] = self.mesh.elementBoundaryDiametersArray
+        argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["cfl"] = self.q[('cfl',0)]
         argsDict["Ct_sge"] = self.shockCapturing.shockCapturingFactor
         argsDict["sc_uref"] = self.coefficients.sc_uref
@@ -694,6 +702,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["nElements_global"] = self.mesh.nElements_global
+        argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
         argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
         argsDict["u_dof"] = self.u[0].dof
         argsDict["sd_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
@@ -711,6 +720,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
+        argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
         argsDict["ebqe_a"] = self.ebqe[('a',0,0)]
         argsDict["ebqe_v"] = self.ebqe[('df',0,0)]
@@ -727,9 +737,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["embeddedBoundary_penalty"] = self.coefficients.embeddedBoundary_penalty
         argsDict["embeddedBoundary_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
         argsDict["embeddedBoundary_sdf_nodes"] = self.coefficients.embeddedBoundary_sdf_nodes
-        argsDict["embeddedBoundary_sdf"] = self.q['embeddedBoundary_sdf']
-        argsDict["embeddedBoundary_normal"] = self.q['embeddedBoundary_normal']
-        argsDict["embeddedBoundary_u"] = self.q['embeddedBoundary_u']
+        argsDict["embeddedBoundary_sdf_q"] = self.q['embeddedBoundary_sdf']
+        argsDict["embeddedBoundary_normal_q"] = self.q['embeddedBoundary_normal']
+        argsDict["embeddedBoundary_u_q"] = self.q['embeddedBoundary_u']
         argsDict["isActiveDOF"] = self.isActiveDOF
         self.adr.calculateJacobian(argsDict)
         log("Jacobian ",level=10,data=jacobian)
