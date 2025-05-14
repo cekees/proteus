@@ -74,21 +74,23 @@ elif sys.platform.startswith('linux'):
 PROTEUS_CHRONO_INCLUDE_DIR, PROTEUS_CHRONO_LIB_DIR = get_flags('chrono')
 
 PROTEUS_CHRONO_CXX_FLAGS = []
-chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','Chrono','ChronoConfig.cmake')
-if not os.path.isfile(chrono_cmake_file_path):
-    chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','ChronoConfig.cmake')
+try:
+    chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','Chrono','ChronoConfig.cmake')
     if not os.path.isfile(chrono_cmake_file_path):
-        chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','Chrono','chrono-config.cmake') 
-with open(chrono_cmake_file_path,'r') as f:
-    for l in f:
-        if 'set(CHRONO_CXX_FLAGS' in l:
-            args = l.split()
-            for arg in args:
-                if arg[0] == '-':
-                    arg = arg.replace('"', '')
-                    arg = arg.replace(')', '')
-                    PROTEUS_CHRONO_CXX_FLAGS += [arg]
-
+        chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','ChronoConfig.cmake')
+        if not os.path.isfile(chrono_cmake_file_path):
+            chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','Chrono','chrono-config.cmake') 
+    with open(chrono_cmake_file_path,'r') as f:
+        for l in f:
+            if 'set(CHRONO_CXX_FLAGS' in l:
+                args = l.split()
+                for arg in args:
+                    if arg[0] == '-':
+                        arg = arg.replace('"', '')
+                        arg = arg.replace(')', '')
+                        PROTEUS_CHRONO_CXX_FLAGS += [arg]
+except:
+    pass
 PROTEUS_EXTRA_FC_COMPILE_ARGS= ['-Wall']
 PROTEUS_EXTRA_FC_LINK_ARGS=platform_extra_link_args
 

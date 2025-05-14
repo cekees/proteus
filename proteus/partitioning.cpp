@@ -1139,8 +1139,7 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
       last_nodes_added2overlap.clear();
       set_difference(new_nodes_overlap.begin(),new_nodes_overlap.end(),
                      nodes_overlap.begin(),nodes_overlap.end(),
-                     insert_iterator<set<int> >(last_nodes_added2overlap,
-                                                last_nodes_added2overlap.begin()));
+		     std::inserter(last_nodes_added2overlap,last_nodes_added2overlap.begin()));
 
       //could do a set_merge
       for (set<int>::iterator nN_addedp = new_nodes_overlap.begin();
