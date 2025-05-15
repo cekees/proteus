@@ -115,7 +115,12 @@ class Coefficients(TC_base):
                  embeddedBoundary_penalty=100.0,
                  embeddedBoundary_ghost_penalty=0.1,
                  embeddedBoundary_sdf=None,
-                 embeddedBoundary_u=None):
+                 embeddedBoundary_u=None,
+                 immersedBoundary=False,
+                 immersedBoundary_penalty=100.0,
+                 immersedBoundary_ghost_penalty=0.1,
+                 immersedBoundary_sdf=None,
+                 immersedBoundary_u=None):
         self.embeddedBoundary=embeddedBoundary
         self.embeddedBoundary_penalty=embeddedBoundary_penalty
         self.embeddedBoundary_ghost_penalty=embeddedBoundary_ghost_penalty
@@ -124,6 +129,14 @@ class Coefficients(TC_base):
         if self.embeddedBoundary:
             assert(self.embeddedBoundary_sdf is not None)
             assert(self.embeddedBoundary_u is not None)
+        self.immersedBoundary=immersedBoundary
+        self.immersedBoundary_penalty=immersedBoundary_penalty
+        self.immersedBoundary_ghost_penalty=immersedBoundary_ghost_penalty
+        self.immersedBoundary_sdf=immersedBoundary_sdf
+        self.immersedBoundary_u=immersedBoundary_u
+        if self.immersedBoundary:
+            assert(self.immersedBoundary_sdf is not None)
+            assert(self.immersedBoundary_u is not None)
         self.useMetrics = useMetrics
         self.forceStrongDirichlet=forceStrongDirichlet
         self.aOfX = aOfX
@@ -160,11 +173,15 @@ class Coefficients(TC_base):
                          sparseDiffusionTensors=sdInfo,
                          useSparseDiffusion=True,
                          movingDomain=False)
-    def initializeMesh(self,mesh): 
+    def initializeMesh(self,mesh):
         self.embeddedBoundary_sdf_nodes = np.ones((mesh.nodeArray.shape[0],),'d')
         if self.embeddedBoundary:
             for nN in range(mesh.nodeArray.shape[0]):
                 self.embeddedBoundary_sdf_nodes[nN], dummy_normal = self.embeddedBoundary_sdf(t=0.0,x=mesh.nodeArray[nN])
+        self.immersedBoundary_sdf_nodes = -np.ones((mesh.nodeArray.shape[0],),'d')
+        if self.immersedBoundary:
+            for nN in range(mesh.nodeArray.shape[0]):
+                self.immersedBoundary_sdf_nodes[nN], dummy_normal = self.immersedBoundary_sdf(t=0.0,x=mesh.nodeArray[nN])
     def initializeElementQuadrature(self,t,cq):
         nd = self.nd
         for ci in range(self.nc):
@@ -184,6 +201,14 @@ class Coefficients(TC_base):
                 for k in range(cq['embeddedBoundary_sdf'].shape[1]):
                     cq['embeddedBoundary_sdf'][eN,k],cq['embeddedBoundary_normal'][eN,k] = self.embeddedBoundary_sdf(t=0.0,x=cq['x'][eN,k])
                     cq['embeddedBoundary_u'][eN,k] = self.embeddedBoundary_u(t=0.0,x=cq['x'][eN,k])
+        cq['immersedBoundary_sdf'] = -np.ones_like(cq[('u',0)])
+        cq['immersedBoundary_normal'] = -np.ones_like(cq['x'])
+        cq['immersedBoundary_u'] = np.ones_like(cq[('u',0)])
+        if self.immersedBoundary:
+            for eN in range(cq['immersedBoundary_sdf'].shape[0]):
+                for k in range(cq['immersedBoundary_sdf'].shape[1]):
+                    cq['immersedBoundary_sdf'][eN,k],cq['immersedBoundary_normal'][eN,k] = self.immersedBoundary_sdf(t=0.0,x=cq['x'][eN,k])
+                    cq['immersedBoundary_u'][eN,k] = self.immersedBoundary_u(t=0.0,x=cq['x'][eN,k])
 
     def initializeElementBoundaryQuadrature(self,t,cebq,cebq_global):
         nd = self.nd
@@ -258,7 +283,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                  name='defaultName',
                  reuse_trial_and_test_quadrature=True,
                  sd = True,
-                 movingDomain=False):#,
+                 movingDomain=False):
+        if coefficients.embeddedBoundary or coefficients.immersedBoundary:
+            self.hasCutCells=True
         from proteus import Comm
         #
         #set the objects describing the method and boundary conditions
@@ -660,10 +687,17 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["embeddedBoundary_sdf_q"] = self.q['embeddedBoundary_sdf']
         argsDict["embeddedBoundary_normal_q"] = self.q['embeddedBoundary_normal']
         argsDict["embeddedBoundary_u_q"] = self.q['embeddedBoundary_u']
+        argsDict["immersedBoundary"] = self.coefficients.immersedBoundary
+        argsDict["immersedBoundary_penalty"] = self.coefficients.immersedBoundary_penalty
+        argsDict["immersedBoundary_ghost_penalty"] = self.coefficients.immersedBoundary_ghost_penalty
+        argsDict["immersedBoundary_sdf_nodes"] = self.coefficients.immersedBoundary_sdf_nodes
+        argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
+        argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
+        argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
         argsDict["isActiveDOF"] = self.isActiveDOF
         self.adr.calculateResidual(argsDict)
-        #self.u[0].dof[:] = np.where(self.isActiveDOF == 1.0, self.u[0].dof,0.0)
-        #r*=self.isActiveDOF
+        self.u[0].dof[:] = np.where(self.isActiveDOF == 1.0, self.u[0].dof,0.0)
+        r*=self.isActiveDOF
         log("Global residual",level=9,data=r)
         #self.coefficients.massConservationError = fabs(globalSum(sum(r.flat[:self.mesh.nElements_owned])))
         #log("   Mass Conservation Error",level=3,data=self.coefficients.massConservationError)
@@ -740,6 +774,13 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["embeddedBoundary_sdf_q"] = self.q['embeddedBoundary_sdf']
         argsDict["embeddedBoundary_normal_q"] = self.q['embeddedBoundary_normal']
         argsDict["embeddedBoundary_u_q"] = self.q['embeddedBoundary_u']
+        argsDict["immersedBoundary"] = self.coefficients.immersedBoundary
+        argsDict["immersedBoundary_penalty"] = self.coefficients.immersedBoundary_penalty
+        argsDict["immersedBoundary_ghost_penalty"] = self.coefficients.immersedBoundary_ghost_penalty
+        argsDict["immersedBoundary_sdf_nodes"] = self.coefficients.immersedBoundary_sdf_nodes
+        argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
+        argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
+        argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
         argsDict["isActiveDOF"] = self.isActiveDOF
         self.adr.calculateJacobian(argsDict)
         log("Jacobian ",level=10,data=jacobian)

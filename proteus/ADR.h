@@ -42,15 +42,10 @@ namespace proteus
     std::valarray<bool> elementIsActive;
     const int nDOF_test_X_trial_element;
     CompKernelType ck;
-    GeneralizedFunctions<nSpace,3,nQuadraturePoints_element,nQuadraturePoints_elementBoundary> gf;
+    GeneralizedFunctions<nSpace,3,nQuadraturePoints_element,nQuadraturePoints_elementBoundary> gf_f;
     GeneralizedFunctions<nSpace,3,nQuadraturePoints_element,nQuadraturePoints_elementBoundary> gf_s;
     cADR(): nDOF_test_X_trial_element(nDOF_test_element*nDOF_trial_element), ck()
     {}
-    /* inline
-       void evaluateCoefficients()
-       {
-       }
-    */
     
     inline
     void exteriorNumericalDiffusiveFlux(int* rowptr,
@@ -71,9 +66,9 @@ namespace proteus
       double penaltyFlux;
       double max_a;
       if (isDiffusiveFluxBoundary == 1)
-	{
-	  flux = bc_flux;
-	}
+		{
+	  	flux = bc_flux;
+		}
       else if (isDOFBoundary == 1)
 	{
 	  flux = 0.0;
@@ -282,26 +277,64 @@ namespace proteus
 					    double* f,
 					    double* df)
     {
-      double outward_normal[2]={0.0,0.0};
+      //todo this doesn't look 1d/3d
+      double outward_normal[nSpace];
       for (int I=0;I<nSpace;I++)
 	outward_normal[I] = -embeddedBoundary_normal[I];
           
       double D_s = gf_s.D(0.,0.);
           
       //diffusive flux
-      ham -= D_s * a * (outward_normal[0] * grad_u[0] + outward_normal[1] * grad_u[1]);
-      dham[0] -= D_s * a * outward_normal[0];
-      dham[1] -= D_s * a * outward_normal[1];
-          
+      for (int I=0;I<nSpace;I++)
+	{
+	  ham -= outward_normal[I] * grad_u[I];
+	  dham[I] -= D_s * a * outward_normal[I];
+	  //Nitsche adjoint consistency
+	  f[I] += D_s * a * outward_normal[I] * (u - u_s);
+	  df[I] += D_s * a * outward_normal[I];
+	}
+      ham *= D_s * a;
+      
       //Nitsche Dirichlet penalty
       r  += D_s*a*embeddedBoundary_penalty * (u - u_s);
       dr += D_s*a*embeddedBoundary_penalty;
+    }
+
+    inline void updateImmersedBoundaryTerms(const double immersedBoundary_penalty,
+					    const double dV,
+					    double* immersedBoundary_normal,
+					    const double u_s,
+					    const double u,
+					    const double grad_u[nSpace],
+					    const double a,
+					    double& r,
+					    double& dr,
+					    double& ham,
+					    double* dham,
+					    double* f,
+					    double* df)
+    {
+      //todo this doesn't look 1d/3d
+      double outward_normal[nSpace];
+      for (int I=0;I<nSpace;I++)
+	outward_normal[I] = immersedBoundary_normal[I];
           
-      //Nitsche adjoint consistency
-      f[0] += D_s * a * outward_normal[0] * (u - u_s);
-      f[1] += D_s * a * outward_normal[1] * (u - u_s);
-      df[0] += D_s * a * outward_normal[0];
-      df[1] += D_s * a * outward_normal[1];
+      double D_f = gf_f.D(0.,0.);
+          
+      //diffusive flux
+      for (int I=0;I<nSpace;I++)
+	{
+	  ham -= outward_normal[I] * grad_u[I];
+	  dham[I] -= D_f * a * outward_normal[I];
+	  //Nitsche adjoint consistency
+	  f[I] += D_f * a * outward_normal[I] * (u - u_s);
+	  df[I] += D_f * a * outward_normal[I];
+	}
+      ham *= D_f * a;
+      
+      //Nitsche Dirichlet penalty
+      r  += D_f*a*immersedBoundary_penalty * (u - u_s);
+      dr += D_f*a*immersedBoundary_penalty;
     }
 
     inline void calculateElementResidual(//element
@@ -361,6 +394,10 @@ namespace proteus
 					 const double embeddedBoundary_penalty,
 					 xt::pyarray<double>& embeddedBoundary_normal_q,
 					 xt::pyarray<double>& embeddedBoundary_u_q,
+					 const bool immersedBoundary,
+					 const double immersedBoundary_penalty,
+					 xt::pyarray<double>& immersedBoundary_normal_q,
+					 xt::pyarray<double>& immersedBoundary_u_q,
 					 bool& element_active,
 					 std::valarray<bool>& elementIsActive)
     {
@@ -372,6 +409,7 @@ namespace proteus
       for (int k = 0; k < nQuadraturePoints_element; k++)
 	{
 	  gf_s.set_quad(k);
+	  gf_f.set_quad(k);
 	  //compute indeces and declare local storage
 	  int eN_k = eN * nQuadraturePoints_element + k;
 	  int eN_k_3d = eN_k*3;
@@ -386,6 +424,10 @@ namespace proteus
 	  double df_s[nSpace]={0.,0.};
 	  double ham_s=0.0;
 	  double dham_s[nSpace]={0.,0.};
+	  double f_f[nSpace]={0.,0.};
+	  double df_f[nSpace]={0.,0.};
+	  double ham_f=0.0;
+	  double dham_f[nSpace]={0.,0.};
 	  double m_t = 0.0;
 	  double dm_t = 0.0;
 	  double pdeResidual_u = 0.0;
@@ -400,6 +442,8 @@ namespace proteus
 	  double r = 0.0;
 	  double r_s = 0.0;
 	  double dr_s = 0.0;
+	  double r_f = 0.0;
+	  double dr_f = 0.0;
 	  double jac[nSpace*nSpace];
 	  double jacDet;
 	  double jacInv[nSpace*nSpace];
@@ -467,11 +511,6 @@ namespace proteus
 	    }
 	  const double H_s = gf_s.H(0.,0.);
 	  const double D_s = gf_s.D(0.,0.);
-	  if ( H_s != 0.0 || D_s != 0.0)
-	    {
-	      element_active=true;
-	      elementIsActive[eN]=true;
-	    }
 	  if(embeddedBoundary)
 	    {
 	      double level_set_normal[nSpace];
@@ -502,6 +541,44 @@ namespace proteus
 					  dham_s,
 					  f_s,
 					  df_s);
+	    }
+	  const double ImH_f = gf_f.ImH(0.,0.);
+	  const double D_f = gf_f.D(0.,0.);
+	  if ( H_s*ImH_f != 0.0 || D_s != 0.0 || D_f != 0.0)
+	    {
+	      element_active=true;
+	      elementIsActive[eN]=true;
+	    }
+	  if(immersedBoundary)
+	    {
+	      double level_set_normal[nSpace];
+	      double sign=0.0;
+	      double norm_exact=0.0,norm_cut=0.0;
+	      for (int I=0;I<nSpace;I++)
+		{
+		  sign += immersedBoundary_normal_q.data()[eN_k_3d+I]*gf_f.get_normal()[I];
+		  level_set_normal[I] = gf_f.get_normal()[I];
+		  norm_cut += level_set_normal[I]*level_set_normal[I];
+		  norm_exact += immersedBoundary_normal_q.data()[eN_k_3d+I]*immersedBoundary_normal_q.data()[eN_k_3d+I];
+		}
+	      assert(std::fabs(1.0-norm_cut) < 1.0e-8);
+	      assert(std::fabs(1.0-norm_exact) < 1.0e-8);
+	      if (sign < 0.0)
+		for (int I=0;I<nSpace;I++)
+		  level_set_normal[I]*=-1.0;
+	      updateImmersedBoundaryTerms(immersedBoundary_penalty/h_phi,//penalty,
+					  dV,
+					  level_set_normal,
+					  immersedBoundary_u_q.data()[eN_k],
+					  u,
+					  grad_u,
+					  a[0],//assume scalar diffusion for now
+					  r_f,
+					  dr_f,
+					  ham_f,
+					  dham_f,
+					  f_f,
+					  df_f);
 	    }
 	  //
 	  //moving mesh
@@ -561,16 +638,22 @@ namespace proteus
 	  for (int i = 0; i < nDOF_test_element; i++)
 	    {
 	      int i_nSpace=i*nSpace;
-	      elementResidual_u.data()[i] += H_s*(ck.Advection_weak(f, &u_grad_test_dV[i_nSpace]) +
-						  ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a, grad_u, &u_grad_test_dV[i_nSpace]) +
-						  ck.Reaction_weak(r, u_test_dV[i]) +
-						  ck.SubgridError(subgridError_u, Lstar_u[i]) +
-						  ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_u, &u_grad_test_dV[i_nSpace]));
+	      elementResidual_u.data()[i] += ImH_f*H_s*(ck.Advection_weak(f, &u_grad_test_dV[i_nSpace]) +
+							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a, grad_u, &u_grad_test_dV[i_nSpace]) +
+							ck.Reaction_weak(r, u_test_dV[i]) +
+							ck.SubgridError(subgridError_u, Lstar_u[i]) +
+							ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_u, &u_grad_test_dV[i_nSpace]));
 	      if (embeddedBoundary)
 		{
 		  elementResidual_u.data()[i] += (ck.Advection_weak(f_s,&u_grad_test_dV[i_nSpace]) +
 						  ck.Reaction_weak(r_s,u_test_dV[i]) +
 						  ck.Hamiltonian_weak(ham_s,u_test_dV[i]));
+		}
+	      if (immersedBoundary)
+		{
+		  elementResidual_u.data()[i] += (ck.Advection_weak(f_f,&u_grad_test_dV[i_nSpace]) +
+						  ck.Reaction_weak(r_f,u_test_dV[i]) +
+						  ck.Hamiltonian_weak(ham_f,u_test_dV[i]));
 		}
 	    }
 	}
@@ -637,6 +720,13 @@ namespace proteus
       xt::pyarray<double>& embeddedBoundary_sdf_q = args.array<double>("embeddedBoundary_sdf_q");
       xt::pyarray<double>& embeddedBoundary_normal_q = args.array<double>("embeddedBoundary_normal_q");
       xt::pyarray<double>& embeddedBoundary_u_q = args.array<double>("embeddedBoundary_u_q");
+      const bool immersedBoundary = args.scalar<int>("immersedBoundary");
+      const double immersedBoundary_penalty = args.scalar<double>("immersedBoundary_penalty");
+      const double immersedBoundary_ghost_penalty = args.scalar<double>("immersedBoundary_ghost_penalty");
+      xt::pyarray<double>& immersedBoundary_sdf_nodes = args.array<double>("immersedBoundary_sdf_nodes");
+      xt::pyarray<double>& immersedBoundary_sdf_q = args.array<double>("immersedBoundary_sdf_q");
+      xt::pyarray<double>& immersedBoundary_normal_q = args.array<double>("immersedBoundary_normal_q");
+      xt::pyarray<double>& immersedBoundary_u_q = args.array<double>("immersedBoundary_u_q");
       xt::pyarray<double>& isActiveDOF = args.array<double>("isActiveDOF");
       const double eb_adjoint_sigma = args.scalar<double>("eb_adjoint_sigma");
       xt::pyarray<double>& x_ref = args.array<double>("x_ref");
@@ -645,7 +735,7 @@ namespace proteus
       xt::pyarray<double>& elementBoundaryDiameter = args.array<double>("elementBoundaryDiameter");
       xt::pyarray<double>& nodeDiametersArray = args.array<double>("nodeDiametersArray");
 
-      gf.useExact = true;
+      gf_f.useExact = true;
       gf_s.useExact = true;
       ifem_boundaries.clear();
       ifem_boundary_elements.clear();
@@ -682,6 +772,12 @@ namespace proteus
 	      int eN_j = eN*nDOF_mesh_trial_element+j;
 	      element_phi_s[j] = embeddedBoundary_sdf_nodes.data()[u_l2g.data()[eN_j]];
 	    }
+	  double element_phi_f[nDOF_mesh_trial_element];
+	  for (int j=0;j<nDOF_mesh_trial_element;j++)
+	    {
+	      int eN_j = eN*nDOF_mesh_trial_element+j;
+	      element_phi_f[j] = immersedBoundary_sdf_nodes.data()[u_l2g.data()[eN_j]];
+	    }
 	  double element_nodes[nDOF_mesh_trial_element*3];
 	  for (int i=0;i<nDOF_mesh_trial_element;i++)
 	    {
@@ -697,22 +793,22 @@ namespace proteus
 		{
 		  const int ebN = elementBoundariesArray.data()[eN*nDOF_mesh_trial_element+ebN_element];
 		  //internal and actually a cut edge
-		  //if (elementBoundaryElementsArray[ebN*2+1] != -1 && element_phi_s[(ebN_element+1)%nDOF_mesh_trial_element]*element_phi_s[(ebN_element+2)%nDOF_mesh_trial_element] <= 0.0)
-		  //  cutfem_boundaries.insert(ebN);
 		  if (elementBoundaryElementsArray.data()[ebN*2+1] != -1 && (ebN < nElementBoundaries_owned))
 		    cutfem_boundaries.insert(ebN);
 		}
 	    }
-	  // int icase = gf.calculate(element_phi, element_nodes, x_ref.data(), rho_1*nu_1, rho_0*nu_0,false,false);
-	  // if (icase == 0)
-	  //   {
-	  //     //only works for simplices
-	  //     for (int ebN_element=0;ebN_element < nDOF_mesh_trial_element; ebN_element++)
-	  //       {
-	  //         const int ebN = elementBoundariesArray.data()[eN*nDOF_mesh_trial_element+ebN_element];
-	  //         ifem_boundaries.insert(ebN);
-	  //       }
-	  //   }
+	  int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), false);//rho_1*nu_1, rho_0*nu_0,false,false);
+	  if (icase_f == 0)
+	    {
+	      //only works for simplices
+	      for (int ebN_element=0;ebN_element < nDOF_mesh_trial_element; ebN_element++)
+	        {
+	          const int ebN = elementBoundariesArray.data()[eN*nDOF_mesh_trial_element+ebN_element];
+		  //internal and actually a cut edge
+		  if (elementBoundaryElementsArray.data()[ebN*2+1] != -1 && (ebN < nElementBoundaries_owned))
+		    ifem_boundaries.insert(ebN);
+	        }
+	    }
 	  calculateElementResidual(mesh_trial_ref,
 				   mesh_grad_trial_ref,
 				   mesh_dof,
@@ -766,6 +862,10 @@ namespace proteus
 				   embeddedBoundary_penalty,
 				   embeddedBoundary_normal_q,
 				   embeddedBoundary_u_q,
+				   immersedBoundary,
+				   immersedBoundary_penalty,
+				   immersedBoundary_normal_q,
+				   immersedBoundary_u_q,
 				   element_active,
 				   elementIsActive);
 	  //
@@ -870,6 +970,96 @@ namespace proteus
 	      it = cutfem_boundaries.erase(it);
 	    }
 	}//cutfem element boundaries
+      for (std::set<int>::iterator it=ifem_boundaries.begin(); it!=ifem_boundaries.end(); )
+	{
+	  if(elementIsActive[elementBoundaryElementsArray[(*it)*2+0]] && elementIsActive[elementBoundaryElementsArray[(*it)*2+1]])
+	    {
+	      std::map<int,double> Dwp_Dn_jump, Dw_Dn_jump;
+	      double gamma_ifem=immersedBoundary_ghost_penalty,h_ifem=elementBoundaryDiameter.data()[*it];
+	      for (int kb=0;kb<nQuadraturePoints_elementBoundary;kb++)
+		{
+		  double Du_Dn_jump=0.0, dS;
+		  for (int eN_side=0;eN_side < 2; eN_side++)
+		    {
+		      int ebN = *it,
+			eN  = elementBoundaryElementsArray.data()[ebN*2+eN_side];
+		      for (int i=0;i<nDOF_test_element;i++)
+			{
+			  Dw_Dn_jump[u_l2g.data()[eN*nDOF_test_element+i]] = 0.0;
+			}
+		    }
+		  for (int eN_side=0;eN_side < 2; eN_side++)
+		    {
+		      int ebN = *it,
+			eN  = elementBoundaryElementsArray.data()[ebN*2+eN_side],
+			ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+eN_side],
+			eN_nDOF_trial_element = eN*nDOF_trial_element,
+			ebN_local_kb = ebN_local*nQuadraturePoints_elementBoundary+kb,
+			ebN_local_kb_nSpace = ebN_local_kb*nSpace;
+		      double u_int=0.0,
+			grad_u_int[nSpace]={0.,0.},
+			jac_int[nSpace*nSpace],
+			jacDet_int,
+			jacInv_int[nSpace*nSpace],
+			boundaryJac[nSpace*(nSpace-1)],
+			metricTensor[(nSpace-1)*(nSpace-1)],
+			metricTensorDetSqrt,
+			u_test_dS[nDOF_test_element],
+			u_grad_trial_trace[nDOF_trial_element*nSpace],
+			u_grad_test_dS[nDOF_trial_element*nSpace],
+			normal[2],x_int,y_int,z_int,xt_int,yt_int,zt_int,integralScaling,
+			G[nSpace*nSpace],G_dd_G,tr_G,h_phi,h_penalty,penalty,
+			force_x,force_y,force_z,force_p_x,force_p_y,force_p_z,force_v_x,force_v_y,force_v_z,r_x,r_y,r_z;
+		      //compute information about mapping from reference element to physical element
+		      ck.calculateMapping_elementBoundary(eN,
+							  ebN_local,
+							  kb,
+							  ebN_local_kb,
+							  mesh_dof.data(),
+							  mesh_l2g.data(),
+							  mesh_trial_trace_ref.data(),
+							  mesh_grad_trial_trace_ref.data(),
+							  boundaryJac_ref.data(),
+							  jac_int,
+							  jacDet_int,
+							  jacInv_int,
+							  boundaryJac,
+							  metricTensor,
+							  metricTensorDetSqrt,
+							  normal_ref.data(),
+							  normal,
+							  x_int,y_int,z_int);
+		      dS = metricTensorDetSqrt*dS_ref.data()[kb];
+		      //compute shape and solution information
+		      //shape
+		      ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace*nDOF_trial_element],jacInv_int,u_grad_trial_trace);
+		      //solution and gradients
+		      ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_trace_ref.data()[ebN_local_kb*nDOF_test_element],u_int);
+		      ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial_trace,grad_u_int);
+		      for (int I=0;I<nSpace;I++)
+			{
+			  Du_Dn_jump += grad_u_int[I]*normal[I];
+			}
+		      for (int i=0;i<nDOF_test_element;i++)
+			{
+			  for (int I=0;I<nSpace;I++)
+			    Dw_Dn_jump[u_l2g.data()[eN_nDOF_trial_element+i]] += u_grad_trial_trace[i*nSpace+I]*normal[I];
+			}
+		    }//eN_side
+		  for (std::map<int,double>::iterator w_it=Dw_Dn_jump.begin(); w_it!=Dw_Dn_jump.end(); ++w_it)
+		    {
+		      int i_global = w_it->first;
+		      double Dw_Dn_jump_i = w_it->second;
+		      globalResidual.data()[offset_u+stride_u*i_global]+=gamma_ifem*h_ifem*Du_Dn_jump*Dw_Dn_jump_i*dS;
+		    }//i
+		}//kb
+	      ++it;
+	    }
+	  else
+	    {
+	      it = ifem_boundaries.erase(it);
+	    }
+	}//ifem element boundaries
       //
       //loop over exterior element boundaries to calculate surface integrals and load into element and global residuals
       //
@@ -1124,7 +1314,11 @@ namespace proteus
 					 const bool embeddedBoundary,
 					 const double embeddedBoundary_penalty,
 					 xt::pyarray<double>& embeddedBoundary_normal_q,
-					 xt::pyarray<double>& embeddedBoundary_u_q)
+					 xt::pyarray<double>& embeddedBoundary_u_q,
+					 const bool immersedBoundary,
+					 const double immersedBoundary_penalty,
+					 xt::pyarray<double>& immersedBoundary_normal_q,
+					 xt::pyarray<double>& immersedBoundary_u_q)
     {
       for (int i=0;i<nDOF_test_element;i++)
 	for (int j=0;j<nDOF_trial_element;j++)
@@ -1134,6 +1328,7 @@ namespace proteus
       for  (int k=0;k<nQuadraturePoints_element;k++)
 	{
 	  gf_s.set_quad(k);
+	  gf_f.set_quad(k);
 	  int eN_k = eN*nQuadraturePoints_element+k; //index to a scalar at a quadrature point
 	  int eN_k_3d = eN_k*3;
 	  //declare local storage
@@ -1145,6 +1340,9 @@ namespace proteus
 	    f[nSpace],df[nSpace],
 	    f_s[nSpace]={0.,0.},df_s[nSpace]={0.,0.},
 	    ham_s=0.0,dham_s[nSpace]={0.,0.},
+	    r_f=0.0,dr_f=0.0,
+	    f_f[nSpace]={0.,0.},df_f[nSpace]={0.,0.},
+	    ham_f=0.0,dham_f[nSpace]={0.,0.},
 	    m_t=0.0,dm_t=0.0,
 	    dpdeResidual_u_u[nDOF_trial_element],
 	    Lstar_u[nDOF_test_element],
@@ -1240,6 +1438,39 @@ namespace proteus
 					  f_s,
 					  df_s);
 	    }
+	  const double ImH_f = gf_f.ImH(0.,0.);
+	  const double D_f = gf_f.D(0.,0.);
+	  if(immersedBoundary)
+	    {
+	      double level_set_normal[nSpace];
+	      double sign=0.0;
+	      double norm_exact=0.0,norm_cut=0.0;
+	      for (int I=0;I<nSpace;I++)
+		{
+		  sign += immersedBoundary_normal_q.data()[eN_k_3d+I]*gf_f.get_normal()[I];
+		  level_set_normal[I] = gf_f.get_normal()[I];
+		  norm_cut += level_set_normal[I]*level_set_normal[I];
+		  norm_exact += immersedBoundary_normal_q.data()[eN_k_3d+I]*immersedBoundary_normal_q.data()[eN_k_3d+I];
+		}
+	      assert(std::fabs(1.0-norm_cut) < 1.0e-8);
+	      assert(std::fabs(1.0-norm_exact) < 1.0e-8);
+	      if (sign < 0.0)
+		for (int I=0;I<nSpace;I++)
+		  level_set_normal[I]*=-1.0;
+	      updateImmersedBoundaryTerms(immersedBoundary_penalty/h_phi,//penalty,
+					  dV,
+					  level_set_normal,
+					  immersedBoundary_u_q.data()[eN_k],
+					  u,
+					  grad_u,
+					  a[0],//assume scalar diffusion for now
+					  r_f,
+					  dr_f,
+					  ham_f,
+					  dham_f,
+					  f_f,
+					  df_f);
+	    }
 	  //
 	  //calculate subgrid error contribution to the Jacobian (strong residual, adjoint, jacobian of strong residual)
 	  //
@@ -1284,16 +1515,22 @@ namespace proteus
 	      for(int j=0;j<nDOF_trial_element;j++) 
 		{ 
 		  int j_nSpace = j*nSpace;
-		  elementJacobian_u_u.data()[i*nDOF_trial_element+j] += H_s*(ck.AdvectionJacobian_weak(df,u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]) +
-									     ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(),sd_colind.data(),a,&u_grad_trial[j_nSpace],&u_grad_test_dV[i_nSpace]) +
-									     ck.ReactionJacobian_weak(dr,u_trial_ref.data()[k*nDOF_trial_element+j],u_test_dV[i]) +
-									     ck.SubgridErrorJacobian(dsubgridError_u_u[j],Lstar_u[i]) +
-									     ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k],&u_grad_trial[j_nSpace],&u_grad_test_dV[i_nSpace]));
+		  elementJacobian_u_u.data()[i*nDOF_trial_element+j] += ImH_f*H_s*(ck.AdvectionJacobian_weak(df,u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]) +
+										   ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(),sd_colind.data(),a,&u_grad_trial[j_nSpace],&u_grad_test_dV[i_nSpace]) +
+										   ck.ReactionJacobian_weak(dr,u_trial_ref.data()[k*nDOF_trial_element+j],u_test_dV[i]) +
+										   ck.SubgridErrorJacobian(dsubgridError_u_u[j],Lstar_u[i]) +
+										   ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k],&u_grad_trial[j_nSpace],&u_grad_test_dV[i_nSpace]));
 		  if (embeddedBoundary)
 		    {
 		      elementJacobian_u_u.data()[i*nDOF_trial_element+j] += (ck.AdvectionJacobian_weak(df_s,u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]) +
 									     ck.ReactionJacobian_weak(dr_s,u_trial_ref.data()[k*nDOF_trial_element+j], u_test_dV[i]) +
 									     ck.HamiltonianJacobian_weak(dham_s,&u_grad_trial[j_nSpace],u_test_dV[i]));
+		    }
+		  if (immersedBoundary)
+		    {
+		      elementJacobian_u_u.data()[i*nDOF_trial_element+j] += (ck.AdvectionJacobian_weak(df_f,u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]) +
+									     ck.ReactionJacobian_weak(dr_f,u_trial_ref.data()[k*nDOF_trial_element+j], u_test_dV[i]) +
+									     ck.HamiltonianJacobian_weak(dham_f,&u_grad_trial[j_nSpace],u_test_dV[i]));
 		    }
 		}//j
 	    }//i
@@ -1302,7 +1539,7 @@ namespace proteus
 
     void calculateJacobian(arguments_dict& args)
     {
-      gf.useExact=true;
+      gf_f.useExact=true;
       gf_s.useExact=true;
       xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
       xt::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
@@ -1364,6 +1601,13 @@ namespace proteus
       xt::pyarray<double>& embeddedBoundary_sdf_q = args.array<double>("embeddedBoundary_sdf_q");
       xt::pyarray<double>& embeddedBoundary_normal_q = args.array<double>("embeddedBoundary_normal_q");
       xt::pyarray<double>& embeddedBoundary_u_q = args.array<double>("embeddedBoundary_u_q");
+      const bool immersedBoundary = args.scalar<int>("immersedBoundary");
+      const double immersedBoundary_penalty = args.scalar<double>("immersedBoundary_penalty");
+      const double immersedBoundary_ghost_penalty = args.scalar<double>("immersedBoundary_ghost_penalty");
+      xt::pyarray<double>& immersedBoundary_sdf_nodes = args.array<double>("immersedBoundary_sdf_nodes");
+      xt::pyarray<double>& immersedBoundary_sdf_q = args.array<double>("immersedBoundary_sdf_q");
+      xt::pyarray<double>& immersedBoundary_normal_q = args.array<double>("immersedBoundary_normal_q");
+      xt::pyarray<double>& immersedBoundary_u_q = args.array<double>("immersedBoundary_u_q");
       xt::pyarray<double>& isActiveDOF = args.array<double>("isActiveDOF");
       const double eb_adjoint_sigma = args.scalar<double>("eb_adjoint_sigma");
       xt::pyarray<double>& x_ref = args.array<double>("x_ref");
@@ -1390,6 +1634,12 @@ namespace proteus
 	      int eN_j = eN*nDOF_mesh_trial_element+j;
 	      element_phi_s[j] = embeddedBoundary_sdf_nodes.data()[u_l2g.data()[eN_j]];
 	    }
+	  double element_phi_f[nDOF_mesh_trial_element];
+	  for (int j=0;j<nDOF_mesh_trial_element;j++)
+	    {
+	      int eN_j = eN*nDOF_mesh_trial_element+j;
+	      element_phi_f[j] = immersedBoundary_sdf_nodes.data()[u_l2g.data()[eN_j]];
+	    }
 	  double element_nodes[nDOF_mesh_trial_element*3];
 	  for (int i=0;i<nDOF_mesh_trial_element;i++)
 	    {
@@ -1398,7 +1648,7 @@ namespace proteus
 		element_nodes[i*3 + I] = mesh_dof.data()[mesh_l2g.data()[eN_i]*3 + I];
 	    }//i
 	  int icase_s = gf_s.calculate(element_phi_s, element_nodes, x_ref.data(), false);
-	  //int icase = gf.calculate(element_phi, element_nodes, x_ref.data(), rho_1*nu_1, rho_0*nu_0,false,false);
+	  int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), false);//rho_1*nu_1, rho_0*nu_0,false,false);
 	  calculateElementJacobian(mesh_trial_ref,
 				   mesh_grad_trial_ref,
 				   mesh_dof,
@@ -1445,7 +1695,11 @@ namespace proteus
 				   embeddedBoundary,
 				   embeddedBoundary_penalty,
 				   embeddedBoundary_normal_q,
-				   embeddedBoundary_u_q);
+				   embeddedBoundary_u_q,
+				   immersedBoundary,
+				   immersedBoundary_penalty,
+				   immersedBoundary_normal_q,
+				   immersedBoundary_u_q);
 	  //
 	  //load into element Jacobian into global Jacobian
 	  //
@@ -1569,6 +1823,116 @@ namespace proteus
 		  }//i,j
 	    }//kb
 	}//cutfem element boundaries
+      for (std::set<int>::iterator it=ifem_boundaries.begin(); it!=ifem_boundaries.end(); ++it)
+	{
+	  std::map<int,double> Dw_Dn_jump;
+	  std::map<std::pair<int, int>, int> u_u_nz;
+	  double gamma_ifem=immersedBoundary_ghost_penalty,h_ifem=elementBoundaryDiameter.data()[*it];
+	  int eN_nDOF_trial_element  = elementBoundaryElementsArray.data()[(*it)*2+0]*nDOF_trial_element;
+	  for (int kb=0;kb<nQuadraturePoints_elementBoundary;kb++)
+	    {
+	      double Dp_Dn_jump=0.0, Du_Dn_jump=0.0, Dv_Dn_jump=0.0,dS;
+	      for (int eN_side=0;eN_side < 2; eN_side++)
+		{
+		  int ebN = *it,
+		    eN  = elementBoundaryElementsArray.data()[ebN*2+eN_side];
+		  for (int i=0;i<nDOF_test_element;i++)
+		    Dw_Dn_jump[u_l2g.data()[eN*nDOF_test_element+i]] = 0.0;
+		}
+	      for (int eN_side=0;eN_side < 2; eN_side++)
+		{
+		  int ebN = *it,
+		    eN  = elementBoundaryElementsArray.data()[ebN*2+eN_side],
+		    ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+eN_side],
+		    eN_nDOF_trial_element = eN*nDOF_trial_element,
+		    ebN_local_kb = ebN_local*nQuadraturePoints_elementBoundary+kb,
+		    ebN_local_kb_nSpace = ebN_local_kb*nSpace;
+		  double 
+		    u_int=0.0,
+		    grad_u_int[nSpace]={0.,0.},
+		    jac_int[nSpace*nSpace],
+		    jacDet_int,
+		    jacInv_int[nSpace*nSpace],
+		    boundaryJac[nSpace*(nSpace-1)],
+		    metricTensor[(nSpace-1)*(nSpace-1)],
+		    metricTensorDetSqrt,
+		    u_test_dS[nDOF_test_element],
+		    u_grad_trial_trace[nDOF_trial_element*nSpace],
+		    u_grad_test_dS[nDOF_trial_element*nSpace],
+		    normal[2],x_int,y_int,z_int,xt_int,yt_int,zt_int,integralScaling,
+		    G[nSpace*nSpace],G_dd_G,tr_G,h_phi,h_penalty,penalty;
+		  //compute information about mapping from reference element to physical element
+		  ck.calculateMapping_elementBoundary(eN,
+						      ebN_local,
+						      kb,
+						      ebN_local_kb,
+						      mesh_dof.data(),
+						      mesh_l2g.data(),
+						      mesh_trial_trace_ref.data(),
+						      mesh_grad_trial_trace_ref.data(),
+						      boundaryJac_ref.data(),
+						      jac_int,
+						      jacDet_int,
+						      jacInv_int,
+						      boundaryJac,
+						      metricTensor,
+						      metricTensorDetSqrt,
+						      normal_ref.data(),
+						      normal,
+						      x_int,y_int,z_int);
+		  dS = metricTensorDetSqrt*dS_ref.data()[kb];
+		  //compute shape and solution information
+		  //shape
+		  ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace*nDOF_trial_element],jacInv_int,u_grad_trial_trace);
+		  for (int i=0;i<nDOF_test_element;i++)
+		    {
+		      int eN_i = eN*nDOF_test_element + i;
+		      for (int I=0;I<nSpace;I++)
+			Dw_Dn_jump[u_l2g.data()[eN_i]] += u_grad_trial_trace[i*nSpace+I]*normal[I];
+		    }
+		}//eN_side
+	      for (int eN_side=0;eN_side < 2; eN_side++)
+		{
+		  int ebN = *it,
+		    eN  = elementBoundaryElementsArray.data()[ebN*2+eN_side];
+		  for (int i=0;i<nDOF_test_element;i++)
+		    {
+		      int eN_i = eN*nDOF_test_element+i;
+		      for (int eN_side2=0;eN_side2 < 2; eN_side2++)
+			{
+			  int eN2  = elementBoundaryElementsArray.data()[ebN*2+eN_side2];
+			  for (int j=0;j<nDOF_test_element;j++)
+			    {
+			      int eN_i_j = eN_i*nDOF_test_element + j;
+			      int eN2_j = eN2*nDOF_test_element + j;
+			      int ebN_i_j = ebN*4*nDOF_test_X_trial_element +
+				eN_side*2*nDOF_test_X_trial_element +
+				eN_side2*nDOF_test_X_trial_element +
+				i*nDOF_trial_element +
+				j;
+			      std::pair<int,int> ij = std::make_pair(u_l2g.data()[eN_i], u_l2g.data()[eN2_j]);
+			      if (u_u_nz.count(ij))
+				{
+				  assert(u_u_nz[ij] == csrRowIndeces_u_u.data()[eN_i] + csrColumnOffsets_eb_u_u.data()[ebN_i_j]);
+				}
+			      else
+				u_u_nz[ij] =  csrRowIndeces_u_u.data()[eN_i] + csrColumnOffsets_eb_u_u.data()[ebN_i_j];
+			    }
+			}
+		    }
+		}
+	      for (std::map<int,double>::iterator wi_it=Dw_Dn_jump.begin(); wi_it!=Dw_Dn_jump.end(); ++wi_it)
+		for (std::map<int,double>::iterator wj_it=Dw_Dn_jump.begin(); wj_it!=Dw_Dn_jump.end(); ++wj_it)
+		  {
+		    int i_global = wi_it->first,
+		      j_global = wj_it->first;
+		    double Dw_Dn_jump_i = wi_it->second,
+		      Dw_Dn_jump_j = wj_it->second;
+		    std::pair<int,int> ij = std::make_pair(i_global, j_global);
+		    globalJacobian.data()[u_u_nz.at(ij)] += gamma_ifem*h_ifem*Dw_Dn_jump_j*Dw_Dn_jump_i*dS;
+		  }//i,j
+	    }//kb
+	}//ifem element boundaries
       //
       //loop over exterior element boundaries to compute the surface integrals and load them into the global Jacobian
       //

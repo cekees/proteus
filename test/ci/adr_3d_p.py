@@ -320,13 +320,25 @@ aOfX = {0:a5}; fOfX = {0:f5}
 #one component
 nc = 1
 #load analytical solution, dirichlet conditions, flux boundary conditions into the expected variables
-#analyticalSolution = {0:u5Ex()}
-#analyticalSolutionVelocity = {0:velEx(analyticalSolution[0],aOfX[0])}
+analyticalSolution = {0:u5Ex()}
+analyticalSolutionVelocity = {0:velEx(analyticalSolution[0],aOfX[0])}
 #
 dirichletConditions = {0:getDBC5}
 advectiveFluxBoundaryConditions =  {0:getAdvFluxBC5}
 diffusiveFluxBoundaryConditions = {0:{0:getDiffFluxBC5}}
 fluxBoundaryConditions = {0:'setFlow'} #options are 'setFlow','noFlow','mixedFlow'
 
-coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=numpy.array([0.0,0.0,0.0]),nc=nc,nd=nd)
+coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=numpy.array([0.0,0.0,0.0]),nc=nc,nd=nd,
+#                                embeddedBoundary=True,
+#                                embeddedBoundary_sdf=lambda t,x: (0.75 - (x[0]**2 + x[1]**2 + x[2]**2)**0.5, tuple([-xi/(x[0]**2 + x[1]**2 + x[2]**2)**0.5 for xi in x])),
+#                                embeddedBoundary_u=lambda t,x: u5Ex().uOfX(x))
+                                embeddedBoundary=True,
+                                embeddedBoundary_sdf=lambda t,x: (0.75  - (x[0]**2 + x[1]**2 + x[2]**2)**0.5, tuple([-xi/(x[0]**2 + x[1]**2 + x[2]**2)**0.5 for xi in x])),
+                                embeddedBoundary_u=lambda t,x: u5Ex().uOfX(x),
+                                immersedBoundary=True,
+                                immersedBoundary_sdf=lambda t,x: (0.25 - (x[0]**2 + x[1]**2 + x[2]**2)**0.5, tuple([-xi/(x[0]**2 + x[1]**2 + x[2]**2)**0.5 for xi in x])),
+                                immersedBoundary_u=lambda t,x: u5Ex().uOfX(x))
+#                                immersedBoundary=True,
+#                                immersedBoundary_sdf=lambda t,x: (x[2] - 0.5, (0.,0.,1)),
+#                                immersedBoundary_u=lambda t,x: u5Ex().uOfX(x))
 coefficients.variableNames=['u0']
