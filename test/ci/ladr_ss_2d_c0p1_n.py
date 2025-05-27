@@ -52,7 +52,11 @@ elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,5)
 #elementQuadrature = SimplexGaussQuadrature(nd,6)
 #elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,6)
 
-nn=5
+
+#domain.MeshOptions.nnx = 321
+#domain.MeshOptions.nny = 321
+nnx=321
+nny=321
 nLevels = 1
 
 subgridError = None

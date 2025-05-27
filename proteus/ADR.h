@@ -315,30 +315,40 @@ namespace proteus
 					    double* df)
     {
       //todo this doesn't look 1d/3d
-      double outward_normal[nSpace];
+/*       double outward_normal[nSpace];
       for (int I=0;I<nSpace;I++)
-	outward_normal[I] = immersedBoundary_normal[I];
+		outward_normal[I] = immersedBoundary_normal[I];
           
-      double D_f = gf_f.D(0.,0.);
+      
           
       //diffusive flux
       for (int I=0;I<nSpace;I++)
-	{
-	  ham -= outward_normal[I] * grad_u[I];
-	  dham[I] -= D_f * a * outward_normal[I];
-	  //Nitsche adjoint consistency
-	  f[I] += D_f * a * outward_normal[I] * (u - u_s);
-	  df[I] += D_f * a * outward_normal[I];
-	}
-      ham *= D_f * a;
-      
+		{
+		ham -= outward_normal[I] * grad_u[I];
+	  	dham[I] -= D_f * a * outward_normal[I];
+	  	//Nitsche adjoint consistency
+	  	f[I] += D_f * a * outward_normal[I] * (u - u_s);
+	  	df[I] += D_f * a * outward_normal[I];
+		}
+      ham *= D_f * a;      
       //Nitsche Dirichlet penalty
       r  += D_f*a*immersedBoundary_penalty * (u - u_s);
-      dr += D_f*a*immersedBoundary_penalty;
+      dr += D_f*a*immersedBoundary_penalty; */
+	  //Leveque & Li 1994, Example 1
+	  double D_f = gf_f.D(0.,0.);
+	  r += D_f*2.0;
+	  dr = 0.0;
+	  ham = 0.0;
+	  dham[0] = 0.0;
+	  dham[1] = 0.0;
+	  f[0] = 0.0;
+	  f[1] = 0.0;
+	  df[0] = 0.0;
+	  df[1] = 0.0;
     }
 
     inline void calculateElementResidual(//element
-					 xt::pyarray<double>& mesh_trial_ref,
+					xt::pyarray<double>& mesh_trial_ref,
 					 xt::pyarray<double>& mesh_grad_trial_ref,
 					 xt::pyarray<double>& mesh_dof,
 					 xt::pyarray<int>& mesh_l2g,
@@ -544,7 +554,8 @@ namespace proteus
 	    }
 	  const double ImH_f = gf_f.ImH(0.,0.);
 	  const double D_f = gf_f.D(0.,0.);
-	  if ( H_s*ImH_f != 0.0 || D_s != 0.0 || D_f != 0.0)
+	  //if ( H_s*ImH_f != 0.0 || D_s != 0.0 || D_f != 0.0) //for two embedded interfaces
+	  if ( H_s != 0.0 || D_s != 0.0 || D_f != 0.0) // for one embedded interface and one immersed interface
 	    {
 	      element_active=true;
 	      elementIsActive[eN]=true;
@@ -566,7 +577,7 @@ namespace proteus
 	      if (sign < 0.0)
 		for (int I=0;I<nSpace;I++)
 		  level_set_normal[I]*=-1.0;
-	      updateImmersedBoundaryTerms(immersedBoundary_penalty/h_phi,//penalty,
+	    updateImmersedBoundaryTerms(immersedBoundary_penalty/h_phi,//penalty,
 					  dV,
 					  level_set_normal,
 					  immersedBoundary_u_q.data()[eN_k],
@@ -638,7 +649,7 @@ namespace proteus
 	  for (int i = 0; i < nDOF_test_element; i++)
 	    {
 	      int i_nSpace=i*nSpace;
-	      elementResidual_u.data()[i] += ImH_f*H_s*(ck.Advection_weak(f, &u_grad_test_dV[i_nSpace]) +
+	      elementResidual_u.data()[i] += H_s*(ck.Advection_weak(f, &u_grad_test_dV[i_nSpace]) +
 							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a, grad_u, &u_grad_test_dV[i_nSpace]) +
 							ck.Reaction_weak(r, u_test_dV[i]) +
 							ck.SubgridError(subgridError_u, Lstar_u[i]) +
@@ -970,7 +981,7 @@ namespace proteus
 	      it = cutfem_boundaries.erase(it);
 	    }
 	}//cutfem element boundaries
-      for (std::set<int>::iterator it=ifem_boundaries.begin(); it!=ifem_boundaries.end(); )
+    for (std::set<int>::iterator it=ifem_boundaries.begin(); it!=ifem_boundaries.end(); )
 	{
 	  if(elementIsActive[elementBoundaryElementsArray[(*it)*2+0]] && elementIsActive[elementBoundaryElementsArray[(*it)*2+1]])
 	    {
@@ -1515,7 +1526,7 @@ namespace proteus
 	      for(int j=0;j<nDOF_trial_element;j++) 
 		{ 
 		  int j_nSpace = j*nSpace;
-		  elementJacobian_u_u.data()[i*nDOF_trial_element+j] += ImH_f*H_s*(ck.AdvectionJacobian_weak(df,u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]) +
+		  elementJacobian_u_u.data()[i*nDOF_trial_element+j] += H_s*(ck.AdvectionJacobian_weak(df,u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]) +
 										   ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(),sd_colind.data(),a,&u_grad_trial[j_nSpace],&u_grad_test_dV[i_nSpace]) +
 										   ck.ReactionJacobian_weak(dr,u_trial_ref.data()[k*nDOF_trial_element+j],u_test_dV[i]) +
 										   ck.SubgridErrorJacobian(dsubgridError_u_u[j],Lstar_u[i]) +

@@ -695,6 +695,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
         argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
         argsDict["isActiveDOF"] = self.isActiveDOF
+
         self.adr.calculateResidual(argsDict)
         self.u[0].dof[:] = np.where(self.isActiveDOF == 1.0, self.u[0].dof,0.0)
         r*=self.isActiveDOF
