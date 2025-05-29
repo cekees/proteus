@@ -25,7 +25,7 @@ L=(2.0,2.0)#,2.0)
 x0 = (-1.0,-1.0)#,-1.0)
 domain = Domain.RectangularDomain(L=L,x=x0,name="adr",units="m")
 #a0=0.01
-a0 = 1.0
+a0 = 10.0
 #b0=1.0
 b0 = 0.0
 A0_1c={0:numpy.array([[a0,0],[0,a0]])}
@@ -43,14 +43,30 @@ class LevequeLiExample1(AnalyticalSolutions.SteadyState):
             return 1.0
         else:
             return 1.0 + math.log(2*r)
-ans = LevequeLiExample1()
+class LevequeLiExample2(AnalyticalSolutions.SteadyState):
+    def __init__(self):
+        super(LevequeLiExample2, self).__init__()
+    def uOfX(self, x):
+        b=a0
+        C=0.1
+        r = (x[0]**2 + x[1]**2)**0.5
+        if r <= 0.5:
+            return r**2
+        else:
+            return (1 - 1/(8*b) - 1/b)/4 + ((r**4)/2 + r**2)/b + C*math.log(2*r)/b
+ans = LevequeLiExample2()
 analyticalSolution = {0:ans}
 initialConditions = None
 
+# Leveque & Li 1994, Example 2
 def a(x):
-    return numpy.array([[a0,0.0],[0.0,a0]])
+    if (x[0]**2 + x[1]**2) <= 0.25:
+        _a = x[0]**2 + x[1]**2 + 1
+    else:
+        _a = a0
+    return numpy.array([[_a,0.0],[0.0,_a]])
 def f(x):
-    return 0.0
+    return -(8*(x[0]**2 + x[1]**2) + 4);
 
 aOfX = {0:a}; fOfX = {0:f}
 
@@ -64,12 +80,10 @@ def embeddedBoundary_sdf(x,t):
     yr = x[1] - center[1]
     r = math.sqrt(xr**2 + yr**2)
     if r > 1.0e-16:
-        n = (-xr/r,-yr/r,0.)
+        n = (xr/r,yr/r,0.)
     else:
         n = (1.0,0.0,0.0)
-    sdf = radius - r
-    if -1.0e-16 < sdf < 1.0e-16:
-        print(sdf,x[0],x[1])
+    sdf = r - radius
     return sdf,n
 
 def embeddedBoundary_u(x,t):
@@ -80,7 +94,8 @@ def embeddedBoundary_u(x,t):
                                 embeddedBoundary_sdf=embeddedBoundary_sdf,
                                 embeddedBoundary_u=embeddedBoundary_u) """
 
-coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=B0_1c[0],nc=1,nd=nd,forceStrongDirichlet=False,
+coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=B0_1c[0],nc=1,nd=nd,
+                                forceStrongDirichlet=True,
                                 immersedBoundary=True,
                                 immersedBoundary_sdf=embeddedBoundary_sdf,
                                 immersedBoundary_u=embeddedBoundary_u,

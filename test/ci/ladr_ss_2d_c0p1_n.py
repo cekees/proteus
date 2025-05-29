@@ -10,8 +10,8 @@ timeIntegration = NoIntegration
 runCFL = 0.9
 
 femSpaces = {0:C0_AffineLinearOnSimplexWithNodalBasis}
-elementQuadrature = SimplexGaussQuadrature(nd,5)
-elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,5)
+elementQuadrature = SimplexGaussQuadrature(nd,6)
+elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,6)
 #femSpaces = {0:C0_AffineQuadraticOnSimplexWithNodalBasis}
 #femSpaces = {0:DG_AffineP0_OnSimplexWithMonomialBasis}
 #femSpaces = {0:DG_AffineP1_OnSimplexWithMonomialBasis}
@@ -57,6 +57,8 @@ elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,5)
 #domain.MeshOptions.nny = 321
 nnx=321
 nny=321
+#nnx=161
+#nny=161
 nLevels = 1
 
 subgridError = None
