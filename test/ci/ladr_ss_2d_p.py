@@ -70,8 +70,19 @@ class LevequeLiExample3(AnalyticalSolutions.SteadyState):
             return math.exp(x[0])*math.cos(x[1])
         else:
             return 0.0
+        
+class LevequeLiExample4(AnalyticalSolutions.SteadyState):
+    def __init__(self):
+        super(LevequeLiExample4, self).__init__()
+    def uOfX(self, x):
+        import math
+        r = (x[0]**2 + x[1]**2)**0.5
+        if r <= 0.5:
+            return x[0] - x[1]
+        else:
+            return 0.0
 
-ans = LevequeLiExample3()
+ans = LevequeLiExample4()
 analyticalSolution = {0:ans}
 initialConditions = None
 

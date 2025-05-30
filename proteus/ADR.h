@@ -343,7 +343,10 @@ namespace proteus
 	  //Leveque & Li 1994, Example 2
 	  //r+=0.1*D_f;
 	  //Leveque & Li 1994, Example 3
-	  r-=(exp(x)*cos(y)*immersedBoundary_normal[0]-exp(x)*sin(y)*immersedBoundary_normal[1])*D_f;
+	  //r-=(exp(x)*cos(y)*immersedBoundary_normal[0]-exp(x)*sin(y)*immersedBoundary_normal[1])*D_f;
+	  //Leveque & Li 1994, Example 4
+	  //r-=(2*x*immersedBoundary_normal[0]-2*y*immersedBoundary_normal[1])*D_f;
+	  r-=(immersedBoundary_normal[0]-immersedBoundary_normal[1])*D_f;
 	  dr = 0.0;
 	  ham = 0.0;
 	  dham[0] = 0.0;
@@ -960,59 +963,25 @@ namespace proteus
 			  if (elementBoundaryElementsArray.data()[ebN * 2 + 1] != -1 && (ebN < nElementBoundaries_owned))
 				  ifem_boundaries.insert(ebN);
 		  }
-		  
-		  double jump = -exp(gf_f.exact.cut_barycenter[0]) * cos(gf_f.exact.cut_barycenter[1]);
-		  double jump_sum_a = 0.0,jump_sum_b = 0.0;
-		  int n_zero=0,i_zero=0,i_plus=0,i_minus=0;
+		  //Leveque and Li 1994, Example 3
+		  //double jump = -exp(gf_f.exact.cut_barycenter[0]) * cos(gf_f.exact.cut_barycenter[1]);
+		  //Leveque and Li 1994, Example 4
+		  //double jump = -(gf_f.exact.cut_barycenter[0]*gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1]*gf_f.exact.cut_barycenter[1]);
+		  double jump = -(gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1]);
 		  for (int i = 0; i < nDOF_mesh_trial_element; i++)
 		  {
 			  int eN_i = eN * nDOF_mesh_trial_element + i;
 			  if (gf_f.exact.phi_dof_corrected[i] > 0.0)
-			  //if (element_phi_f[i] > 0.0)
 			  {
 				JA[i] = -jump;
-				jump_sum_a -= jump;
-				JB[i] = 0.0; 
-				i_plus = i;
+				JB[i] = 0.0;
 			  }
-			  else if (gf_f.exact.phi_dof_corrected[i] < 0.0)
-			  //else if (element_phi_f[i] < 0.0)
+			  else if (gf_f.exact.phi_dof_corrected[i] <= 0.0)
 			  {
 				  JA[i] = 0.0;
 				  JB[i] = jump;
-				  jump_sum_b += jump;
-				  i_minus = i;
 			  }
-			  else
-			  {
-				i_zero = i;
-				n_zero +=1;
-			  }
-		  }
-		  if (n_zero > 0)
-		  {
-			if (n_zero == 1)
-			{
-				std::cout<<"one zero"<<std::endl;
-				if (fabs(element_phi_f[i_minus]) < element_phi_f[i_plus])
-				{
-					JB[i_zero] = jump;
-					jump_sum_b += jump;
-				}
-				else
-				{
-				    JA[i_zero] = -jump;
-					jump_sum_a -= jump;
-				}
-			}
-			if (n_zero == 2)
-			{
-				std::cout<<"two zero"<<std::endl;
-			}
-		  }
-		  std::cout<<"jump_sum_a = "<<jump_sum_a<<std::endl;
-		  std::cout<<"jump_sum_b = "<<jump_sum_b<<std::endl;
-		  std::cout<<"jump "<<fabs(jump)<<'\t'<<(fabs(jump_sum_a) + fabs(jump_sum_b))/3.0<<std::endl;	
+		  }	
 	  }
 	  calculateElementResidual(icase_f,
 					mesh_trial_ref,

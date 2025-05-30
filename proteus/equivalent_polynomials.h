@@ -504,7 +504,7 @@ namespace equivalent_polynomials
   template<int nSpace, int nP, int nQ, int nEBQ>
   inline void Simplex<nSpace,nP,nQ,nEBQ>::_correct_phi(const double* phi_dof, const double* phi_nodes)
   {
-    memset(cut_barycenternSpace, 0,  3*sizeof(double));
+    memset(cut_barycenter, 0,  3*sizeof(double));
     const double one_by_nNm1 = 1.0 / (nN - 1.0);
     if (quad_cut)
     {
