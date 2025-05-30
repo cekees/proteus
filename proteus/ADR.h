@@ -303,6 +303,9 @@ namespace proteus
     inline void updateImmersedBoundaryTerms(const double immersedBoundary_penalty,
 					    const double dV,
 					    double* immersedBoundary_normal,
+						double x,
+						double y,
+						double z,
 					    const double u_s,
 					    const double u,
 					    const double grad_u[nSpace],
@@ -338,7 +341,9 @@ namespace proteus
 	  //Leveque & Li 1994, Example 1
 	  //r += D_f*2.0;
 	  //Leveque & Li 1994, Example 2
-	  r+=0.1*D_f;
+	  //r+=0.1*D_f;
+	  //Leveque & Li 1994, Example 3
+	  r-=(exp(x)*cos(y)*immersedBoundary_normal[0]-exp(x)*sin(y)*immersedBoundary_normal[1])*D_f;
 	  dr = 0.0;
 	  ham = 0.0;
 	  dham[0] = 0.0;
@@ -412,7 +417,9 @@ namespace proteus
 					 xt::pyarray<double>& immersedBoundary_normal_q,
 					 xt::pyarray<double>& immersedBoundary_u_q,
 					 bool& element_active,
-					 std::valarray<bool>& elementIsActive)
+					 std::valarray<bool>& elementIsActive,
+					double* JA,
+					double* JB)
     {
       for (int i = 0; i < nDOF_test_element; i++)
 	{
@@ -433,6 +440,10 @@ namespace proteus
 	  double grad_ua[nSpace];
 	  double ub = 0.0;
 	  double grad_ub[nSpace];
+	  double uja = 0.0;
+	  double grad_uja[nSpace];
+	  double ujb = 0.0;
+	  double grad_ujb[nSpace];
 	  double m = 0.0;
 	  double dm=0.0;
 	  double f[nSpace];
@@ -545,17 +556,17 @@ namespace proteus
 			//		std::cerr << "vb[0] = " << vb[0] << " vb[1] = " << vb[1]<< " vb[2] = " << vb[2] << std::endl;
 			//		std::cerr << "va[i] = " << va[i] << " u_trial_ref = " << u_trial_ref.data()[k * nDOF_trial_element+i] << std::endl;
 			//	}
-				//assert(fabs(va[i] - u_trial_ref.data()[k * nDOF_trial_element+i]) < 1.0e-8);
+				//assert(fabs(va[i] - u_trial_ref.data()[k * nDOF_trial_element+i]) < 1.0e-12);
 				va_grad_trial[i * nSpace + 0] = gf_f.VA_x(i);
-				//assert(fabs(va_grad_trial[i*nSpace+0] - u_grad_trial[i*nSpace+0]) < 1.0e-8);
+				//assert(fabs(va_grad_trial[i*nSpace+0] - u_grad_trial[i*nSpace+0]) < 1.0e-12);
 				va_grad_trial[i * nSpace + 1] = gf_f.VA_y(i);
-				//assert(fabs(va_grad_trial[i*nSpace+1] - u_grad_trial[i*nSpace+1]) < 1.0e-8);
+				//assert(fabs(va_grad_trial[i*nSpace+1] - u_grad_trial[i*nSpace+1]) < 1.0e-12);
 				vb[i] = gf_f.VB(i);
-				//assert(fabs(va[i] - u_trial_ref.data()[k * nDOF_trial_element+i]) < 1.0e-8);
+				//assert(fabs(va[i] - u_trial_ref.data()[k * nDOF_trial_element+i]) < 1.0e-12);
 				vb_grad_trial[i * nSpace + 0] = gf_f.VB_x(i);
-				//assert(fabs(vb_grad_trial[i*nSpace+0] - u_grad_trial[i*nSpace+0]) < 1.0e-8);
+				//assert(fabs(vb_grad_trial[i*nSpace+0] - u_grad_trial[i*nSpace+0]) < 1.0e-12);
 				vb_grad_trial[i * nSpace + 1] = gf_f.VB_y(i);
-				//assert(fabs(vb_grad_trial[i*nSpace+1] - u_grad_trial[i*nSpace+1]) < 1.0e-8);
+				//assert(fabs(vb_grad_trial[i*nSpace+1] - u_grad_trial[i*nSpace+1]) < 1.0e-12);
 				suma += va[i];
 				sumb += vb[i];
 				sumax += va_grad_trial[i * nSpace + 0];
@@ -580,6 +591,10 @@ namespace proteus
 			ck.gradFromElementDOF(element_u.data(), va_grad_trial, grad_ua);
 			ck.valFromElementDOF(element_u.data(), vb, ub);
 			ck.gradFromElementDOF(element_u.data(), vb_grad_trial, grad_ub);
+			ck.valFromElementDOF(JA, &u_trial_ref.data()[k * nDOF_trial_element], uja);
+			ck.gradFromElementDOF(JA, u_grad_trial, grad_uja);
+			ck.valFromElementDOF(JB, &u_trial_ref.data()[k * nDOF_trial_element], ujb);
+			ck.gradFromElementDOF(JB, u_grad_trial, grad_ujb);
 			//assert(fabs(ua - u) < 1.0e-8);
 			//assert(fabs(ub - u) < 1.0e-8);
 			for (int j = 0; j < nDOF_trial_element; j++)
@@ -669,6 +684,9 @@ namespace proteus
 	    updateImmersedBoundaryTerms(immersedBoundary_penalty/h_phi,//penalty,
 					  dV,
 					  level_set_normal,
+					  x,
+					  y,
+					  z,
 					  immersedBoundary_u_q.data()[eN_k],
 					  u,
 					  grad_u,
@@ -741,17 +759,24 @@ namespace proteus
 		  if (icase_f == 0)
 		  {
 			//Leveque & Li 1994, Example 2
-			double a_loc[4]={0.0,0.0,0.0,0.0};
-			a_loc[0] = x*x + y*y + 1;
-			a_loc[3] = a_loc[0];
+			//double a_loc[4]={0.0,0.0,0.0,0.0};
+			//a_loc[0] = x*x + y*y + 1;
+			//a_loc[3] = a_loc[0];
+			//Leveque & Li 1994, Example 3
+			double a_loc[4]={1.0,0.0,0.0,1.0};
 			elementResidual_u.data()[i] += ImH_f*H_s*(ck.Advection_weak(f, &ua_grad_test_dV[i_nSpace]) +
 							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ua, &ua_grad_test_dV[i_nSpace]) +
+							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_uja, &u_grad_test_dV[i_nSpace]) +
 							ck.Reaction_weak(r, ua_test_dV[i]) +
 							ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ua, &ua_grad_test_dV[i_nSpace]));
-			a_loc[0] = 10.0;
-			a_loc[3] = a_loc[0];
+			//Leveque & Li 1994, Example 2
+			//a_loc[0] = 10.0;
+			//a_loc[3] = a_loc[0];
+			//Leveque & Li 1994, Example 3
+			//no change to a
 			elementResidual_u.data()[i] += H_f*H_s*(ck.Advection_weak(f, &ub_grad_test_dV[i_nSpace]) +
 							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ub, &ub_grad_test_dV[i_nSpace]) +
+							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ujb, &u_grad_test_dV[i_nSpace]) +
 							ck.Reaction_weak(r, ub_test_dV[i]) +
 							ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
 		  }
@@ -918,21 +943,77 @@ namespace proteus
 		}
 	    }
 	  //Leveque & Li 1994, Example 1
-	  double mua=10.0;
-	  double mub=0.5;
-	  //int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), 1.0,1.0,false,false);
+	  //double mua=10.0;
+	  //double mub=0.5;
+	  //Leveque & Li 1994, Example 3
+	  double mua=1.0;
+	  double mub=1.0;
 	  int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mub, mua,false,false);
+	  double JA[3]={0.0,0.0,0.0},JB[3]={0.0,0.0,0.0};
 	  if (icase_f == 0)
-	    {
-	      //only works for simplices
-	      for (int ebN_element=0;ebN_element < nDOF_mesh_trial_element; ebN_element++)
-	        {
-	          const int ebN = elementBoundariesArray.data()[eN*nDOF_mesh_trial_element+ebN_element];
-		  //internal and actually a cut edge
-		  if (elementBoundaryElementsArray.data()[ebN*2+1] != -1 && (ebN < nElementBoundaries_owned))
-		    ifem_boundaries.insert(ebN);
-	        }
-	    }
+	  {
+		  // only works for simplices
+		  for (int ebN_element = 0; ebN_element < nDOF_mesh_trial_element; ebN_element++)
+		  {
+			  const int ebN = elementBoundariesArray.data()[eN * nDOF_mesh_trial_element + ebN_element];
+			  // internal and actually a cut edge
+			  if (elementBoundaryElementsArray.data()[ebN * 2 + 1] != -1 && (ebN < nElementBoundaries_owned))
+				  ifem_boundaries.insert(ebN);
+		  }
+		  
+		  double jump = -exp(gf_f.exact.cut_barycenter[0]) * cos(gf_f.exact.cut_barycenter[1]);
+		  double jump_sum_a = 0.0,jump_sum_b = 0.0;
+		  int n_zero=0,i_zero=0,i_plus=0,i_minus=0;
+		  for (int i = 0; i < nDOF_mesh_trial_element; i++)
+		  {
+			  int eN_i = eN * nDOF_mesh_trial_element + i;
+			  if (gf_f.exact.phi_dof_corrected[i] > 0.0)
+			  //if (element_phi_f[i] > 0.0)
+			  {
+				JA[i] = -jump;
+				jump_sum_a -= jump;
+				JB[i] = 0.0; 
+				i_plus = i;
+			  }
+			  else if (gf_f.exact.phi_dof_corrected[i] < 0.0)
+			  //else if (element_phi_f[i] < 0.0)
+			  {
+				  JA[i] = 0.0;
+				  JB[i] = jump;
+				  jump_sum_b += jump;
+				  i_minus = i;
+			  }
+			  else
+			  {
+				i_zero = i;
+				n_zero +=1;
+			  }
+		  }
+		  if (n_zero > 0)
+		  {
+			if (n_zero == 1)
+			{
+				std::cout<<"one zero"<<std::endl;
+				if (fabs(element_phi_f[i_minus]) < element_phi_f[i_plus])
+				{
+					JB[i_zero] = jump;
+					jump_sum_b += jump;
+				}
+				else
+				{
+				    JA[i_zero] = -jump;
+					jump_sum_a -= jump;
+				}
+			}
+			if (n_zero == 2)
+			{
+				std::cout<<"two zero"<<std::endl;
+			}
+		  }
+		  std::cout<<"jump_sum_a = "<<jump_sum_a<<std::endl;
+		  std::cout<<"jump_sum_b = "<<jump_sum_b<<std::endl;
+		  std::cout<<"jump "<<fabs(jump)<<'\t'<<(fabs(jump_sum_a) + fabs(jump_sum_b))/3.0<<std::endl;	
+	  }
 	  calculateElementResidual(icase_f,
 					mesh_trial_ref,
 				   mesh_grad_trial_ref,
@@ -992,7 +1073,9 @@ namespace proteus
 				   immersedBoundary_normal_q,
 				   immersedBoundary_u_q,
 				   element_active,
-				   elementIsActive);
+				   elementIsActive,
+					JA,
+					JB);
 	  //
 	  //load element into global residual and save element residual
 	  //
@@ -1628,6 +1711,9 @@ namespace proteus
 				updateImmersedBoundaryTerms(immersedBoundary_penalty / h_phi, // penalty,
 											dV,
 											level_set_normal,
+											x,
+											y,
+											z,
 											immersedBoundary_u_q.data()[eN_k],
 											u,
 											grad_u,
@@ -1686,16 +1772,21 @@ namespace proteus
 					if (icase_f == 0)
 					{
 						//Leveque & Li 1994, Example 2
-						double a_loc[4]={0.0,0.0,0.0,0.0};
-						a_loc[0] = x*x + y*y + 1;
-						a_loc[3] = a_loc[0];
+						//double a_loc[4]={0.0,0.0,0.0,0.0};
+						//a_loc[0] = x*x + y*y + 1;
+						//a_loc[3] = a_loc[0];
+						//Leveque & Li 1994, Example 3
+						double a_loc[4]={1.0,0.0,0.0,1.0};
 						elementJacobian_u_u.data()[i * nDOF_trial_element + j] += ImH_f * H_s * (
 							ck.AdvectionJacobian_weak(df, ua_trial[j], &ua_grad_test_dV[i_nSpace]) + 
 							ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]) + 
 							ck.ReactionJacobian_weak(dr, ua_trial[j], ua_test_dV[i]) + 
 							ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]));
-						a_loc[0] = 10.0;
-						a_loc[3] = a_loc[0];
+						//Leveque & Li 1994, Example 2
+						//a_loc[0] = 10.0;
+						//a_loc[3] = a_loc[0];
+						//Leveque & Li 1994, Example 3
+						// no change to a
 						elementJacobian_u_u.data()[i * nDOF_trial_element + j] += H_f * H_s * (
 							ck.AdvectionJacobian_weak(df, ub_trial[j], &ub_grad_test_dV[i_nSpace]) + 
 							ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]) + 
@@ -1839,11 +1930,12 @@ namespace proteus
 	    }//i
 	  int icase_s = gf_s.calculate(element_phi_s, element_nodes, x_ref.data(), false);
 	  //Leveque & Li 1994, Example 1 
-	  double mua=10.0;
-	  double mub=0.5;
-	  //int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), 1.0, 1.0, false,false);
+	  //double mua=10.0;
+	  //double mub=0.5;
+	  //Leveque & Li 1994, Example 3
+	  double mua=1.0;
+	  double mub=1.0;
 	  int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mub, mua, false,false);
-	  //int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), false);
 	  calculateElementJacobian(icase_f,
 		           mesh_trial_ref,
 				   mesh_grad_trial_ref,

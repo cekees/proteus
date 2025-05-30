@@ -164,6 +164,7 @@ namespace equivalent_polynomials
     bool inside_out, quad_cut;
     static const unsigned int nN=nSpace+1;
     double phi_dof_corrected[nN];
+    double cut_barycenter[3] ={0.,0.,0.};
   private:
     double _H_q, _ImH_q, _D_q, _va_q[nN], _vb_q[nN],
       _va_x[nN],_va_y[nN],_va_z[nN],_vb_x[nN],_vb_y[nN],_vb_z[nN];
@@ -503,37 +504,40 @@ namespace equivalent_polynomials
   template<int nSpace, int nP, int nQ, int nEBQ>
   inline void Simplex<nSpace,nP,nQ,nEBQ>::_correct_phi(const double* phi_dof, const double* phi_nodes)
   {
-    double cut_barycenter[3] ={0.,0.,0.};
-    const double one_by_nNm1 = 1.0/(nN-1.0);
+    memset(cut_barycenternSpace, 0,  3*sizeof(double));
+    const double one_by_nNm1 = 1.0 / (nN - 1.0);
     if (quad_cut)
-      {
-	for (unsigned int I=0; I < nSpace; I++)
-	  cut_barycenter[I] += 0.25*(phys_nodes_cut_quad_01[I] +
-				     phys_nodes_cut_quad_02[I] +
-				     phys_nodes_cut_quad_31[I] +
-				     phys_nodes_cut_quad_32[I]);
-      }
+    {
+      for (unsigned int I = 0; I < nSpace; I++)
+        cut_barycenter[I] += 0.25 * (phys_nodes_cut_quad_01[I] +
+                                     phys_nodes_cut_quad_02[I] +
+                                     phys_nodes_cut_quad_31[I] +
+                                     phys_nodes_cut_quad_32[I]);
+    }
     else
+    {
+      for (unsigned int i = 0; i < nN - 1; i++)
       {
-	for (unsigned int i=0; i < nN-1;i++)
-	  {
-	    for (unsigned int I=0; I < nSpace; I++)
-	      cut_barycenter[I] += phys_nodes_cut[i*3+I]*one_by_nNm1;
-	  }
+        assert(!isnan(phys_nodes_cut[i * 3 + 0]));
+        assert(!isnan(phys_nodes_cut[i * 3 + 1]));
+        assert(!isnan(phys_nodes_cut[i * 3 + 2]));
+        for (unsigned int I = 0; I < nSpace; I++)
+          cut_barycenter[I] += phys_nodes_cut[i * 3 + I] * one_by_nNm1;
       }
-    for (unsigned int i=0; i < nN;i++)
+    }
+    for (unsigned int i = 0; i < nN; i++)
+    {
+      phi_dof_corrected[i] = 0.0;
+      for (unsigned int I = 0; I < nSpace; I++)
       {
-        phi_dof_corrected[i]=0.0;
-        for (unsigned int I=0; I < nSpace; I++)
-          {
-            phi_dof_corrected[i] += level_set_normal[I]*(phi_nodes[i*3+I] - cut_barycenter[I]);             
-          }
-        //ensure sdf sign convention consistent with input phi
-        if (phi_dof_corrected[i]*phi_dof[i] < 0.0)
-          {
-            phi_dof_corrected[i]*=-1.0;
-          }
+        phi_dof_corrected[i] += level_set_normal[I] * (phi_nodes[i * 3 + I] - cut_barycenter[I]);
       }
+      // ensure sdf sign convention consistent with input phi
+      if (phi_dof_corrected[i] * phi_dof[i] < 0.0)
+      {
+        phi_dof_corrected[i] *= -1.0;
+      }
+    }
   }
 
   template<int nSpace, int nP, int nQ, int nEBQ>
@@ -594,180 +598,180 @@ namespace equivalent_polynomials
   template<int nSpace, int nP, int nQ, int nEBQ>
   inline int Simplex<nSpace,nP,nQ,nEBQ>::calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, bool isBoundary, bool scale)
   {
-    //initialize phi_dof_corrected -- correction can only be actually computed on cut cells
-    for (unsigned int i=0; i < nN;i++)
+    // initialize phi_dof_corrected -- correction can only be actually computed on cut cells
+    for (unsigned int i = 0; i < nN; i++)
       phi_dof_corrected[i] = phi_dof[i];
-    int icase = _calculate_permutation(phi_dof, phi_nodes);//permuation, Jac,inv_Jac...
-    if(icase == 1)
+    int icase = _calculate_permutation(phi_dof, phi_nodes); // permuation, Jac,inv_Jac...
+    if (icase == 1)
+    {
+      for (unsigned int q = 0; q < nQ; q++)
       {
-        for (unsigned int q=0; q < nQ; q++)
-          {
-            _H[q] = 1.0;
-            _ImH[q] = 0.0;
-            _D[q] = 0.0;
-          }
-        for (unsigned int ebq=0; ebq < nEBQ; ebq++)
-          {
-            _H_ebq[ebq] = 1.0;
-            _ImH_ebq[ebq] = 0.0;
-            _D_ebq[ebq] = 0.0;
-          }
-        return icase;
+        _H[q] = 1.0;
+        _ImH[q] = 0.0;
+        _D[q] = 0.0;
       }
-    else if(icase == -1)
+      for (unsigned int ebq = 0; ebq < nEBQ; ebq++)
       {
-        for (unsigned int q=0; q < nQ; q++)
-          {
-            _H[q] = 0.0;
-            _ImH[q] = 1.0;
-            _D[q] = 0.0;
-          }
-        for (unsigned int ebq=0; ebq < nEBQ; ebq++)
-          {
-            _H_ebq[ebq] = 0.0;
-            _ImH_ebq[ebq] = 1.0;
-            _D_ebq[ebq] = 0.0;
-          }
-        return icase;
+        _H_ebq[ebq] = 1.0;
+        _ImH_ebq[ebq] = 0.0;
+        _D_ebq[ebq] = 0.0;
       }
+      return icase;
+    }
+    else if (icase == -1)
+    {
+      for (unsigned int q = 0; q < nQ; q++)
+      {
+        _H[q] = 0.0;
+        _ImH[q] = 1.0;
+        _D[q] = 0.0;
+      }
+      for (unsigned int ebq = 0; ebq < nEBQ; ebq++)
+      {
+        _H_ebq[ebq] = 0.0;
+        _ImH_ebq[ebq] = 1.0;
+        _D_ebq[ebq] = 0.0;
+      }
+      return icase;
+    }
     if (quad_cut)
-      {
-	_calculate_cuts_quad();//THETA_* for quad cut in 3D
-	_calculate_normal_quad(phys_nodes_cut_quad_01,
-			       phys_nodes_cut_quad_02,
-			       phys_nodes_cut_quad_31,
-			       phys_nodes_cut_quad_32,
-			       level_set_normal);//normal to interface
-      }
+    {
+      _calculate_cuts_quad(); // THETA_* for quad cut in 3D
+      _calculate_normal_quad(phys_nodes_cut_quad_01,
+                             phys_nodes_cut_quad_02,
+                             phys_nodes_cut_quad_31,
+                             phys_nodes_cut_quad_32,
+                             level_set_normal); // normal to interface
+    }
     else
-      {
-	_calculate_cuts();//X_0, array of interface cuts on reference simplex
-	_calculate_normal<nSpace>(phys_nodes_cut, level_set_normal);//normal to interface
-      }
-    double ma_scale,mb_scale;
+    {
+      _calculate_cuts();                                           // X_0, array of interface cuts on reference simplex
+      _calculate_normal<nSpace>(phys_nodes_cut, level_set_normal); // normal to interface
+    }
+    double ma_scale, mb_scale;
     if (scale)
-      {
-        //cek hack - 2D, pressure basis for discontinuous density
-        double jump_scale = level_set_normal[1],
-          m_average = 0.5*(ma + mb),
-          m_jump = 0.5*(mb - ma);
-        mb_scale = m_average + jump_scale*m_jump;//mb when jump_scale=1
-        ma_scale = m_average - jump_scale*m_jump;//ma when jump_scale=1
-        //    double mb_scale=mb, ma_scale=ma;
-        //cek hack end
-      }
+    {
+      // cek hack - 2D, pressure basis for discontinuous density
+      double jump_scale = level_set_normal[1],
+             m_average = 0.5 * (ma + mb),
+             m_jump = 0.5 * (mb - ma);
+      mb_scale = m_average + jump_scale * m_jump; // mb when jump_scale=1
+      ma_scale = m_average - jump_scale * m_jump; // ma when jump_scale=1
+      //    double mb_scale=mb, ma_scale=ma;
+      // cek hack end
+    }
     else
-      {
-        ma_scale = ma;
-        mb_scale = mb;
-      }
+    {
+      ma_scale = ma;
+      mb_scale = mb;
+    }
     if (inside_out)
+    {
+      if (nN == 3)
       {
-        if (nN==3)
-          {
-            _calculate_basis_coefficients(mb_scale, ma_scale);
-            for (int i=0; i < 3; i++)
-              {
-                double tmp;
-                tmp = _va_x[i];
-                _va_x[i] = _vb_x[i];
-                _vb_x[i] = tmp;
-                tmp = _va_y[i];
-                _va_y[i] = _vb_y[i];
-                _vb_y[i] = tmp;
-              }
-          }
+        _calculate_basis_coefficients(mb_scale, ma_scale);
+        for (int i = 0; i < 3; i++)
+        {
+          double tmp;
+          tmp = _va_x[i];
+          _va_x[i] = _vb_x[i];
+          _vb_x[i] = tmp;
+          tmp = _va_y[i];
+          _va_y[i] = _vb_y[i];
+          _vb_y[i] = tmp;
+        }
       }
+    }
     else
-      {
-        if (nN==3)
-          _calculate_basis_coefficients(ma_scale, mb_scale);
-      }
+    {
+      if (nN == 3)
+        _calculate_basis_coefficients(ma_scale, mb_scale);
+    }
     _correct_phi(phi_dof, phi_nodes);
-    _calculate_C();//coefficients of equiv poly
-    //compute the default affine map based on phi_nodes[0]
-    double Jac_0[nSpace*nSpace];
-    for(unsigned int i=0; i < nN - 1; i++)
-      for(unsigned int I=0; I < nSpace; I++)
-        Jac_0[I*nSpace+i] = phi_nodes[(1+i)*3 + I] - phi_nodes[I];
+    _calculate_C(); // coefficients of equiv poly
+    // compute the default affine map based on phi_nodes[0]
+    double Jac_0[nSpace * nSpace];
+    for (unsigned int i = 0; i < nN - 1; i++)
+      for (unsigned int I = 0; I < nSpace; I++)
+        Jac_0[I * nSpace + i] = phi_nodes[(1 + i) * 3 + I] - phi_nodes[I];
 
     if (not isBoundary)
+    {
+      for (unsigned int q = 0; q < nQ; q++)
       {
-    for(unsigned int q=0; q < nQ; q++)
-      {
-        //Due to the permutation, the quadrature points on the reference may be rotated
-        //map reference to physical simplex, then back to permuted reference
+        // Due to the permutation, the quadrature points on the reference may be rotated
+        // map reference to physical simplex, then back to permuted reference
         double x[nSpace], xi[nSpace];
-        //to physical coordinates
-        for (unsigned int I=0; I < nSpace; I++)
+        // to physical coordinates
+        for (unsigned int I = 0; I < nSpace; I++)
+        {
+          x[I] = phi_nodes[I];
+          for (unsigned int J = 0; J < nSpace; J++)
           {
-            x[I]=phi_nodes[I];
-            for (unsigned int J=0; J < nSpace;J++)
-              {
-                x[I] += Jac_0[I*nSpace + J]*xi_r[q*3 + J];
-              }
+            x[I] += Jac_0[I * nSpace + J] * xi_r[q * 3 + J];
           }
-        //back to reference coordinates on possibly permuted 
-        for (unsigned int I=0; I < nSpace; I++)
+        }
+        // back to reference coordinates on possibly permuted
+        for (unsigned int I = 0; I < nSpace; I++)
+        {
+          xi[I] = 0.0;
+          for (unsigned int J = 0; J < nSpace; J++)
           {
-            xi[I] = 0.0;
-            for (unsigned int J=0; J < nSpace; J++)
-              {
-                xi[I] += inv_Jac[I*nSpace + J]*(x[J] - nodes[J]);
-              }
+            xi[I] += inv_Jac[I * nSpace + J] * (x[J] - nodes[J]);
           }
+        }
         if (nSpace == 1)
-          _calculate_polynomial_1D<nP>(xi,C_H,C_ImH,C_D,_H[q],_ImH[q],_D[q]);
+          _calculate_polynomial_1D<nP>(xi, C_H, C_ImH, C_D, _H[q], _ImH[q], _D[q]);
         else if (nSpace == 2)
-          {
-            _calculate_polynomial_2D<nP>(xi,C_H,C_ImH,C_D,_H[q],_ImH[q],_D[q]);
-            _calculate_basis(xi,&_va[q*nN],&_vb[q*nN]);
-          }
+        {
+          _calculate_polynomial_2D<nP>(xi, C_H, C_ImH, C_D, _H[q], _ImH[q], _D[q]);
+          _calculate_basis(xi, &_va[q * nN], &_vb[q * nN]);
+        }
         else if (nSpace == 3)
-          _calculate_polynomial_3D<nP>(xi,C_H,C_ImH,C_D,_H[q],_ImH[q],_D[q]);
+          _calculate_polynomial_3D<nP>(xi, C_H, C_ImH, C_D, _H[q], _ImH[q], _D[q]);
       }
-    set_quad(0);
-      }
+      set_quad(0);
+    }
     else
+    {
+      for (unsigned int ebq = 0; ebq < nEBQ; ebq++)
       {
-    for(unsigned int ebq=0; ebq < nEBQ; ebq++)
-      {
-        //Due to the permutation, the quadrature points on the reference may be rotated
-        //map reference to physical simplex, then back to permuted reference
+        // Due to the permutation, the quadrature points on the reference may be rotated
+        // map reference to physical simplex, then back to permuted reference
         double x[nSpace], xi[nSpace];
-        //to physical coordinates
-        for (unsigned int I=0; I < nSpace; I++)
+        // to physical coordinates
+        for (unsigned int I = 0; I < nSpace; I++)
+        {
+          x[I] = phi_nodes[I];
+          for (unsigned int J = 0; J < nSpace; J++)
           {
-            x[I]=phi_nodes[I];
-            for (unsigned int J=0; J < nSpace;J++)
-              {
-                x[I] += Jac_0[I*nSpace + J]*xi_r[ebq*3 + J];
-              }
+            x[I] += Jac_0[I * nSpace + J] * xi_r[ebq * 3 + J];
           }
-        //back to reference coordinates on possibly permuted 
-        for (unsigned int I=0; I < nSpace; I++)
+        }
+        // back to reference coordinates on possibly permuted
+        for (unsigned int I = 0; I < nSpace; I++)
+        {
+          xi[I] = 0.0;
+          for (unsigned int J = 0; J < nSpace; J++)
           {
-            xi[I] = 0.0;
-            for (unsigned int J=0; J < nSpace; J++)
-              {
-                xi[I] += inv_Jac[I*nSpace + J]*(x[J] - nodes[J]);
-              }
+            xi[I] += inv_Jac[I * nSpace + J] * (x[J] - nodes[J]);
           }
+        }
         if (nSpace == 1)
-          _calculate_polynomial_1D<nP>(xi,C_H,C_ImH,C_D,_H_ebq[ebq],_ImH_ebq[ebq],_D_ebq[ebq]);
+          _calculate_polynomial_1D<nP>(xi, C_H, C_ImH, C_D, _H_ebq[ebq], _ImH_ebq[ebq], _D_ebq[ebq]);
         else if (nSpace == 2)
-          {
-            _calculate_polynomial_2D<nP>(xi,C_H,C_ImH,C_D,_H_ebq[ebq],_ImH_ebq[ebq],_D_ebq[ebq]);
-            _calculate_basis(xi,&_va_ebq[ebq*nN],&_vb_ebq[ebq*nN]);
-          }
+        {
+          _calculate_polynomial_2D<nP>(xi, C_H, C_ImH, C_D, _H_ebq[ebq], _ImH_ebq[ebq], _D_ebq[ebq]);
+          _calculate_basis(xi, &_va_ebq[ebq * nN], &_vb_ebq[ebq * nN]);
+        }
         else if (nSpace == 3)
-          _calculate_polynomial_3D<nP>(xi,C_H,C_ImH,C_D,_H_ebq[ebq],_ImH_ebq[ebq],_D_ebq[ebq]);
+          _calculate_polynomial_3D<nP>(xi, C_H, C_ImH, C_D, _H_ebq[ebq], _ImH_ebq[ebq], _D_ebq[ebq]);
       }
-    set_boundary_quad(0);
-      }
+      set_boundary_quad(0);
+    }
     if (inside_out)
-      for (unsigned int I=0; I<nSpace;I++)
-    	level_set_normal[I]*=-1.0;
+      for (unsigned int I = 0; I < nSpace; I++)
+        level_set_normal[I] *= -1.0;
     return icase;
   }
 

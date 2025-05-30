@@ -326,7 +326,7 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'cADR',
         sources=['proteus/ADR.cpp'],
-        depends=['proteus/ADR.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        depends=['proteus/ADR.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h','proteus/equivalent_polynomials.h'],
         include_dirs=get_xtensor_include(),
         extra_compile_args=PROTEUS_OPT+['-std=c++23'],
         language='c++'

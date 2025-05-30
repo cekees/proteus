@@ -21,9 +21,13 @@ Linear advection-diffusion-reaction at equilibrium in 2D.
 #\todo finish ladr_ss_2d_p.py doc
 
 nd = 2
-L=(2.0,2.0)#,2.0)
+L=(2.0,2.0+1e-6)#,2.0)
 x0 = (-1.0,-1.0)#,-1.0)
-domain = Domain.RectangularDomain(L=L,x=x0,name="adr",units="m")
+domainR = Domain.RectangularDomain(L=L,x=x0,name="adr",units="m")
+domainR.writePoly("ladr_ss_2d_p")
+domainUS = Domain.PlanarStraightLineGraphDomain("ladr_ss_2d_p")
+domainUS.boundaryTags = domainR.boundaryTags
+domain = domainUS
 #a0=0.01
 a0 = 10.0
 #b0=1.0
@@ -43,6 +47,7 @@ class LevequeLiExample1(AnalyticalSolutions.SteadyState):
             return 1.0
         else:
             return 1.0 + math.log(2*r)
+        
 class LevequeLiExample2(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(LevequeLiExample2, self).__init__()
@@ -54,7 +59,19 @@ class LevequeLiExample2(AnalyticalSolutions.SteadyState):
             return r**2
         else:
             return (1 - 1/(8*b) - 1/b)/4 + ((r**4)/2 + r**2)/b + C*math.log(2*r)/b
-ans = LevequeLiExample2()
+        
+class LevequeLiExample3(AnalyticalSolutions.SteadyState):
+    def __init__(self):
+        super(LevequeLiExample3, self).__init__()
+    def uOfX(self, x):
+        import math
+        r = (x[0]**2 + x[1]**2)**0.5
+        if r <= 0.5:
+            return math.exp(x[0])*math.cos(x[1])
+        else:
+            return 0.0
+
+ans = LevequeLiExample3()
 analyticalSolution = {0:ans}
 initialConditions = None
 
@@ -68,10 +85,16 @@ def a(x):
 def f(x):
     return -(8*(x[0]**2 + x[1]**2) + 4);
 
+# Leveque & Li 1994, Example 3
+def a(x):
+    return numpy.array([[1.0,0.0],[0.0,1.0]])
+def f(x):
+    return 0.0
+
 aOfX = {0:a}; fOfX = {0:f}
 
-center = (0.5,0.5)
-radius = 0.45
+#center = (0.5,0.5)
+#radius = 0.45
 center = (0.0,0.0)
 radius = 0.5
 
@@ -95,7 +118,7 @@ def embeddedBoundary_u(x,t):
                                 embeddedBoundary_u=embeddedBoundary_u) """
 
 coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=B0_1c[0],nc=1,nd=nd,
-                                forceStrongDirichlet=True,
+                                forceStrongDirichlet=False,
                                 immersedBoundary=True,
                                 immersedBoundary_sdf=embeddedBoundary_sdf,
                                 immersedBoundary_u=embeddedBoundary_u,
