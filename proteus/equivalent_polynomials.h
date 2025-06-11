@@ -16,11 +16,15 @@ namespace equivalent_polynomials
   public:
     Regularized(bool useExact=false)
     {}
-    inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, bool isBoundary, bool scale)
+    inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, double jf, bool isBoundary, bool scale)
     {}
+    inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, bool isBoundary, bool scale)
+    {
+      return calculate(phi_dof, phi_nodes, xi_r, ma, mb, 0.0, isBoundary, scale);
+    }
     inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, bool isBoundary)
     {
-      return calculate(phi_dof, phi_nodes, xi_r, 1.0,1.0, isBoundary, false);
+      return calculate(phi_dof, phi_nodes, xi_r, 1.0,1.0, 0.0, isBoundary, false);
     }
     inline double* get_normal()
     {
@@ -88,11 +92,16 @@ namespace equivalent_polynomials
       level_set_normal[0]=1.0;
     }
     
-    inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, bool isBoundary, bool scale);
+    inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, double jf, bool isBoundary, bool scale);
+
+    inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, bool isBoundary, bool scale)
+    {
+      return calculate(phi_dof, phi_nodes, xi_r, ma, mb, 0.0, isBoundary, false);
+    }
 
     inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, bool isBoundary)
     {
-      return calculate(phi_dof, phi_nodes, xi_r, 1.0,1.0, isBoundary, false);
+      return calculate(phi_dof, phi_nodes, xi_r, 1.0,1.0, 0.0, isBoundary, false);
     }
     
     inline void set_quad(unsigned int q)
@@ -165,7 +174,8 @@ namespace equivalent_polynomials
     static const unsigned int nN=nSpace+1;
     double phi_dof_corrected[nN];
     double cut_barycenter[3] ={0.,0.,0.};
-  private:
+    bool corner;
+  private:;
     double _H_q, _ImH_q, _D_q, _va_q[nN], _vb_q[nN],
       _va_x[nN],_va_y[nN],_va_z[nN],_vb_x[nN],_vb_y[nN],_vb_z[nN];
     unsigned int root_node, permutation[nN];
@@ -184,7 +194,7 @@ namespace equivalent_polynomials
     inline void _correct_phi(const double* phi_dof, const double* phi_nodes);
     double _H[nQ], _ImH[nQ], _D[nQ], _va[nQ*nN], _vb[nQ*nN];
     double _H_ebq[nEBQ], _ImH_ebq[nEBQ], _D_ebq[nEBQ], _va_ebq[nEBQ*nN], _vb_ebq[nEBQ*nN];//cek hack: this is confusing because we use no suffice for the q arrays and _ebq for the ebq arrays, then use _q above for generic quad point
-    inline void _calculate_basis_coefficients(const double ma, const double mb);
+    inline void _calculate_basis_coefficients(const double ma, const double mb, const double jf);
     inline void _calculate_basis(const double* xi,double* va, double* vb)
     {
       //2D specific but won't break in 3D
@@ -268,6 +278,7 @@ namespace equivalent_polynomials
   inline int Simplex<nSpace,nP,nQ,nEBQ>::_calculate_permutation(const double* phi_dof, const double* phi_nodes)
   {
     int p_i, pcount=0, n_i, ncount=0, z_i, zcount=0;
+    corner = false;
     root_node=0;
     inside_out=false;
     quad_cut=false;
@@ -304,10 +315,12 @@ namespace equivalent_polynomials
       {
         if (zcount == nN-1)//interface is on an element boundary, don't integrate this orientation
           {
+            //std::cout<<"zcount "<<zcount<<std::endl;
 	    if (nSpace > 1)
 	      {
-		//note: see comment below about these two cases
-		return -1;
+		      //note: see comment below about these two cases
+		      //return -1;
+          root_node = n_i;
 	      }
 	    else
 	      {
@@ -323,6 +336,7 @@ namespace equivalent_polynomials
       {
         if (zcount == nN-1)//interface is on an element boundary, integrate this orientation
 	  {
+      //std::cout<<"zcount "<<zcount<<std::endl;
 	    //note: we are marking the element to the positive sdf side as cut,
 	    //which means the other element is fully in the -1 domain
 	    //for single-phase/cut cell methods, that means the fictitious domain
@@ -334,7 +348,11 @@ namespace equivalent_polynomials
 		inside_out = true;
 	      }
 	    else
-	      return 1;
+        {
+          root_node = p_i;
+		      inside_out = true;
+          //return 1;
+        }
 	  }
         else
           {
@@ -357,13 +375,20 @@ namespace equivalent_polynomials
       }
     else
       {
+        //std::cout<<"zcount "<<zcount<<"pcount "<<pcount<<"ncount "<<ncount<<std::endl;
         if (zcount >= nN-1)
-          std::cout<<"zcount "<<zcount<<" >= "<<nN-1<<std::endl;
+          std::cerr<<"zcount "<<zcount<<" >= "<<nN-1<<std::endl;
         assert(zcount < nN-1);
+        corner = true;
         if(pcount)
-          return 1;
+          root_node = z_i;
+          //return 1;
         else if (ncount)
-          return -1;
+          {
+            root_node = z_i;
+            inside_out = true;
+          }
+          //return -1;
         else
           assert(false);
       }
@@ -467,12 +492,23 @@ namespace equivalent_polynomials
           }
         else
           {
-            assert(phi[i+1] < eps);
+            //assert(phi[i+1] < eps);
+            if (phi[i+1] < eps)
+            {
             X_0[i] = 1.0;
             for (unsigned int I=0; I < 3; I++)
               {
                 phys_nodes_cut[i*3 + I] = nodes[(1+i)*3 + I];
               }
+            }
+            else
+            {
+              X_0[i] = 0.0;
+              for (unsigned int I=0; I < 3; I++)
+                {
+                  phys_nodes_cut[i*3 + I] = nodes[I];
+                }
+            }
           }
       }
   }
@@ -541,11 +577,21 @@ namespace equivalent_polynomials
   }
 
   template<int nSpace, int nP, int nQ, int nEBQ>
-  inline void Simplex<nSpace,nP,nQ,nEBQ>::_calculate_basis_coefficients(const double ma, const double mb)
+  inline void Simplex<nSpace,nP,nQ,nEBQ>::_calculate_basis_coefficients(const double ma, const double mb, const double jf)
   {
     assert(nSpace == 2);
     assert(nN==3);
     double nx=0.0,ny=0.0,fax=0.0,fay=0.0,fbx=0.0,fby=0.0;
+    if (inside_out)
+      {
+        nx = -level_set_normal[0];
+        ny = -level_set_normal[1];
+      }
+      else
+      {
+        nx = level_set_normal[0];
+        ny = level_set_normal[1];
+      }
     nx = level_set_normal[0];
     ny = level_set_normal[1];
     double Jit00 = inv_Jac[0*nSpace+0],
@@ -564,13 +610,21 @@ namespace equivalent_polynomials
         v[0] = vall[j*3+0];
         v[1] = vall[j*3+1];
         v[2] = vall[j*3+2];
+/*
+        _a1[i] = v[i];
+        _a2[i] = (-2.0*Jit00*mb*nx*v[0]*y0 + 2.0*Jit00*mb*nx*v[2]*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[0]*y0 + 2.0*Jit01*ma*nx*v[1]*x0*y0 - 2.0*Jit01*ma*nx*v[1]*y0 - 2.0*Jit01*ma*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[0]*y0 - 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[1]*y0 + 2.0*Jit01*mb*nx*v[2]*x0*y0 - 2.0*Jit10*mb*ny*v[0]*y0 + 2.0*Jit10*mb*ny*v[2]*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[0]*y0 + 2.0*Jit11*ma*ny*v[1]*x0*y0 - 2.0*Jit11*ma*ny*v[1]*y0 - 2.0*Jit11*ma*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[0]*y0 - 2.0*Jit11*mb*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[1]*y0 + 2.0*Jit11*mb*ny*v[2]*x0*y0 - fax*nx*v[0]*x0*y0 - fax*nx*v[0]*y0*y0 + 2.0*fax*nx*v[0]*y0 - fax*nx*v[1]*x0*y0*y0 + fax*nx*v[1]*y0*y0 + fax*nx*v[2]*x0*y0*y0 - fax*nx*v[2]*x0*y0 - fay*ny*v[0]*x0*y0 - fay*ny*v[0]*y0*y0 + 2.0*fay*ny*v[0]*y0 - fay*ny*v[1]*x0*y0*y0 + fay*ny*v[1]*y0*y0 + fay*ny*v[2]*x0*y0*y0 - fay*ny*v[2]*x0*y0 + fbx*nx*v[0]*x0*y0 + fbx*nx*v[0]*y0*y0 - 2.0*fbx*nx*v[0]*y0 + fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[1]*y0*y0 - fbx*nx*v[2]*x0*y0*y0 + fbx*nx*v[2]*x0*y0 + fby*ny*v[0]*x0*y0 + fby*ny*v[0]*y0*y0 - 2.0*fby*ny*v[0]*y0 + fby*ny*v[1]*x0*y0*y0 - fby*ny*v[1]*y0*y0 - fby*ny*v[2]*x0*y0*y0 + fby*ny*v[2]*x0*y0 - 2.0*jf*x0*y0 + 2.0*jf*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
+        _a3[i] = (2.0*Jit00*ma*nx*v[0]*x0 - 2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[1]*x0*y0 + 2.0*Jit00*ma*nx*v[1]*y0 + 2.0*Jit00*ma*nx*v[2]*x0*y0 - 2.0*Jit00*ma*nx*v[2]*x0 - 2.0*Jit00*mb*nx*v[0]*x0 + 2.0*Jit00*mb*nx*v[1]*x0*y0 - 2.0*Jit00*mb*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[0]*x0 + 2.0*Jit01*mb*nx*v[1]*x0 + 2.0*Jit10*ma*ny*v[0]*x0 - 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[1]*y0 + 2.0*Jit10*ma*ny*v[2]*x0*y0 - 2.0*Jit10*ma*ny*v[2]*x0 - 2.0*Jit10*mb*ny*v[0]*x0 + 2.0*Jit10*mb*ny*v[1]*x0*y0 - 2.0*Jit10*mb*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[0]*x0 + 2.0*Jit11*mb*ny*v[1]*x0 - fax*nx*v[0]*x0*x0 - fax*nx*v[0]*x0*y0 + 2.0*fax*nx*v[0]*x0 + fax*nx*v[1]*x0*x0*y0 - fax*nx*v[1]*x0*y0 - fax*nx*v[2]*x0*x0*y0 + fax*nx*v[2]*x0*x0 - fay*ny*v[0]*x0*x0 - fay*ny*v[0]*x0*y0 + 2.0*fay*ny*v[0]*x0 + fay*ny*v[1]*x0*x0*y0 - fay*ny*v[1]*x0*y0 - fay*ny*v[2]*x0*x0*y0 + fay*ny*v[2]*x0*x0 + fbx*nx*v[0]*x0*x0 + fbx*nx*v[0]*x0*y0 - 2.0*fbx*nx*v[0]*x0 - fbx*nx*v[1]*x0*x0*y0 + fbx*nx*v[1]*x0*y0 + fbx*nx*v[2]*x0*x0*y0 - fbx*nx*v[2]*x0*x0 + fby*ny*v[0]*x0*x0 + fby*ny*v[0]*x0*y0 - 2.0*fby*ny*v[0]*x0 - fby*ny*v[1]*x0*x0*y0 + fby*ny*v[1]*x0*y0 + fby*ny*v[2]*x0*x0*y0 - fby*ny*v[2]*x0*x0 - 2.0*jf*x0*y0 + 2.0*jf*x0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
+        _b1[i] = (2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[0]*x0 - 2.0*Jit01*ma*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[0]*x0 - 2.0*Jit11*ma*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[1]*x0*y0 + fax*nx*v[1]*x0*y0*y0 + fax*nx*v[2]*x0*x0*y0 + fay*ny*v[1]*x0*y0*y0 + fay*ny*v[2]*x0*x0*y0 - fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[2]*x0*x0*y0 - fby*ny*v[1]*x0*y0*y0 - fby*ny*v[2]*x0*x0*y0 + 2.0*jf*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
+        _b2[i] = (-2.0*Jit00*ma*nx*v[0]*y0 + 2.0*Jit00*ma*nx*v[2]*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[1]*x0*y0 - 2.0*Jit01*ma*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[2]*x0*y0 - 2.0*Jit10*ma*ny*v[0]*y0 + 2.0*Jit10*ma*ny*v[2]*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[1]*x0*y0 - 2.0*Jit11*ma*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[2]*x0*y0 - fax*nx*v[1]*x0*y0*y0 + fax*nx*v[2]*x0*y0*y0 - 2.0*fax*nx*v[2]*x0*y0 - fay*ny*v[1]*x0*y0*y0 + fay*ny*v[2]*x0*y0*y0 - 2.0*fay*ny*v[2]*x0*y0 + fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[2]*x0*y0*y0 + 2.0*fbx*nx*v[2]*x0*y0 + fby*ny*v[1]*x0*y0*y0 - fby*ny*v[2]*x0*y0*y0 + 2.0*fby*ny*v[2]*x0*y0 - 2.0*jf*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
+        _b3[i] = (-2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[1]*x0*y0 + 2.0*Jit00*ma*nx*v[1]*y0 + 2.0*Jit00*ma*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[1]*x0*y0 - 2.0*Jit00*mb*nx*v[2]*x0*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[1]*x0 - 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[1]*y0 + 2.0*Jit10*ma*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[1]*x0*y0 - 2.0*Jit10*mb*ny*v[2]*x0*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[1]*x0 + fax*nx*v[1]*x0*x0*y0 - 2.0*fax*nx*v[1]*x0*y0 - fax*nx*v[2]*x0*x0*y0 + fay*ny*v[1]*x0*x0*y0 - 2.0*fay*ny*v[1]*x0*y0 - fay*ny*v[2]*x0*x0*y0 - fbx*nx*v[1]*x0*x0*y0 + 2.0*fbx*nx*v[1]*x0*y0 + fbx*nx*v[2]*x0*x0*y0 - fby*ny*v[1]*x0*x0*y0 + 2.0*fby*ny*v[1]*x0*y0 + fby*ny*v[2]*x0*x0*y0 - 2.0*jf*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
+        */
         _a1[i] = v[0];
         _a2[i] = (-2.0*Jit00*mb*nx*v[0]*y0 + 2.0*Jit00*mb*nx*v[2]*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[0]*y0 + 2.0*Jit01*ma*nx*v[1]*x0*y0 - 2.0*Jit01*ma*nx*v[1]*y0 - 2.0*Jit01*ma*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[0]*y0 - 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[1]*y0 + 2.0*Jit01*mb*nx*v[2]*x0*y0 - 2.0*Jit10*mb*ny*v[0]*y0 + 2.0*Jit10*mb*ny*v[2]*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[0]*y0 + 2.0*Jit11*ma*ny*v[1]*x0*y0 - 2.0*Jit11*ma*ny*v[1]*y0 - 2.0*Jit11*ma*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[0]*y0 - 2.0*Jit11*mb*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[1]*y0 + 2.0*Jit11*mb*ny*v[2]*x0*y0 - fax*nx*v[0]*x0*y0 - fax*nx*v[0]*y0*y0 + 2.0*fax*nx*v[0]*y0 - fax*nx*v[1]*x0*y0*y0 + fax*nx*v[1]*y0*y0 + fax*nx*v[2]*x0*y0*y0 - fax*nx*v[2]*x0*y0 - fay*ny*v[0]*x0*y0 - fay*ny*v[0]*y0*y0 + 2.0*fay*ny*v[0]*y0 - fay*ny*v[1]*x0*y0*y0 + fay*ny*v[1]*y0*y0 + fay*ny*v[2]*x0*y0*y0 - fay*ny*v[2]*x0*y0 + fbx*nx*v[0]*x0*y0 + fbx*nx*v[0]*y0*y0 - 2.0*fbx*nx*v[0]*y0 + fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[1]*y0*y0 - fbx*nx*v[2]*x0*y0*y0 + fbx*nx*v[2]*x0*y0 + fby*ny*v[0]*x0*y0 + fby*ny*v[0]*y0*y0 - 2.0*fby*ny*v[0]*y0 + fby*ny*v[1]*x0*y0*y0 - fby*ny*v[1]*y0*y0 - fby*ny*v[2]*x0*y0*y0 + fby*ny*v[2]*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
         _a3[i] = (2.0*Jit00*ma*nx*v[0]*x0 - 2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[1]*x0*y0 + 2.0*Jit00*ma*nx*v[1]*y0 + 2.0*Jit00*ma*nx*v[2]*x0*y0 - 2.0*Jit00*ma*nx*v[2]*x0 - 2.0*Jit00*mb*nx*v[0]*x0 + 2.0*Jit00*mb*nx*v[1]*x0*y0 - 2.0*Jit00*mb*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[0]*x0 + 2.0*Jit01*mb*nx*v[1]*x0 + 2.0*Jit10*ma*ny*v[0]*x0 - 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[1]*y0 + 2.0*Jit10*ma*ny*v[2]*x0*y0 - 2.0*Jit10*ma*ny*v[2]*x0 - 2.0*Jit10*mb*ny*v[0]*x0 + 2.0*Jit10*mb*ny*v[1]*x0*y0 - 2.0*Jit10*mb*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[0]*x0 + 2.0*Jit11*mb*ny*v[1]*x0 - fax*nx*v[0]*x0*x0 - fax*nx*v[0]*x0*y0 + 2.0*fax*nx*v[0]*x0 + fax*nx*v[1]*x0*x0*y0 - fax*nx*v[1]*x0*y0 - fax*nx*v[2]*x0*x0*y0 + fax*nx*v[2]*x0*x0 - fay*ny*v[0]*x0*x0 - fay*ny*v[0]*x0*y0 + 2.0*fay*ny*v[0]*x0 + fay*ny*v[1]*x0*x0*y0 - fay*ny*v[1]*x0*y0 - fay*ny*v[2]*x0*x0*y0 + fay*ny*v[2]*x0*x0 + fbx*nx*v[0]*x0*x0 + fbx*nx*v[0]*x0*y0 - 2.0*fbx*nx*v[0]*x0 - fbx*nx*v[1]*x0*x0*y0 + fbx*nx*v[1]*x0*y0 + fbx*nx*v[2]*x0*x0*y0 - fbx*nx*v[2]*x0*x0 + fby*ny*v[0]*x0*x0 + fby*ny*v[0]*x0*y0 - 2.0*fby*ny*v[0]*x0 - fby*ny*v[1]*x0*x0*y0 + fby*ny*v[1]*x0*y0 + fby*ny*v[2]*x0*x0*y0 - fby*ny*v[2]*x0*x0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
         _b1[i] = (2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[0]*x0 - 2.0*Jit01*ma*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[0]*x0 - 2.0*Jit11*ma*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[1]*x0*y0 + fax*nx*v[1]*x0*y0*y0 + fax*nx*v[2]*x0*x0*y0 + fay*ny*v[1]*x0*y0*y0 + fay*ny*v[2]*x0*x0*y0 - fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[2]*x0*x0*y0 - fby*ny*v[1]*x0*y0*y0 - fby*ny*v[2]*x0*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
         _b2[i] = (-2.0*Jit00*ma*nx*v[0]*y0 + 2.0*Jit00*ma*nx*v[2]*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[1]*x0*y0 - 2.0*Jit01*ma*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[2]*x0*y0 - 2.0*Jit10*ma*ny*v[0]*y0 + 2.0*Jit10*ma*ny*v[2]*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[1]*x0*y0 - 2.0*Jit11*ma*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[2]*x0*y0 - fax*nx*v[1]*x0*y0*y0 + fax*nx*v[2]*x0*y0*y0 - 2.0*fax*nx*v[2]*x0*y0 - fay*ny*v[1]*x0*y0*y0 + fay*ny*v[2]*x0*y0*y0 - 2.0*fay*ny*v[2]*x0*y0 + fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[2]*x0*y0*y0 + 2.0*fbx*nx*v[2]*x0*y0 + fby*ny*v[1]*x0*y0*y0 - fby*ny*v[2]*x0*y0*y0 + 2.0*fby*ny*v[2]*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
         _b3[i] = (-2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[1]*x0*y0 + 2.0*Jit00*ma*nx*v[1]*y0 + 2.0*Jit00*ma*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[1]*x0*y0 - 2.0*Jit00*mb*nx*v[2]*x0*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[1]*x0 - 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[1]*y0 + 2.0*Jit10*ma*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[1]*x0*y0 - 2.0*Jit10*mb*ny*v[2]*x0*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[1]*x0 + fax*nx*v[1]*x0*x0*y0 - 2.0*fax*nx*v[1]*x0*y0 - fax*nx*v[2]*x0*x0*y0 + fay*ny*v[1]*x0*x0*y0 - 2.0*fay*ny*v[1]*x0*y0 - fay*ny*v[2]*x0*x0*y0 - fbx*nx*v[1]*x0*x0*y0 + 2.0*fbx*nx*v[1]*x0*y0 + fbx*nx*v[2]*x0*x0*y0 - fby*ny*v[1]*x0*x0*y0 + 2.0*fby*ny*v[1]*x0*y0 + fby*ny*v[2]*x0*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
-
+ 
         /* _a1[i] = v[0];
         _a2[i] =  (ny*v[1]*y0*(ma*x0 - ma - mb*x0 + mb) - v[0]*(ma*ny*x0 - ma*ny*y0 + mb*nx*y0 + mb*ny*y0) + v[2]*(-ma*ny*x0*y0 + ma*ny*x0 + mb*nx*y0 + mb*ny*x0*y0))/(-ma*nx*x0*y0 + ma*nx*y0 - ma*ny*x0*y0 + ma*ny*x0 + mb*nx*x0*y0 + mb*ny*x0*y0);
         _a3[i] = (nx*v[2]*x0*(ma*y0 - ma - mb*y0 + mb) - v[0]*(-ma*nx*x0 + ma*nx*y0 + mb*nx*x0 + mb*ny*x0) + v[1]*(-ma*nx*x0*y0 + ma*nx*y0 + mb*nx*x0*y0 + mb*ny*x0))/(-ma*nx*x0*y0 + ma*nx*y0 - ma*ny*x0*y0 + ma*ny*x0 + mb*nx*x0*y0 + mb*ny*x0*y0);
@@ -596,7 +650,7 @@ namespace equivalent_polynomials
   }
 
   template<int nSpace, int nP, int nQ, int nEBQ>
-  inline int Simplex<nSpace,nP,nQ,nEBQ>::calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, bool isBoundary, bool scale)
+  inline int Simplex<nSpace,nP,nQ,nEBQ>::calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, double jf, bool isBoundary, bool scale)
   {
     // initialize phi_dof_corrected -- correction can only be actually computed on cut cells
     for (unsigned int i = 0; i < nN; i++)
@@ -669,7 +723,7 @@ namespace equivalent_polynomials
     {
       if (nN == 3)
       {
-        _calculate_basis_coefficients(mb_scale, ma_scale);
+        _calculate_basis_coefficients(mb_scale, ma_scale, jf);
         for (int i = 0; i < 3; i++)
         {
           double tmp;
@@ -685,7 +739,7 @@ namespace equivalent_polynomials
     else
     {
       if (nN == 3)
-        _calculate_basis_coefficients(ma_scale, mb_scale);
+        _calculate_basis_coefficients(ma_scale, mb_scale, jf);
     }
     _correct_phi(phi_dof, phi_nodes);
     _calculate_C(); // coefficients of equiv poly
@@ -786,13 +840,11 @@ namespace equivalent_polynomials
       useExact(useExact)
     {}
     
-    inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, bool isBoundary, bool scale)
+    inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, double jf, bool isBoundary, bool scale)
     {
-      //hack for testing
-      //return exact.calculate(phi_dof, phi_nodes, xi_r, ma, mb);
-      //
+  
       if(useExact)
-        return exact.calculate(phi_dof, phi_nodes, xi_r, ma, mb,isBoundary,scale);
+        return exact.calculate(phi_dof, phi_nodes, xi_r, ma, mb,jf, isBoundary,scale);
       else//for inexact just copy over local phi_dof
         {
           for (int i=0; i<exact.nN;i++)
@@ -801,9 +853,14 @@ namespace equivalent_polynomials
         }
     }
     
+    inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, double ma, double mb, bool isBoundary, bool scale)
+    {
+      return calculate(phi_dof, phi_nodes, xi_r, ma,mb,0.0,isBoundary, false);
+    }
+
     inline int calculate(const double* phi_dof, const double* phi_nodes, const double* xi_r, bool isBoundary)
     {
-      return calculate(phi_dof, phi_nodes, xi_r, 1.0,1.0,isBoundary, false);
+      return calculate(phi_dof, phi_nodes, xi_r, 1.0,1.0,0.0,isBoundary, false);
     }
 
     inline double* get_normal()
