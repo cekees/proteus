@@ -23,13 +23,14 @@ Linear advection-diffusion-reaction at equilibrium in 2D.
 opts = Context.Options([
     ("test", 1.0, "which test to run (default is 1.0)"),
     ("unstructured", False, "use unstructured mesh (default is structured)"),
+    ("skew", 0.0001, "skew the domain when using unstructured mesh"),
     ("refinement", 0, "number of times to refine the mesh (default is 0)"),
 ])
 
 nd = 2
 L=(2.0,2.0)#,2.0)
 if opts.unstructured:
-    L=(2.0,2.0+.001)#,2.0)#throw off rectangular domain
+    L=(2.0,2.0+opts.skew)#,2.0)#throw off rectangular domain
 x0 = (-1.0,-1.0)#,-1.0)
 domainR = Domain.RectangularDomain(L=L,x=x0,name="adr",units="m")
 domainR.writePoly("ladr_ss_2d_p")
@@ -99,10 +100,10 @@ class LevequeLiExample4l(AnalyticalSolutions.SteadyState):
         super(LevequeLiExample4l, self).__init__()
     def uOfX(self, x):
         r = (x[0]**2 + x[1]**2)**0.5
-        if r <= 0.5: #if x[0] - x[1] - 1.0 <= 0.0:
+        if r <= 0.5:
             return x[0] - x[1]
         else:
-            return 0.0#return x[0] - x[1] - 1
+            return 0.0
 
 class PWC(AnalyticalSolutions.SteadyState):
     def __init__(self):

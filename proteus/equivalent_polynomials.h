@@ -174,6 +174,7 @@ namespace equivalent_polynomials
     static const unsigned int nN=nSpace+1;
     double phi_dof_corrected[nN];
     double cut_barycenter[3] ={0.,0.,0.};
+    bool bminus;
     bool corner;
   private:;
     double _H_q, _ImH_q, _D_q, _va_q[nN], _vb_q[nN],
@@ -273,207 +274,212 @@ namespace equivalent_polynomials
 	  }
       }
   }
-  
-  template<int nSpace, int nP, int nQ, int nEBQ>
-  inline int Simplex<nSpace,nP,nQ,nEBQ>::_calculate_permutation(const double* phi_dof, const double* phi_nodes)
+
+  template <int nSpace, int nP, int nQ, int nEBQ>
+  inline int Simplex<nSpace, nP, nQ, nEBQ>::_calculate_permutation(const double *phi_dof, const double *phi_nodes)
   {
-    int p_i, pcount=0, n_i, ncount=0, z_i, zcount=0;
+    int p_i, pcount = 0, n_i, ncount = 0, z_i, zcount = 0;
     corner = false;
-    root_node=0;
-    inside_out=false;
-    quad_cut=false;
-    const double eps=1.0e-8;
-    for (unsigned int i=0; i < nN; i++)
+    bminus = false;
+    root_node = 0;
+    inside_out = false;
+    quad_cut = false;
+    const double eps = 1.0e-8;
+    for (unsigned int i = 0; i < nN; i++)
+    {
+      if (phi_dof[i] > eps)
       {
-        if(phi_dof[i] > eps)
-          {
-	    if (pcount == 0)
-	      p_i = i;
-            pcount  += 1;
-          }
-        else if(phi_dof[i] < -eps)
-          {
-	    if (ncount == 0)
-	      n_i = i;
-            ncount += 1;
-          }
-        else
-          {
-            z_i = i;
-            zcount += 1;
-          }
+        if (pcount == 0)
+          p_i = i;
+        pcount += 1;
       }
-    if(pcount == nN)
+      else if (phi_dof[i] < -eps)
       {
-        return 1;
+        if (ncount == 0)
+          n_i = i;
+        ncount += 1;
       }
-    else if(ncount == nN)
+      else
       {
-        return -1;
+        z_i = i;
+        zcount += 1;
       }
-    else if(ncount == 1)
+    }
+    if (pcount == nN)
+    {
+      return 1;
+    }
+    else if (ncount == nN)
+    {
+      return -1;
+    }
+    else if (ncount == 1)
+    {
+      if (zcount == nN - 1) // interface is on an element boundary, don't integrate this orientation
       {
-        if (zcount == nN-1)//interface is on an element boundary, don't integrate this orientation
-          {
-            //std::cout<<"zcount "<<zcount<<std::endl;
-	    if (nSpace > 1)
-	      {
-		      //note: see comment below about these two cases
-		      //return -1;
+        bminus = true;
+        // std::cout<<"zcount "<<zcount<<std::endl;
+        if (nSpace > 1)
+        {
+          // note: see comment below about these two cases
+          // return -1;
           root_node = n_i;
-	      }
-	    else
-	      {
-		root_node = n_i;
-	      }
-	  }
+        }
         else
-          {
-	    root_node = n_i;
-          }
+        {
+          root_node = n_i;
+        }
       }
-    else if(pcount == 1)
+      else
       {
-        if (zcount == nN-1)//interface is on an element boundary, integrate this orientation
-	  {
-      //std::cout<<"zcount "<<zcount<<std::endl;
-	    //note: we are marking the element to the positive sdf side as cut,
-	    //which means the other element is fully in the -1 domain
-	    //for single-phase/cut cell methods, that means the fictitious domain
-	    //is excluded. This affects how ghost penalties and inactive nodes are set.
-	    //This choice is more robust.
-	    if (nSpace > 1)
-	      {
-		root_node = p_i;
-		inside_out = true;
-	      }
-	    else
+        root_node = n_i;
+      }
+    }
+    else if (pcount == 1)
+    {
+      if (zcount == nN - 1) // interface is on an element boundary, integrate this orientation
+      {
+        // std::cout<<"zcount "<<zcount<<std::endl;
+        // note: we are marking the element to the positive sdf side as cut,
+        // which means the other element is fully in the -1 domain
+        // for single-phase/cut cell methods, that means the fictitious domain
+        // is excluded. This affects how ghost penalties and inactive nodes are set.
+        // This choice is more robust.
+        if (nSpace > 1)
         {
           root_node = p_i;
-		      inside_out = true;
-          //return 1;
+          inside_out = true;
         }
-	  }
         else
-          {
-            if (nSpace > 1)
-              {
-                root_node = p_i;
-                inside_out = true;
-              }
-            else
-              {
-                root_node = n_i;
-              }
-          }
+        {
+          root_node = p_i;
+          inside_out = true;
+          // return 1;
+        }
       }
+      else
+      {
+        if (nSpace > 1)
+        {
+          root_node = p_i;
+          inside_out = true;
+        }
+        else
+        {
+          root_node = n_i;
+        }
+      }
+    }
     else if (nSpace == 3 && pcount == 2 && ncount == 2)
-      {
-	//special case only in 3D
-	quad_cut = true;
-	root_node = n_i;
-      }
+    {
+      // special case only in 3D
+      quad_cut = true;
+      root_node = n_i;
+    }
     else
+    {
+      // std::cout<<"zcount "<<zcount<<"pcount "<<pcount<<"ncount "<<ncount<<std::endl;
+      if (zcount >= nN - 1)
+        std::cerr << "zcount " << zcount << " >= " << nN - 1 << std::endl;
+      assert(zcount < nN - 1);
+      corner = true;
+      if (pcount)
       {
-        //std::cout<<"zcount "<<zcount<<"pcount "<<pcount<<"ncount "<<ncount<<std::endl;
-        if (zcount >= nN-1)
-          std::cerr<<"zcount "<<zcount<<" >= "<<nN-1<<std::endl;
-        assert(zcount < nN-1);
-        corner = true;
-        if(pcount)
-          root_node = z_i;
-          //return 1;
-        else if (ncount)
-          {
-            root_node = z_i;
-            inside_out = true;
-          }
-          //return -1;
+        root_node = z_i;
+        inside_out = true;
+      }
+      // return 1;
+      else if (ncount)
+      {
+        root_node = z_i;
+        // inside_out = true;
+      }
+      // return -1;
+      else
+        assert(false);
+    }
+    for (unsigned int i = 0; i < nN; i++)
+    {
+      permutation[i] = (root_node + i) % nN;
+    }
+    if (quad_cut)
+    {
+      if (phi_dof[permutation[nN - 1]] > 0.0)
+      {
+        int tmp = permutation[nN - 1];
+        if (phi_dof[permutation[nN - 2]] < 0.0)
+        {
+          permutation[nN - 1] = permutation[nN - 2];
+          permutation[nN - 2] = tmp;
+        }
+        else if (phi_dof[permutation[nN - 3]] < 0.0)
+        {
+          permutation[nN - 1] = permutation[nN - 3];
+          permutation[nN - 3] = tmp;
+        }
         else
           assert(false);
       }
-    for(unsigned int i=0; i < nN; i++)
+      assert(phi_dof[permutation[0]] < 0.0);
+      assert(phi_dof[permutation[3]] < 0.0);
+      assert(phi_dof[permutation[1]] > 0.0);
+      assert(phi_dof[permutation[2]] > 0.0);
+    }
+    for (unsigned int i = 0; i < nN; i++)
+    {
+      phi[i] = phi_dof[permutation[i]];
+      for (unsigned int I = 0; I < 3; I++)
       {
-        permutation[i] = (root_node+i)%nN;
+        nodes[i * 3 + I] = phi_nodes[permutation[i] * 3 + I]; // nodes always 3D
       }
-    if(quad_cut)
+    }
+    double JacTest[nSpace * nSpace];
+    for (unsigned int I = 0; I < nSpace; I++)
+    {
+      for (unsigned int i = 0; i < nN - 1; i++)
       {
-        if(phi_dof[permutation[nN-1]] > 0.0)
-	  {
-	    int tmp=permutation[nN-1];
-	    if (phi_dof[permutation[nN-2]] < 0.0)
-	      {
-		permutation[nN-1] = permutation[nN-2];
-		permutation[nN-2] = tmp;
-	      }
-	    else if (phi_dof[permutation[nN-3]] < 0.0)
-	      {
-		permutation[nN-1] = permutation[nN-3];
-		permutation[nN-3] = tmp;
-	      }
-	    else
-	      assert(false);
-	  }
-	assert(phi_dof[permutation[0]] < 0.0);
-	assert(phi_dof[permutation[3]] < 0.0);
-	assert(phi_dof[permutation[1]] > 0.0);
-	assert(phi_dof[permutation[2]] > 0.0);
+        Jac[I * nSpace + i] = nodes[(1 + i) * 3 + I] - nodes[I];
+        JacTest[I * nSpace + i] = phi_nodes[(1 + i) * 3 + I] - phi_nodes[I];
       }
-    for(unsigned int i=0; i < nN; i++)
-      {
-        phi[i] = phi_dof[permutation[i]];
-        for(unsigned int I=0; I < 3; I++)
-          {
-            nodes[i*3 + I] = phi_nodes[permutation[i]*3 + I];//nodes always 3D
-          }
-      }
-    double JacTest[nSpace*nSpace];
-    for(unsigned int I=0; I < nSpace; I++)
-      {
-        for(unsigned int i=0; i < nN - 1; i++)
-          {
-            Jac[I*nSpace+i] = nodes[(1+i)*3 + I] - nodes[I];
-            JacTest[I*nSpace+i] = phi_nodes[(1+i)*3 + I] - phi_nodes[I];
-          }
-      }
+    }
     det_Jac = det<nSpace>(Jac);
     double det_JacTest = det<nSpace>(JacTest);
     /* assert(det_JacTest >= 0.0); */
     /* assert(det_Jac >= 0.0); */
-    if(det_Jac < 0.0)
+    if (det_Jac < 0.0)
+    {
+      if (quad_cut) // flip the two internal positive nodes
       {
-	if (quad_cut)//flip the two internal positive nodes
-	  {
-	    double tmp = permutation[2];
-	    permutation[2] = permutation[1];
-	    permutation[1] = tmp;
-	  }
-	else//flip the last two nodes
-	  {
-	    double tmp = permutation[nN-1];
-	    permutation[nN-1] = permutation[nN-2];
-	    permutation[nN-2] = tmp;
-	  }
-        for(unsigned int i=0; i < nN; i++)
-          {
-            phi[i] = phi_dof[permutation[i]];
-            for(unsigned int I=0; I < 3; I++)
-              {
-                nodes[i*3 + I] = phi_nodes[permutation[i]*3 + I];//nodes always 3D
-              }
-          }
-        for(unsigned int i=0; i < nN-1; i++)
-          for(unsigned int I=0; I < nSpace; I++)
-            Jac[I*nSpace+i] = nodes[(1+i)*3 + I] - nodes[I];
-        det_Jac = det<nSpace>(Jac);
-        assert(det_Jac > 0);
-        if (nSpace == 1)
-          inside_out = true;
+        double tmp = permutation[2];
+        permutation[2] = permutation[1];
+        permutation[1] = tmp;
       }
+      else // flip the last two nodes
+      {
+        double tmp = permutation[nN - 1];
+        permutation[nN - 1] = permutation[nN - 2];
+        permutation[nN - 2] = tmp;
+      }
+      for (unsigned int i = 0; i < nN; i++)
+      {
+        phi[i] = phi_dof[permutation[i]];
+        for (unsigned int I = 0; I < 3; I++)
+        {
+          nodes[i * 3 + I] = phi_nodes[permutation[i] * 3 + I]; // nodes always 3D
+        }
+      }
+      for (unsigned int i = 0; i < nN - 1; i++)
+        for (unsigned int I = 0; I < nSpace; I++)
+          Jac[I * nSpace + i] = nodes[(1 + i) * 3 + I] - nodes[I];
+      det_Jac = det<nSpace>(Jac);
+      assert(det_Jac > 0);
+      if (nSpace == 1)
+        inside_out = true;
+    }
     inv<nSpace>(Jac, inv_Jac);
     return 0;
   }
-  
+
   template<int nSpace, int nP, int nQ, int nEBQ>
   inline void Simplex<nSpace,nP,nQ,nEBQ>::_calculate_cuts()
   {

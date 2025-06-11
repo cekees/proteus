@@ -15,7 +15,7 @@ namespace py = pybind11;
 
 namespace proteus
 {
-	double sol_inner(int test, double x, double y)
+	double sol_inner(double test, double x, double y)
 	{
 		double sol = 0.0;
 		if (test == 1.0) // Leveque & Li 1994, Example 1
@@ -40,7 +40,7 @@ namespace proteus
 			assert(false && "Unknown test case in sol_inner");
 		return sol;
 	}
-	double sol_outer(int test, double x, double y, double b, double C)
+	double sol_outer(double test, double x, double y, double b, double C)
 	{
 		double sol = 0.0, r = sqrt(x * x + y * y);
 		;
@@ -385,7 +385,7 @@ namespace proteus
 			if (test == 1.0) // Leveque & Li 1994, Example 1
 				r += 2.0*D_f;
 			else if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
-				r += 0.2* D_f;
+				r += 0.2* D_f;//note: paper has error, jump is 0.2 not 0.1
 			else if (test == 3.0) // Leveque & Li 1994, Example 3
 				r -= (exp(x) * cos(y) * immersedBoundary_normal[0] - exp(x) * sin(y) * immersedBoundary_normal[1]) * D_f;
 			else if (test == 4.0) // Leveque & Li 1994, Example 4
@@ -837,10 +837,9 @@ namespace proteus
 						ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
 
 						double sol = sol_inner(test, x, y);
-						L2_error += ImH_f * (ua + uja - sol) * (ua + uja - sol) * dV;
-
+						L2_error += ImH_f * (ua + uja - sol) * (ua + uja - sol) * dV;	
 						sol = sol_outer(test, x, y, a_loc[0], 0.1);
-						L2_error += H_f * (ub + ujb - sol) * (ub + ujb - sol) * dV;
+						L2_error += H_f * (ub  + ujb - sol) * (ub + ujb  - sol) * dV;
 					}
 					else
 					{
@@ -868,9 +867,10 @@ namespace proteus
 					}
 					if (immersedBoundary)
 					{
-						elementResidual_u.data()[i] += (ck.Advection_weak(f_f, &u_grad_test_dV[i_nSpace]) +
-														ck.Reaction_weak(r_f, u_test_dV[i]) +
-														ck.Hamiltonian_weak(ham_f, u_test_dV[i]));
+						if (!gf_f.exact.bminus && !gf_f.exact.corner)
+							elementResidual_u.data()[i] += (ck.Advection_weak(f_f, &u_grad_test_dV[i_nSpace]) +
+															ck.Reaction_weak(r_f, u_test_dV[i]) +
+															ck.Hamiltonian_weak(ham_f, u_test_dV[i]));
 					}
 				}
 			}
@@ -1061,8 +1061,8 @@ namespace proteus
 					{
 						for (int i = 0; i < nDOF_mesh_trial_element; i++)
 						{
-							if (element_phi_f[i] == 0.0)
-								std::cout << "element_phi_f " << element_phi_f[0] << " " << element_phi_f[1] << " " << element_phi_f[2] << std::endl;
+							//if (element_phi_f[i] == 0.0)
+							//	std::cout << "element_phi_f " << element_phi_f[0] << " " << element_phi_f[1] << " " << element_phi_f[2] << std::endl;
 							int eN_i = eN * nDOF_mesh_trial_element + i;
 							// if (gf_f.exact.phi_dof_corrected[i] > 0.0)
 							if (element_phi_f[i] > 0.0)
@@ -1084,6 +1084,7 @@ namespace proteus
 					}
 					else
 					{
+						//std::cout << "corner element_phi_f " << element_phi_f[0] << " " << element_phi_f[1] << " " << element_phi_f[2] << std::endl;
 						bool plus = false, minus = false, split = false;
 						;
 						for (int i = 0; i < nDOF_mesh_trial_element; i++)
@@ -1095,6 +1096,7 @@ namespace proteus
 						}
 						if (plus and minus)
 							split = true;
+						assert(!split);
 						if (split == false && plus)
 						{
 							for (int i = 0; i < nDOF_mesh_trial_element; i++)
@@ -1987,7 +1989,8 @@ namespace proteus
 						}
 						if (immersedBoundary)
 						{
-							elementJacobian_u_u.data()[i * nDOF_trial_element + j] += (ck.AdvectionJacobian_weak(df_f, u_trial_ref.data()[k * nDOF_trial_element + j], &u_grad_test_dV[i_nSpace]) +
+							if (!gf_f.exact.bminus && !gf_f.exact.corner)
+								elementJacobian_u_u.data()[i * nDOF_trial_element + j] += (ck.AdvectionJacobian_weak(df_f, u_trial_ref.data()[k * nDOF_trial_element + j], &u_grad_test_dV[i_nSpace]) +
 																					   ck.ReactionJacobian_weak(dr_f, u_trial_ref.data()[k * nDOF_trial_element + j], u_test_dV[i]) +
 																					   ck.HamiltonianJacobian_weak(dham_f, &u_grad_trial[j_nSpace], u_test_dV[i]));
 						}
