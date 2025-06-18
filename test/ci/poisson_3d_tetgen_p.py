@@ -17,7 +17,14 @@ Heterogeneous Poisson's equation, -div(a(x)u) = f(x), on unit domain [0,1]x[0,1]
 # Domain - mesh - quadrature
 #----------------------------------------------------
 #space dimension
+opts = Context.Options([
+    ("genMesh", True, "Generate mesh on the fly, otherwise mesh files must be written prior to job"),
+    ("Refinement", 0, "Refine the mesh this many times"),
+])
+
+name = "poisson_"+str(opts.Refinement)
 nd = 3
+print("Running %s" % name)
 
 hull_length = 0.5
 hull_beam   = 0.5
@@ -37,7 +44,8 @@ hull_center = (0.5*hull_length,
 
 nLevels = 1
 
-he = L[0]/10.0
+# he = L[0]/1.0
+he =  L[0] / ( ( 1.0 * 1.26**opts.Refinement) )
 #he = hull_draft/1.0
 #he = hull_draft/6.0
 genMesh=True

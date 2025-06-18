@@ -259,6 +259,8 @@ cdef extern from "mesh.h":
     cdef int writeTriangleMesh(Mesh& mesh,
                                const char* filebase,
                                int base)
+    cdef int readDMPlexMesh(object dmplexMesh,
+                               Mesh& mesh)
     cdef int readTetgenMesh(Mesh& mesh,
                             const char* filebase,
                             int base)

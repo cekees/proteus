@@ -11,6 +11,8 @@
 /** #include <mach/mach_time.h> */
 #include <cassert>
 #include <cmath>
+
+ 
 /**
    \file mesh.h
    \defgroup mesh mesh
@@ -81,6 +83,10 @@ extern "C"
       *elementBoundaryNumbering_subdomain2global,
       *edgeOffsets_subdomain_owned,
       *edgeNumbering_subdomain2global;
+
+    // DMPlex mesh flag
+    bool usePlex = false;
+    
     Mesh* subdomainp;
   };
   
@@ -380,7 +386,7 @@ extern "C"
   int setFromTriangleNodes(triangulateio* trimesh, Mesh& mesh, int base);
   int readTriangleMesh(Mesh& mesh, const char* filebase, int base);
   int readTriangleElementBoundaryMaterialTypes(Mesh& mesh, const char* filebase, int base);
-  int writeTriangleMesh(Mesh& mesh, const char* filebase, int base);
+  int writeTriangleMesh(Mesh& mesh, const char* filebase, int base); 
   int readTetgenMesh(Mesh& mesh, const char* filebase, int base);
   int readTetgenElementBoundaryMaterialTypes(Mesh& mesh, const char* filebase, int base);
   int writeTetgenMesh(Mesh& mesh, const char* filebase, int base);
@@ -392,8 +398,14 @@ extern "C"
   int write2dmMesh(Mesh& mesh, const char* filebase, int base);
   int copyElementBoundaryMaterialTypesFromTriangle(triangulateio* trimesh, 
 						   Mesh& mesh, int base);
-}//extern "C"
+              }//extern "C"
   
+  // DMPlex mesh reader function declaration.
+  // #include <pybind11/pybind11.h>
+  // namespace py = pybind11;
+  #include <Python.h>
+  int readDMPlexMesh(PyObject* dmplexMesh, Mesh& mesh);
+
 /* A sorted tuple of node numbers to use as a key in maps */
 template<int nNodes>
 class NodeTuple

@@ -18,6 +18,73 @@ cdef class CMesh:
     def deleteCMesh(self):
         cppm.deleteMesh(self.mesh)
 
+    # def buildCMeshInterface(self, object plexMesh):
+    #             self.mesh.nElements_global                           = plexMesh.nElements_global
+    #             self.mesh.nNodes_global                              = plexMesh.nNodes_global
+    #             self.mesh.nNodes_element                             = plexMesh.nNodes_element
+    #             self.mesh.nNodes_elementBoundary                     = plexMesh.nNodes_elementBoundary
+    #             self.mesh.nElementBoundaries_element                 = plexMesh.nElementBoundaries_element
+    #             self.mesh.nElementBoundaries_global                  = plexMesh.nElementBoundaries_global
+    #             self.mesh.nInteriorElementBoundaries_global          = plexMesh.nInteriorElementBoundaries_global
+    #             self.mesh.nExteriorElementBoundaries_global          = plexMesh.nExteriorElementBoundaries_global
+    #             self.mesh.nEdges_global                              = plexMesh.nEdges_global
+    #             self.mesh.max_nNodeNeighbors_node                    = plexMesh.max_nNodeNeighbors_node
+    #             self.mesh.max_nElements_node                         = plexMesh.max_nElements_node
+
+    #             self.max_nNodeNeighbors_node                    = plexMesh.max_nNodeNeighbors_node
+    #             self.nElements_global                           = plexMesh.nElements_global
+    #             self.nNodes_global                              = plexMesh.nNodes_global
+    #             self.nNodes_element                             = plexMesh.nNodes_element
+    #             self.nNodes_elementBoundary                     = plexMesh.nNodes_elementBoundary
+    #             self.max_nElements_node                         = plexMesh.max_nElements_node
+    #             self.nEdges_global                              = plexMesh.nEdges_global
+    #             self.nElementBoundaries_element                 = plexMesh.nElementBoundaries_element
+    #             self.nElementBoundaries_global                  = plexMesh.nElementBoundaries_global
+    #             self.nInteriorElementBoundaries_global          = plexMesh.nInteriorElementBoundaries_global
+    #             self.nExteriorElementBoundaries_global          = plexMesh.nExteriorElementBoundaries_global
+
+    #     cdef np.ndarray <int*> self.mesh.elementNodesArray                          = <int*> self.elementNodesArray
+    #     # self.mesh.nodeElementsArray                          = <int*> self.nodeElementsArray
+    #     # self.mesh.nodeElementOffsets                         = <int*> self.nodeElementOffsets
+    #     # self.mesh.elementNeighborsArray                      = <int*> self.elementNeighborsArray
+    #     # self.mesh.elementBoundariesArray                     = <int*> self.elementBoundariesArray
+    #     # self.mesh.elementBoundaryNodesArray                  = <int*> self.elementBoundaryNodesArray
+    #     # self.mesh.elementBoundaryElementsArray               = <int*> self.elementBoundaryElementsArray
+    #     # self.mesh.elementBoundaryLocalElementBoundariesArray = <int*> self.elementBoundaryLocalElementBoundariesArray
+    #     # self.mesh.interiorElementBoundariesArray             = <int*> self.interiorElementBoundariesArray
+    #     # self.mesh.exteriorElementBoundariesArray             = <int*> self.exteriorElementBoundariesArray
+    #     # self.mesh.edgeNodesArray                             = <int*> self.edgeNodesArray
+    #     # self.mesh.nodeStarArray                              = <int*> self.nodeStarArray
+    #     # self.mesh.nodeStarOffsets                            = <int*> self.nodeStarOffsets
+    #     # self.mesh.elementMaterialTypes                       = <int*> self.elementMaterialTypes
+    #     # self.mesh.elementBoundaryMaterialTypes               = <int*> self.elementBoundaryMaterialTypes
+    #     # self.mesh.nodeMaterialTypes                          = <int*> self.nodeMaterialTypes
+
+    #     # self.mesh.elementIJK                                 = self.elementIJK
+    #     # self.mesh.weights                                    = self.weights
+    #     # self.mesh.U_KNOT                                     = self.U_KNOT
+    #     # self.mesh.V_KNOT                                     = self.V_KNOT
+    #     # self.mesh.W_KNOT                                     = self.W_KNOT
+    #     # self.mesh.nx                                         = self.nx
+    #     # self.mesh.ny                                         = self.ny
+    #     # self.mesh.nz                                         = self.nz
+    #     # self.mesh.px                                         = self.px
+    #     # self.mesh.py                                         = self.py
+    #     # self.mesh.pz                                         = self.pz
+
+    #     # self.mesh.nodeArray                                  = self.nodeArray
+    #     # self.mesh.elementDiametersArray                      = self.elementDiametersArray
+    #     # self.mesh.elementInnerDiametersArray                 = self.elementInnerDiametersArray
+    #     # self.mesh.elementBoundaryDiametersArray              = self.elementBoundaryDiametersArray
+    #     # self.mesh.elementBarycentersArray                    = self.elementBarycentersArray
+    #     # self.mesh.elementBoundaryBarycentersArray            = self.elementBoundaryBarycentersArray
+    #     # self.mesh.nodeDiametersArray                         = <double*> self.nodeDiametersArray
+    #     # self.mesh.nodeSupportArray                           = <double*> self.nodeSupportArray
+    #     # self.mesh.h                                          = self.h
+    #     # self.mesh.hMin                                       = self.hMin
+    #     # self.mesh.sigmaMax                                   = self.sigmaMax
+    #     # self.mesh.volume                                     = self.volume
+
     def buildPythonMeshInterface(self):
         cdef int dim1
         self.nElements_global = self.mesh.nElements_global
@@ -339,6 +406,87 @@ cpdef void writeTriangleFiles(CMesh cmesh,
                              int base):
     cdef int failed
     failed = cppm.writeTriangleMesh(cmesh.mesh,filebase.encode('utf8'),base);
+
+cpdef void generateCMeshFromDMPlex(self, CMesh cmesh):
+    cdef int failed
+    failed = cppm.readDMPlexMesh(self, cmesh.mesh);
+
+    # int
+    cmesh.nElements_global                           = self.nElements_global
+    cmesh.nNodes_global                              = self.nNodes_global
+    cmesh.nNodes_element                             = self.nNodes_element
+    cmesh.elementNodesArray                          = self.elementNodesArray
+    cmesh.nodeMaterialTypes                          = self.nodeMaterialTypes
+    cmesh.elementMaterialTypes                       = self.elementMaterialTypes
+    cmesh.nodeArray                                  = self.nodeArray
+
+    # cppm.constructElementBoundaryElementsArray_tetrahedron(cmesh.mesh);
+
+    cmesh.nNodes_elementBoundary                     = self.nNodes_elementBoundary
+    cmesh.nEdges_global                              = self.nEdges_global
+    cmesh.nElementBoundaries_element                 = self.nElementBoundaries_element
+    cmesh.nElementBoundaries_global                  = self.nElementBoundaries_global
+    cmesh.nInteriorElementBoundaries_global          = self.nInteriorElementBoundaries_global
+    cmesh.nExteriorElementBoundaries_global          = self.nExteriorElementBoundaries_global
+    cmesh.max_nNodeNeighbors_node                    = self.max_nNodeNeighbors_node
+    cmesh.max_nElements_node                         = self.max_nElements_node
+
+    # print("nElements_global = ", self.nElements_global)
+    # print("nNodes_global = ", self.nNodes_global)
+    # print("nNodes_element = ", self.nNodes_element)
+    # print("nNodes_elementBoundary = ", self.nNodes_elementBoundary)
+    # print("nEdges_global = ", self.nEdges_global)
+    # print("nElementBoundaries_element = ", self.nElementBoundaries_element)
+    # print("nElementBoundaries_global = ", self.nElementBoundaries_global)
+    # print("nInteriorElementBoundaries_global = ", self.nInteriorElementBoundaries_global)
+    # print("nExteriorElementBoundaries_global = ", self.nExteriorElementBoundaries_global)
+    # print("max_nNodeNeighbors_node = ", self.max_nNodeNeighbors_node)
+    # print("max_nElements_node = ", self.max_nElements_node)
+
+    # int*
+    cmesh.nodeElementsArray                          = self.nodeElementsArray
+    
+    cmesh.nodeElementOffsets                         = self.nodeElementOffsets
+    cmesh.elementBoundariesArray                     = self.elementBoundariesArray
+    cmesh.elementBoundaryNodesArray                  = self.elementBoundaryNodesArray
+    cmesh.elementBoundaryNodesArray                  = self.elementBoundaryNodesArray
+    cmesh.elementBoundaryElementsArray               = self.elementBoundaryElementsArray
+    cmesh.interiorElementBoundariesArray             = self.interiorElementBoundariesArray
+    cmesh.exteriorElementBoundariesArray             = self.exteriorElementBoundariesArray
+    cmesh.edgeNodesArray                             = self.edgeNodesArray
+    cmesh.nodeStarArray                              = self.nodeStarArray
+    cmesh.nodeStarOffsets                            = self.nodeStarOffsets
+    
+    
+    # cmesh.elementBoundaryMaterialTypes               = self.elementBoundaryMaterialTypes
+    # print("nodeElementsArray = ", self.nodeElementsArray)
+    # print("elementNodesArray = ", self.elementNodesArray)
+    # print("nodeElementOffsets = ", self.nodeElementOffsets)
+    # print("elementBoundariesArray = ", self.elementBoundariesArray)
+    # print("elementBoundaryNodesArray = ", self.elementBoundaryNodesArray)
+    # print("elementBoundaryElementsArray = ", self.elementBoundaryElementsArray)
+    # print("interiorElementBoundariesArray = ", self.interiorElementBoundariesArray)
+    # print("exteriorElementBoundariesArray = ", self.exteriorElementBoundariesArray)
+    # print("edgeNodesArray = ", self.edgeNodesArray)
+    # print("nodeStarArray = ", self.nodeStarArray)
+    # print("nodeStarOffsets = ", self.nodeStarOffsets)
+    # print("nodeMaterialTypes = ", self.nodeMaterialTypes)
+    # print("elementMaterialTypes = ", self.elementMaterialTypes)
+    # print("elementBoundaryMaterialTypes = ", self.elementBoundaryMaterialTypes)
+
+    # double*
+    
+    # print("nodeArray = ", self.nodeArray)
+    # cppm.constructElementBoundaryElementsArray_tetrahedron(cmesh.mesh);
+    # double
+    # cmesh.h                                          = self.h
+    # cmesh.hMin                                       = self.hMin
+    # cmesh.sigmaMax                                   = self.sigmaMax
+    # cmesh.volume                                     = self.volume
+    # print("h = ", self.h)
+    # print("hMin = ", self.hMin)
+    # print("sigmaMax = ", self.sigmaMax)
+    # print("volume = ", self.volume)
 
 cpdef void generateFromTetgenFiles(CMesh cmesh,
                                   unicode filebase,

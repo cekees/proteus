@@ -16,10 +16,13 @@ import os
 import proteus
 
 #remove blanket import statements until after Comm initialized for petsc4py
-from proteus import Profiling, Comm, Context
+from proteus import *
+# from proteus import Profiling, Comm, Context
 from warnings import *
 import optparse
 import sys
+sys.path.append("/home/nathawani/proteus/proteus")
+
 
 usage = "usage: %prog [options] [main.py] [soModule.py] [pModule.py nModule.py]"
 parser = optparse.OptionParser(usage=usage)
