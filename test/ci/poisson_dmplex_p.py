@@ -27,15 +27,10 @@ f = 4 * pi^2 * sin(2 * pi * x[d]); d in [0, nDimensions-1]
 #----------------------------------------------------
 # Domain - mesh - quadrature
 #----------------------------------------------------
-#space dimension
-# opts = Context.Options([
-#     ("genMesh", True, "Generate mesh on the fly, otherwise mesh files must be written prior to job"),
-#     ("Refinement", 0, "Refine the mesh this many times"),
-#     ("usePlex", True, "Use DMPlex for mesh generation and solution"),
-# ])
+# Use the following PETSc options to run this test:
+# -dm_plex_dim 3 -dm_refine_volume_limit_pre 0.5 -dm_view ascii -dm_plex_separate_marker 1 -dm_distribute 0 -ksp_type cg -pc_type gamg
 
 name = "poisson_plex"
-print("Running %s" % name)
 plexMesh = PETSc.DMPlex()
 plexMesh.create(comm.comm)
 plexMesh.setFromOptions()

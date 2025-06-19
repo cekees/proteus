@@ -7787,7 +7787,6 @@ int readDMPlexMesh(PyObject* dmplexMesh, Mesh& mesh)
   if (py::isinstance(plexMesh, meshTools.attr("Mesh"))) {
     logEvent("DMPlex mesh is available in MeshTools.", 1);
     logEvent("Reading DMPlex mesh from MeshTools", 1);
-    
     mesh.usePlex = true;
     mesh.nNodes_global = plexMesh.attr("nNodes_global").cast<int>();
     mesh.nElements_global = plexMesh.attr("nElements_global").cast<int>();    
@@ -7799,9 +7798,8 @@ int readDMPlexMesh(PyObject* dmplexMesh, Mesh& mesh)
     mesh.nInteriorElementBoundaries_global = plexMesh.attr("nInteriorElementBoundaries_global").cast<int>();
     mesh.nExteriorElementBoundaries_global = plexMesh.attr("nExteriorElementBoundaries_global").cast<int>();
     
-    mesh.max_nElements_node = plexMesh.attr("max_nElements_node").cast<int>();
     mesh.max_nNodeNeighbors_node = plexMesh.attr("max_nNodeNeighbors_node").cast<int>();
-        
+    
     py::array_t<int> nodeElementsArray = plexMesh.attr("nodeElementsArray").cast<py::array_t<int>>();
     auto nodeElementsArrayBuf = nodeElementsArray.request();
     mesh.nodeElementsArray = static_cast<int*>(nodeElementsArrayBuf.ptr);
@@ -7833,7 +7831,7 @@ int readDMPlexMesh(PyObject* dmplexMesh, Mesh& mesh)
   //     }
   //     std::cout << std::endl;
   // }
-    py::array_t<int> elementBoundaryElementsArray = plexMesh.attr("elementBoundaryElementsArray").cast<py::array_t<int>>();
+  py::array_t<int> elementBoundaryElementsArray = plexMesh.attr("elementBoundaryElementsArray").cast<py::array_t<int>>();
     auto elementBoundaryElementsArrayBuf = elementBoundaryElementsArray.request();
     mesh.elementBoundaryElementsArray = static_cast<int*>(elementBoundaryElementsArrayBuf.ptr);
     
@@ -7905,20 +7903,15 @@ int readDMPlexMesh(PyObject* dmplexMesh, Mesh& mesh)
     // auto nodeSupportArrayBuf = nodeSupportArray.request();
     // mesh.nodeSupportArray = static_cast<double*>(nodeSupportArrayBuf.ptr);
 
-    mesh.h = plexMesh.attr("h").cast<double>();
-    mesh.hMin = plexMesh.attr("hMin").cast<double>();
-    mesh.sigmaMax = plexMesh.attr("sigmaMax").cast<double>();
-    mesh.volume = plexMesh.attr("volume").cast<double>();
+    // mesh.h = plexMesh.attr("h").cast<double>();
+    // mesh.hMin = plexMesh.attr("hMin").cast<double>();
+    // mesh.sigmaMax = plexMesh.attr("sigmaMax").cast<double>();
+    // mesh.volume = plexMesh.attr("volume").cast<double>();
 
   } else {
     std::cerr << "DMPlex mesh is not available in MeshTools." << std::endl;
     return -1;
   }
-
-  // py::list attrs = py::dir(instance);
-  // py::object meshObj = py::reinterpret_borrow<py::object>(dmplexMesh);
-  // std::cout << "nElements: " << py::str(meshObj.attr("nElements")) << std::endl;  
-  
   return 0;
 }
 

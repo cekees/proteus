@@ -572,7 +572,7 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
   //
   //compute offsets to build processor (local) to global ordering for nodes
   //in default partitioning
-  printf("rank %d partitionNodes nNodes_global %d\n", rank, mesh.nNodes_global);
+  // printf("rank %d partitionNodes nNodes_global %d\n", rank, mesh.nNodes_global);
   valarray<int> nodeOffsets_old(size+1);
   nodeOffsets_old[0] = 0;
   for (int sdN=0; sdN < size; sdN++)
@@ -585,6 +585,7 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
   //2. Determine nodal connectivity on local processor, (local node star array)
   //
   int nNodes_subdomain = (nodeOffsets_old[rank+1] - nodeOffsets_old[rank]);
+  // printf("rank %d nNodes_subdomain %d\n", rank, nNodes_subdomain);
   PetscInt *nodeNeighborsOffsets_subdomain,*nodeNeighbors_subdomain,*weights_subdomain;
   PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain+1),&nodeNeighborsOffsets_subdomain);
   PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain*mesh.max_nNodeNeighbors_node),&nodeNeighbors_subdomain);
@@ -592,13 +593,13 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
   nodeNeighborsOffsets_subdomain[0] = 0;
   for (int nN = 0,offset=0; nN < nNodes_subdomain; nN++)
     {
-      // printf("rank %d nN %d nodeOffsets_old[rank] %d nNodes_subdomain %d\n", rank, nN, nodeOffsets_old[rank], nNodes_subdomain);
       int nN_global = nodeOffsets_old[rank] + nN;
+      // printf("rank %d nN %d nodeOffsets_old[rank] %d nNodes_subdomain %d nN_global = %d nodeStarOffset = %d\n", rank, nN, nodeOffsets_old[rank], nNodes_subdomain, nN_global, mesh.nodeStarOffsets[nN_global]);
       for (int offset_global = mesh.nodeStarOffsets[nN_global];
            offset_global < mesh.nodeStarOffsets[nN_global+1]; offset_global++)
            {
-          // printf("rank %d nN %d offset_global %d mesh.nodeStarOffsets[nN_global+1] %d\n", rank, nN, offset_global, mesh.nodeStarOffsets[nN_global+1]);
-          nodeNeighbors_subdomain[offset++] = mesh.nodeStarArray[offset_global];
+             nodeNeighbors_subdomain[offset++] = mesh.nodeStarArray[offset_global];
+            //  printf("rank %d nN %d offset_global %d mesh.nodeStarOffsets[nN_global+1] %d  nodeNeighbors_subdomain[offset++] = %d mesh.nodeStarArray[offset_global]\n", rank, nN, offset_global, mesh.nodeStarOffsets[nN_global+1], nodeNeighbors_subdomain[offset++], mesh.nodeStarArray[offset_global]);
         }
       nodeNeighborsOffsets_subdomain[nN+1]=offset;
       sort(&nodeNeighbors_subdomain[nodeNeighborsOffsets_subdomain[nN]],&nodeNeighbors_subdomain[nodeNeighborsOffsets_subdomain[nN+1]]);
