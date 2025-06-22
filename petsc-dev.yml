@@ -3,10 +3,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - compilers
-#  - mpich
-#  - openblas
-#  - h5py=*=*mpich*
+#  - compilers
   - python
   - setuptools
   - numpy
@@ -17,6 +14,7 @@ dependencies:
   - cython
   - pybind11
   - swig
+  - pybind11
   - ncurses
   - memory_profiler
   - pytest

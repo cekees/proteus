@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -N NUM_NODES
 #SBATCH -n TASKS_PER_NODE
-#SBATCH -t 8:00:00
+#SBATCH -t 12:00:00
 #SBATCH -p PARTITION_NAME 
 #SBATCH -A hpc_ceds2d_2hp
 #SBATCH -J "poisson test"
@@ -28,6 +28,7 @@ export WORK_DIR=/work/$USER/poisson-${SLURM_NNODES}_${SLURM_NTASKS}_${SLURM_JOBI
 mkdir -p $WORK_DIR
 
 # Copy files, jump to WORK_DIR, and execute a program
+cp poisson_slurm.sh $WORK_DIR
 cp $PROJECT_DIR/poisson_3d_tetgen_p.py $WORK_DIR
 cp $PROJECT_DIR/poisson_3d_tetgen_c0p1_n.py $WORK_DIR
 # cp poisson.sh $WORK_DIR
