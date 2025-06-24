@@ -66,7 +66,7 @@ if parallel:
     parallelPartitioningType = MeshParallelPartitioningTypes.node
     #parallelPartitioningType = MeshParallelPartitioningTypes.element
     #have to have a numerical flux in parallel
-    numericalFluxType = Advection_DiagonalUpwind_Diffusion_IIPG_exterior
+    numericalFluxType = Advection_DiagonalUpwind_Diffusion_SIPG_exterior
     #for true residual test or maxits
     linearSolverConvergenceTest = 'rits-true'
     #to allow multiple models to set different ksp options

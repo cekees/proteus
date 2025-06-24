@@ -5,7 +5,6 @@ try:
 except:
     from poisson_dmplex_p import *
 
-print("Hello from %d" % comm.rank())
 
 plexMesh.viewFromOptions('-dm_view')
 # plexMesh.getLabel("marker").view()
@@ -19,11 +18,6 @@ femSpaces = {0:C0_AffineLinearOnSimplexWithNodalBasis}
 #numerical quadrature choices
 elementQuadrature = SimplexGaussQuadrature(nd,3)
 elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,3)
-
-#domain.MeshOptions.
-# if not opts.usePlex:
-#     triangleOptions="VApq1.35q12feena%e" % ((he**3)/6.0,)
-#     logEvent("""Mesh generated using: tetgen -%s %s"""  % (triangleOptions,domain.polyfile+".poly"))
 
 #number of levels in mesh
 nLevels = 1
@@ -68,7 +62,7 @@ if parallel:
     nLayersOfOverlapForParallel = 0
     #type of partition
     parallelPartitioningType = MeshParallelPartitioningTypes.node
-    # parallelPartitioningType = MeshParallelPartitioningTypes.element
+    #parallelPartitioningType = MeshParallelPartitioningTypes.element
     #have to have a numerical flux in parallel
     numericalFluxType = Advection_DiagonalUpwind_Diffusion_SIPG_exterior
     #for true residual test or maxits
