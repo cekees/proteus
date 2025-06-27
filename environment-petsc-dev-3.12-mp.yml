@@ -1,0 +1,16 @@
+name: petsc-dev-3.12-mp
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python =3.12
+  - pip
+  - setuptools
+  - make
+  - cmake
+  - cython
+  - swig =4.2.1
+  - numpy
+  - pybind11
+  - openblas
+  - tetgen

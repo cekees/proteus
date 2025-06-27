@@ -16,9 +16,8 @@ femSpaces = {0:C0_AffineLinearOnSimplexWithNodalBasis}
 elementQuadrature = SimplexGaussQuadrature(nd,3)
 elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,3)
 
+#domain.MeshOptions.
 triangleOptions="VApq1.35q12feena%e" % ((he**3)/6.0,)
-domain.MeshOptions.triangleOptions="VApq1.35q12feena%e" % ((he**3)/6.0,)
-
 logEvent("""Mesh generated using: tetgen -%s %s"""  % (triangleOptions,domain.polyfile+".poly"))
 
 #number of levels in mesh
@@ -32,9 +31,10 @@ shockCapturing = None
 #nonlinear solver choices
 multilevelNonlinearSolver  = Newton
 levelNonlinearSolver = Newton
+computeNonlinearSolverRates=False
 #linear problem so force 1 iteration allowed
-maxNonlinearIts = 2
-maxLineSearches = 1
+maxNonlinearIts = 1
+maxLineSearches = 0
 fullNewtonFlag = True
 #absolute nonlinear solver residual tolerance
 nl_atol_res = 1.0e-8

@@ -2,6 +2,7 @@
 #define PARTITIONING_H
 #include <iostream>
 #include <valarray>
+#include <iterator>
 #include "mpi.h"
 #include "hdf5.h"
 #include "petsc.h"
@@ -129,6 +130,8 @@ namespace proteus
   //--memory profiling
   inline int enforceMemoryLimit(const MPI_Comm& PROTEUS_COMM_WORLD, int rank, double max_rss_gb,const char* msg)
   {
+    if (max_rss_gb <= 0.0)
+      return 0;
     double current, current_global,gb(1.0e-9);
     PetscBarrier(NULL);
     current = double(getCurrentRSS())*gb;
@@ -150,7 +153,8 @@ namespace proteus
 
   extern int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nNodes_overlap);
 
-  extern int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char* filebase, int indexBase, Mesh& newMesh, int nNodes_overlap);
+  extern int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char* filebase, int indexBase, Mesh& newMesh, int nNodes_overlap, double memHardLimit);
+
   extern int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char* filebase, int indexBase, Mesh& newMesh, int nNodes_overlap);
 
   extern int partitionElements(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nElements_overlap);

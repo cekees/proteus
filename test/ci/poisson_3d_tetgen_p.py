@@ -1,5 +1,7 @@
 from proteus import *
 from proteus.default_p import *
+from proteus import Context, Comm
+
 """
 Heterogeneous Poisson's equation, -div(a(x)u) = f(x), on unit domain [0,1]x[0,1]x[0,1]
 """
@@ -48,7 +50,7 @@ nLevels = 1
 he =  L[0] / ( ( 20.0 * 1.26**opts.Refinement) )
 #he = hull_draft/1.0
 #he = hull_draft/6.0
-genMesh=True
+genMesh=opts.genMesh
 vessel = None
 #vessel = 'cube'
 #vessel = 'wigley'
@@ -114,7 +116,7 @@ else:
             return 8 + i*n_points_draft+j
         for i in range(n_points_length-1):
             for j in range(n_points_draft-1):
-                if i < n_points_length/2:
+                if i < n_points_length//2:
                     facets.append([[vN_right(i,j),vN_right(i+1,j+1),vN_right(i+1,j)]])
                     facetFlags.append(boundaryTags['obstacle'])
                     facets.append([[vN_right(i,j),vN_right(i,j+1),vN_right(i+1,j+1)]])
