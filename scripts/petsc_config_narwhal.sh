@@ -1,0 +1,3 @@
+#!/bin/bash
+export CMAKE_BUILD_PARALLEL_LEVEL=64
+PETSC_DIR=${PWD} PETSC_ARCH=arch-narwhal-opt ./configure --prefix=${CONDA_PREFIX} --with-make-np=64 --with-mpi-dir=${CRAY_MPICH_PREFIX} --download-openblas --with-openmp --download-superlu --download-eigen --download-ctetgen --download-tetgen --download-tetgen-build-exec --download-gmsh --download-hdf5 --download-hdf5-configure-arguments="--enable-parallel" --download-hypre --download-libceed --download-metis --download-parmetis --download-opencascade --download-suitesparse --download-triangle --download-triangle-build-exec --download-yaml --download-szlib --download-zoltan --download-kokkos --with-debugging=0
