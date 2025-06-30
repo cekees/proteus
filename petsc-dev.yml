@@ -4,13 +4,19 @@ channels:
   - defaults
 dependencies:
   - compilers
+#  - mpich
+#  - openblas
+#  - h5py=*=*mpich*
   - python
-  - numpy
   - setuptools
+  - numpy
+  - scipy
   - pip
   - make
   - cmake
   - cython
+  - pybind11
   - swig
   - ncurses
-  - xtensor-python
+  - memory_profiler
+  - pytest
