@@ -50,9 +50,11 @@ useSeepageFace = True
 galerkin=False
 
 if galerkin:
-    stabilization_type=0
+    stabilization_type='Galerkin'
 else:
-    stabilization_type=1
+    #stabilization_type='Implicit_FCT'
+    #stabilization_type='EntropyViscosity'
+    stabilization_type='EV_Stab'
 if optRichards:
     LevelModelType = Richards.LevelModel
     coefficients = Richards.Coefficients(nd,
@@ -66,7 +68,7 @@ if optRichards:
                                          beta=beta,
                                          diagonal_conductivity=True,
                                          STABILIZATION_TYPE=stabilization_type,
-                                         ENTROPY_TYPE=1,
+                                         ENTROPY_TYPE=0,
                                          LUMPED_MASS_MATRIX=False,
                                          FCT=True,
                                          MONOLITHIC=False,
