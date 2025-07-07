@@ -819,7 +819,8 @@ class ExplicitLumpedMassMatrix(Newton):
         ############
         # FCT STEP #
         ############
-        self.F.kth_FCT_step()
+        self.F.FCTStep()
+        #self.F.kth_FCT_step()
 
         ###########################################
         # DISTRUBUTE SOLUTION FROM u to u[ci].dof #

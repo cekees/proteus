@@ -1,3 +1,6 @@
+from __future__ import division
+from builtins import range
+#from past.utils import old_div
 import proteus
 from .cRichards import *
 import numpy as np
@@ -9,7 +12,7 @@ from proteus.mprans import cArgumentsDict
 from proteus.LinearAlgebraTools import SparseMat
 from proteus import TimeIntegration
 from proteus.NonlinearSolvers import ExplicitLumpedMassMatrixForRichards
-from proteus.NonlinearSolvers import Newton
+#from proteus.NonlinearSolvers import Newton
 
 
 class ThetaScheme(TimeIntegration.BackwardEuler):
@@ -59,7 +62,7 @@ class RKEV(TimeIntegration.SSP):
         comm = Comm.get()
         maxCFL = 1.0e-6
         maxCFL = max(maxCFL, comm.globalMax(self.cfl.max()))
-        self.dt = self.runCFL/maxCFL
+        self.dt = self.runCFL/ maxCFL
         if self.dtLast is None:
             self.dtLast = self.dt
         self.t = self.tLast + self.dt
@@ -101,7 +104,7 @@ class RKEV(TimeIntegration.SSP):
                 logEvent("Second stage of SSP33 method", level=4)
                 for ci in range(self.nc):
                     self.u_dof_stage[ci][self.lstage][:] = self.transport.u[ci].dof
-                    self.u_dof_stage[ci][self.lstage] *= 1./4.
+                    self.u_dof_stage[ci][self.lstage] *= 1./ 4.
                     self.u_dof_stage[ci][self.lstage] += 3. / 4. * self.u_dof_last[ci]
                     # Update u_dof_old
                     self.transport.u_dof_old[:] = self.u_dof_stage[ci][self.lstage]
@@ -109,7 +112,7 @@ class RKEV(TimeIntegration.SSP):
                 logEvent("Third stage of SSP33 method", level=4)
                 for ci in range(self.nc):
                     self.u_dof_stage[ci][self.lstage][:] = self.transport.u[ci].dof
-                    self.u_dof_stage[ci][self.lstage] *= 2.0/3.0
+                    self.u_dof_stage[ci][self.lstage] *= 2.0/ 3.0
                     self.u_dof_stage[ci][self.lstage] += 1.0 / 3.0 * self.u_dof_last[ci]
                     # update u_dof_old
                     self.transport.u_dof_old[:] = self.u_dof_last[ci]
@@ -126,7 +129,7 @@ class RKEV(TimeIntegration.SSP):
                 logEvent("Second stage of SSP22 method", level=4)
                 for ci in range(self.nc):
                     self.u_dof_stage[ci][self.lstage][:] = self.transport.u[ci].dof
-                    self.u_dof_stage[ci][self.lstage][:] *= 1./2.
+                    self.u_dof_stage[ci][self.lstage][:] *= 1. / 2.
                     self.u_dof_stage[ci][self.lstage][:] += 1. / 2. * self.u_dof_last[ci]
                     # update u_dof_old
                     self.transport.u_dof_old[:] = self.u_dof_last[ci]
@@ -203,8 +206,6 @@ class RKEV(TimeIntegration.SSP):
                 setattr(self, flag, val)
                 if flag == 'timeOrder':
                     self.resetOrder(self.timeOrder)
-    
-
 
 class Coefficients(proteus.TransportCoefficients.TC_base):
     """
@@ -225,7 +226,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  diagonal_conductivity=True,
                  getSeepageFace=None,
                 # FOR EDGE BASED EV
-                 STABILIZATION_TYPE=0,
+                 STABILIZATION_TYPE='Implicit_FCT',
                  ENTROPY_TYPE=2,  # logarithmic
                  LUMPED_MASS_MATRIX=False,
                  MONOLITHIC=True,
@@ -238,7 +239,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  # FOR ARTIFICIAL COMPRESSION
                  cK=1.0,
                  # OUTPUT quantDOFs
-                 outputQuantDOFs=False, ):
+                 outputQuantDOFs=False,
+                  ):
         self.anb_seepage_flux= 0.00
         #self.anb_seepage_flux_n =0.0
         variableNames=['pressure_head']
@@ -291,19 +293,36 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             else:
                 assert Ksw_types.shape[1] == self.nd**2
                 self.Ksw_types = Ksw_types
+
+        stabilization_types = {"Galerkin":0, 
+                               "EV_Stab":1, 
+                               "EntropyViscosity":2, 
+                               "Implicit_FCT":3}
+        try:
+            if isinstance(STABILIZATION_TYPE, int):
+                STABILIZATION_TYPE = [key for key, value in stabilization_types.items() if value == STABILIZATION_TYPE][0]
+            
+            self.STABILIZATION_TYPE = stabilization_types[STABILIZATION_TYPE]
+        except:
+            raise ValueError("STABILIZATION_TYPE must be one of "+str(stabilization_types.keys())+" not "+STABILIZATION_TYPE)
+        
         # EDGE BASED (AND ENTROPY) VISCOSITY
         self.LUMPED_MASS_MATRIX = LUMPED_MASS_MATRIX
         self.MONOLITHIC = MONOLITHIC
-        self.STABILIZATION_TYPE = STABILIZATION_TYPE
+        #self.STABILIZATION_TYPE = STABILIZATION_TYPE
         self.ENTROPY_TYPE = ENTROPY_TYPE
         self.FCT = FCT
         self.num_fct_iter=num_fct_iter
         self.uL = uL
         self.uR = uR
         self.cK = cK
+        #self.forceStrongConditions = False
         self.forceStrongConditions = True
         self.cE = cE
         self.outputQuantDOFs = outputQuantDOFs
+        #For seepage anb
+        self.model = None 
+
         TC_base.__init__(self,
                          nc,
                          mass,
@@ -315,6 +334,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                          variableNames,
                          sparseDiffusionTensors = sparseDiffusionTensors,
                          useSparseDiffusion = True)
+        
 
     def initializeMesh(self,mesh):
         from proteus.SubsurfaceTransportCoefficients import BlockHeterogeneousCoefficients
@@ -385,6 +405,13 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                                                                c[('a',0,0)],
                                                                c[('da',0,0,0)],
                                                                vol_frac)
+         # Log grad(u) for debugging
+        if ('grad(u)', 0) in c:
+            logEvent(f"Richards grad(u): mean={c[('grad(u)', 0)].mean()}, min={c[('grad(u)', 0)].min()}, max={c[('grad(u)', 0)].max()}")
+        else:
+            logEvent("Warning: grad(u) is not available in Richards coefficients.")
+        
+        # Add logging for grad(u)
         # print "Picard---------------------------------------------------------------"
         # c[('df',0,0)][:] = 0.0
         # c[('da',0,0,0)][:] = 0.0
@@ -414,12 +441,70 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             np.isnan(c[('dm',0,0)]).any()):
             import pdb
             pdb.set_trace()
-   
-    def postStep(self, t, firstStep=False):
+    
+    # def postStep(self, t, firstStep=False):
+    #     comm = Comm.get()
+    #     if comm.isMaster():
+    #         with open("seepage_flux_try.txt", "a") as f:
+    #             f.write(f"{t:.6f}"+ ",\t ")
+    
     #    #anb_seepage_flux_n[:]= self.anb_seepage_flux
-        with open('seepage_stab_0', "a") as f:
+    #    with open("seepage_flux_try.txt", "a") as f:
     #        f.write("\n Time"+ ",\t" +"Seepage\n")
-            f.write(repr(t)+ ",\t")# +repr(np.sum(self.LevelModel.anb_seepage_flux_n)))
+    #        f.write(f"{t:.6f}"+ ",\t ")
+    
+#    def postStep(self, t, firstStep=False):
+#        import os
+#        #from proteus import Comm
+#        comm = Comm.get()
+#        if comm.isMaster():
+#            try:
+#                # Attempt to access and sum the seepage flux
+#                s_now = float(np.sum(self.model.anb_seepage_flux_n))
+#                with open("seepage_flux.txt", "a") as f:
+#                    if os.stat("seepage_flux.txt").st_size == 0:
+#                        f.write("time,seepage_flux\n")
+#                    f.write(f"{t:.6f},{s_now:.6f}\n")
+#            except Exception as e:
+#                logEvent(f"[postStep] Skipped logging seepage: {e}")
+   
+    #def postStep(self, t, firstStep=False):
+    #    import os
+    #    #from proteus import Comm
+    #    comm = Comm.get()
+    #    if comm.isMaster():
+    #        try:
+    #            # Attempt to access and sum the seepage flux
+    #            s_now = float(np.sum(self.model.anb_seepage_flux_n))
+    #            #s_now= float(self.model.anb_seepage_flux)
+    #            if s_now>0.0:
+    #                with open("seepage_flux.txt", "a") as f:
+    #                    if os.stat("seepage_flux.txt").st_size == 0:
+    #                        f.write("time,seepage_flux\n")
+    #                        f.write(f"{t:.6f},{s_now:.6f}\n")
+    #       except Exception as e:
+    #            logEvent(f"[postStep] Skipped logging seepage: {e}")
+        
+   
+    # def postStep(self, t, firstStep=False):
+    #     import os
+    #     try:
+    #     # Attempt to access and sum the seepage flux
+    #         s_now = float(np.sum(self.model.anb_seepage_flux_n))
+    #         with open("seepage_flux.txt", "a") as f:
+    #             if os.stat("seepage_flux.txt").st_size == 0:
+    #                 f.write("time, seepage_flux\n")
+    #             # Write the time and seepage flux to the file
+                
+    #             f.write(f"{t:.6f}, {s_now:.6f}\n")
+    #     except Exception as e:
+    #         logEvent(f"[postStep] Skipped logging seepage: {e}")
+        
+    # #    #anb_seepage_flux_n[:]= self.anb_seepage_flux
+    # #    #anb_seepage_flux_n[:]= self.anb_seepage_flux
+    #     with open('seepage_stab_0.txt', "a") as f:
+    #        # f.write("\n Time"+ ",\t" +"Seepage\n")
+    #         f.write(repr(t)+ ",\t") # +repr(np.sum(self.LevelModel.anb_seepage_flux_n)))
         
 class LevelModel(proteus.Transport.OneLevelTransport):
     nCalls=0
@@ -492,6 +577,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.diffusiveFluxBoundaryConditionsSetterDictDict = diffusiveFluxBoundaryConditionsSetterDictDict
         #determine whether  the stabilization term is nonlinear
         self.stabilizationIsNonlinear = False
+        #anb add 
+        self.anb_seepage_flux= 0.0
+        self.coefficients.model = self 
+
         #cek come back
         if self.stabilization != None:
             for ci in range(self.nc):
@@ -647,10 +736,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.edge_based_cfl = np.zeros(self.u[0].dof.shape)+100
         #mesh
         #self.q['x'] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,3),'d')
-        self.q[('dV_u', 0)] = (1.0/self.mesh.nElements_global) * np.ones((self.mesh.nElements_global, self.nQuadraturePoints_element), 'd')
+        self.q[('dV_u', 0)] = (1.0/ self.mesh.nElements_global) * np.ones((self.mesh.nElements_global, self.nQuadraturePoints_element), 'd')
         self.ebqe['x'] = np.zeros((self.mesh.nExteriorElementBoundaries_global,self.nElementBoundaryQuadraturePoints_elementBoundary,3),'d')
         self.q[('u',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element),'d')
         self.q[('grad(u)',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')
+        self.q[('grad(u_v)',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')
         self.q['velocity'] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')
         self.q[('m',0)] = self.q[('u',0)].copy()
         self.q[('mt',0)] = self.q[('u',0)].copy()
@@ -736,16 +826,23 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #################################################################
         ####################ARNOB_FCT_EDIT###############################
         #################################################################
-        if not self.coefficients.LUMPED_MASS_MATRIX and self.coefficients.STABILIZATION_TYPE == 2:
-            cond = 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == Newton
+        #if not self.coefficients.LUMPED_MASS_MATRIX and self.coefficients.STABILIZATION_TYPE == 2:
+        #    cond = 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == Newton
         
+        #if self.coefficients.FCT == True:
+        #    cond = self.coefficients.STABILIZATION_TYPE = 3, "Use FCT just with STABILIZATION_TYPE=3; i.e., edge based stabilization"
+        
+        if self.coefficients.FCT:
+            valid_stabilization_types = {1, 2}  # Only allow FCT for STABILIZATION_TYPE 1 (EV_Stab) and 2 (EntropyViscosity)
+            if self.coefficients.STABILIZATION_TYPE not in valid_stabilization_types:
+                raise ValueError("Use FCT only with STABILIZATION_TYPE 1 (EV_Stab) or 2 (EntropyViscosity).")
 
 
 
         
         if self.coefficients.FCT == True:
             cond = self.coefficients.STABILIZATION_TYPE > 0, "Use FCT just with STABILIZATION_TYPE>0; i.e., edge based stabilization"
-        # END OF ASSERTS
+        # # END OF ASSERTS
 
         # cek adding empty data member for low order numerical viscosity structures here for now
         self.ML = None  # lumped mass matrix
@@ -777,7 +874,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.stride = [self.nc for ci in range(self.nc)]
         #
         logEvent(memory("stride+offset","OneLevelTransport"),level=4)
-        
         
         if numericalFluxType != None:
             if options is None or options.periodicDirichletConditions is None:
@@ -851,7 +947,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.MOVING_DOMAIN=0.0
         if self.mesh.nodeVelocityArray is None:
             self.mesh.nodeVelocityArray = np.zeros(self.mesh.nodeArray.shape,'d')        
-        self.forceStrongConditions=False
+        #self.forceStrongConditions=False
+        self.forceStrongConditions=True
         self.dirichletConditionsForceDOF = {}
         if self.forceStrongConditions:
             for cj in range(self.nc):
@@ -891,9 +988,16 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["MONOLITHIC"] =0#cek hack self.coefficients.MONOLITHIC
         argsDict["anb_seepage_flux_n"]= self.anb_seepage_flux_n
+        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes,
+        argsDict["rho"] = self.coefficients.rho
+        argsDict["thetaR"] = self.coefficients.thetaR_types
+        argsDict["thetaSR"] = self.coefficients.thetaSR_types
+        
+        #argsDict["globalResidual"] = r
         #pdb.set_trace()
         self.richards.FCTStep(argsDict)
-        
+        #logEvent("limited solution:" + str(limited_solution))
+
             # self.nnz,  # number of non zero entries
             # len(rowptr) - 1,  # number of DOFs
             # self.timeIntegration.dt,
@@ -912,8 +1016,13 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             # self.coefficients.LUMPED_MASS_MATRIX,
             # self.coefficients.MONOLITHIC)
         old_dof = self.u[0].dof.copy()
+
         self.invert(limited_solution, self.u[0].dof)
+
+        #import pdb
+        #pdb.set_trace()
         self.timeIntegration.u[:] = self.u[0].dof
+
         #fromFreeToGlobal=1 #direction copying
         #cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns(fromFreeToGlobal,
         #                                                       self.offset[0],
@@ -937,6 +1046,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                                                                self.dirichletConditions[0].global2freeGlobal_free_dofs,
                                                                limited_solution,
                                                                self.timeintegration.u_dof_stage[0][self.timeIntegration.lstage])
+                                                               #self.timeintegration.u_dof_stage[0][self.timeIntegration.lstage])
+
 
         self.richards.kth_FCT_step(
             self.timeIntegration.dt,
@@ -954,6 +1065,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             limitedFlux,
             rowptr,
             colind)
+        #import pdb
+        #pdb.set_trace()
 
         self.timeIntegration.u[:] = limited_solution
         #self.u[0].dof[:] = limited_solution
@@ -1195,7 +1308,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #     self.ebqe[('diffusiveFlux_bc_flag',0)][t[0],t[1]] = 1
         #self.shockCapturing.lag=True
         self.bc_mask = np.ones_like(self.u[0].dof)
+            
         if self.forceStrongConditions:
+            self.bc_mask = np.ones_like(self.u[0].dof)
             for cj in range(len(self.dirichletConditionsForceDOF)):
                 for dofN,g in list(self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.items()):
                     self.u[cj].dof[dofN] = g(self.dirichletConditionsForceDOF[cj].DOFBoundaryPointDict[dofN],self.timeIntegration.t)
@@ -1307,6 +1422,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["CTz"] = CTz
         argsDict["ML"] = self.ML
         argsDict["delta_x_ij"] = self.delta_x_ij
+        argsDict["MC"] = self.MC_a
+        
+
         # PARAMETERS FOR 1st or 2nd ORDER MPP METHOD
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["STABILIZATTION_TYPE"] = self.coefficients.STABILIZATION_TYPE
@@ -1332,19 +1450,63 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["solH"] = self.sHigh
         
 ######################################################################################        
-        argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
+        #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
+        argsDict["anb_seepage_flux"] = self.anb_seepage_flux
+        argsDict["q_velocity"] = self.q[('grad(u_v)', 0)]
+        
+        #argsDict["q_grad_psi"] = self.q[('velocity', 0)]
+        
+        
+
         #print(anb_seepage_flux)
         #argsDict["anb_seepage_flux_n"] = self.coefficients.anb_seepage_flux_n
         #if np.sum(anb_seepage_flux_n)>0:
 
         #logEvent("Hi, this is Arnob", self.anb_seepage_flux_n[0])
         #print("Seepage Flux from Python file",  np.sum(self.anb_seepage_flux_n))
-        seepage_text_variable= np.sum(self.anb_seepage_flux_n)
+        #seepage_text_variable= np.sum(self.anb_seepage_flux_n)
+        #t_now = float(self.timeIntegration.t)
+        #s_now = float(np.sum(self.anb_seepage_flux_n))
+
+        #with open("seepage_stab_0.txt", "a") as f:
+        #    f.write(f"t={t_now:.6f}, s={s_now:.6e}\n")
+
         
-        with open('seepage_stab_0',"a" ) as f:
+        #with open('seepage_stab_0.txt',"a" ) as f:
             #f.write("\n Time"+ ",\t" +"Seepage\n")
-            #f.write(repr(self.coefficients.t)+ ",\t" +repr(seepage_text_variable), "\n")
-            f.write(repr(seepage_text_variable)+ "\n")
+        #    f.write(f"{self.timeIntegration.t:.6f},\t{float(seepage_text_variable):.6e}\n")
+#            f.write(repr(self.coefficients.t)+ ",\t" +repr(seepage_text_variable), "\n")
+            #f.write(repr(seepage_text_variable)+ "\n")
+        
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+
+        seepage_flux_value = np.sum(self.anb_seepage_flux_n)
+        if seepage_flux_value > 0.0:
+        # Each processor writes its own flux with its rank
+            with open("seepage_flux_try.txt", "a") as f:
+                f.write(f"Rank {rank}:, {self.timeIntegration.t:.6f}, {seepage_flux_value:.8f}\n")
+
+
+       
+        # seepage_flux_value = np.sum(self.anb_seepage_flux_n) #self.anb_seepage_flux_n[0]
+        
+        # with open("seepage_flux_try.txt", "a") as f:
+        #    f.write(f"{seepage_flux_value:.8f}\n")
+                          
+        #seepage_flux.append(seepage_flux_value)
+        
+        # comm = Comm.get()
+        # if comm.isMaster():
+        #     with open("seepage_flux_try.txt", "a") as f:
+        #         f.write(f"{seepage_flux_value:.6f}\n")
+                
+            #seepage_flux_value = np.sum(self.anb_seepage_flux_n) #self.anb_seepage_flux_n[0]
+            #logEvent(f"Seepage flux at t={self.timeIntegration.t:.6f} is {seepage_flux_value:.6e}", level=2)
+#            with open("seepage_flux_vs_time.txt", "a") as f:
+#                f.write(f"{self.timeIntegration.t:.6f}, {seepage_flux_value:.6f}\n")
+
         if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
             self.calculateResidual = self.richards.calculateResidual
             self.calculateJacobian = self.richards.calculateJacobian
@@ -1355,6 +1517,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         if self.delta_x_ij is None:
             self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
         self.calculateResidual(argsDict)
+        
+
+
         #self.q[('mt',0)][:] =self.timeIntegration.m_tmp[0]
         #self.q[('mt',0)] *= self.timeIntegration.alpha_bdf
         #self.q[('mt',0)] += self.timeIntegration.beta_bdf[0]
@@ -1370,49 +1535,41 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         if self.globalResidualDummy is None:
             self.globalResidualDummy = np.zeros(r.shape,'d')
 
-
-
-    def invert(self,u,r):
-        #u=s
-        #r=p
-        import pdb
+    def invert(self, u, r=None, ulow=None):
+        """
+        Unified invert method that handles both standard and FCT modes
+        using self.coefficients.FCT as the switching flag.
+        """
+        import numpy as np
         import copy
-        """
-        Calculate the element residuals and add in to the global residual
-        """
-        self.sHigh[:] = u
+    
+        isFCT = getattr(self.coefficients, "FCT", False)
+    
+        if isFCT:
+            self.sHigh[:] = u  # u is actually limited_solution here
+        else:
+            self.sHigh[:] = u
+            r.fill(0.0)
+    
         rowptr, colind, nzval = self.jacobian.getCSRrepresentation()
-        nnz = nzval.shape[-1]  # number of non-zero entries in sparse matrix
-        r.fill(0.0)
+        nnz = nzval.shape[-1]
+    
         rowptr, colind, Cx = self.cterm_global[0].getCSRrepresentation()
-        if (self.nSpace_global == 2):
-            rowptr, colind, Cy = self.cterm_global[1].getCSRrepresentation()
-        else:
-            Cy = np.zeros(Cx.shape, 'd')
-        if (self.nSpace_global == 3):
-            rowptr, colind, Cz = self.cterm_global[2].getCSRrepresentation()
-        else:
-            Cz = np.zeros(Cx.shape, 'd')
+        Cy = self.cterm_global[1].getCSRrepresentation()[2] if self.nSpace_global >= 2 else np.zeros(Cx.shape, 'd')
+        Cz = self.cterm_global[2].getCSRrepresentation()[2] if self.nSpace_global == 3 else np.zeros(Cx.shape, 'd')
+    
         rowptr, colind, CTx = self.cterm_global_transpose[0].getCSRrepresentation()
-        if (self.nSpace_global == 2):
-            rowptr, colind, CTy = self.cterm_global_transpose[1].getCSRrepresentation()
-        else:
-            CTy = np.zeros(CTx.shape, 'd')
-        if (self.nSpace_global == 3):
-            rowptr, colind, CTz = self.cterm_global_transpose[2].getCSRrepresentation()
-        else:
-            CTz = np.zeros(CTx.shape, 'd')
-
-        # This is dummy. I just care about the csr structure of the sparse matrix
-        nFree = len(rowptr)-1
-        degree_polynomial = 1
-        try:
-            degree_polynomial = self.u[0].femSpace.order
-        except:
-            pass
+        CTy = self.cterm_global_transpose[1].getCSRrepresentation()[2] if self.nSpace_global >= 2 else np.zeros(CTx.shape, 'd')
+        CTz = self.cterm_global_transpose[2].getCSRrepresentation()[2] if self.nSpace_global == 3 else np.zeros(CTx.shape, 'd')
+    
+        degree_polynomial = getattr(self.u[0].femSpace, "order", 1)
+    
         if self.delta_x_ij is None:
-            self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
+            self.delta_x_ij = -np.ones((self.nNonzerosInJacobian * 3,), 'd')
+    
         argsDict = cArgumentsDict.ArgumentsDict()
+        #anb_add
+        argsDict["isFCT"] = int(isFCT) #isFCT
         argsDict["dt"] = self.timeIntegration.dt
         argsDict["mesh_trial_ref"] = self.u[0].femSpace.elementMaps.psi
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
@@ -1436,7 +1593,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["nElements_global"] = self.mesh.nElements_global
         argsDict["ebqe_penalty_ext"] = self.ebqe['penalty']
-        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes,
+        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
         argsDict["isSeepageFace"] = self.coefficients.isSeepageFace
         argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
@@ -1458,7 +1615,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["degree_polynomial"] = degree_polynomial
-        argsDict["u_dof"] = u#self.u[0].dof
+        argsDict["u_dof"] = u
         argsDict["u_dof_old"] = self.u[0].dof
         argsDict["velocity"] = self.q['velocity']
         argsDict["q_m"] = self.timeIntegration.m_tmp[0]
@@ -1470,7 +1627,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["q_numDiff_u_last"] = self.q[('cfl',0)]
         argsDict["offset_u"] = self.offset[0]
         argsDict["stride_u"] = self.stride[0]
-        argsDict["globalResidual"] = r
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
@@ -1484,23 +1640,18 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["epsFact"] = 0.0
         argsDict["ebqe_u"] = self.ebqe[('u',0)]
         argsDict["ebqe_flux"] = self.ebqe[('advectiveFlux',0)]
-        argsDict['STABILIZATION_TYPE'] = self.coefficients.STABILIZATION_TYPE
-        # ENTROPY VISCOSITY and ARTIFICIAL COMRPESSION
+        argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
         argsDict["cE"] = self.coefficients.cE
         argsDict["cK"] = self.coefficients.cK
-        # PARAMETERS FOR LOG BASED ENTROPY FUNCTION
         argsDict["uL"] = self.coefficients.uL
         argsDict["uR"] = self.coefficients.uR
-        # PARAMETERS FOR EDGE VISCOSITY
-        argsDict["numDOFs"] = len(rowptr) - 1  # num of DOFs
-        argsDict["NNZ"] = self.nnz 
-        argsDict["Cx"] = len(Cx)  # num of non-zero entries in the sparsity pattern
-        argsDict["csrRowIndeces_DofLoops"] = rowptr  # Row indices for Sparsity Pattern (convenient for DOF loops)
-        argsDict["csrColumnOffsets_DofLoops"] = colind  # Column indices for Sparsity Pattern (convenient for DOF loops)
-        argsDict["csrRowIndeces_CellLoops"] = self.csrRowIndeces[(0, 0)]  # row indices (convenient for element loops)
-        argsDict["csrColumnOffsets_CellLoops"] = self.csrColumnOffsets[(0, 0)]  # column indices (convenient for element loops)
-        argsDict["csrColumnOffsets_eb_CellLoops"] = self.csrColumnOffsets_eb[(0, 0)]  # indices for boundary terms
-        # C matrices
+        argsDict["numDOFs"] = len(rowptr) - 1
+        argsDict["NNZ"] = self.nnz
+        argsDict["csrRowIndeces_DofLoops"] = rowptr
+        argsDict["csrColumnOffsets_DofLoops"] = colind
+        argsDict["csrRowIndeces_CellLoops"] = self.csrRowIndeces[(0, 0)]
+        argsDict["csrColumnOffsets_CellLoops"] = self.csrColumnOffsets[(0, 0)]
+        argsDict["csrColumnOffsets_eb_CellLoops"] = self.csrColumnOffsets_eb[(0, 0)]
         argsDict["Cx"] = Cx
         argsDict["Cy"] = Cy
         argsDict["Cz"] = Cz
@@ -1509,11 +1660,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["CTz"] = CTz
         argsDict["ML"] = self.ML
         argsDict["delta_x_ij"] = self.delta_x_ij
-        # PARAMETERS FOR 1st or 2nd ORDER MPP METHOD
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
-        argsDict["STABILIZATTION_TYPE"] = self.coefficients.STABILIZATION_TYPE
         argsDict["ENTROPY_TYPE"] = self.coefficients.ENTROPY_TYPE
-        # FLUX CORRECTED TRANSPORT
         argsDict["dLow"] = self.dLow
         argsDict["fluxMatrix"] = self.fluxMatrix
         argsDict["uDotLow"] = self.uDotLow
@@ -1524,11 +1672,179 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["quantDOFs"] = self.quantDOFs
         argsDict["sLow"] = self.sLow
         argsDict["sn"] = self.sn
-        #Arnob trying to print flux
         argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
- 
-
+    
+        # FCT-only args
+        if isFCT:
+            argsDict["limited_solution"] = u
+            if ulow is not None:
+                argsDict["ulow"] = ulow
+        else:
+            argsDict["globalResidual"] = r
+    
         self.richards.invert(argsDict)
+     
+
+    # def invert(self,limited_solution,ulow):
+    #     #u=s
+    #     #r=p
+    #     import pdb
+    #     import copy
+    #     """
+    #     Calculate the element residuals and add in to the global residual
+    #     """
+    #     #self.sHigh[:] = u
+    #     self.sHigh[:] = limited_solution
+    #     rowptr, colind, nzval = self.jacobian.getCSRrepresentation()
+    #     nnz = nzval.shape[-1]  # number of non-zero entries in sparse matrix
+    #     #r.fill(0.0)
+    #     rowptr, colind, Cx = self.cterm_global[0].getCSRrepresentation()
+    #     if (self.nSpace_global == 2):
+    #         rowptr, colind, Cy = self.cterm_global[1].getCSRrepresentation()
+    #     else:
+    #         Cy = np.zeros(Cx.shape, 'd')
+    #     if (self.nSpace_global == 3):
+    #         rowptr, colind, Cz = self.cterm_global[2].getCSRrepresentation()
+    #     else:
+    #         Cz = np.zeros(Cx.shape, 'd')
+    #     rowptr, colind, CTx = self.cterm_global_transpose[0].getCSRrepresentation()
+    #     if (self.nSpace_global == 2):
+    #         rowptr, colind, CTy = self.cterm_global_transpose[1].getCSRrepresentation()
+    #     else:
+    #         CTy = np.zeros(CTx.shape, 'd')
+    #     if (self.nSpace_global == 3):
+    #         rowptr, colind, CTz = self.cterm_global_transpose[2].getCSRrepresentation()
+    #     else:
+    #         CTz = np.zeros(CTx.shape, 'd')
+
+    #     # This is dummy. I just care about the csr structure of the sparse matrix
+    #     nFree = len(rowptr)-1
+    #     degree_polynomial = 1
+    #     try:
+    #         degree_polynomial = self.u[0].femSpace.order
+    #     except:
+    #         pass
+    #     if self.delta_x_ij is None:
+    #         self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
+    #     argsDict = cArgumentsDict.ArgumentsDict()
+    #     argsDict["dt"] = self.timeIntegration.dt
+    #     argsDict["mesh_trial_ref"] = self.u[0].femSpace.elementMaps.psi
+    #     argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
+    #     argsDict["mesh_dof"] = self.mesh.nodeArray
+    #     argsDict["mesh_velocity_dof"] = self.mesh.nodeVelocityArray
+    #     argsDict["MOVING_DOMAIN"] = self.MOVING_DOMAIN
+    #     argsDict["mesh_l2g"] = self.mesh.elementNodesArray
+    #     argsDict["dV_ref"] = self.elementQuadratureWeights[('u',0)]
+    #     argsDict["u_trial_ref"] = self.u[0].femSpace.psi
+    #     argsDict["u_grad_trial_ref"] = self.u[0].femSpace.grad_psi
+    #     argsDict["u_test_ref"] = self.u[0].femSpace.psi
+    #     argsDict["u_grad_test_ref"] = self.u[0].femSpace.grad_psi
+    #     argsDict["mesh_trial_trace_ref"] = self.u[0].femSpace.elementMaps.psi_trace
+    #     argsDict["mesh_grad_trial_trace_ref"] = self.u[0].femSpace.elementMaps.grad_psi_trace
+    #     argsDict["dS_ref"] = self.elementBoundaryQuadratureWeights[('u',0)]
+    #     argsDict["u_trial_trace_ref"] = self.u[0].femSpace.psi_trace
+    #     argsDict["u_grad_trial_trace_ref"] = self.u[0].femSpace.grad_psi_trace
+    #     argsDict["u_test_trace_ref"] = self.u[0].femSpace.psi_trace
+    #     argsDict["u_grad_test_trace_ref"] = self.u[0].femSpace.grad_psi_trace
+    #     argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
+    #     argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
+    #     argsDict["nElements_global"] = self.mesh.nElements_global
+    #     argsDict["ebqe_penalty_ext"] = self.ebqe['penalty']
+    #     argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes,
+    #     argsDict["isSeepageFace"] = self.coefficients.isSeepageFace
+    #     argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
+    #     argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
+    #     argsDict["rho"] = self.coefficients.rho
+    #     argsDict["beta"] = self.coefficients.beta
+    #     argsDict["gravity"] = self.coefficients.gravity
+    #     argsDict["alpha"] = self.coefficients.vgm_alpha_types
+    #     argsDict["n"] = self.coefficients.vgm_n_types
+    #     argsDict["thetaR"] = self.coefficients.thetaR_types
+    #     argsDict["thetaSR"] = self.coefficients.thetaSR_types
+    #     argsDict["KWs"] = self.coefficients.Ksw_types
+    #     argsDict["useMetrics"] = 0.0
+    #     argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
+    #     argsDict["lag_shockCapturing"] = 0
+    #     argsDict["shockCapturingDiffusion"] = 0.0
+    #     argsDict["sc_uref"] = 0.0
+    #     argsDict["sc_alpha"] = 0.0
+    #     argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
+    #     argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
+    #     argsDict["elementDiameter"] = self.mesh.elementDiametersArray
+    #     argsDict["degree_polynomial"] = degree_polynomial
+    #     #argsDict["u_dof"] = u #self.u[0].dof
+    #     argsDict["u_dof"] = limited_solution
+    #     argsDict["u_dof_old"] = self.u[0].dof
+    #     argsDict["velocity"] = self.q['velocity']
+    #     argsDict["q_m"] = self.timeIntegration.m_tmp[0]
+    #     argsDict["q_u"] = self.q[('u',0)]
+    #     argsDict["q_dV"] = self.q[('dV_u',0)]
+    #     argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
+    #     argsDict["cfl"] = self.q[('cfl',0)]
+    #     argsDict["q_numDiff_u"] = self.q[('cfl',0)]
+    #     argsDict["q_numDiff_u_last"] = self.q[('cfl',0)]
+    #     argsDict["offset_u"] = self.offset[0]
+    #     argsDict["stride_u"] = self.stride[0]
+        
+    #     #argsDict["globalResidual"] = r
+    #     argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
+    #     argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
+    #     argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
+    #     argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
+    #     argsDict["ebqe_velocity_ext"] = self.ebqe['velocity']
+    #     argsDict["isDOFBoundary_u"] = self.numericalFlux.isDOFBoundary[0]
+    #     argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u',0)]
+    #     argsDict["isFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag',0)]
+    #     argsDict["ebqe_bc_flux_ext"] = self.ebqe[('advectiveFlux_bc',0)]
+    #     argsDict["ebqe_phi"] = self.ebqe[('u',0)]
+    #     argsDict["epsFact"] = 0.0
+    #     argsDict["ebqe_u"] = self.ebqe[('u',0)]
+    #     argsDict["ebqe_flux"] = self.ebqe[('advectiveFlux',0)]
+    #     argsDict['STABILIZATION_TYPE'] = self.coefficients.STABILIZATION_TYPE
+    #     # ENTROPY VISCOSITY and ARTIFICIAL COMRPESSION
+    #     argsDict["cE"] = self.coefficients.cE
+    #     argsDict["cK"] = self.coefficients.cK
+    #     # PARAMETERS FOR LOG BASED ENTROPY FUNCTION
+    #     argsDict["uL"] = self.coefficients.uL
+    #     argsDict["uR"] = self.coefficients.uR
+    #     # PARAMETERS FOR EDGE VISCOSITY
+    #     argsDict["numDOFs"] = len(rowptr) - 1  # num of DOFs
+    #     argsDict["NNZ"] = self.nnz 
+    #     argsDict["Cx"] = len(Cx)  # num of non-zero entries in the sparsity pattern
+    #     argsDict["csrRowIndeces_DofLoops"] = rowptr  # Row indices for Sparsity Pattern (convenient for DOF loops)
+    #     argsDict["csrColumnOffsets_DofLoops"] = colind  # Column indices for Sparsity Pattern (convenient for DOF loops)
+    #     argsDict["csrRowIndeces_CellLoops"] = self.csrRowIndeces[(0, 0)]  # row indices (convenient for element loops)
+    #     argsDict["csrColumnOffsets_CellLoops"] = self.csrColumnOffsets[(0, 0)]  # column indices (convenient for element loops)
+    #     argsDict["csrColumnOffsets_eb_CellLoops"] = self.csrColumnOffsets_eb[(0, 0)]  # indices for boundary terms
+    #     # C matrices
+    #     argsDict["Cx"] = Cx
+    #     argsDict["Cy"] = Cy
+    #     argsDict["Cz"] = Cz
+    #     argsDict["CTx"] = CTx
+    #     argsDict["CTy"] = CTy
+    #     argsDict["CTz"] = CTz
+    #     argsDict["ML"] = self.ML
+    #     argsDict["delta_x_ij"] = self.delta_x_ij
+    #     # PARAMETERS FOR 1st or 2nd ORDER MPP METHOD
+    #     argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
+    #     argsDict["STABILIZATTION_TYPE"] = self.coefficients.STABILIZATION_TYPE
+    #     argsDict["ENTROPY_TYPE"] = self.coefficients.ENTROPY_TYPE
+    #     # FLUX CORRECTED TRANSPORT
+    #     argsDict["dLow"] = self.dLow
+    #     argsDict["fluxMatrix"] = self.fluxMatrix
+    #     argsDict["uDotLow"] = self.uDotLow
+    #     argsDict["uLow"] = self.uLow
+    #     argsDict["dt_times_fH_minus_fL"] = self.dt_times_dC_minus_dL
+    #     argsDict["min_s_bc"] = self.min_s_bc
+    #     argsDict["max_s_bc"] = self.max_s_bc
+    #     argsDict["quantDOFs"] = self.quantDOFs
+    #     argsDict["sLow"] = self.sLow
+    #     argsDict["sn"] = self.sn
+    #     argsDict["limited_solution"]= limited_solution
+    #     #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
+       
+
+    #     self.richards.invert(argsDict)
             # self.timeIntegration.dt,
             # self.u[0].femSpace.elementMaps.psi,
             # self.u[0].femSpace.elementMaps.grad_psi,
@@ -1651,10 +1967,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #self.nonlinear_function_evaluations += 1
         #if self.globalResidualDummy is None:
         #    self.globalResidualDummy = numpy.zeros(r.shape,'d')
-    def postStep(self, t, firstStep=False):
-        with open('seepage_flux_nnnn', "a") as f:
-            f.write("\n Time"+ ",\t" +"Seepage\n")
-            f.write(repr(t)+ ",\t" +repr(self.coefficients.anb_seepage_flux))
+    #def postStep(self, t, firstStep=False):
+    #    with open('seepage_flux_nnnn', "a") as f:
+    #        f.write("\n Time"+ ",\t" +"Seepage\n")
+    #        f.write(repr(t)+ ",\t" +repr(self.coefficients.anb_seepage_flux))
     def getJacobian(self,jacobian):
         if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
             cfemIntegrals.zeroJacobian_CSR(self.nNonzerosInJacobian,
@@ -1730,7 +2046,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["ebqe_bc_flux_ext"] = self.ebqe[('advectiveFlux_bc',0)]
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0,0)]
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
-        argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
+        #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
 
         self.calculateJacobian(argsDict)
         if self.forceStrongConditions:
@@ -1814,10 +2130,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         pass
     def calculateAuxiliaryQuantitiesAfterStep(self):
         pass
-    def postStep(self, t, firstStep=False):
-        with open('seepage_flux_nnnnk', "a") as f:
-            f.write("\n Time"+ ",\t" +"Seepage\n")
-            f.write(repr(t)+ ",\t" +repr(self.coefficients.anb_seepage_flux))
+    #def postStep(self, t, firstStep=False):
+    #    with open('seepage_flux_nnnnk', "a") as f:
+    #        f.write("\n Time"+ ",\t" +"Seepage\n")
+    #        f.write(repr(t)+ ",\t" +repr(self.coefficients.anb_seepage_flux))
 
     
 
