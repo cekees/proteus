@@ -334,6 +334,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             self.b.dof = mesh.nodeArray[:, 2].copy()
         else:
             self.b.dof = self.bathymetry[0]([x, y])
+            mesh.nodeArray[:,2] = self.b.dof
 
     def initializeElementQuadrature(self, t, cq):
         pass
@@ -449,6 +450,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #
         self.coefficients.initializeMesh(self.mesh)
         self.nc = self.coefficients.nc
+        for ci in range(self.nc):
+            self.u[ci].femSpace.updateInterpolationPoints()
         self.stabilization = stabilization
         self.shockCapturing = shockCapturing
         # no velocity post-processing for now
