@@ -220,25 +220,7 @@ namespace richards
       	pcBar = pow(pcBar_n, 1.0/n_vg);
       	psiC = pcBar/alpha;
 		u= -psiC;
-		//std::cout<<"inverse FCT"<< -psiC<<std::endl;
 	  }
-    //   if (thetaW > thetaS+0.001 || thetaW < thetaR-0.001)
-	// { u=u;
-	//   //cek debug
-	//   std::cout<<"rho "<<rho<<std::endl
-	// 	   <<"n "<<n_vg<<std::endl
-	// 	   <<"m "<<m_vg<<std::endl
-	// 	   <<"thetaR "<<thetaR<<std::endl
-	// 	   <<"theta "<<thetaW<<std::endl
-	// 	   <<"thetaS "<<thetaS<<std::endl
-	// 	   <<"sBar "<<sBar<<std::endl
-	// 	   <<"pcBar_n "<<pcBar_n<<std::endl
-	// 	   <<"pcBar "<<pcBar<<std::endl
-	// 	   <<"psiC "<<psiC<<std::endl;
-	// }
-	// else{
-	// 	u= -psiC;
-	// }
     }
     inline
     void calculateCFL(const double& elementDiameter,
@@ -249,7 +231,7 @@ namespace richards
       h = elementDiameter;
       nrm_v=0.0;
       for(int I=0;I<nSpace;I++)
-	nrm_v+=df[I]*df[I];
+		nrm_v+=df[I]*df[I];
       nrm_v = sqrt(nrm_v);
       cfl = nrm_v/h;
     }
@@ -265,7 +247,7 @@ namespace richards
       h = elementDiameter;
       nrm_v=0.0;
       for(int I=0;I<nSpace;I++)
-	nrm_v+=dH[I]*dH[I];
+		nrm_v+=dH[I]*dH[I];
       nrm_v = sqrt(nrm_v);
       cfl = nrm_v/h;
       oneByAbsdt =  fabs(dmt);
@@ -282,9 +264,8 @@ namespace richards
     {
       double v_d_Gv=0.0;
       for(int I=0;I<nSpace;I++)
-	for (int J=0;J<nSpace;J++)
-	  v_d_Gv += Ai[I]*G[I*nSpace+J]*Ai[J];
-
+		for (int J=0;J<nSpace;J++)
+	  		v_d_Gv += Ai[I]*G[I*nSpace+J]*Ai[J];
       tau_v = 1.0/sqrt(Ct_sge*A0*A0 + v_d_Gv);
     }
     
@@ -296,13 +277,13 @@ namespace richards
 				     double& numDiff)
     {
       double h,
-	num,
-	den,
-	n_grad_u;
+		num,
+		den,
+		n_grad_u;
       h = elementDiameter;
       n_grad_u = 0.0;
       for (int I=0;I<nSpace;I++)
-	n_grad_u += grad_u[I]*grad_u[I];
+		n_grad_u += grad_u[I]*grad_u[I];
       num = shockCapturingDiffusion*0.5*h*fabs(strong_residual);
       den = sqrt(n_grad_u) + 1.0e-8;
       numDiff = num/den;
@@ -325,17 +306,17 @@ namespace richards
     {
       double v_I,bc_u_seepage=0.0;
       if (isSeepageFace || isDOFBoundary)
-	{
-	  flux = 0.0;
-	  for(int I=0;I<nSpace;I++)
+		{
+	  	flux = 0.0;
+	  	for(int I=0;I<nSpace;I++)
 	    {
 	      //gravity
 	      v_I = K_rho_g[I];
 	      //pressure head
 	      for(int m=rowptr[I];m<rowptr[I+1];m++)
-		{
-		  v_I -= K[m]*grad_psi[colind[m]];
-		}
+			{
+		  	v_I -= K[m]*grad_psi[colind[m]];
+			}
 	      flux += v_I*n[I];
 	    }
 	  if (isSeepageFace)
@@ -344,15 +325,15 @@ namespace richards
 	  if (isSeepageFace)
 	    {
 	      if (flux > 0.0)
-		{
-		  isDOFBoundary = 1;
-		  bc_u = bc_u_seepage;
-		}
-	      else
-		{
-		  isDOFBoundary = 0;
-		  flux = 0.0;
-		}
+			{
+		  	isDOFBoundary = 1;
+		  	bc_u = bc_u_seepage;
+			}
+	      	else
+			{
+		  	isDOFBoundary = 0;
+		  	flux = 0.0;
+			}
 	    }
 	  /* //set DOF flag and flux correctly if seepage face */
 	  /* if (isSeepageFace) */
@@ -669,6 +650,8 @@ double computeIthLimitedFluxCorrection(int i,
       double epsFact = args.scalar<double>("epsFact");
       xt::pyarray<double>& ebqe_u = args.array<double>("ebqe_u");
       xt::pyarray<double>& ebqe_flux = args.array<double>("ebqe_flux");
+	  // VMS
+	  double VMS = args.scalar<double>("VMS");
       // PARAMETERS FOR EDGE BASED STABILIZATION
       double cE = args.scalar<double>("cE");
       double cK = args.scalar<double>("cK");
@@ -847,38 +830,38 @@ double computeIthLimitedFluxCorrection(int i,
 		     dm,
 		     m_t,
 		     dm_t);
-	      /* // */
-	      /* //calculate subgrid error (strong residual and adjoint) */
-	      /* // */
-	      /* //calculate strong residual */
-	      /* pdeResidual_u = ck.Mass_strong(m_t) + ck.Advection_strong(df,grad_u); */
-	      /* //calculate adjoint */
-	      /* for (int i=0;i<nDOF_test_element;i++) */
-	      /*     { */
-	      /*       // int eN_k_i_nSpace = (eN_k*nDOF_trial_element+i)*nSpace; */
-	      /*       // Lstar_u[i]  = ck.Advection_adjoint(df,&u_grad_test_dV[eN_k_i_nSpace]); */
-	      /*       int i_nSpace = i*nSpace; */
-	      /*       Lstar_u[i]  = ck.Advection_adjoint(df,&u_grad_test_dV[i_nSpace]); */
-	      /*     } */
-	      /* //calculate tau and tau*Res */
-	      /* calculateSubgridError_tau(elementDiameter[eN],dm_t,df,cfl[eN_k],tau0); */
-	      /* calculateSubgridError_tau(Ct_sge, */
-	      /*                           G, */
-	      /*                           dm_t, */
-	      /*                           df, */
-	      /*                           tau1, */
-	      /*                           cfl[eN_k]); */
+	      //
+	      //calculate subgrid error (strong residual and adjoint)
+	      //
+	      //calculate strong residual
+	      pdeResidual_u = ck.Mass_strong(m_t) + ck.Advection_strong(df,grad_u);
+	      //calculate adjoint
+	      for (int i=0;i<nDOF_test_element;i++)
+	          {
+	            // int eN_k_i_nSpace = (eN_k*nDOF_trial_element+i)*nSpace;
+	            // Lstar_u[i]  = ck.Advection_adjoint(df,&u_grad_test_dV[eN_k_i_nSpace]);
+	            int i_nSpace = i*nSpace;
+	            Lstar_u[i]  = ck.Advection_adjoint(df,&u_grad_test_dV[i_nSpace]);
+	          }
+	      //calculate tau and tau*Res
+	      calculateSubgridError_tau(elementDiameter[eN],dm_t,df,cfl[eN_k],tau0);
+	      calculateSubgridError_tau(Ct_sge,
+	                                G,
+	                                dm_t,
+	                                df,
+	                                tau1,
+	                                cfl[eN_k]);
 
-	      /* tau = useMetrics*tau1+(1.0-useMetrics)*tau0; */
+	      tau = useMetrics*tau1+(1.0-useMetrics)*tau0;
 
-	      /* subgridError_u = -tau*pdeResidual_u; */
-	      /* // */
-	      /* //calculate shock capturing diffusion */
-	      /* // */
-	      /* ck.calculateNumericalDiffusion(shockCapturingDiffusion,elementDiameter[eN],pdeResidual_u,grad_u,numDiff0);       */
-	      /* //ck.calculateNumericalDiffusion(shockCapturingDiffusion,G,pdeResidual_u,grad_u_old,numDiff1); */
-	      /* ck.calculateNumericalDiffusion(shockCapturingDiffusion,sc_uref, sc_alpha,G,G_dd_G,pdeResidual_u,grad_u,numDiff1); */
-	      /* q_numDiff_u[eN_k] = useMetrics*numDiff1+(1.0-useMetrics)*numDiff0; */
+	      subgridError_u = -tau*pdeResidual_u;
+	      //
+	      //calculate shock capturing diffusion
+	      //
+	      ck.calculateNumericalDiffusion(shockCapturingDiffusion,elementDiameter[eN],pdeResidual_u,grad_u,numDiff0);
+	      //ck.calculateNumericalDiffusion(shockCapturingDiffusion,G,pdeResidual_u,grad_u_old,numDiff1);
+	      ck.calculateNumericalDiffusion(shockCapturingDiffusion,sc_uref, sc_alpha,G,G_dd_G,pdeResidual_u,grad_u,numDiff1);
+	      q_numDiff_u[eN_k] = useMetrics*numDiff1+(1.0-useMetrics)*numDiff0;
 	      //std::cout<<tau<<"   "<<q_numDiff_u[eN_k]<<std::endl;
 	      //
 	      //update element residual
@@ -891,10 +874,10 @@ double computeIthLimitedFluxCorrection(int i,
 
 		  elementResidual_u[i] += ck.Mass_weak(m_t,u_test_dV[i]) +
 		    ck.Advection_weak(f,&u_grad_test_dV[i_nSpace]) +
-		    ck.Diffusion_weak(a_rowptr.data(),a_colind.data(),a,grad_u,&u_grad_test_dV[i_nSpace]);
-		  /* +  */
-		  /*   ck.SubgridError(subgridError_u,Lstar_u[i]) +  */
-		  /*   ck.NumericalDiffusion(q_numDiff_u_last[eN_k],grad_u,&u_grad_test_dV[i_nSpace]);  */
+		    ck.Diffusion_weak(a_rowptr.data(),a_colind.data(),a,grad_u,&u_grad_test_dV[i_nSpace])
+		  +
+		    VMS*ck.SubgridError(subgridError_u,Lstar_u[i]) +
+		    VMS*ck.NumericalDiffusion(q_numDiff_u[eN_k],grad_u,&u_grad_test_dV[i_nSpace]);
 		}//i
 	      //
 	      q_m.data()[eN_k] = m;
@@ -1150,12 +1133,15 @@ double computeIthLimitedFluxCorrection(int i,
       double alphaBDF = args.scalar<double>("alphaBDF");
       int lag_shockCapturing = args.scalar<int>("lag_shockCapturing");
       double shockCapturingDiffusion = args.scalar<double>("shockCapturingDiffusion");
+	  // VMS
+	  double VMS = args.scalar<double>("VMS");
       xt::pyarray<int>& u_l2g = args.array<int>("u_l2g");
       xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
       xt::pyarray<double>& u_dof = args.array<double>("u_dof");
       xt::pyarray<double>& velocity = args.array<double>("velocity");
       xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
       xt::pyarray<double>& cfl = args.array<double>("cfl");
+      xt::pyarray<double>& q_numDiff_u = args.array<double>("q_numDiff_u");
       xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
       xt::pyarray<int>& csrRowIndeces_u_u = args.array<int>("csrRowIndeces_u_u");
       xt::pyarray<int>& csrColumnOffsets_u_u = args.array<int>("csrColumnOffsets_u_u");
@@ -1287,41 +1273,41 @@ double computeIthLimitedFluxCorrection(int i,
 		     dm,
 		     m_t,
 		     dm_t);
-	      // //
-	      // //calculate subgrid error contribution to the Jacobian (strong residual, adjoint, jacobian of strong residual)
-	      // //
-	      // //calculate the adjoint times the test functions
-	      // for (int i=0;i<nDOF_test_element;i++)
-	      //     {
-	      //       // int eN_k_i_nSpace = (eN_k*nDOF_trial_element+i)*nSpace;
-	      //       // Lstar_u[i]=ck.Advection_adjoint(df,&u_grad_test_dV[eN_k_i_nSpace]);
-	      //       int i_nSpace = i*nSpace;
-	      //       Lstar_u[i]=ck.Advection_adjoint(df,&u_grad_test_dV[i_nSpace]);
-	      //     }
-	      // //calculate the Jacobian of strong residual
-	      // for (int j=0;j<nDOF_trial_element;j++)
-	      //     {
-	      //       //int eN_k_j=eN_k*nDOF_trial_element+j;
-	      //       //int eN_k_j_nSpace = eN_k_j*nSpace;
-	      //       int j_nSpace = j*nSpace;
-	      //       dpdeResidual_u_u[j]= ck.MassJacobian_strong(dm_t,u_trial_ref[k*nDOF_trial_element+j]) +
-	      //         ck.AdvectionJacobian_strong(df,&u_grad_trial[j_nSpace]);
-	      //     }
-	      // //tau and tau*Res
-	      // calculateSubgridError_tau(elementDiameter[eN],
-	      //                 dm_t,
-	      //                 df,
-	      //                 cfl[eN_k],
-	      //                 tau0);
-	      // calculateSubgridError_tau(Ct_sge,
-	      //                           G,
-	      //                 dm_t,
-	      //                 df,
-	      //                 tau1,
-	      //                     cfl[eN_k]);
-	      // tau = useMetrics*tau1+(1.0-useMetrics)*tau0;
-	      // for(int j=0;j<nDOF_trial_element;j++)
-	      //     dsubgridError_u_u[j] = -tau*dpdeResidual_u_u[j];
+	      //
+	      //calculate subgrid error contribution to the Jacobian (strong residual, adjoint, jacobian of strong residual)
+	      //
+	      //calculate the adjoint times the test functions
+	      for (int i=0;i<nDOF_test_element;i++)
+	          {
+	            // int eN_k_i_nSpace = (eN_k*nDOF_trial_element+i)*nSpace;
+	            // Lstar_u[i]=ck.Advection_adjoint(df,&u_grad_test_dV[eN_k_i_nSpace]);
+	            int i_nSpace = i*nSpace;
+	            Lstar_u[i]=ck.Advection_adjoint(df,&u_grad_test_dV[i_nSpace]);
+	          }
+	      //calculate the Jacobian of strong residual
+	      for (int j=0;j<nDOF_trial_element;j++)
+	          {
+	            //int eN_k_j=eN_k*nDOF_trial_element+j;
+	            //int eN_k_j_nSpace = eN_k_j*nSpace;
+	            int j_nSpace = j*nSpace;
+	            dpdeResidual_u_u[j]= ck.MassJacobian_strong(dm_t,u_trial_ref[k*nDOF_trial_element+j]) +
+	              ck.AdvectionJacobian_strong(df,&u_grad_trial[j_nSpace]);
+	          }
+	      //tau and tau*Res
+	      calculateSubgridError_tau(elementDiameter[eN],
+	                      dm_t,
+	                      df,
+	                      cfl[eN_k],
+	                      tau0);
+	      calculateSubgridError_tau(Ct_sge,
+	                                G,
+	                      dm_t,
+	                      df,
+	                      tau1,
+	                          cfl[eN_k]);
+	      tau = useMetrics*tau1+(1.0-useMetrics)*tau0;
+	      for(int j=0;j<nDOF_trial_element;j++)
+	          dsubgridError_u_u[j] = -tau*dpdeResidual_u_u[j];
 	      for(int i=0;i<nDOF_test_element;i++)
 		{
 		  //int eN_k_i=eN_k*nDOF_test_element+i;
@@ -1336,10 +1322,10 @@ double computeIthLimitedFluxCorrection(int i,
 			ck.AdvectionJacobian_weak(df,u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_test_dV[i_nSpace]) +
 			ck.DiffusionJacobian_weak(a_rowptr.data(),a_colind.data(),a,da,
 						  grad_u,&u_grad_test_dV[i_nSpace],1.0,
-						  u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_trial[j_nSpace]);
-		      // +
-		      //     ck.SubgridErrorJacobian(dsubgridError_u_u[j],Lstar_u[i]) +
-		      //     ck.NumericalDiffusionJacobian(q_numDiff_u_last[eN_k],&u_grad_trial[j_nSpace],&u_grad_test_dV[i_nSpace]);
+						  u_trial_ref.data()[k*nDOF_trial_element+j],&u_grad_trial[j_nSpace])
+		      +
+		          VMS*ck.SubgridErrorJacobian(dsubgridError_u_u[j],Lstar_u[i]) +
+		          VMS*ck.NumericalDiffusionJacobian(q_numDiff_u[eN_k],&u_grad_trial[j_nSpace],&u_grad_test_dV[i_nSpace]);
 		    }//j
 		}//i
 	    }//k
@@ -1582,6 +1568,7 @@ double computeIthLimitedFluxCorrection(int i,
 	  //double sdoti = (solHi - solni);
 	  double sdoti = uDotLow[i];
 	  sdot[i] = 0.0;
+	  //cek todo: add boundary data
 	  //double mini=max_s_bc.data()[i], maxi=min_s_bc.data()[i]; // init min/max with value at BCs (NOTE: if no boundary then min=1E10, max=-1E10)
 	  double mini=1e10, maxi=1e-10; // init min/max with value at BCs (NOTE: if no boundary then min=1E10, max=-1E10)
 	  if (GLOBAL_FCT==1)

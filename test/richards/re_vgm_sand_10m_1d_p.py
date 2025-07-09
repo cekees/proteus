@@ -4,7 +4,7 @@ from proteus.richards import Richards
 
 nd = 1
 
-L=(10.0,1.0,1.0)
+L=(1.0,1.0,1.0)
 
 analyticalSolution = None
 
@@ -53,8 +53,8 @@ if galerkin:
     stabilization_type='Galerkin'
 else:
     #stabilization_type='Implicit_FCT'
-    #stabilization_type='EntropyViscosity'
-    stabilization_type='EV_Stab'
+    stabilization_type='EntropyViscosity'
+    #stabilization_type='EV_Stab'
 if optRichards:
     LevelModelType = Richards.LevelModel
     coefficients = Richards.Coefficients(nd,
@@ -104,8 +104,8 @@ else:
 
 #pondingPressure=-0.1#-0.1
 #bottomPressure = -0.2#0.0
-pondingPressure= 0.1
-bottomPressure = 0.0
+pondingPressure= -.75#0.1
+bottomPressure = -10.0
 pondingSaturation = 0.9
 waterTableSaturation = 0.9
 initialSaturation = 0.01
@@ -140,7 +140,7 @@ else:
             #     return f(x,t)
             # return bottomPressure + x[0]*dimensionless_gravity[0]*dimensionless_density
             if x[0] < L[0]:#*0.5:
-                return bottomPressure + x[0]*dimensionless_gravity[0]*dimensionless_density
+                return bottomPressure #+ x[0]*dimensionless_gravity[0]*dimensionless_density
             else:
                 return pondingPressure
 
@@ -159,5 +159,5 @@ advectiveFluxBoundaryConditions =  {0:flux}
 
 diffusiveFluxBoundaryConditions = {0:{}}
 
-T = 0.5/timeScale
+T = 100/timeScale
 #T = 0.35/timeScale

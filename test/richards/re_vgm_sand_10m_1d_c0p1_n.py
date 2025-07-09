@@ -9,7 +9,7 @@ useGustafsson = False#True#
 atol_u[0] = 1.0e-5
 rtol_u[0] = 1.0e-5
 #DT = 1.0e-6#None#0.025#1.0e-1/timeScale
-tnList = [0.0]; nDTout = 1000#cek don't have stability worked out yet, blows up for large time steps
+tnList = [0.0,1.0e-4]; nDTout = 10000#cek don't have stability worked out yet, blows up for large time steps
 for i in range(nDTout):
     tnList.append(0.0+(i+1)*(T)/float(nDTout))
 if useFLCBDF:
@@ -32,8 +32,8 @@ else:
     stepController = HeuristicNL_dt_controller#FixedStep
     #nDTout = 1#int(T/DT)#int(T/DT) #100#int(T/DT)
     #for controlling time stepping
-    nonlinearIterationsFloor = 4
-    nonlinearIterationsCeil  = 8
+    nonlinearIterationsFloor = 3
+    nonlinearIterationsCeil  = 6
     dtNLgrowFactor = 2
     dtNLreduceFactor = 0.5
     dtNLfailureReduceFactor = 0.5
@@ -44,22 +44,22 @@ if not galerkin:
     timeIntegration = Richards.ThetaScheme
 #    timeIntegration = Richards.RKEV
 timeOrder = 1
-stepController = FixedStep
+#stepController = FixedStep
 #systemStepControllerType = SplitOperator.Sequential_FixedStep
 #dt_system_fixed = 0.001
 #nDTout = 1#int(T/DT)#int(T/DT) #100#int(T/DT)
 #for controlling time stepping
-nonlinearIterationsFloor = 4
-nonlinearIterationsCeil  = 8
-dtNLgrowFactor = 2
-dtNLreduceFactor = 0.5
-dtNLfailureReduceFactor = 0.5
-useInitialGuessPredictor= True
-stepExact = True
+#nonlinearIterationsFloor = 4
+#nonlinearIterationsCeil  = 8
+#dtNLgrowFactor = 2
+#dtNLreduceFactor = 0.5
+#dtNLfailureReduceFactor = 0.5
+#useInitialGuessPredictor= True
+#stepExact = True
 
 femSpaces = {0:C0_AffineLinearOnSimplexWithNodalBasis}
 
-elementQuadrature = SimplexGaussQuadrature(nd,3)
+elementQuadrature = SimplexGaussQuadrature(nd,5)
 
 elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,1)
 
@@ -118,10 +118,10 @@ fullNewtonFlag = True
 
 tolFac = 0.0
 
-nl_atol_res = 1.0e-8
+nl_atol_res = 1.0e-4
 
 maxNonlinearIts = 100#1001
-maxLineSearches =100
+maxLineSearches =0
 
 matrix = SparseMatrix
 #matrix = Numeric.array

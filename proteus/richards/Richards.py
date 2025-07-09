@@ -230,6 +230,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  ENTROPY_TYPE=2,  # logarithmic
                  LUMPED_MASS_MATRIX=False,
                  MONOLITHIC=True,
+                 VMS=0.0,
                  FCT=True,
                  num_fct_iter=1,
                  # FOR ENTROPY VISCOSITY
@@ -241,6 +242,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  # OUTPUT quantDOFs
                  outputQuantDOFs=False,
                   ):
+        self.VMS=VMS
         self.anb_seepage_flux= 0.00
         #self.anb_seepage_flux_n =0.0
         variableNames=['pressure_head']
@@ -740,6 +742,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.ebqe['x'] = np.zeros((self.mesh.nExteriorElementBoundaries_global,self.nElementBoundaryQuadraturePoints_elementBoundary,3),'d')
         self.q[('u',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element),'d')
         self.q[('grad(u)',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')
+        self.q[('grad(phi)',0)] = self.q[('u',0)]
+        self.q[('dphi',0,0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,),'d')
+        self.q[('da',0,0,0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,),'d')
         self.q[('grad(u_v)',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')
         self.q['velocity'] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')
         self.q[('m',0)] = self.q[('u',0)].copy()
@@ -1321,7 +1326,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             degree_polynomial = self.u[0].femSpace.order
         except:
             pass
-
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["bc_mask"] = self.bc_mask
         argsDict["dt"] = self.timeIntegration.dt
@@ -1363,9 +1367,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
         argsDict["lag_shockCapturing"] = 0
-        argsDict["shockCapturingDiffusion"] = 0.0
-        argsDict["sc_uref"] = 0.0
-        argsDict["sc_alpha"] = 0.0
+        argsDict["shockCapturingDiffusion"] = 0.9
+        argsDict["VMS"] = self.coefficients.VMS
+        argsDict["sc_uref"] = 1.0
+        argsDict["sc_alpha"] = 2.0
         argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
         argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
@@ -1378,8 +1383,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["q_dV"] = self.q[('dV_u',0)]
         argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
         argsDict["cfl"] = self.q[('cfl',0)]
-        argsDict["q_numDiff_u"] = self.q[('cfl',0)]
-        argsDict["q_numDiff_u_last"] = self.q[('cfl',0)]
+        argsDict["q_numDiff_u"] = self.q[('numDiff',0,0)]
+        argsDict["q_numDiff_u_last"] = self.q[('numDiff',0,0)]
         argsDict["offset_u"] = self.offset[0]
         argsDict["stride_u"] = self.stride[0]
         argsDict["globalResidual"] = r
@@ -1608,9 +1613,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
         argsDict["lag_shockCapturing"] = 0
-        argsDict["shockCapturingDiffusion"] = 0.0
-        argsDict["sc_uref"] = 0.0
-        argsDict["sc_alpha"] = 0.0
+        argsDict["shockCapturingDiffusion"] = 0.9
+        argsDict["sc_uref"] = 1.0
+        argsDict["sc_alpha"] = 2.0
         argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
         argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
@@ -1623,8 +1628,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["q_dV"] = self.q[('dV_u',0)]
         argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
         argsDict["cfl"] = self.q[('cfl',0)]
-        argsDict["q_numDiff_u"] = self.q[('cfl',0)]
-        argsDict["q_numDiff_u_last"] = self.q[('cfl',0)]
+        argsDict["q_numDiff_u"] = self.q[('numDiff',0,0)]
+        argsDict["q_numDiff_u_last"] = self.q[('numDiff',0,0)]
         argsDict["offset_u"] = self.offset[0]
         argsDict["stride_u"] = self.stride[0]
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
@@ -2021,7 +2026,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
         argsDict["lag_shockCapturing"] = 0
-        argsDict["shockCapturingDiffusion"] = 0.0
+        argsDict["shockCapturingDiffusion"] = 0.1
         argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
         argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
@@ -2030,7 +2035,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["velocity"] = self.q['velocity']
         argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
         argsDict["cfl"] = self.q[('cfl',0)]
-        argsDict["q_numDiff_u_last"] = self.q[('cfl',0)]
+        argsDict["q_numDiff_u"] = self.q[('numDiff',0,0)]
+        argsDict["q_numDiff_u_last"] = self.q[('numDiff',0,0)]
         argsDict["csrRowIndeces_u_u"] = self.csrRowIndeces[(0,0)]
         argsDict["csrColumnOffsets_u_u"] = self.csrColumnOffsets[(0,0)]
         argsDict["globalJacobian"] = jacobian.getCSRrepresentation()[2]
@@ -2046,6 +2052,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["ebqe_bc_flux_ext"] = self.ebqe[('advectiveFlux_bc',0)]
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0,0)]
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
+        argsDict["VMS"] = self.coefficients.VMS
         #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
 
         self.calculateJacobian(argsDict)

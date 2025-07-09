@@ -9,7 +9,7 @@ useGustafsson = False#True#
 atol_u[0] = 1.0e-5
 rtol_u[0] = 1.0e-5
 #DT = 1.0e-6#None#0.025#1.0e-1/timeScale
-tnList = [0.0]; nDTout = 1000#cek don't have stability worked out yet, blows up for large time steps
+tnList = [0.0]; nDTout = 100#cek don't have stability worked out yet, blows up for large time steps
 for i in range(nDTout):
     tnList.append(0.0+(i+1)*(T)/float(nDTout))
 if useFLCBDF:
@@ -59,15 +59,15 @@ stepExact = True
 
 femSpaces = {0:C0_AffineLinearOnSimplexWithNodalBasis}
 
-elementQuadrature = SimplexGaussQuadrature(nd,3)
+#elementQuadrature = SimplexGaussQuadrature(nd,5)
 
-elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,1)
+#elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,1)
 
-#elementQuadrature = SimplexLobattoQuadrature(nd,1)
+elementQuadrature = SimplexLobattoQuadrature(nd,1)
 #
-#elementBoundaryQuadrature = SimplexLobattoQuadrature(nd-1,1)
+elementBoundaryQuadrature = SimplexLobattoQuadrature(nd-1,1)
 
-#nn=101
+nn=101
 #nLevels = 4
 nn= 21#3*2**2
 nLevels = 1#10-2
@@ -118,7 +118,7 @@ fullNewtonFlag = True
 
 tolFac = 0.0
 
-nl_atol_res = 1.0e-8
+nl_atol_res = 1.0e-6
 
 maxNonlinearIts = 100#1001
 maxLineSearches =100

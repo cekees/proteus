@@ -553,6 +553,16 @@ namespace proteus
 			    abort();
 			  }
 		      }
+			else if (nQuadraturePoints_elementIn == 7)
+		      {
+			if (nQuadraturePoints_elementBoundaryIn == 1)
+			  return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<1,2,2,2>,1,7,2,2,2,1>());
+			else
+			  {
+			    NO_INSTANCE;
+			    abort();
+			  }
+		      }
 		    else
 		      {
 			NO_INSTANCE;

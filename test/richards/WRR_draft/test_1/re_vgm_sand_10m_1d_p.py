@@ -13,10 +13,10 @@ density       = 998.2   #kg/m^3
 gravity       = 9.8     #m/s^2
 beta          = 0.0#density*gravity*4.524e-10
 m_per_s_by_m_per_d = 1.1574074e-5
-permeability  = (0.00922*m_per_s_by_m_per_d)*viscosity/(gravity*density)  #m^2
+permeability  = (0.00922*864*m_per_s_by_m_per_d)*viscosity/(gravity*density)  #m^2
 thetaS        = 0.368   #-
 thetaR        = 0.102   #-
-mvg_alpha     = 0.0335    #1/m
+mvg_alpha     = 0.0335*100    #1/m
 mvg_n         = 1.694
 mvg_m         = 1.0 - 1.0/mvg_n
 lengthScale   = 1.0     #m
@@ -48,11 +48,14 @@ for i in range(nMediaTypes+1):
 
 useSeepageFace = True
 galerkin=False
-
-# if galerkin:
-#     stabilization_type=0
-# else:
-#     stabilization_type=1
+VMS=0.0
+if galerkin:
+    stabilization_type=0
+    FCT=False
+    VMS=0.0
+else:
+    stabilization_type=1
+    FCT=False
 
 LevelModelType = Richards.LevelModel
 coefficients = Richards.Coefficients(nd,
@@ -65,11 +68,12 @@ coefficients = Richards.Coefficients(nd,
                                      density=dimensionless_density,
                                      beta=beta,
                                      diagonal_conductivity=True,
-                                     STABILIZATION_TYPE=0,
+                                     STABILIZATION_TYPE=stabilization_type,
                                      ENTROPY_TYPE=1,
                                      LUMPED_MASS_MATRIX=False,
-                                     FCT=False,
+                                     FCT=FCT,
                                      MONOLITHIC=False,
+                                     VMS=VMS,
                                      num_fct_iter=1,
                                          # FOR ENTROPY VISCOSITY
                                      cE=1.0,
@@ -140,5 +144,5 @@ advectiveFluxBoundaryConditions =  {0:flux}
 
 diffusiveFluxBoundaryConditions = {0:{}}
 
-T = 1/24/timeScale
+T = 12/24
 #T = 0.35/timeScale
