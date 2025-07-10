@@ -231,6 +231,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  LUMPED_MASS_MATRIX=False,
                  MONOLITHIC=True,
                  VMS=0.0,
+                 SC=0.0,
                  FCT=True,
                  num_fct_iter=1,
                  # FOR ENTROPY VISCOSITY
@@ -243,6 +244,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  outputQuantDOFs=False,
                   ):
         self.VMS=VMS
+        self.SC=SC
         self.anb_seepage_flux= 0.00
         #self.anb_seepage_flux_n =0.0
         variableNames=['pressure_head']
@@ -752,6 +754,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.q[('m_tmp',0)] = self.q[('u',0)].copy()
         self.q[('cfl',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element),'d')
         self.q[('numDiff',0,0)] =  np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element),'d')
+        self.numDiff_star = self.q[('numDiff',0,0)]
+        self.q[('numDiff_last',0,0)] =  np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element),'d')
         self.ebqe[('u',0)] = np.zeros((self.mesh.nExteriorElementBoundaries_global,self.nElementBoundaryQuadraturePoints_elementBoundary),'d')
         self.ebqe[('grad(u)',0)] = np.zeros((self.mesh.nExteriorElementBoundaries_global,self.nElementBoundaryQuadraturePoints_elementBoundary,self.nSpace_global),'d')
         self.ebqe['velocity'] = np.zeros((self.mesh.nExteriorElementBoundaries_global,self.nElementBoundaryQuadraturePoints_elementBoundary,self.nSpace_global),'d')
@@ -1364,7 +1368,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
         argsDict["lag_shockCapturing"] = 0
-        argsDict["shockCapturingDiffusion"] = 0.9
+        argsDict["shockCapturingDiffusion"] = self.coefficients.SC
         argsDict["VMS"] = self.coefficients.VMS
         argsDict["sc_uref"] = 1.0
         argsDict["sc_alpha"] = 2.0
@@ -1381,7 +1385,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
         argsDict["cfl"] = self.q[('cfl',0)]
         argsDict["q_numDiff_u"] = self.q[('numDiff',0,0)]
-        argsDict["q_numDiff_u_last"] = self.q[('numDiff',0,0)]
+        #argsDict["q_numDiff_u_last"] = self.q[('numDiff_last',0,0)]
+        argsDict["q_numDiff_u_last"] = self.numDiff_star
         argsDict["offset_u"] = self.offset[0]
         argsDict["stride_u"] = self.stride[0]
         argsDict["globalResidual"] = r
@@ -1610,7 +1615,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
         argsDict["lag_shockCapturing"] = 0
-        argsDict["shockCapturingDiffusion"] = 0.9
+        argsDict["shockCapturingDiffusion"] = self.coefficients.SC
         argsDict["sc_uref"] = 1.0
         argsDict["sc_alpha"] = 2.0
         argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
@@ -1626,7 +1631,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
         argsDict["cfl"] = self.q[('cfl',0)]
         argsDict["q_numDiff_u"] = self.q[('numDiff',0,0)]
-        argsDict["q_numDiff_u_last"] = self.q[('numDiff',0,0)]
+        argsDict["q_numDiff_u_last"] = self.q[('numDiff_last',0,0)]
+        argsDict["q_numDiff_u_last"] = self.numDiff_star
         argsDict["offset_u"] = self.offset[0]
         argsDict["stride_u"] = self.stride[0]
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
