@@ -1318,7 +1318,7 @@ public:
           aux_entropy_residual = 0.,
           DENTROPY_un, DENTROPY_uni,
           //for mass matrix contributions
-          u = 0.0, un = 0.0, grad_u[nSpace], grad_un[nSpace], velocity[nSpace], u_test_dV[nDOF_trial_element], u_grad_trial[nDOF_trial_element * nSpace], u_grad_test_dV[nDOF_test_element * nSpace],
+          u = 0.0, un = 0.0, grad_u[nSpace], grad_un[nSpace], velocity_loc[nSpace], u_test_dV[nDOF_trial_element], u_grad_trial[nDOF_trial_element * nSpace], u_grad_test_dV[nDOF_test_element * nSpace],
           //for general use
           jac[nSpace * nSpace], jacDet, jacInv[nSpace * nSpace], dV, x, y, z, xt, yt, zt, m, dm, f[nSpace], df[nSpace], a[nnz], da[nnz], as[nnz], mn, dmn, fn[nSpace], dfn[nSpace], an[nnz], dan[nnz], asn[nnz];
         //get the physical integration weight
@@ -1355,11 +1355,11 @@ public:
                              &KWs.data()[elementMaterialTypes[eN] * nnz], u, m, dm, f, df, a, da, as, Kr, dKr);
 
         // Darcy velocity calculation
-        for (int I = 0; I < nSpace; I++) { velocity[I] = 0.0; }
+        for (int I = 0; I < nSpace; I++) { velocity_loc[I] = 0.0; }
         for (int I = 0; I < nSpace; I++) {
-          for (int J = 0; J < nSpace; J++) { velocity[I] -= Kr * KWs.data()[elementMaterialTypes[eN] * nSpace * nSpace + I * nSpace + J] * grad_u[J]; }
+          for (int J = 0; J < nSpace; J++) { velocity_loc[I] -= Kr * KWs.data()[elementMaterialTypes[eN] * nSpace * nSpace + I * nSpace + J] * grad_u[J]; }
         }
-        for (int I = 0; I < nSpace; I++) { q_velocity.data()[eN_k_nSpace + I] = velocity[I]; }
+        for (int I = 0; I < nSpace; I++) { q_velocity.data()[eN_k_nSpace + I] = velocity_loc[I]; }
 
         //
         //moving mesh
@@ -1371,19 +1371,19 @@ public:
         //relative velocity at tn
         for (int I = 0; I < nSpace; I++) {
           f[I] -= MOVING_DOMAIN * m * mesh_velocity[I];
-          velocity[I] = df[I] * (2.0 * dm * dm / (dm * dm + fmax(1.0e-16, dm * dm)));
+          velocity_loc[I] = df[I] * (2.0 * dm * dm / (dm * dm + fmax(1.0e-16, dm * dm)));
         }
         //////////////////////////////
         // CALCULATE CELL BASED CFL //
         //////////////////////////////
-        calculateCFL(elementDiameter.data()[eN] / degree_polynomial, velocity, cfl.data()[eN_k]);
+        calculateCFL(elementDiameter.data()[eN] / degree_polynomial, velocity_loc, cfl.data()[eN_k]);
 
         //////////////////////////////////////////////
         // CALCULATE ENTROPY RESIDUAL AT QUAD POINT //
         //////////////////////////////////////////////
         if (STABILIZATION_TYPE == STABILIZATION::EV_Stab) // EV stab
         {
-          for (int I = 0; I < nSpace; I++) aux_entropy_residual += velocity[I] * grad_un[I];
+          for (int I = 0; I < nSpace; I++) aux_entropy_residual += velocity_loc[I] * grad_un[I];
           DENTROPY_un = ENTROPY_TYPE == 1 ? DENTROPY(un, uL, uR) : DENTROPY_LOG(un, uL, uR);
         }
         //////////////
