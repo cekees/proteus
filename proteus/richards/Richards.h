@@ -140,12 +140,12 @@ public:
       df[I] = 0.0;
       for (int ii = rowptr[I]; ii < rowptr[I + 1]; ii++) {
         f[I] += rho2 * KWr * KWs[ii] * gravity[colind[ii]];
-        df[I] += -rho2 * DKWr_DpsiC * KWs[ii] * gravity[colind[ii]]; //0.0;//
+        df[I] += -rho2 * DKWr_DpsiC * KWs[ii] * gravity[colind[ii]]; 
         a[ii]  = rho * KWr * KWs[ii];
-        da[ii] = -rho * DKWr_DpsiC * KWs[ii]; //0.0;//
+        da[ii] = -rho * DKWr_DpsiC * KWs[ii];
         as[ii] = rho * KWs[ii];
         kr     = KWr;
-        dkr    = 0.0; //mod picard DKWr_DpsiC;
+        dkr    = -DKWr_DpsiC;
       }
     }
   }
