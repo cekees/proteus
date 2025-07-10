@@ -122,8 +122,8 @@ public:
       sqrt_sBar     = sqrt(sBar);
       sqrt_sBarStar = sqrt_sBar;
       if (sqrt_sBar < 1.0e-8) sqrt_sBarStar = 1.0e-8;
-      KWr        = sqrt_sBar * vBar2;                                                                    //1.0;//
-      DKWr_DpsiC = ((0.5 / sqrt_sBarStar) * DsBar_DpsiC * vBar2 + 2.0 * sqrt_sBar * vBar * DvBar_DpsiC); //0.0;//
+      KWr        = sqrt_sBar * vBar2;                                                                    
+      DKWr_DpsiC = ((0.5 / sqrt_sBarStar) * DsBar_DpsiC * vBar2 + 2.0 * sqrt_sBar * vBar * DvBar_DpsiC); 
     } else {
       thetaW        = thetaS;
       DthetaW_DpsiC = 0.0;
@@ -1272,8 +1272,8 @@ public:
       // NODAL ENTROPY //
       if (STABILIZATION_TYPE == STABILIZATION::EV_Stab) //EV stab
       {
-        double porosity_times_solni = 1.0 * u_free_dof_old[i];
-        eta[i]                      = ENTROPY_TYPE == 1 ? ENTROPY(porosity_times_solni, uL, uR) : ENTROPY_LOG(porosity_times_solni, uL, uR);
+        double solni = 1.0 * u_free_dof_old[i];
+        eta[i]                      = ENTROPY_TYPE == 1 ? ENTROPY(solni, uL, uR) : ENTROPY_LOG(solni, uL, uR);
         global_entropy_residual[i]  = 0.;
       }
       boundary_integral[i] = 0.;
@@ -1284,7 +1284,7 @@ public:
     // ** LOOP IN CELLS FOR CELL BASED TERMS ** //
     //////////////////////////////////////////////
     // HERE WE COMPUTE:
-    //    * Time derivative term. porosity*u_t
+    //    * Time derivative term. u_t
     //    * cell based CFL (for reference)
     //    * Entropy residual
     //    * Transport matrices
@@ -1318,7 +1318,7 @@ public:
           aux_entropy_residual = 0.,
           DENTROPY_un, DENTROPY_uni,
           //for mass matrix contributions
-          u = 0.0, un = 0.0, grad_u[nSpace], grad_un[nSpace], porosity_times_velocity[nSpace], u_test_dV[nDOF_trial_element], u_grad_trial[nDOF_trial_element * nSpace], u_grad_test_dV[nDOF_test_element * nSpace],
+          u = 0.0, un = 0.0, grad_u[nSpace], grad_un[nSpace], velocity[nSpace], u_test_dV[nDOF_trial_element], u_grad_trial[nDOF_trial_element * nSpace], u_grad_test_dV[nDOF_test_element * nSpace],
           //for general use
           jac[nSpace * nSpace], jacDet, jacInv[nSpace * nSpace], dV, x, y, z, xt, yt, zt, m, dm, f[nSpace], df[nSpace], a[nnz], da[nnz], as[nnz], mn, dmn, fn[nSpace], dfn[nSpace], an[nnz], dan[nnz], asn[nnz];
         //get the physical integration weight
@@ -1340,7 +1340,7 @@ public:
         for (int j = 0; j < nDOF_trial_element; j++) {
           u_test_dV[j] = u_test_ref.data()[k * nDOF_trial_element + j] * dV;
           for (int I = 0; I < nSpace; I++) {
-            grad_un[I] += Phi_n[j] * u_grad_trial[j * nSpace + I];
+            grad_un[I] += Phi_n[j] * u_grad_trial[j * nSpace + I];//note: grad u is grad phi
             grad_u[I] += Phi[j] * u_grad_trial[j * nSpace + I];
             u_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; //cek warning won't work for Petrov-Galerkin
           }
@@ -1357,7 +1357,7 @@ public:
         // Darcy velocity calculation
         for (int I = 0; I < nSpace; I++) { velocity[I] = 0.0; }
         for (int I = 0; I < nSpace; I++) {
-          for (int J = 0; J < nSpace; J++) { velocity[I] -= Kr * KWs.data()[elementMaterialTypes[eN] * nSpace * nSpace + I * nSpace + J] * (grad_u[J] + gravity[J]); }
+          for (int J = 0; J < nSpace; J++) { velocity[I] -= Kr * KWs.data()[elementMaterialTypes[eN] * nSpace * nSpace + I * nSpace + J] * grad_u[J]; }
         }
         for (int I = 0; I < nSpace; I++) { q_velocity.data()[eN_k_nSpace + I] = velocity[I]; }
 
@@ -1371,19 +1371,19 @@ public:
         //relative velocity at tn
         for (int I = 0; I < nSpace; I++) {
           f[I] -= MOVING_DOMAIN * m * mesh_velocity[I];
-          porosity_times_velocity[I] = df[I] * (2.0 * dm * dm / (dm * dm + fmax(1.0e-16, dm * dm)));
+          velocity[I] = df[I] * (2.0 * dm * dm / (dm * dm + fmax(1.0e-16, dm * dm)));
         }
         //////////////////////////////
         // CALCULATE CELL BASED CFL //
         //////////////////////////////
-        calculateCFL(elementDiameter.data()[eN] / degree_polynomial, porosity_times_velocity, cfl.data()[eN_k]);
+        calculateCFL(elementDiameter.data()[eN] / degree_polynomial, velocity, cfl.data()[eN_k]);
 
         //////////////////////////////////////////////
         // CALCULATE ENTROPY RESIDUAL AT QUAD POINT //
         //////////////////////////////////////////////
         if (STABILIZATION_TYPE == STABILIZATION::EV_Stab) // EV stab
         {
-          for (int I = 0; I < nSpace; I++) aux_entropy_residual += porosity_times_velocity[I] * grad_un[I];
+          for (int I = 0; I < nSpace; I++) aux_entropy_residual += velocity[I] * grad_un[I];
           DENTROPY_un = ENTROPY_TYPE == 1 ? DENTROPY(un, uL, uR) : DENTROPY_LOG(un, uL, uR);
         }
         //////////////
@@ -1396,8 +1396,8 @@ public:
           if (STABILIZATION_TYPE == STABILIZATION::EV_Stab) // EV stab
           {
             int    gi                 = offset_u + stride_u * u_l2g.data()[eN_i]; //global i-th index
-            double porosity_times_uni = 1.0 * u_dof_old.data()[gi];
-            DENTROPY_uni              = ENTROPY_TYPE == 1 ? DENTROPY(porosity_times_uni, uL, uR) : DENTROPY_LOG(porosity_times_uni, uL, uR);
+            double uni = u_dof_old.data()[gi];
+            DENTROPY_uni              = ENTROPY_TYPE == 1 ? DENTROPY(uni, uL, uR) : DENTROPY_LOG(uni, uL, uR);
             element_entropy_residual[i] += (DENTROPY_un - DENTROPY_uni) * aux_entropy_residual * u_test_dV[i];
           }
           elementResidual_u[i] += m * u_test_dV[i];
@@ -1437,78 +1437,7 @@ public:
           TransportMatrixConsistentn[csrRowIndeces_CellLoops.data()[eN_i] + csrColumnOffsets_CellLoops.data()[eN_i_j]] += elementTransportConsistentn[i][j];
         } //j
       } //i
-    } //elements
-
-    //   /* ////////////////////////////////////////////////////////////////////////////////////////// */
-    //   /* // ADD OUTFLOW BOUNDARY TERM TO TRANSPORT MATRICES AND COMPUTE INFLOW BOUNDARY INTEGRAL // */
-    //   /* ////////////////////////////////////////////////////////////////////////////////////////// */
-    //   /* //   * Compute outflow boundary integral as a matrix; i.e., int_B[ (vel.normal)*wi*wj*dx] */
-    //   //This is comment undone to calculate flux under Stabilization_type=2
-
-    for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++) {
-      double min_u_bc_local = 1E10, max_u_bc_local = -1E10;
-      int    ebN = exteriorElementBoundariesArray[ebNE];
-      int    eN = elementBoundaryElementsArray[ebN * 2 + 0], ebN_local = elementBoundaryLocalElementBoundariesArray[ebN * 2 + 0], eN_nDOF_trial_element = eN * nDOF_trial_element;
-      double elementResidual_u[nDOF_test_element];
-      for (int i = 0; i < nDOF_test_element; i++) elementResidual_u[i] = 0.0;
-      // loop on quad points
-      for (int kb = 0; kb < nQuadraturePoints_elementBoundary; kb++) {
-        int ebNE_kb = ebNE * nQuadraturePoints_elementBoundary + kb, ebNE_kb_nSpace = ebNE_kb * nSpace, ebN_local_kb = ebN_local * nQuadraturePoints_elementBoundary + kb, ebN_local_kb_nSpace = ebN_local_kb * nSpace;
-        double u = 0.0, u_ext = 0.0, bc_u_ext = 0.0, grad_u_ext[nSpace], porosity_times_velocity[nSpace], flux_ext = 0.0, dflux_ext = 0.0, fluxTransport[nDOF_trial_element], jac_ext[nSpace * nSpace], jacDet_ext, jacInv_ext[nSpace * nSpace], boundaryJac[nSpace * (nSpace - 1)], metricTensor[(nSpace - 1) * (nSpace - 1)], metricTensorDetSqrt,
-               //arnob adding the variable
-          //u_grad_trial_trace[nDOF_trial_element*nSpace],
-          a_ext[nnz], da_ext[nnz], as_ext[nnz],
-
-               m_ext = 0.0, dm_ext = 0.0,
-
-               f_ext[nSpace], df_ext[nSpace], bc_m_ext = 0.0, bc_dm_ext = 0.0,
-
-               //bc_u_ext=0.0,
-          bc_f_ext[nSpace], bc_df_ext[nSpace], bc_a_ext[nnz], bc_da_ext[nnz], bc_as_ext[nnz],
-
-               dS, u_test_dS[nDOF_test_element], u_grad_trial_trace[nDOF_trial_element * nSpace], normal[nSpace], x_ext, y_ext, z_ext, xt_ext, yt_ext, zt_ext, integralScaling, porosity_ext, G[nSpace * nSpace], G_dd_G, tr_G;
-        // calculate mappings
-        ck.calculateMapping_elementBoundary(eN, ebN_local, kb, ebN_local_kb, mesh_dof.data(), mesh_l2g.data(), mesh_trial_trace_ref.data(), mesh_grad_trial_trace_ref.data(), boundaryJac_ref.data(), jac_ext, jacDet_ext, jacInv_ext, boundaryJac, metricTensor, metricTensorDetSqrt,
-                                            normal_ref.data(), normal, x_ext, y_ext, z_ext);
-        ck.calculateMappingVelocity_elementBoundary(eN, ebN_local, kb, ebN_local_kb, mesh_velocity_dof.data(), mesh_l2g.data(), mesh_trial_trace_ref.data(), xt_ext, yt_ext, zt_ext, normal, boundaryJac, metricTensor, integralScaling);
-        dS = ((1.0 - MOVING_DOMAIN) * metricTensorDetSqrt + MOVING_DOMAIN * integralScaling) * dS_ref[kb];
-
-        //calculate the numerical fluxes
-        //get the metric tensor
-        //cek todo use symmetry
-        ck.calculateG(jacInv_ext, G, G_dd_G, tr_G);
-        //compute shape and solution information
-        //shape
-        ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace * nDOF_trial_element], jacInv_ext, u_grad_trial_trace);
-
-        //compute shape and solution information
-
-        ck.valFromDOF(u_dof.data(), &u_l2g.data()[eN_nDOF_trial_element], &u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element], u_ext);
-        ck.gradFromDOF(u_dof.data(), &u_l2g.data()[eN_nDOF_trial_element], u_grad_trial_trace, grad_u_ext);
-
-        //precalculate test function products with integration weights
-        for (int j = 0; j < nDOF_trial_element; j++) u_test_dS[j] = u_test_trace_ref[ebN_local_kb * nDOF_test_element + j] * dS;
-
-        bc_u_ext = isDOFBoundary_u.data()[ebNE_kb] * ebqe_bc_u_ext.data()[ebNE_kb] + (1 - isDOFBoundary_u.data()[ebNE_kb]) * u_ext;
-
-        //arnob addition
-        double Kr, dKr;
-        evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[eN]], n.data()[elementMaterialTypes.data()[eN]], thetaR.data()[elementMaterialTypes.data()[eN]],
-                             thetaSR.data()[elementMaterialTypes.data()[eN]], &KWs.data()[elementMaterialTypes.data()[eN] * nnz], u_ext, m_ext, dm_ext, f_ext, df_ext, a_ext, da_ext, as_ext, Kr, dKr);
-        evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[eN]], n.data()[elementMaterialTypes.data()[eN]], thetaR.data()[elementMaterialTypes.data()[eN]],
-                             thetaSR.data()[elementMaterialTypes.data()[eN]], &KWs.data()[elementMaterialTypes.data()[eN] * nnz], bc_u_ext, bc_m_ext, bc_dm_ext, bc_f_ext, bc_df_ext, bc_a_ext, bc_da_ext, bc_as_ext, Kr, dKr);
-
-        exteriorNumericalFlux(ebqe_bc_flux_ext[ebNE_kb], a_rowptr.data(), a_colind.data(),
-                              isSeepageFace.data()[ebNE], //tricky, this is a face flag not face quad
-                              isDOFBoundary_u.data()[ebNE_kb], normal, bc_u_ext, a_ext, grad_u_ext, u_ext, f_ext,
-                              ebqe_penalty_ext.data()[ebNE_kb], // penalty,
-                              flux_ext);
-        ebqe_flux.data()[ebNE_kb] = flux_ext;
-        ebqe_u.data()[ebNE_kb]    = u_ext;
-        anb_seepage_flux = seepagefluxcalculator(anb_seepage_flux, isSeepageFace.data()[ebNE], dS, flux_ext);
-        anb_seepage_flux_n.data()[0] = anb_seepage_flux;
-      }
-    }
+    } //elementsxw
 
     /////////////////////////////////////////////////////////////////
     // COMPUTE SMOOTHNESS INDICATOR and NORMALIZE ENTROPY RESIDUAL //
@@ -1523,7 +1452,7 @@ public:
         etaMaxi = fabs(eta[i]);
         etaMini = fabs(eta[i]);
       }
-      double porosity_times_solni = 1.0 * u_free_dof_old[i];
+      double solni = u_free_dof_old[i];
       // initialize gi and compute xi
       for (int I = 0; I < nSpace; I++) {
         gi[I] = 0.;
@@ -1539,7 +1468,7 @@ public:
           etaMaxi = fmax(etaMaxi, fabs(eta[j]));
           etaMini = fmin(etaMini, fabs(eta[j]));
         }
-        double porosity_times_solnj = 1.0 * u_free_dof_old[j];
+        double solnj = u_free_dof_old[j];
         // Update Cij matrices
         Cij[0] = Cx[ij];
 #if nSpace == 2
@@ -1549,10 +1478,10 @@ public:
         Cij[2] = Cz[ij];
 #endif
         // COMPUTE gi VECTOR. gi=1/mi*sum_j(Cij*solj)
-        for (int I = 0; I < nSpace; I++) gi[I] += Cij[I] * porosity_times_solnj;
+        for (int I = 0; I < nSpace; I++) gi[I] += Cij[I] * solnj;
 
         // COMPUTE numerator and denominator of smoothness indicator
-        double alpha_num = porosity_times_solni - porosity_times_solnj;
+        double alpha_num = solni - solnj;
         if (alpha_num >= 0.) {
           alpha_numerator_pos += alpha_num;
           alpha_denominator_pos += alpha_num;
@@ -1612,7 +1541,6 @@ public:
     ij = 0;
     for (int i = 0; i < numDOFs; i++) {
       double sum_abs_dt_times_fH_minus_fL = 0.0;
-      // NOTE: Transport matrices already have the porosity considered. ---> Dissipation matrices as well.
       double soli  = u_free_dof[i];     // solution at time tn for the ith DOF
       double solni = u_free_dof_old[i]; // solution at time tn for the ith DOF
 
@@ -1621,7 +1549,6 @@ public:
         solni -= rho * gravity.data()[I] * mesh_dof.data()[i * 3 + I];
       }
 
-      double porosityi                      = 1.0;
       double ith_dissipative_term           = 0;
       double ith_low_order_dissipative_term = 0;
       double ith_flux_term                  = 0;
@@ -1646,9 +1573,7 @@ public:
           solnj -= rho * gravity.data()[I] * mesh_dof.data()[j * 3 + I];
         }
 
-        double porosityj = 1.0;
         double dLowij, dLij, dEVij, dHij, fH, fL, fA;
-
         fH = -Theta * TransportMatrixConsistent[ij] * (solj - soli);
         ith_consistent_flux_term += fH;
         fA = fH;
@@ -1694,12 +1619,9 @@ public:
           fA -= fL;
         }
         dt_times_fH_minus_fL.data()[ij] = dt * fA;
-        //sum_abs_dt_times_fH_minus_fL += std::abs(dt_times_fH_minus_fL.data()[ij]);
         ij += 1;
       }
       double mi = ML.data()[i];
-      // compute edge_based_cfl
-      //edge_based_cfl[i] = 2.*fabs(dLii)/mi;
 
       uDotLow.data()[i] = 1.0 / mi * ith_flux_term;
       evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(),
@@ -1719,11 +1641,9 @@ public:
 
         globalResidual.data()[i] = (mi * (m - mn) / dt - ith_flux_term + ith_limited_flux_correction) * bc_mask.data()[i]; // + ith_limited_flux_correction ;//cek should introduce mn,mnp1 or somethign clearer
       }
-
       else {
-        globalResidual.data()[i] = (mi * (m - mn) / dt - ith_flux_term) * bc_mask.data()[i]; // + ith_limited_flux_correction ;//cek should introduce mn,mnp1 or somethign clearer
+        globalResidual.data()[i] = bc_mask.data()[i] * (mi * (m - mn) / dt - ith_flux_term);
       }
-
       globalJacobian.data()[ii] += bc_mask.data()[i] * (mi * dm / dt + J_ii) + (1.0 - bc_mask.data()[i]);
     }
   }
@@ -1858,9 +1778,6 @@ public:
 
         //declare local storage
         double u = 0.0, grad_u[nSpace], m = 0.0, dm = 0.0, f[nSpace], df[nSpace], a[nnz], da[nnz], as[nnz], m_t = 0.0, dm_t = 0.0, dpdeResidual_u_u[nDOF_trial_element], Lstar_u[nDOF_test_element], dsubgridError_u_u[nDOF_trial_element], tau = 0.0, tau0 = 0.0, tau1 = 0.0, jac[nSpace * nSpace], jacDet, jacInv[nSpace * nSpace], u_grad_trial[nDOF_trial_element * nSpace], dV, u_test_dV[nDOF_test_element], u_grad_test_dV[nDOF_test_element * nSpace], x, y, z, xt, yt, zt,
-               //VRANS
-          porosity,
-               //
           G[nSpace * nSpace], G_dd_G, tr_G;
 
         //get jacobian, etc for mapping reference element
@@ -1882,9 +1799,6 @@ public:
             u_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; //cek warning won't work for Petrov-Galerkin
           }
         }
-        //VRANS
-        porosity = 1.0;
-        //
         //
         //calculate pde coefficients and derivatives at quadrature points
         //
