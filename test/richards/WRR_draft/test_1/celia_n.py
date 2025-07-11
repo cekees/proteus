@@ -1,6 +1,6 @@
 from proteus import *
 from proteus.default_n import *
-from re_vgm_sand_10m_1d_p import *
+from celia_p import *
 
 timeIntegrator = ForwardIntegrator
 tnList = [0.0]; nDTout = math.ceil(T/opts.dt)
