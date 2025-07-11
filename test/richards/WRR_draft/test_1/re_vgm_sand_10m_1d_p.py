@@ -2,9 +2,24 @@ from proteus import *
 from proteus.default_p import *
 from proteus.richards import Richards
 
-nd = 1
+opts= Context.Options([
+    ('num','fct',"numerics: num = fct, low-order, galerkin, low-order-galerkin, vms-galerkin, vms-sc-galerkin"),
+    ("final_time",0.5,"Final time for simulation in days"),
+    ("dt",0.1,"Time step for simulation in days"),
+    ("nnx",11,"Number of nodes in x direction"),
+    ("nny",1,"Number of nodes in y direction"),
+    ("nnz",1,"Number of nodes in z direction"),
+    ])
 
+nd = 1
+he = 10.0/(opts.nnx-1)
 L=(1.0,1.0,1.0)
+if opts.nny > 1:
+    nd = 2
+    L=(1.0,1.0/(opts.nny-1),1.0)
+if opts.nnz > 1:
+    nd = 3
+    L=(1.0,1.0/(opts.nny-1),1.0/(opts.nnz-1))
 
 analyticalSolution = None
 
@@ -46,103 +61,97 @@ for i in range(nMediaTypes+1):
     thetaSRtypes[i] = thetaStypes[i] - thetaRtypes[i]
     KsTypes[i,:]    = [dimensionless_conductivity]#,dimensionless_conductivity,dimensionless_conductivity]#m/d?
 
-useSeepageFace = True
-galerkin=False
-VMS=0.0
-if galerkin:
-    stabilization_type=0
+if opts.num == 'fct':
+    stabilization_type='EV_Stab'
+    FCT=True
+    VMS=0.0
+    SC=0.0
+elif opts.num == 'low-order':
+    stabilization_type='EV_Stab'
     FCT=False
     VMS=0.0
-else:
-    stabilization_type=1
+    SC=0.0
+elif opts.num == 'galerkin':
+    stabilization_type='Galerkin'
     FCT=False
+    VMS=0.0
+    SC=0.0
+elif opts.num == 'low-order-galerkin':
+    stabilization_type='Galerkin'
+    FCT=False
+    VMS=0.0
+    SC=0.0
+elif opts.num == 'vms-galerkin':
+    stabilization_type='Galerkin'
+    FCT=False
+    VMS=1.0
+    SC=0.0
+elif opts.num == 'vms-sc-galerkin':
+    stabilization_type='Galerkin'
+    FCT=False
+    VMS=1.0
+    SC=0.9
+else:
+    raise Exception("Unknown numerical method: %s" % opts.num)
 
 LevelModelType = Richards.LevelModel
 coefficients = Richards.Coefficients(nd,
-                                     KsTypes,
-                                     nVGtypes,
-                                     alphaVGtypes,
-                                     thetaRtypes,
-                                     thetaSRtypes,
-                                     gravity=dimensionless_gravity,
-                                     density=dimensionless_density,
-                                     beta=beta,
-                                     diagonal_conductivity=True,
-                                     STABILIZATION_TYPE=stabilization_type,
-                                     ENTROPY_TYPE=1,
-                                     LUMPED_MASS_MATRIX=False,
-                                     FCT=FCT,
-                                     MONOLITHIC=False,
-                                     VMS=VMS,
-                                     num_fct_iter=1,
-                                         # FOR ENTROPY VISCOSITY
-                                     cE=1.0,
-                                     uL=0.0,
-                                     uR=1.0,
-                                     # FOR ARTIFICIAL COMPRESSION
-                                     cK=1.0,
-                                     # OUTPUT quantDOFs
-                                     outputQuantDOFs=False)
+                                    KsTypes,
+                                    nVGtypes,
+                                    alphaVGtypes,
+                                    thetaRtypes,
+                                    thetaSRtypes,
+                                    gravity=dimensionless_gravity,
+                                    density=dimensionless_density,
+                                    beta=beta,
+                                    diagonal_conductivity=True,
+                                    STABILIZATION_TYPE=stabilization_type,
+                                    ENTROPY_TYPE=0,
+                                    LUMPED_MASS_MATRIX=False,
+                                    FCT=FCT,
+                                    VMS=VMS,
+                                    SC=SC,      
+                                    MONOLITHIC=False,
+                                    num_fct_iter=1,
+                                    # FOR ENTROPY VISCOSITY
+                                    cE=1.0,
+                                    uL=0.0,
+                                    uR=1.0,
+                                    # FOR ARTIFICIAL COMPRESSION
+                                    cK=1.0,
+                                    # OUTPUT quantDOFs
+                                    outputQuantDOFs=False)
 
 
-#pondingPressure=-0.1#-0.1
-#bottomPressure = -0.2#0.0
-pondingPressure= -0.75 #0.1
+pondingPressure= -0.75
 bottomPressure = -10.0
-#pondingSaturation = 0.9
-#waterTableSaturation = 0.9
-#initialSaturation = 0.01
-#pondingPressure=-0.1
-# if satRichards:
-#     def getDBC_Richards_Shock(x,flag):
-#         if x[0] == L[0]:
-#             return lambda x,t: pondingSaturation
-#         if x[0] == 0.0:
-#             return lambda x,t: waterTableSaturation
-#else:
-def getDBC_Richards_Shock(x,flag):
+
+def getDBC(x,flag):
     if x[0] == L[0]:
         return lambda x,t: pondingPressure
     if x[0] == 0.0:
         return lambda x,t: bottomPressure
    
-dirichletConditions = {0:getDBC_Richards_Shock}
-
-# if satRichards:
-#     class ShockIC_Richards:
-#         def uOfXT(self,x,t):
-#             f = getDBC_Richards_Shock(x,0)
-#             if f:
-#                 return f(x,t)
-#             return initialSaturation
-# else:
-class ShockIC_Richards:
-    def uOfXT(self,x,t):
-        f = getDBC_Richards_Shock(x,0)
-        if f:
-            return f(x,t)
-        else:
-            return -10.0
-        #     # return bottomPressure + x[0]*dimensionless_gravity[0]*dimensionless_density
-        # if x[0] < L[0]:#*0.5:
-        #     return bottomPressure + x[0]*dimensionless_gravity[0]*dimensionless_density
-        # else:
-        #     return pondingPressure
-
-initialConditions  = {0:ShockIC_Richards()}
-
-fluxBoundaryConditions = {0:'outFlow'}
+dirichletConditions = {0:getDBC}
 
 def flux(x,flag):
-    return None
-#    if x[0] == L[0]:
-#        return lambda x,t: 0.0
-#    if x[0] == 0.0:
-#        return lambda x,t: 0.0
-
+    if x[0] == L[0] or x[0] == 0.0:
+        return None
+    else:
+        return lambda x,t: 0.0
+    
 advectiveFluxBoundaryConditions =  {0:flux}
 
 diffusiveFluxBoundaryConditions = {0:{}}
 
-T = 12/24
-#T = 0.35/timeScale
+class ShockIC_Richards:
+    def uOfXT(self,x,t):
+        f = getDBC(x,0)
+        if f:
+            return f(x,t)
+        else:
+            return bottomPressure
+
+initialConditions  = {0:ShockIC_Richards()}
+
+T = opts.final_time/timeScale
