@@ -960,19 +960,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             for cj in range(self.nc):
                 self.dirichletConditionsForceDOF[cj] = DOFBoundaryConditions(self.u[cj].femSpace,dofBoundaryConditionsSetterDict[cj],weakDirichletConditions=False)
     def FCTStep(self):
-        import pdb
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         limited_solution = np.zeros((len(rowptr) - 1),'d')
-        #self.u_free_dof_stage_0_l = np.zeros((len(rowptr) - 1),'d')
-        #self.timeIntegration.u_dof_stage[0][self.timeIntegration.lstage],  # soln
-        #fromFreeToGlobal=0
-        #cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns(fromFreeToGlobal,
-        #                                                       self.offset[0],
-        #                                                       self.stride[0],
-        #                                                       self.dirichletConditions[0].global2freeGlobal_global_dofs,
-        #                                                       self.dirichletConditions[0].global2freeGlobal_free_dofs,
-        #                                                       self.u_free_dof_stage_0_l,
-        #                                                       self.timeIntegration.u_dof_stage[0][self.timeIntegration.lstage])
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["bc_mask"] = self.bc_mask
         argsDict["NNZ"] = self.nnz 
@@ -998,45 +987,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["rho"] = self.coefficients.rho
         argsDict["thetaR"] = self.coefficients.thetaR_types
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
-        
-        #argsDict["globalResidual"] = r
-        #pdb.set_trace()
+
         self.richards.FCTStep(argsDict)
-        #logEvent("limited solution:" + str(limited_solution))
 
-            # self.nnz,  # number of non zero entries
-            # len(rowptr) - 1,  # number of DOFs
-            # self.timeIntegration.dt,
-            # self.ML,  # Lumped mass matrix
-            # self.sn,
-            # self.u_dof_old,
-            # self.sHigh,  # high order solution
-            # self.sLow,
-            # limited_solution,
-            # rowptr,  # Row indices for Sparsity Pattern (convenient for DOF loops)
-            # colind,  # Column indices for Sparsity Pattern (convenient for DOF loops)
-            # MassMatrix,
-            # self.dt_times_dC_minus_dL,
-            # self.min_s_bc,
-            # self.max_s_bc,
-            # self.coefficients.LUMPED_MASS_MATRIX,
-            # self.coefficients.MONOLITHIC)
         old_dof = self.u[0].dof.copy()
-
         self.invert(limited_solution, self.u[0].dof)
-
-        #import pdb
-        #pdb.set_trace()
         self.timeIntegration.u[:] = self.u[0].dof
-
-        #fromFreeToGlobal=1 #direction copying
-        #cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns(fromFreeToGlobal,
-        #                                                       self.offset[0],
-        #                                                       self.stride[0],
-        #                                                       self.dirichletConditions[0].global2freeGlobal_global_dofs,
-        #                                                       self.dirichletConditions[0].global2freeGlobal_free_dofs,
-        #                                                       self.u[0].dof,
-        #                                                       limited_solution)
     def kth_FCT_step(self):
         #import pdb
         #pdb.set_trace()

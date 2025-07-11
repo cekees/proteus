@@ -24,7 +24,7 @@ enum class STABILIZATION : int {
 
 namespace richards
 {
-
+//cek todo: revisit entry for mass transport form
 // Power entropy //
 inline double ENTROPY(const double &phi, const double &phiL, const double &phiR)
 {
@@ -98,7 +98,6 @@ public:
     psiC   = -u;
     m_vg   = 1.0 - 1.0 / n_vg;
     thetaS = thetaR + thetaSR;
-    //std::cout<< "Thetas"<<thetaS<<std::endl;//arnob trying to debug
     if (psiC > 0.0) {
       pcBar     = alpha * psiC;
       pcBarStar = pcBar;
@@ -157,7 +156,6 @@ public:
     thetaS = thetaR + thetaSR;
     thetaW = m / rho;
     if (thetaW > thetaR && thetaW < thetaS) {
-      //sBar = (fmax(thetaR+1.0e-8, fmin(thetaS, thetaW)) - thetaR)/thetaSR;
       sBar    = (thetaW - thetaR) / thetaSR;
       pcBar_n = pow(sBar, -1.0 / m_vg) - 1.0;
       pcBar   = pow(pcBar_n, 1.0 / n_vg);
@@ -249,22 +247,18 @@ public:
 
   double seepagefluxcalculator(double anb_seepage_flux, int isSeepageFace, double dS, double flux_ext)
   {
-    //std::cout<<"ds "<<dS<<"flux" <<flux_ext <<std::endl;
     if (isSeepageFace) { anb_seepage_flux += flux_ext * dS; }
-    //else{
-    //std::cout<<"No Seepage boundary "<<std::endl;
-    //	}
     return anb_seepage_flux;
   }
 
   double computeIthLimitedFluxCorrection(int i, const xt::pyarray<int> &csrRowIndeces_DofLoops, const xt::pyarray<int> &csrColumnOffsets_DofLoops, const xt::pyarray<double> &uLow, const xt::pyarray<double> &uDotLow, const xt::pyarray<double> &MC, const xt::pyarray<double> &dLow, const xt::pyarray<double> &ML, double dt)
   {
+    //cek todo: don't think this works because ij is used and it must be accumulated across all i
     int    numDOFs = uLow.size();
     double Rpos[numDOFs], Rneg[numDOFs];
     int    ij = 0; // Initialize ij to 0 for global indexing
 
     // Compute P and Q vectors and R values
-    //for (int i = 0; i < numDOFs; ++i) {
     double mini = uLow(i), maxi = uLow(i);
     double Pposi = 0.0, Pnegi = 0.0;
 
@@ -688,7 +682,6 @@ public:
       for (int i = 0; i < nDOF_test_element; i++) {
         for (int j = 0; j < nDOF_trial_element; j++) { elementJacobian_u_u[i][j] = 0.0; }
       }
-      //std::cout<<"Element_REsidual 22"<<std::endl;
       for (int k = 0; k < nQuadraturePoints_element; k++) {
         int eN_k                  = eN * nQuadraturePoints_element + k, //index to a scalar at a quadrature point
           eN_k_nSpace             = eN_k * nSpace,
@@ -871,7 +864,6 @@ public:
       double solni = soln.data()[i];
       double mi    = lumped_mass_matrix.data()[i];
       // compute low order solution
-      // mi*(uLi-uni) + dt*sum_j[(Tij+dLij)*unj] = 0
       solL[i] = uLow.data()[i];
       //double sdoti = (solHi - solni);
       double sdoti = uDotLow[i];
@@ -918,7 +910,6 @@ public:
 
         //update ij
         ij += 1;
-        //std::cout<<"sdoti error"<<fabs(sdoti-sdot[i])<<std::endl;
       }
       ///////////////////////
       // COMPUTE Q VECTORS //
@@ -1024,7 +1015,6 @@ public:
             int j = csrColumnOffsets_DofLoops.data()[offset];
             // compute Flux correction
             double Fluxij = FluxMatrix.data()[ij] - limitedFlux.data()[ij];
-            //std::cout<<"Flux Matrix : " <<Fluxij  <<std::endl;
             Pposi += Fluxij * ((Fluxij > 0) ? 1. : 0.);
             // update ij
             ij += 1;
@@ -1109,7 +1099,6 @@ public:
         Lij        = fij > 0 ? fmin(Rposi, Rneg[j]) : fmin(Rnegi, Rpos[j]);
         // compute ith_limited_flux_correction
         ith_limited_flux_correction += Lij * fij;
-        std::cout << "Extra term :" << ith_limited_flux_correction << std::endl;
         ij += 1;
       }
       double mi = ML.data()[i];
@@ -1512,9 +1501,6 @@ public:
         // compute gi*(xi-xj)
         double gi_times_x = 0.;
         for (int I = 0; I < nSpace; I++) {
-          //if (delta_x_ij[offset*3+I] > 0.0)
-          //  assert( (xi[I] - xj[I]) == delta_x_ij[offset*3+I]);
-          //gi_times_x += gi[I]*(xi[I]-xj[I]);
           gi_times_x += gi[I] * delta_x_ij.data()[offset * 3 + I];
         }
         // compute the positive and negative part of gi*(xi-xj)
@@ -1633,6 +1619,7 @@ public:
       sn.data()[i]   = mn;
       sLow.data()[i] = m;
       if (STABILIZATION_TYPE == STABILIZATION::Implicit_FCT) {
+        //cek todo: don't think this can work due to use of ij variable inside the function body
         double ith_limited_flux_correction = computeIthLimitedFluxCorrection(i, csrRowIndeces_DofLoops, csrColumnOffsets_DofLoops, uLow,
                                                                              uDotLow, // Passing uDotLow instead of dt_times_fH_minus_fL
                                                                              MC,      // Passing MC array
@@ -1812,9 +1799,7 @@ public:
         mesh_velocity[0] = xt;
         mesh_velocity[1] = yt;
         mesh_velocity[2] = zt;
-        //std::cout<<"qj mesh_velocity"<<std::endl;
         for (int I = 0; I < nSpace; I++) {
-          //std::cout<<mesh_velocity[I]<<std::endl;
           f[I] -= MOVING_DOMAIN * m * mesh_velocity[I];
           df[I] -= MOVING_DOMAIN * dm * mesh_velocity[I];
         }
@@ -1831,15 +1816,11 @@ public:
         //
         //calculate the adjoint times the test functions
         for (int i = 0; i < nDOF_test_element; i++) {
-          // int eN_k_i_nSpace = (eN_k*nDOF_trial_element+i)*nSpace;
-          // Lstar_u[i]=ck.Advection_adjoint(df,&u_grad_test_dV[eN_k_i_nSpace]);
           int i_nSpace = i * nSpace;
           Lstar_u[i]   = ck.Advection_adjoint(df, &u_grad_test_dV[i_nSpace]);
         }
         //calculate the Jacobian of strong residual
         for (int j = 0; j < nDOF_trial_element; j++) {
-          //int eN_k_j=eN_k*nDOF_trial_element+j;
-          //int eN_k_j_nSpace = eN_k_j*nSpace;
           int j_nSpace        = j * nSpace;
           dpdeResidual_u_u[j] = ck.MassJacobian_strong(dm_t, u_trial_ref.data()[k * nDOF_trial_element + j]) + ck.AdvectionJacobian_strong(df, &u_grad_trial[j_nSpace]);
         }
@@ -1850,20 +1831,14 @@ public:
         tau = useMetrics * tau1 + (1.0 - useMetrics) * tau0;
 
         for (int j = 0; j < nDOF_trial_element; j++) dsubgridError_u_u[j] = -tau * dpdeResidual_u_u[j];
-        //double h=elementDiameter.data()[eN];
         for (int i = 0; i < nDOF_test_element; i++) {
-          //int eN_k_i=eN_k*nDOF_test_element+i;
-          //int eN_k_i_nSpace=eN_k_i*nSpace;
           for (int j = 0; j < nDOF_trial_element; j++) {
             if (LUMPED_MASS_MATRIX == 1) {
               if (i == j) elementJacobian_u_u[i][j] += u_test_dV[i];
             } else {
-              //int eN_k_j=eN_k*nDOF_trial_element+j;
-              //int eN_k_j_nSpace = eN_k_j*nSpace;
               int j_nSpace = j * nSpace;
               int i_nSpace = i * nSpace;
-              //std::cout<<"jac "<<'\t'<<q_numDiff_u_last.data()[eN_k]<<'\t'<<dm_t<<'\t'<<df[0]<<df[1]<<'\t'<<dsubgridError_u_u[j]<<std::endl;
-              dm_t = 1.0; //cek, will solving for continuum density explicitly
+              dm_t = 1.0; //we are solving for continuum density explicitly
               elementJacobian_u_u[i][j] += ck.MassJacobian_weak(dm_t, u_trial_ref.data()[k * nDOF_trial_element + j], u_test_dV[i]);
             }
           } //j
