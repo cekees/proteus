@@ -229,7 +229,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  STABILIZATION_TYPE='Implicit_FCT',
                  ENTROPY_TYPE=2,  # logarithmic
                  LUMPED_MASS_MATRIX=False,
-                 MONOLITHIC=True,
+                 MONOLITHIC=False,
                  VMS=0.0,
                  SC=0.0,
                  FCT=True,
@@ -708,22 +708,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.nElementBoundaryQuadraturePoints_global = (self.mesh.nElements_global*
                                                         self.mesh.nElementBoundaries_element*
                                                         self.nElementBoundaryQuadraturePoints_elementBoundary)
-#        if isinstance(self.u[0].femSpace,C0_AffineLinearOnSimplexWithNodalBasis):
-#            print self.nQuadraturePoints_element
-#            if self.nSpace_global == 3:
-#                assert(self.nQuadraturePoints_element == 5)
-#            elif self.nSpace_global == 2:
-#                assert(self.nQuadraturePoints_element == 6)
-#            elif self.nSpace_global == 1:
-#                assert(self.nQuadraturePoints_element == 3)
-#
-#            print self.nElementBoundaryQuadraturePoints_elementBoundary
-#            if self.nSpace_global == 3:
-#                assert(self.nElementBoundaryQuadraturePoints_elementBoundary == 4)
-#            elif self.nSpace_global == 2:
-#                assert(self.nElementBoundaryQuadraturePoints_elementBoundary == 4)
-#            elif self.nSpace_global == 1:
-#                assert(self.nElementBoundaryQuadraturePoints_elementBoundary == 1)
 
         #
         #storage dictionaries
@@ -989,9 +973,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
 
         self.richards.FCTStep(argsDict)
-
         old_dof = self.u[0].dof.copy()
-        self.invert(limited_solution, self.u[0].dof)
+        self.invert(u=limited_solution, ulow=self.u[0].dof)
+        #print("FCT - low",np.linalg.norm(self.u[0].dof- old_dof))
         self.timeIntegration.u[:] = self.u[0].dof
     def kth_FCT_step(self):
         #import pdb
@@ -1578,7 +1562,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["degree_polynomial"] = degree_polynomial
-        argsDict["u_dof"] = u
+        argsDict["u_dof"] = self.u[0].dof
         argsDict["u_dof_old"] = self.u[0].dof
         argsDict["velocity"] = self.q['velocity']
         argsDict["q_m"] = self.timeIntegration.m_tmp[0]
@@ -1641,9 +1625,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # FCT-only args
         if isFCT:
             argsDict["limited_solution"] = u
-            if ulow is not None:
-                argsDict["ulow"] = ulow
+            argsDict["uLow"] = self.u[0].dof
         else:
+            # shouldn't be in this function unless we're doing semi-implicit FCT
+            assert(False)
             argsDict["globalResidual"] = r
     
         self.richards.invert(argsDict)

@@ -5,8 +5,8 @@ from proteus.richards import Richards
 opts= Context.Options([
     ('num','fct',"numerics: num = fct, low-order, galerkin, low-order-galerkin, vms-galerkin, vms-sc-galerkin"),
     ("final_time",0.5,"Final time for simulation in days"),
-    ("dt",0.1,"Time step for simulation in days"),
-    ("nnx",11,"Number of nodes in x direction"),
+    ("dt",0.01,"Time step for simulation in days"),
+    ("nnx",101,"Number of nodes in x direction"),
     ("nny",1,"Number of nodes in y direction"),
     ("nnz",1,"Number of nodes in z direction"),
     ])

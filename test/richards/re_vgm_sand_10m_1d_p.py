@@ -122,7 +122,7 @@ coefficients = Richards.Coefficients(nd,
                                     # OUTPUT quantDOFs
                                     outputQuantDOFs=False)
 
-pondingPressure= -0.1
+pondingPressure= 0.1
 bottomPressure = 0.0
 
 def getDBC(x,flag):

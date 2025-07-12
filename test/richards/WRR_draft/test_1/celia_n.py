@@ -25,8 +25,8 @@ if opts.num == 'low-order-galerkin':
     elementQuadrature = SimplexLobattoQuadrature(nd,1)
     elementBoundaryQuadrature = SimplexLobattoQuadrature(nd-1,1)
 else:
-    elementQuadrature = SimplexGaussQuadrature(nd,5)
-    elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,1)
+    elementQuadrature = SimplexGaussQuadrature(nd,3)# can do 5 in 1D
+    elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,3)
 
 nn = opts.nnx
 nnx=opts.nnx

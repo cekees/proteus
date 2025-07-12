@@ -155,7 +155,7 @@ public:
     m_vg   = 1.0 - 1.0 / n_vg;
     thetaS = thetaR + thetaSR;
     thetaW = m / rho;
-    if (thetaW > thetaR && thetaW < thetaS) {
+    if (thetaW > 1.01*thetaR && thetaW < thetaS) {
       sBar    = (thetaW - thetaR) / thetaSR;
       pcBar_n = pow(sBar, -1.0 / m_vg) - 1.0;
       pcBar   = pow(pcBar_n, 1.0 / n_vg);
@@ -956,18 +956,19 @@ public:
         ij += 1;
       }
 
-      double limited_mass = solL[i] + 1. / lumped_mass_matrix.data()[i] * ith_Limiter_times_FluxCorrectionMatrix * bc_mask[i];
+      limited_solution.data()[i] = solL[i] + 1. / lumped_mass_matrix.data()[i] * ith_Limiter_times_FluxCorrectionMatrix * bc_mask[i];
 
+      //cek todo: double check that the below is not necesary. The limted_solution should already be within the bounds
       //Calculate the min and max mass bounds
-      double mMin = rho * thetaR.data()[elementMaterialTypes.data()[0]];
-      double mMax = rho * (thetaR.data()[elementMaterialTypes.data()[0]] + thetaSR.data()[elementMaterialTypes.data()[0]]);
+      //double mMin = rho * thetaR.data()[elementMaterialTypes.data()[0]];
+      //double mMax = rho * (thetaR.data()[elementMaterialTypes.data()[0]] + thetaSR.data()[elementMaterialTypes.data()[0]]);
 
       // Check if the limited mass is within bounds
-      if (limited_mass < mMin || limited_mass > mMax) {
-        limited_solution.data()[i] = solL[i]; // Fallback to lower-order solution
-      } else {
-        limited_solution.data()[i] = limited_mass; // Assign the limited mass
-      }
+      //if (limited_mass < mMin || limited_mass > mMax) {
+      //  limited_solution.data()[i] = solL[i]; // Fallback to lower-order solution
+      //} else {
+      //  limited_solution.data()[i] = limited_mass; // Assign the limited mass
+      //}
     }
   }
 
@@ -1412,8 +1413,6 @@ public:
       for (int i = 0; i < nDOF_test_element; i++) {
         int eN_i = eN * nDOF_test_element + i;
         int gi   = offset_u + stride_u * r_l2g.data()[eN_i]; //global i-th index
-        // distribute global residual for (lumped) mass matrix
-        //globalResidual.data()[gi] += elementResidual_u[i];
         // distribute entropy_residual
         if (STABILIZATION_TYPE == STABILIZATION::EV_Stab) // EV Stab
           global_entropy_residual[gi] += element_entropy_residual[i];
@@ -1660,11 +1659,15 @@ public:
       input_solution  = &args.array<double>("limited_solution");
       secondary_input = &args.array<double>("uLow");
     } else {
+      //shouldnt' be in this function if we're not doing sem-implicit FCT
+      assert(false);
       input_solution  = &args.array<double>("u_dof");
       globalResidual  = &args.array<double>("globalResidual");
       secondary_input = globalResidual; // For non-FCT, use globalResidual in place of uLow
     }
 
+    xt::pyarray<double> &mIn = args.array<double>("limited_solution");
+    xt::pyarray<double> &pOut = args.array<double>("u_dof");
     for (int i = 0; i < numDOFs; i++) {
       double dm, f[nSpace], df[nSpace], a[nnz], da[nnz];
       double mMin = rho * thetaR.data()[elementMaterialTypes.data()[0]];
@@ -1674,8 +1677,9 @@ public:
 
       evaluateInverseCoefficients(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[0]], n.data()[elementMaterialTypes.data()[0]], thetaR.data()[elementMaterialTypes.data()[0]],
                                   thetaSR.data()[elementMaterialTypes.data()[0]], &KWs.data()[elementMaterialTypes.data()[0] * nnz],
-                                  (*secondary_input).data()[i], // uLow if FCT; globalResidual if non-FCT
-                                  (*input_solution).data()[i],  // limited_solution or u_dof
+                                  //(*secondary_input).data()[i], // uLow if FCT; globalResidual if non-FCT
+                                  //(*input_solution).data()[i],  // limited_solution or u_dof
+                                  pOut.data()[i], mIn.data()[i],
                                   dm, f, df, a, da);
     }
   }
