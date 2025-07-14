@@ -12,14 +12,16 @@ except:
 rtol_u[0] = 0.0#0.001*he
 atol_u[0] = 0.001*he
 tnList = [0.0,1.0e-5,1.0e5]
-timeIntegration = BackwardEuler
-#timeIntegration = Richards.ThetaScheme
+if opts.num in ['fct','low-order']:
+    timeIntegration = Richards.ThetaScheme
+else:
+    timeIntegration = BackwardEuler
 stepController = HeuristicNL_dt_controller
 nonlinearIterationsFloor =5
 nonlinearIterationsCeil=10
 #systemStepControllerType = SplitOperator.Sequential_MinModelStep
-maxNonlinearIts=25
-maxLineSearches=25
+maxNonlinearIts=100
+maxLineSearches=100
 # maxNonlinearIts=100
 # maxLineSearches=0#25
 # #steady
@@ -40,10 +42,10 @@ maxLineSearches=25
 femSpaces = {0:C0_AffineLinearOnSimplexWithNodalBasis}
 elementQuadrature = {('m',0):SimplexGaussQuadrature(nd,5),
                      'default':SimplexLobattoQuadrature(nd,1)}
-#elementQuadrature = SimplexGaussQuadrature(nd,5)
+elementQuadrature = SimplexGaussQuadrature(nd,5)
 elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,5)
-elementQuadrature = SimplexLobattoQuadrature(nd,1)
-elementBoundaryQuadrature = SimplexLobattoQuadrature(nd-1,1)
+#elementQuadrature = SimplexLobattoQuadrature(nd,1)
+#elementBoundaryQuadrature = SimplexLobattoQuadrature(nd-1,1)
 
 
 subgridError = None

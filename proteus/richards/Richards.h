@@ -218,6 +218,7 @@ public:
       }
       if (isSeepageFace) bc_u = bc_u_seepage;
       flux += penalty * (u - bc_u);
+      //flux -= penalty * bc_u;
       if (isSeepageFace) {
         if (flux > 0.0) {
           isDOFBoundary = 1;
@@ -590,8 +591,6 @@ public:
         //update residuals
         //
         for (int i = 0; i < nDOF_test_element; i++) {
-          int ebNE_kb_i = ebNE_kb * nDOF_test_element + i;
-
           elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext, u_test_dS[i]);
         } //i
       } //kb
@@ -803,8 +802,6 @@ public:
         //calculate the flux jacobian
         //
         for (int j = 0; j < nDOF_trial_element; j++) {
-          //int ebNE_kb_j = ebNE_kb*nDOF_trial_element+j;
-          int ebN_local_kb_j = ebN_local_kb * nDOF_trial_element + j;
           exteriorNumericalFluxJacobian(a_rowptr.data(), a_colind.data(), isDOFBoundary_u.data()[ebNE_kb], normal, a_ext, da_ext, grad_u_ext, &u_grad_trial_trace[j * nSpace], df_ext, u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element + j],
                                         ebqe_penalty_ext.data()[ebNE_kb], //penalty,
                                         fluxJacobian_u_u[j]);
@@ -814,7 +811,6 @@ public:
         //
         for (int i = 0; i < nDOF_test_element; i++) {
           int eN_i = eN * nDOF_test_element + i;
-          //int ebNE_kb_i = ebNE_kb*nDOF_test_element+i;
           for (int j = 0; j < nDOF_trial_element; j++) {
             int ebN_i_j = ebN * 4 * nDOF_test_X_trial_element + i * nDOF_trial_element + j;
             globalJacobian.data()[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j] * u_test_dS[i];
@@ -1231,7 +1227,10 @@ public:
     xt::pyarray<double> &q_velocity = args.array<double>("q_velocity");
     double &anb_seepage_flux(args.scalar<double>("anb_seepage_flux"));
     anb_seepage_flux = 0.0;
-
+    xt::pyarray<int>    &csrRowIndeces_u_u                          = args.array<int>("csrRowIndeces_u_u");
+    xt::pyarray<int>    &csrColumnOffsets_u_u                       = args.array<int>("csrColumnOffsets_u_u");
+    xt::pyarray<int>    &csrColumnOffsets_eb_u_u                    = args.array<int>("csrColumnOffsets_eb_u_u");
+    
     double Rpos[numDOFs], Rneg[numDOFs];
     //double FluxCorrectionMatrix[NNZ];
     // NOTE: This function follows a different (but equivalent) implementation of the smoothness based indicator than NCLS.h
@@ -1427,6 +1426,103 @@ public:
       } //i
     } //elementsxw
 
+        //loop over exterior element boundaries to calculate surface integrals and load into element and global residuals
+    //
+    //ebNE is the Exterior element boundary INdex
+    //ebN is the element boundary INdex
+    //eN is the element index
+    for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++) {
+      int    ebN = exteriorElementBoundariesArray.data()[ebNE], eN = elementBoundaryElementsArray.data()[ebN * 2 + 0], ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN * 2 + 0], eN_nDOF_trial_element = eN * nDOF_trial_element;
+      double elementResidual_u[nDOF_test_element];
+      for (int i = 0; i < nDOF_test_element; i++) { elementResidual_u[i] = 0.0; }
+      for (int kb = 0; kb < nQuadraturePoints_elementBoundary; kb++) {
+        int    ebNE_kb = ebNE * nQuadraturePoints_elementBoundary + kb, ebNE_kb_nSpace = ebNE_kb * nSpace, ebN_local_kb = ebN_local * nQuadraturePoints_elementBoundary + kb, ebN_local_kb_nSpace = ebN_local_kb * nSpace;
+        double u_ext = 0.0, un_ext, grad_u_ext[nSpace], m_ext = 0.0, dm_ext = 0.0, f_ext[nSpace], df_ext[nSpace], a_ext[nnz], da_ext[nnz], as_ext[nnz], 
+        mn_ext = 0.0, dmn_ext = 0.0, fn_ext[nSpace], dfn_ext[nSpace], an_ext[nnz], dan_ext[nnz], asn_ext[nnz], flux_ext = 0.0,
+               //anb_seepage_flux=0.0, // for flux calculation
+          bc_u_ext = 0.0, bc_grad_u_ext[nSpace], bc_m_ext = 0.0, bc_dm_ext = 0.0, bc_f_ext[nSpace], bc_df_ext[nSpace], bc_a_ext[nnz], bc_da_ext[nnz], bc_as_ext[nnz], jac_ext[nSpace * nSpace], jacDet_ext, jacInv_ext[nSpace * nSpace], boundaryJac[nSpace * (nSpace - 1)], metricTensor[(nSpace - 1) * (nSpace - 1)], metricTensorDetSqrt, dS, u_test_dS[nDOF_test_element], u_grad_trial_trace[nDOF_trial_element * nSpace], normal[3], x_ext, y_ext, z_ext, xt_ext, yt_ext, zt_ext, integralScaling, G[nSpace * nSpace], G_dd_G, tr_G, fluxJacobian_u_u[nDOF_trial_element], fluxJacobian_un_un[nDOF_trial_element];
+        //
+        //calculate the solution and gradients at quadrature points
+        //
+        //compute information about mapping from reference element to physical element
+        ck.calculateMapping_elementBoundary(eN, ebN_local, kb, ebN_local_kb, mesh_dof.data(), mesh_l2g.data(), mesh_trial_trace_ref.data(), mesh_grad_trial_trace_ref.data(), boundaryJac_ref.data(), jac_ext, jacDet_ext, jacInv_ext, boundaryJac, metricTensor, metricTensorDetSqrt,
+                                            normal_ref.data(), normal, x_ext, y_ext, z_ext);
+        ck.calculateMappingVelocity_elementBoundary(eN, ebN_local, kb, ebN_local_kb, mesh_velocity_dof.data(), mesh_l2g.data(), mesh_trial_trace_ref.data(), xt_ext, yt_ext, zt_ext, normal, boundaryJac, metricTensor, integralScaling);
+        dS = ((1.0 - MOVING_DOMAIN) * metricTensorDetSqrt + MOVING_DOMAIN * integralScaling) * dS_ref.data()[kb];
+        //get the metric tensor
+        //cek todo use symmetry
+        ck.calculateG(jacInv_ext, G, G_dd_G, tr_G);
+        //compute shape and solution information
+        //shape
+        ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace * nDOF_trial_element], jacInv_ext, u_grad_trial_trace);
+        //solution and gradient
+        ck.valFromDOF(u_dof.data(), &u_l2g.data()[eN_nDOF_trial_element], &u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element], u_ext);
+        ck.valFromDOF(u_dof_old.data(), &u_l2g.data()[eN_nDOF_trial_element], &u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element], un_ext);
+        ck.gradFromDOF(u_dof.data(), &u_l2g.data()[eN_nDOF_trial_element], u_grad_trial_trace, grad_u_ext);
+        //precalculate test function products with integration weights
+        for (int j = 0; j < nDOF_trial_element; j++) { u_test_dS[j] = u_test_trace_ref.data()[ebN_local_kb * nDOF_test_element + j] * dS; }
+        //
+        //load the boundary values
+        //
+        bc_u_ext = isDOFBoundary_u.data()[ebNE_kb] * ebqe_bc_u_ext.data()[ebNE_kb] + (1 - isDOFBoundary_u.data()[ebNE_kb]) * u_ext;
+        //
+        //calculate the pde coefficients using the solution and the boundary values for the solution
+        //
+        double bc_Kr, bc_dKr,bc_Kr_ext, bc_dKr_ext, bc_Krn, bc_dKrn;
+        evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[eN]], n.data()[elementMaterialTypes.data()[eN]], thetaR.data()[elementMaterialTypes.data()[eN]],
+                             thetaSR.data()[elementMaterialTypes.data()[eN]], &KWs.data()[elementMaterialTypes.data()[eN] * nnz], u_ext, m_ext, dm_ext, f_ext, df_ext, a_ext, da_ext, as_ext, bc_Kr, bc_dKr);
+        evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[eN]], n.data()[elementMaterialTypes.data()[eN]], thetaR.data()[elementMaterialTypes.data()[eN]],
+                             thetaSR.data()[elementMaterialTypes.data()[eN]], &KWs.data()[elementMaterialTypes.data()[eN] * nnz], un_ext, mn_ext, dmn_ext, fn_ext, dfn_ext, an_ext, dan_ext, asn_ext, bc_Krn, bc_dKrn);
+        evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[eN]], n.data()[elementMaterialTypes.data()[eN]], thetaR.data()[elementMaterialTypes.data()[eN]],
+                             thetaSR.data()[elementMaterialTypes.data()[eN]], &KWs.data()[elementMaterialTypes.data()[eN] * nnz], bc_u_ext, bc_m_ext, bc_dm_ext, bc_f_ext, bc_df_ext, bc_a_ext, bc_da_ext, bc_as_ext, bc_Kr_ext, bc_dKr_ext);
+        //
+        //calculate the numerical fluxes
+        //
+        exteriorNumericalFlux(ebqe_bc_flux_ext[ebNE_kb], a_rowptr.data(), a_colind.data(),
+                              isSeepageFace.data()[ebNE], //tricky, this is a face flag not face quad
+                              isDOFBoundary_u.data()[ebNE_kb], normal, bc_u_ext, a_ext, grad_u_ext, u_ext, f_ext,
+                              ebqe_penalty_ext.data()[ebNE_kb], // penalty,
+                              flux_ext);
+        ebqe_flux.data()[ebNE_kb] = flux_ext;
+
+        anb_seepage_flux             = seepagefluxcalculator(anb_seepage_flux, isSeepageFace.data()[ebNE], dS, flux_ext);
+        anb_seepage_flux_n.data()[0] = anb_seepage_flux;
+        ebqe_u.data()[ebNE_kb]       = u_ext;
+        //
+        //update residuals
+        //
+        for (int i = 0; i < nDOF_test_element; i++) {
+          elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext, u_test_dS[i]);
+        } //i
+        for (int j = 0; j < nDOF_trial_element; j++) {
+          exteriorNumericalFluxJacobian(a_rowptr.data(), a_colind.data(), isDOFBoundary_u.data()[ebNE_kb], normal, a_ext, da_ext, grad_u_ext, &u_grad_trial_trace[j * nSpace], df_ext, u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element + j],
+                                        ebqe_penalty_ext.data()[ebNE_kb], //penalty,
+                                        fluxJacobian_u_u[j]);
+          //probably need isDOFBoundary_un here
+          //exteriorNumericalFluxJacobian(a_rowptr.data(), a_colind.data(), isDOFBoundary_u.data()[ebNE_kb], normal, asn_ext, dan_ext, grad_u_ext, &u_grad_trial_trace[j * nSpace], dfn_ext, u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element + j],
+          //                              ebqe_penalty_ext.data()[ebNE_kb], //penalty,
+          //                              fluxJacobian_un_un[j]);
+        } //j
+        //
+        //update the element and global residual storage
+        //
+        for (int i = 0; i < nDOF_test_element; i++) {
+          int eN_i = eN * nDOF_test_element + i;
+          for (int j = 0; j < nDOF_trial_element; j++) {
+            int ebN_i_j = ebN * 4 * nDOF_test_X_trial_element + i * nDOF_trial_element + j;
+            globalJacobian.data()[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j] * u_test_dS[i];
+            //TransportMatrix[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j] * u_test_dS[i];
+            //TransportMatrixConsistent[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j] * u_test_dS[i];
+            //TransportMatrixn[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_un_un[j] * u_test_dS[i];
+            //TransportMatrixConsistentn[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_un_un[j] * u_test_dS[i];
+          } //j
+        } //i
+      } //kb
+      for (int i = 0; i < nDOF_test_element; i++) {
+          int eN_i = eN * nDOF_test_element + i;
+          globalResidual.data()[offset_u + stride_u * u_l2g.data()[eN_i]] += elementResidual_u[i];
+      }//i
+    } //ebNE
     /////////////////////////////////////////////////////////////////
     // COMPUTE SMOOTHNESS INDICATOR and NORMALIZE ENTROPY RESIDUAL //
     /////////////////////////////////////////////////////////////////
@@ -1481,7 +1577,8 @@ public:
         ij += 1;
       }
       // scale g vector by lumped mass matrix
-      if (fabs(ML.data()[i] - ML2[i]) > 1.0e-16) std::cout << "ML " << ML.data()[i] << '\t' << ML2[i] << std::endl;
+      //double mass_matrix_error = abs(ML.data()[i] - ML2[i]);
+      //if (mass_matrix_error > 1.0e-16) std::cout << mass_matrix_error<<" ML " << ML.data()[i] << '\t' << ML2[i] << std::endl;
       for (int I = 0; I < nSpace; I++) gi[I] /= ML.data()[i];
       if (STABILIZATION_TYPE == STABILIZATION::EV_Stab) //EV Stab
       {
@@ -1628,9 +1725,11 @@ public:
         globalResidual.data()[i] = (mi * (m - mn) / dt - ith_flux_term + ith_limited_flux_correction) * bc_mask.data()[i]; // + ith_limited_flux_correction ;//cek should introduce mn,mnp1 or somethign clearer
       }
       else {
-        globalResidual.data()[i] = bc_mask.data()[i] * (mi * (m - mn) / dt - ith_flux_term);
+        globalResidual.data()[i] += bc_mask.data()[i] * (mi * (m - mn) / dt - ith_flux_term);
+        //globalResidual.data()[i] += (mi * (m - mn) / dt - ith_flux_term);
       }
       globalJacobian.data()[ii] += bc_mask.data()[i] * (mi * dm / dt + J_ii) + (1.0 - bc_mask.data()[i]);
+      //globalJacobian.data()[ii] += (mi * dm / dt + J_ii);
     }
   }
 

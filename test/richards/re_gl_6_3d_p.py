@@ -8,12 +8,18 @@ try:
     from .griffiths_lane_6 import *
 except:
     from griffiths_lane_6 import *
-he = 4.0
-he*=0.5
-he*=0.5
-#he*=0.5
-#he*=0.33
-he*=0.5
+
+opts= Context.Options([
+    ('num','low-order',"numerics: num = fct, low-order, galerkin, low-order-galerkin, vms-galerkin, vms-sc-galerkin"),
+#    ("final_time",0.38,"Final time for simulation in days"),
+#    ("dt",0.1,"Time step for simulation in days"),
+#    ("nnx",101,"Number of nodes in x direction"),
+#    ("nny",1,"Number of nodes in y direction"),
+#    ("nnz",1,"Number of nodes in z direction"),
+    ("r",3,"refinement factor for mesh"),
+    ])
+
+he = 4.0*0.5**opts.r
 domain = gl_6_3d(width=he)
 boundaryFlags = domain.boundaryFlags
 #domain.regionConstraints = [(he**3)/6.0]
@@ -115,6 +121,38 @@ def getSeepageFace(flag):
             return 0
     else:
         return 0
+if opts.num == 'fct':
+    stabilization_type='EV_Stab'
+    FCT=True
+    VMS=0.0
+    SC=0.0
+elif opts.num == 'low-order':
+    stabilization_type='EV_Stab'
+    FCT=False
+    VMS=0.0
+    SC=0.0
+elif opts.num == 'galerkin':
+    stabilization_type='Galerkin'
+    FCT=False
+    VMS=0.0
+    SC=0.0
+elif opts.num == 'low-order-galerkin':
+    stabilization_type='Galerkin'
+    FCT=False
+    VMS=0.0
+    SC=0.0
+elif opts.num == 'vms-galerkin':
+    stabilization_type='Galerkin'
+    FCT=False
+    VMS=1.0
+    SC=0.0
+elif opts.num == 'vms-sc-galerkin':
+    stabilization_type='Galerkin'
+    FCT=False
+    VMS=1.0
+    SC=0.9
+else:
+    raise Exception("Unknown numerical method: %s" % opts.num)
 
 useOpt = True
 if not useOpt:
@@ -142,13 +180,14 @@ else:
                                          beta=0.0001,
                                          diagonal_conductivity=True,
                                          # FOR EDGE BASED EV
-                                        STABILIZATION_TYPE='Galerkin',#EntropyViscosity',
+                                        #STABILIZATION_TYPE='Galerkin',#EntropyViscosity',
+                                        STABILIZATION_TYPE=stabilization_type,
                                         ENTROPY_TYPE=2,  # logarithmic
                                         LUMPED_MASS_MATRIX=False,
                                         MONOLITHIC=False,
-                                        VMS=0.0,
-                                        SC=0.0,
-                                        FCT=False,
+                                        VMS=VMS,
+                                        SC=SC,
+                                        FCT=FCT,
                                         num_fct_iter=1,
                                         # FOR ENTROPY VISCOSITY
                                         cE=1.0,

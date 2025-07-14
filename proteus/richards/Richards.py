@@ -320,7 +320,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.uL = uL
         self.uR = uR
         self.cK = cK
-        self.forceStrongConditions = True
+        self.forceStrongConditions = False
         self.cE = cE
         self.outputQuantDOFs = outputQuantDOFs
         #For seepage anb
@@ -1400,7 +1400,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
         argsDict["anb_seepage_flux"] = self.anb_seepage_flux
         argsDict["q_velocity"] = self.q[('grad(u_v)', 0)]
-        
+        argsDict["csrRowIndeces_u_u"] = self.csrRowIndeces[(0,0)]
+        argsDict["csrColumnOffsets_u_u"] = self.csrColumnOffsets[(0,0)]
+        argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0,0)]
         #argsDict["q_grad_psi"] = self.q[('velocity', 0)]
         
         
@@ -1621,7 +1623,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["sLow"] = self.sLow
         argsDict["sn"] = self.sn
         argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
-    
+
         # FCT-only args
         if isFCT:
             argsDict["limited_solution"] = u
