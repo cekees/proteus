@@ -52,7 +52,9 @@ namespace proteus
                       return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<3,4,4,4>,3,5,4,4,4,4>());
                     else if (nQuadraturePoints_elementIn == 4)
                       return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<3,4,4,4>,3,4,4,4,4,3>());
-                    else if (nQuadraturePoints_elementIn == 15 && nQuadraturePoints_elementBoundaryIn == 7)
+                    else if (nQuadraturePoints_elementIn == 15 && nQuadraturePoints_elementBoundaryIn == 3)
+                      return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<3,4,4,4>,3,15,4,4,4,3>());
+					else if (nQuadraturePoints_elementIn == 15 && nQuadraturePoints_elementBoundaryIn == 7)
                       return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<3,4,4,4>,3,15,4,4,4,7>());
                     else if (nQuadraturePoints_elementIn == 24 && nQuadraturePoints_elementBoundaryIn == 12)
 		      return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<3,4,4,4>,3,24,4,4,4,12>());
