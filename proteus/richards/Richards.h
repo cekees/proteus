@@ -246,6 +246,55 @@ public:
     } else fluxJacobian = 0.0;
   }
 
+inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], int colind[nnz], int isSeepageFace, int &isDOFBoundary, double n[nSpace], double bc_u, double K[nnz], double grad_psi[nSpace], double u, double K_rho_g[nSpace], double penalty, double &flux, double &bflux)
+  {
+    double v_I, bc_u_seepage = 0.0;
+    if (isSeepageFace || isDOFBoundary) {
+      flux = 0.0;
+      bflux = 0.0;
+      for (int I = 0; I < nSpace; I++) {
+        //gravity
+        v_I = K_rho_g[I];
+        //pressure head
+        for (int m = rowptr[I]; m < rowptr[I + 1]; m++) { v_I -= K[m] * grad_psi[colind[m]]; }
+        flux += v_I * n[I];
+      }
+      if (isSeepageFace) bc_u = bc_u_seepage;
+      flux += penalty * (u - bc_u);
+      bflux += penalty * (u - bc_u);
+      if (isSeepageFace) {
+        if (flux > 0.0) {
+          isDOFBoundary = 1;
+        } else {
+          isDOFBoundary = 0;
+          flux          = 0.0;
+          bflux         = 0.0;
+        }
+      }
+    } else {
+      flux = bc_flux;
+      bflux = bc_flux;
+    }
+  }
+
+  void exteriorNumericalFluxJacobian2(const int rowptr[nSpace], const int colind[nnz], const int isDOFBoundary, const double n[nSpace],  const double Ks[nnz], const double K[nnz], const double dK[nnz], const double grad_psi[nSpace], const double grad_v[nSpace], const double dK_rho_g[nSpace], const double v, const double penalty, double &fluxJacobian, double &bfluxJacobian)
+  {
+    if (isDOFBoundary) {
+      fluxJacobian = 0.0;
+      bfluxJacobian = 0.0;
+      for (int I = 0; I < nSpace; I++) {
+        for (int m = rowptr[I]; m < rowptr[I + 1]; m++) { 
+          fluxJacobian -= Ks[m] * grad_v[colind[m]] * n[I]; 
+        }
+      }
+      //Dirichlet penalty
+      bfluxJacobian = penalty * v;
+    } else {
+      fluxJacobian = 0.0;
+      bfluxJacobian = 0.0;
+    }
+  }
+
   double seepagefluxcalculator(double anb_seepage_flux, int isSeepageFace, double dS, double flux_ext)
   {
     if (isSeepageFace) { anb_seepage_flux += flux_ext * dS; }
@@ -254,16 +303,14 @@ public:
 
   double computeIthLimitedFluxCorrection(int i, const xt::pyarray<int> &csrRowIndeces_DofLoops, const xt::pyarray<int> &csrColumnOffsets_DofLoops, const xt::pyarray<double> &uLow, const xt::pyarray<double> &uDotLow, const xt::pyarray<double> &MC, const xt::pyarray<double> &dLow, const xt::pyarray<double> &ML, double dt)
   {
-    //cek todo: don't think this works because ij is used and it must be accumulated across all i
     int    numDOFs = uLow.size();
     double Rpos[numDOFs], Rneg[numDOFs];
-    int    ij = 0; // Initialize ij to 0 for global indexing
-
     // Compute P and Q vectors and R values
     double mini = uLow(i), maxi = uLow(i);
     double Pposi = 0.0, Pnegi = 0.0;
 
     for (int offset = csrRowIndeces_DofLoops(i); offset < csrRowIndeces_DofLoops(i + 1); ++offset) {
+      int ij = offset;
       int j = csrColumnOffsets_DofLoops(offset);
 
       // Compute local bounds
@@ -277,8 +324,6 @@ public:
       Pposi += fij * (fij > 0.0 ? 1.0 : 0.0);
       Pnegi += fij * (fij < 0.0 ? 1.0 : 0.0);
 
-      // Update global index
-      ij++;
     }
 
     // Compute Q vectors
@@ -292,11 +337,11 @@ public:
     //}
 
     // Compute the ith_limited_flux_correction
-    ij                                 = 0; // Reset global index for second pass
     double ith_limited_flux_correction = 0.0;
     double Rposi                       = Rpos[i];
     double Rnegi                       = Rneg[i];
     for (int offset = csrRowIndeces_DofLoops(i); offset < csrRowIndeces_DofLoops(i + 1); ++offset) {
+      int ij = offset;
       int j = csrColumnOffsets_DofLoops(offset);
       // Compute fij
       double fij = (MC(ij) * (uDotLow(i) - uDotLow(j)) / dt + dLow(ij) * (uLow(i) - uLow(j)));
@@ -304,10 +349,7 @@ public:
       double Lij = fij > 0.0 ? std::fmin(Rposi, Rneg[j]) : std::fmin(Rnegi, Rpos[j]);
       // Accumulate the flux correction
       ith_limited_flux_correction += Lij * fij;
-      // Update global index
-      ij++;
     }
-
     return ith_limited_flux_correction;
   }
 
@@ -1438,9 +1480,9 @@ public:
       for (int kb = 0; kb < nQuadraturePoints_elementBoundary; kb++) {
         int    ebNE_kb = ebNE * nQuadraturePoints_elementBoundary + kb, ebNE_kb_nSpace = ebNE_kb * nSpace, ebN_local_kb = ebN_local * nQuadraturePoints_elementBoundary + kb, ebN_local_kb_nSpace = ebN_local_kb * nSpace;
         double u_ext = 0.0, un_ext, grad_u_ext[nSpace], m_ext = 0.0, dm_ext = 0.0, f_ext[nSpace], df_ext[nSpace], a_ext[nnz], da_ext[nnz], as_ext[nnz], 
-        mn_ext = 0.0, dmn_ext = 0.0, fn_ext[nSpace], dfn_ext[nSpace], an_ext[nnz], dan_ext[nnz], asn_ext[nnz], flux_ext = 0.0,
+        mn_ext = 0.0, dmn_ext = 0.0, fn_ext[nSpace], dfn_ext[nSpace], an_ext[nnz], dan_ext[nnz], asn_ext[nnz], flux_ext = 0.0, bflux_ext = 0.0,
                //anb_seepage_flux=0.0, // for flux calculation
-          bc_u_ext = 0.0, bc_grad_u_ext[nSpace], bc_m_ext = 0.0, bc_dm_ext = 0.0, bc_f_ext[nSpace], bc_df_ext[nSpace], bc_a_ext[nnz], bc_da_ext[nnz], bc_as_ext[nnz], jac_ext[nSpace * nSpace], jacDet_ext, jacInv_ext[nSpace * nSpace], boundaryJac[nSpace * (nSpace - 1)], metricTensor[(nSpace - 1) * (nSpace - 1)], metricTensorDetSqrt, dS, u_test_dS[nDOF_test_element], u_grad_trial_trace[nDOF_trial_element * nSpace], normal[3], x_ext, y_ext, z_ext, xt_ext, yt_ext, zt_ext, integralScaling, G[nSpace * nSpace], G_dd_G, tr_G, fluxJacobian_u_u[nDOF_trial_element], fluxJacobian_un_un[nDOF_trial_element];
+          bc_u_ext = 0.0, bc_grad_u_ext[nSpace], bc_m_ext = 0.0, bc_dm_ext = 0.0, bc_f_ext[nSpace], bc_df_ext[nSpace], bc_a_ext[nnz], bc_da_ext[nnz], bc_as_ext[nnz], jac_ext[nSpace * nSpace], jacDet_ext, jacInv_ext[nSpace * nSpace], boundaryJac[nSpace * (nSpace - 1)], metricTensor[(nSpace - 1) * (nSpace - 1)], metricTensorDetSqrt, dS, u_test_dS[nDOF_test_element], u_grad_trial_trace[nDOF_trial_element * nSpace], normal[3], x_ext, y_ext, z_ext, xt_ext, yt_ext, zt_ext, integralScaling, G[nSpace * nSpace], G_dd_G, tr_G, fluxJacobian_u_u[nDOF_trial_element], bfluxJacobian_u_u[nDOF_trial_element], fluxJacobian_un_un[nDOF_trial_element];
         //
         //calculate the solution and gradients at quadrature points
         //
@@ -1478,11 +1520,20 @@ public:
         //
         //calculate the numerical fluxes
         //
-        exteriorNumericalFlux(ebqe_bc_flux_ext[ebNE_kb], a_rowptr.data(), a_colind.data(),
+        bool useConsistentFlux=false;
+        if (useConsistentFlux) {
+          exteriorNumericalFlux(ebqe_bc_flux_ext[ebNE_kb], a_rowptr.data(), a_colind.data(),
+                                isSeepageFace.data()[ebNE], //tricky, this is a face flag not face quad
+                                isDOFBoundary_u.data()[ebNE_kb], normal, bc_u_ext, a_ext, grad_u_ext, u_ext, f_ext,
+                                ebqe_penalty_ext.data()[ebNE_kb], // penalty,
+                                flux_ext);
+        } else {
+          exteriorNumericalFlux2(ebqe_bc_flux_ext[ebNE_kb], a_rowptr.data(), a_colind.data(),
                               isSeepageFace.data()[ebNE], //tricky, this is a face flag not face quad
                               isDOFBoundary_u.data()[ebNE_kb], normal, bc_u_ext, a_ext, grad_u_ext, u_ext, f_ext,
                               ebqe_penalty_ext.data()[ebNE_kb], // penalty,
-                              flux_ext);
+                              flux_ext, bflux_ext);
+        }
         ebqe_flux.data()[ebNE_kb] = flux_ext;
 
         anb_seepage_flux             = seepagefluxcalculator(anb_seepage_flux, isSeepageFace.data()[ebNE], dS, flux_ext);
@@ -1492,12 +1543,22 @@ public:
         //update residuals
         //
         for (int i = 0; i < nDOF_test_element; i++) {
-          elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext, u_test_dS[i]);
+          if (useConsistentFlux) {
+            elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext, u_test_dS[i]);
+          } else {
+            elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(bflux_ext, u_test_dS[i]);
+          }
         } //i
         for (int j = 0; j < nDOF_trial_element; j++) {
+          if (useConsistentFlux) {
           exteriorNumericalFluxJacobian(a_rowptr.data(), a_colind.data(), isDOFBoundary_u.data()[ebNE_kb], normal, a_ext, da_ext, grad_u_ext, &u_grad_trial_trace[j * nSpace], df_ext, u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element + j],
                                         ebqe_penalty_ext.data()[ebNE_kb], //penalty,
                                         fluxJacobian_u_u[j]);
+          } else {
+            exteriorNumericalFluxJacobian2(a_rowptr.data(), a_colind.data(), isDOFBoundary_u.data()[ebNE_kb], normal, as_ext, a_ext, da_ext, grad_u_ext, &u_grad_trial_trace[j * nSpace], df_ext, u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element + j],
+                                        ebqe_penalty_ext.data()[ebNE_kb], //penalty,
+                                        fluxJacobian_u_u[j],bfluxJacobian_u_u[j]);
+          }
           //probably need isDOFBoundary_un here
           //exteriorNumericalFluxJacobian(a_rowptr.data(), a_colind.data(), isDOFBoundary_u.data()[ebNE_kb], normal, asn_ext, dan_ext, grad_u_ext, &u_grad_trial_trace[j * nSpace], dfn_ext, u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element + j],
           //                              ebqe_penalty_ext.data()[ebNE_kb], //penalty,
@@ -1510,11 +1571,15 @@ public:
           int eN_i = eN * nDOF_test_element + i;
           for (int j = 0; j < nDOF_trial_element; j++) {
             int ebN_i_j = ebN * 4 * nDOF_test_X_trial_element + i * nDOF_trial_element + j;
-            globalJacobian.data()[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j] * u_test_dS[i];
-            //TransportMatrix[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j] * u_test_dS[i];
-            //TransportMatrixConsistent[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j] * u_test_dS[i];
-            //TransportMatrixn[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_un_un[j] * u_test_dS[i];
-            //TransportMatrixConsistentn[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_un_un[j] * u_test_dS[i];
+            if (useConsistentFlux) {
+              globalJacobian.data()[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j] * u_test_dS[i];
+            } else {
+              globalJacobian.data()[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += bfluxJacobian_u_u[j] * u_test_dS[i];
+              TransportMatrix[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j] * u_test_dS[i];
+              TransportMatrixConsistent[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_u_u[j] * u_test_dS[i];
+              TransportMatrixn[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_un_un[j] * u_test_dS[i];
+              TransportMatrixConsistentn[csrRowIndeces_u_u[eN_i] + csrColumnOffsets_eb_u_u[ebN_i_j]] += fluxJacobian_un_un[j] * u_test_dS[i];
+            }
           } //j
         } //i
       } //kb
@@ -1715,7 +1780,6 @@ public:
       sn.data()[i]   = mn;
       sLow.data()[i] = m;
       if (STABILIZATION_TYPE == STABILIZATION::Implicit_FCT) {
-        //cek todo: don't think this can work due to use of ij variable inside the function body
         double ith_limited_flux_correction = computeIthLimitedFluxCorrection(i, csrRowIndeces_DofLoops, csrColumnOffsets_DofLoops, uLow,
                                                                              uDotLow, // Passing uDotLow instead of dt_times_fH_minus_fL
                                                                              MC,      // Passing MC array
@@ -1726,10 +1790,8 @@ public:
       }
       else {
         globalResidual.data()[i] += bc_mask.data()[i] * (mi * (m - mn) / dt - ith_flux_term);
-        //globalResidual.data()[i] += (mi * (m - mn) / dt - ith_flux_term);
       }
       globalJacobian.data()[ii] += bc_mask.data()[i] * (mi * dm / dt + J_ii) + (1.0 - bc_mask.data()[i]);
-      //globalJacobian.data()[ii] += (mi * dm / dt + J_ii);
     }
   }
 
