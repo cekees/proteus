@@ -845,16 +845,19 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.residualComputed=False #TMP
         self.dLow= None
         self.fluxMatrix = None
-        self.uDotLow = None
-        self.uLow = None
+        self.mDotLow = None
+        self.mLow = None
         self.dt_times_dC_minus_dL = None
-        self.min_s_bc = None
-        self.max_s_bc = None
+        self.min_m_bc = None
+        self.max_m_bc = None
         # Aux quantity at DOFs to be filled by optimized code (MQL)
         self.quantDOFs = np.zeros(self.u[0].dof.shape, 'd')
-        self.sLow = np.zeros(self.u[0].dof.shape, 'd')
-        self.sHigh = np.zeros(self.u[0].dof.shape, 'd')
-        self.sn = np.zeros(self.u[0].dof.shape, 'd')
+        self.mLow = np.zeros(self.u[0].dof.shape, 'd')
+        self.mHigh = np.zeros(self.u[0].dof.shape, 'd')
+        self.mDotLow = np.zeros(self.u[0].dof.shape, 'd')
+        self.mDotHigh = np.zeros(self.u[0].dof.shape, 'd')
+        self.fluxCorrection = np.zeros(self.u[0].dof.shape, 'd')
+        self.mn = np.zeros(self.u[0].dof.shape, 'd')
         self.anb_seepage_flux_n = np.zeros(self.u[0].dof.shape, 'd')
         comm = Comm.get()
         self.comm=comm
@@ -951,27 +954,24 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["NNZ"] = self.nnz 
         argsDict["numDOFs"] = len(rowptr) - 1  # num of DOFs
         argsDict["dt"] = self.timeIntegration.dt
-        argsDict["lumped_mass_matrix"] = self.ML
-        argsDict["soln"] = self.sn
-        argsDict["pn"] = self.u[0].dof
-        argsDict["solH"] = self.sHigh
-        argsDict["uLow"] = self.sLow
-        argsDict["uDotLow"] = self.uDotLow
+        argsDict["ML"] = self.ML
+        argsDict["mn"] = self.mn
+        argsDict["mHigh"] = self.mHigh
+        argsDict["mLow"] = self.mLow
+        argsDict["mDotHigh"] = self.mDotHigh
+        argsDict["fluxCorrection"] = self.fluxCorrection
+        argsDict["mDotLow"] = self.mDotLow
         argsDict["limited_solution"] = limited_solution
         argsDict["csrRowIndeces_DofLoops"] = rowptr
         argsDict["csrColumnOffsets_DofLoops"] = colind
-        argsDict["MassMatrix"] = MassMatrix
+        argsDict["MC"] = MassMatrix
         argsDict["dt_times_fH_minus_fL"] = self.dt_times_dC_minus_dL
-        argsDict["min_s_bc"] = np.ones_like(self.min_s_bc)*self.coefficients.rho*(self.coefficients.thetaR_types[0]) #cek hack just set from physical bounds
-        argsDict["max_s_bc"] = np.ones_like(self.min_s_bc)*self.coefficients.rho*(self.coefficients.thetaR_types[0] + self.coefficients.thetaSR_types[0]) #cek hack
+        argsDict["min_m_bc"] = self.min_m_bc
+        argsDict["max_m_bc"] = self.max_m_bc
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["MONOLITHIC"] =0#cek hack self.coefficients.MONOLITHIC
         argsDict["anb_seepage_flux_n"]= self.anb_seepage_flux_n
         argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes,
-        argsDict["rho"] = self.coefficients.rho
-        argsDict["thetaR"] = self.coefficients.thetaR_types
-        argsDict["thetaSR"] = self.coefficients.thetaSR_types
-
         self.richards.FCTStep(argsDict)
         old_dof = self.u[0].dof.copy()
         self.invert(u=limited_solution, ulow=self.u[0].dof)
@@ -1004,8 +1004,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.ML,  # Lumped mass matrix
             self.u_dof_old,
             limited_solution,
-            self.uDotLow,
-            self.uLow,
+            self.mDotLow,
+            self.mLow,
             self.dLow,
             self.fluxMatrix,
             limitedFlux,
@@ -1218,10 +1218,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.fluxMatrix = np.zeros(Cx.shape, 'd')
         self.dt_times_dC_minus_dL = np.zeros(Cx.shape, 'd')
         nFree = len(rowptr)-1
-        self.min_s_bc = np.zeros(nFree, 'd') + 1E10
-        self.max_s_bc = np.zeros(nFree, 'd') - 1E10
-        self.uDotLow = np.zeros(nFree, 'd')
-        self.uLow = np.zeros(nFree, 'd')
+        self.min_m_bc = np.ones(nFree, 'd')
+        self.min_m_bc *= 1.0e10
+        self.max_m_bc = np.ones(nFree, 'd')
+        self.max_m_bc *= -1.0e10
         #
         # cek end computationa of cterm_global
         #
@@ -1379,22 +1379,25 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # FLUX CORRECTED TRANSPORT
         argsDict["dLow"] = self.dLow
         argsDict["fluxMatrix"] = self.fluxMatrix
-        argsDict["uDotLow"] = self.uDotLow
-        argsDict["uLow"] = self.uLow
+        argsDict["mDotLow"] = self.mDotLow
+        argsDict["mDotHigh"] = self.mDotHigh
+        argsDict["fluxCorrection"] = self.fluxCorrection
+        limited_solution = np.zeros((len(rowptr) - 1),'d')
+        argsDict["limited_solution"] = limited_solution
+        argsDict["MONOLITHIC"] =0
+        argsDict["mLow"] = self.mLow
         argsDict["dt_times_fH_minus_fL"] = self.dt_times_dC_minus_dL
-        argsDict["min_s_bc"] = self.min_s_bc
-        argsDict["max_s_bc"] = self.max_s_bc
+        argsDict["min_m_bc"] = self.min_m_bc
+        argsDict["max_m_bc"] = self.max_m_bc
         argsDict["quantDOFs"] = self.quantDOFs
-        argsDict["sLow"] = self.sLow
-        argsDict["sn"] = self.sn
+        argsDict["mn"] = self.mn
         argsDict["anb_seepage_flux_n"]= self.anb_seepage_flux_n
 ######################################################################################
         argsDict["pn"] = self.u[0].dof
-        argsDict["solH"] = self.sHigh
+        argsDict["mHigh"] = self.mHigh
 
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         argsDict["MassMatrix"] = MassMatrix
-        argsDict["solH"] = self.sHigh
         
 ######################################################################################        
         #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
@@ -1492,13 +1495,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         import numpy as np
         import copy
     
-        isFCT = getattr(self.coefficients, "FCT", False)
-    
-        if isFCT:
-            self.sHigh[:] = u  # u is actually limited_solution here
-        else:
-            self.sHigh[:] = u
-            r.fill(0.0)
+        self.mHigh[:] = u
     
         rowptr, colind, nzval = self.jacobian.getCSRrepresentation()
         nnz = nzval.shape[-1]
@@ -1517,8 +1514,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.delta_x_ij = -np.ones((self.nNonzerosInJacobian * 3,), 'd')
     
         argsDict = cArgumentsDict.ArgumentsDict()
-        #anb_add
-        argsDict["isFCT"] = int(isFCT) #isFCT
         argsDict["dt"] = self.timeIntegration.dt
         argsDict["mesh_trial_ref"] = self.u[0].femSpace.elementMaps.psi
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
@@ -1614,25 +1609,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["ENTROPY_TYPE"] = self.coefficients.ENTROPY_TYPE
         argsDict["dLow"] = self.dLow
         argsDict["fluxMatrix"] = self.fluxMatrix
-        argsDict["uDotLow"] = self.uDotLow
-        argsDict["uLow"] = self.uLow
+        argsDict["mDotLow"] = self.mDotLow
         argsDict["dt_times_fH_minus_fL"] = self.dt_times_dC_minus_dL
-        argsDict["min_s_bc"] = self.min_s_bc
-        argsDict["max_s_bc"] = self.max_s_bc
+        argsDict["min_m_bc"] = self.min_m_bc
+        argsDict["max_m_bc"] = self.max_m_bc
         argsDict["quantDOFs"] = self.quantDOFs
-        argsDict["sLow"] = self.sLow
-        argsDict["sn"] = self.sn
+        argsDict["mn"] = self.mn
         argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
-
-        # FCT-only args
-        if isFCT:
-            argsDict["limited_solution"] = u
-            argsDict["uLow"] = self.u[0].dof
-        else:
-            # shouldn't be in this function unless we're doing semi-implicit FCT
-            assert(False)
-            argsDict["globalResidual"] = r
-    
+        argsDict["limited_solution"] = u
+        argsDict["mLow"] = self.u[0].dof
         self.richards.invert(argsDict)
      
     def getJacobian(self,jacobian):

@@ -6,7 +6,7 @@ opts= Context.Options([
     ('num','fct',"numerics: num = fct, low-order, galerkin, low-order-galerkin, vms-galerkin, vms-sc-galerkin"),
     ("final_time",0.5,"Final time for simulation in days"),
     ("dt",0.01,"Time step for simulation in days"),
-    ("nnx",101,"Number of nodes in x direction"),
+    ("nnx",81,"Number of nodes in x direction"),
     ("nny",1,"Number of nodes in y direction"),
     ("nnz",1,"Number of nodes in z direction"),
     ])
@@ -91,6 +91,11 @@ elif opts.num == 'vms-sc-galerkin':
     FCT=False
     VMS=1.0
     SC=0.9
+elif opts.num == 'implicit-fct':
+    stabilization_type='Implicit_FCT'
+    FCT=False
+    VMS=0.0
+    SC=0.0
 else:
     raise Exception("Unknown numerical method: %s" % opts.num)
 

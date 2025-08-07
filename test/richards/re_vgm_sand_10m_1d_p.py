@@ -26,7 +26,10 @@ analyticalSolution = None
 viscosity     = 8.9e-4  #kg/(m*s)
 density       = 998.2   #kg/m^3
 gravity       = 9.8     #m/s^2
-beta          = density*gravity*4.524e-10
+if opts.num ==  'low-order-galerkin':
+    beta          = density*gravity*4.524e-10
+else:
+    beta = 0.0
 m_per_s_by_m_per_d = 1.1574074e-5
 permeability  = (5.04*m_per_s_by_m_per_d)*viscosity/(gravity*density)  #m^2
 thetaS        = 0.301   #-

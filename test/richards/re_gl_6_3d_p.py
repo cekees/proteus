@@ -13,7 +13,7 @@ opts= Context.Options([
     ('num','low-order',"numerics: num = fct, low-order, galerkin, low-order-galerkin, vms-galerkin, vms-sc-galerkin"),
 #    ("final_time",0.38,"Final time for simulation in days"),
 #    ("dt",0.1,"Time step for simulation in days"),
-#    ("nnx",101,"Number of nodes in x direction"),
+#    ("nnx",11,"Number of nodes in x direction"),
 #    ("nny",1,"Number of nodes in y direction"),
 #    ("nnz",1,"Number of nodes in z direction"),
     ("r",3,"refinement factor for mesh"),

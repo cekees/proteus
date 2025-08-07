@@ -3,6 +3,10 @@ echo "fct"
 rm -rf fct
 parun celia_p.py celia_n.py -l 5 -D fct -C "num='fct' dt=0.0001"
 tail -n 100 fct/celia_p.log
+echo "implicit-fct"
+rm -rf implicit-fct
+parun celia_p.py celia_n.py -l 5 -D implicit-fct -C "num='implicit-fct' dt=0.0001"
+tail -n 100 implicit-fct/celia_p.log
 echo "low-order"
 rm -rf low-order
 parun celia_p.py celia_n.py -l 5 -D low-order -C "num='low-order' dt=0.0001"

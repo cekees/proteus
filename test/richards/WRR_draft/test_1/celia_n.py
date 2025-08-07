@@ -9,7 +9,7 @@ for i in range(nDTout):
     tnList.append(0.0+(i+1)*DT)    
 timeIntegration = BackwardEuler
 
-if opts.num in ['fct','low-order']:
+if opts.num in ['fct','low-order','implicit-fct']:
     timeIntegration = Richards.ThetaScheme
 else:
     timeIntegration = BackwardEuler
@@ -47,7 +47,7 @@ tolFac = 0.0
 
 nl_atol_res = 1.0e-8
 
-maxNonlinearIts = 100
+maxNonlinearIts = 1000
 if opts.num == 'vms-sc-galerkin':
     maxLineSearches = 0
 else:

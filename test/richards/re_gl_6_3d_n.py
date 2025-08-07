@@ -11,14 +11,14 @@ except:
 #systemStepControllerType = SplitOperator.Sequential_MinFLCBDFModelStep
 rtol_u[0] = 0.0#0.001*he
 atol_u[0] = 0.001*he
-tnList = [0.0,1.0e-5,1.0e5]
+tnList = [0.0,1.0e-5,5.0]
 if opts.num in ['fct','low-order']:
     timeIntegration = Richards.ThetaScheme
 else:
     timeIntegration = BackwardEuler
 stepController = HeuristicNL_dt_controller
-nonlinearIterationsFloor =5
-nonlinearIterationsCeil=10
+nonlinearIterationsFloor =4
+nonlinearIterationsCeil=8
 #systemStepControllerType = SplitOperator.Sequential_MinModelStep
 maxNonlinearIts=100
 maxLineSearches=100
@@ -42,11 +42,13 @@ maxLineSearches=100
 femSpaces = {0:C0_AffineLinearOnSimplexWithNodalBasis}
 elementQuadrature = {('m',0):SimplexGaussQuadrature(nd,5),
                      'default':SimplexLobattoQuadrature(nd,1)}
-elementQuadrature = SimplexGaussQuadrature(nd,5)
-elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,5)
-#elementQuadrature = SimplexLobattoQuadrature(nd,1)
-#elementBoundaryQuadrature = SimplexLobattoQuadrature(nd-1,1)
 
+if opts.num == 'low-order-galerkin':
+    elementQuadrature = SimplexLobattoQuadrature(nd,1)
+    elementBoundaryQuadrature = SimplexLobattoQuadrature(nd-1,1)
+else:
+    elementQuadrature = SimplexGaussQuadrature(nd,5)
+    elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,5)
 
 subgridError = None
 
