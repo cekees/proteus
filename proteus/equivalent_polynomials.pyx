@@ -10,6 +10,8 @@ cdef extern from *:
     ctypedef int nSpace1T "1"
     ctypedef int nSpace2T "2"
     ctypedef int nSpace3T "3"
+    ctypedef int nP_ifem1T "1"
+    # ctypedef int nP_ifem2T "2"
     ctypedef int nP1T "1"
     ctypedef int nP2T "2"
     ctypedef int nP3T "3"
@@ -31,15 +33,15 @@ cdef class Simplex:
     cdef np.ndarray _ImH
     cdef np.ndarray _D
     #instatiate template classes for 1,2,3D and P1-P3
-    cdef eqp.cSimplex[nSpace1T,nP1T,nQT,nEBQT] s11
-    cdef eqp.cSimplex[nSpace1T,nP2T,nQT,nEBQT] s12
-    cdef eqp.cSimplex[nSpace1T,nP3T,nQT,nEBQT] s13
-    cdef eqp.cSimplex[nSpace2T,nP1T,nQT,nEBQT] s21
-    cdef eqp.cSimplex[nSpace2T,nP2T,nQT,nEBQT] s22
-    cdef eqp.cSimplex[nSpace2T,nP3T,nQT,nEBQT] s23
-    cdef eqp.cSimplex[nSpace3T,nP1T,nQT,nEBQT] s31
-    cdef eqp.cSimplex[nSpace3T,nP2T,nQT,nEBQT] s32
-    cdef eqp.cSimplex[nSpace3T,nP3T,nQT,nEBQT] s33
+    cdef eqp.cSimplex[nSpace1T,nP_ifem1T,nP1T,nQT,nEBQT] s11
+    cdef eqp.cSimplex[nSpace1T,nP_ifem1T,nP2T,nQT,nEBQT] s12
+    cdef eqp.cSimplex[nSpace1T,nP_ifem1T,nP3T,nQT,nEBQT] s13
+    cdef eqp.cSimplex[nSpace2T,nP_ifem1T,nP1T,nQT,nEBQT] s21
+    cdef eqp.cSimplex[nSpace2T,nP_ifem1T,nP2T,nQT,nEBQT] s22
+    cdef eqp.cSimplex[nSpace2T,nP_ifem1T,nP3T,nQT,nEBQT] s23
+    cdef eqp.cSimplex[nSpace3T,nP_ifem1T,nP1T,nQT,nEBQT] s31
+    cdef eqp.cSimplex[nSpace3T,nP_ifem1T,nP2T,nQT,nEBQT] s32
+    cdef eqp.cSimplex[nSpace3T,nP_ifem1T,nP3T,nQT,nEBQT] s33
     def __cinit__(self, nSpace, nP, nQ):
         self.xiBuffer=np.zeros((50,3),'d')
         self.nSpace = nSpace

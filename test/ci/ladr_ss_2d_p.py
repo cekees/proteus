@@ -25,8 +25,12 @@ opts = Context.Options([
     ("unstructured", False, "use unstructured mesh (default is structured)"),
     ("skew", 0.0001, "skew the domain when using unstructured mesh"),
     ("refinement", 0, "number of times to refine the mesh (default is 0)"),
+    ("qOrder", 6, "order of quadrature (default is 6)"),
+    ("usePetsc", False, "Use PETSc linear solvers"),
+    ("name", "ladr_ss_2d", "name of the test (default is ladr_ss_2d)"),
 ])
 
+name = opts.name
 nd = 2
 L=(2.0,2.0)#,2.0)
 if opts.unstructured:

@@ -175,15 +175,16 @@ class Coefficients(TC_base):
                          sparseDiffusionTensors=sdInfo,
                          useSparseDiffusion=True,
                          movingDomain=False)
-    def initializeMesh(self,mesh):
-        self.embeddedBoundary_sdf_nodes = 100*np.ones((mesh.nodeArray.shape[0],),'d')
+    def initializeSDF(self,femSpace):
+        nodeArray = femSpace.mesh.nodeArray if (femSpace.max_nDOF_element==3) else femSpace.dofMap.lagrangeNodesArray
+        self.embeddedBoundary_sdf_nodes = 100*np.ones((nodeArray.shape[0],),'d')
         if self.embeddedBoundary:
-            for nN in range(mesh.nodeArray.shape[0]):
-                self.embeddedBoundary_sdf_nodes[nN], dummy_normal = self.embeddedBoundary_sdf(t=0.0,x=mesh.nodeArray[nN])
-        self.immersedBoundary_sdf_nodes = -100*np.ones((mesh.nodeArray.shape[0],),'d')
+            for nN in range(nodeArray.shape[0]):
+                self.embeddedBoundary_sdf_nodes[nN], dummy_normal = self.embeddedBoundary_sdf(t=0.0,x=nodeArray[nN])
+        self.immersedBoundary_sdf_nodes = -100*np.ones((nodeArray.shape[0],),'d')
         if self.immersedBoundary:
-            for nN in range(mesh.nodeArray.shape[0]):
-                self.immersedBoundary_sdf_nodes[nN], dummy_normal = self.immersedBoundary_sdf(t=0.0,x=mesh.nodeArray[nN])
+            for nN in range(nodeArray.shape[0]):
+                self.immersedBoundary_sdf_nodes[nN], dummy_normal = self.immersedBoundary_sdf(t=0.0,x=nodeArray[nN])
     def initializeElementQuadrature(self,t,cq):
         nd = self.nd
         for ci in range(self.nc):
@@ -318,7 +319,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.dirichletConditions = dofBoundaryConditionsDict
         self.dirichletNodeSetList=None #explicit Dirichlet  conditions for now, no Dirichlet BC constraints
         self.coefficients = coefficients
-        self.coefficients.initializeMesh(self.mesh)
+        self.coefficients.initializeSDF(self.u[0].femSpace)
         self.nc = self.coefficients.nc
         self.stabilization = stabilization
         self.shockCapturing = shockCapturing
@@ -623,7 +624,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["mesh_trial_ref"] = self.u[0].femSpace.elementMaps.psi
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
-        argsDict["mesh_dof"] = self.mesh.nodeArray
+        # ToDo: Have lagrange nodes for all DOFmaps. 
+        argsDict["mesh_dof"] = self.mesh.nodeArray if (self.u[0].femSpace.max_nDOF_element==3) else self.u[0].femSpace.dofMap.lagrangeNodesArray
+        # argsDict["mesh_dof"] = self.mesh.nodeArray
         argsDict["mesh_l2g"] = self.mesh.elementNodesArray
         argsDict["x_ref"] = self.elementQuadraturePoints
         argsDict["dV_ref"] = self.elementQuadratureWeights[('u',0)]
@@ -720,7 +723,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["mesh_trial_ref"] = self.u[0].femSpace.elementMaps.psi
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
-        argsDict["mesh_dof"] = self.mesh.nodeArray
+        argsDict["mesh_dof"] = self.mesh.nodeArray if (self.u[0].femSpace.max_nDOF_element==3) else self.u[0].femSpace.dofMap.lagrangeNodesArray
+        # argsDict["mesh_dof"] = self.mesh.nodeArray
         argsDict["mesh_l2g"] = self.mesh.elementNodesArray
         argsDict["x_ref"] = self.elementQuadraturePoints
         argsDict["dV_ref"] = self.elementQuadratureWeights[('u',0)]
