@@ -298,12 +298,12 @@ namespace equivalent_polynomials
   {    
     if (flip_the_cell)
     {
-       std::cout << "Flipping the permutation from: " << std::endl;
-      for (unsigned int i = 0; i < nP_ifem; i++)
-      {
-        std::cout << permutation[i] << " ";
-      }
-      std::cout << std::endl;
+      //  std::cout << "Flipping the permutation from: " << std::endl;
+      // for (unsigned int i = 0; i < nP_ifem; i++)
+      // {
+      //   std::cout << permutation[i] << " ";
+      // }
+      // std::cout << std::endl;
       int temp = permutation[1];
       permutation[1] = permutation[2];
       permutation[2] = temp;
@@ -312,12 +312,12 @@ namespace equivalent_polynomials
       permutation[5] = temp;
       flip_the_cell = false;
       
-      std::cout << "Flipping the permutation to: " << std::endl;
-      for (unsigned int i = 0; i < nP_ifem; i++)
-      {
-        std::cout << permutation[i] << " ";
-      }
-      std::cout << std::endl;
+      // std::cout << "Flipping the permutation to: " << std::endl;
+      // for (unsigned int i = 0; i < nP_ifem; i++)
+      // {
+      //   std::cout << permutation[i] << " ";
+      // }
+      // std::cout << std::endl;
     }  
     else
     {
@@ -487,7 +487,7 @@ namespace equivalent_polynomials
           std::cerr << "zcount " << zcount << " >= " << nN - 1 << std::endl;
         assert(zcount < nN - 1);
         corner = true; // The interface passes through a corner node
-        std::cout << "corner case: zcount " << zcount << "\t pcount " << pcount << "\t ncount " << ncount << std::endl;
+        // std::cout << "corner case: zcount " << zcount << "\t pcount " << pcount << "\t ncount " << ncount << std::endl;
         if (pcount)
         {
           root_node = z_i;
@@ -535,7 +535,7 @@ namespace equivalent_polynomials
         assert(phi_dof[permutation[1]] > 0.0);
         assert(phi_dof[permutation[2]] > 0.0);
       }
-      std::cout << "pcount " << pcount << "\t ncount " << ncount << "\t zcount " << zcount << "\t root node = " << root_node << std::endl;
+      // std::cout << "pcount " << pcount << "\t ncount " << ncount << "\t zcount " << zcount << "\t root node = " << root_node << std::endl;
     }
     for (unsigned int i = 0; i < nP_ifem; i++)
     {
@@ -574,7 +574,7 @@ namespace equivalent_polynomials
       }
       else // flip the last two nodes
       {
-        std::cout << "Flipping the last two nodes to fix negative Jacobian in _calculate_permutation()" << std::endl;
+        // std::cout << "Flipping the last two nodes to fix negative Jacobian in _calculate_permutation()" << std::endl;
         double tmp = permutation[nP_ifem - 1];
         permutation[nP_ifem - 1] = permutation[nP_ifem - 2];
         permutation[nP_ifem - 2] = tmp;
@@ -638,16 +638,16 @@ namespace equivalent_polynomials
         }
       }
     }
-    std::cout << "X_0: \t" << X_0[0] << ", " << X_0[1] << std::endl;
-    std::cout << "phys_nodes_cut: " << std::endl;
-    for (unsigned int i = 0; i < nN - 1; i++)
-    {
-      std::cout << "phys_nodes_cut[" << i << "]: \t" << phys_nodes_cut[i * 3 + 0] << ", " << phys_nodes_cut[i * 3 + 1] << ", " << phys_nodes_cut[i * 3 + 2] << std::endl;
-    }
+    // std::cout << "X_0: \t" << X_0[0] << ", " << X_0[1] << std::endl;
+    // std::cout << "phys_nodes_cut: " << std::endl;
+    // for (unsigned int i = 0; i < nN - 1; i++)
+    // {
+    //   std::cout << "phys_nodes_cut[" << i << "]: \t" << phys_nodes_cut[i * 3 + 0] << ", " << phys_nodes_cut[i * 3 + 1] << ", " << phys_nodes_cut[i * 3 + 2] << std::endl;
+    // }
     // Redo the permutation for the case: (x0>0.5 and y0<=0.5)
     if (nP_ifem == 6 && (X_0[0] > 0.5 && X_0[1] <= 0.5))
     {
-      std::cout << "Case (X_0[0] > 0.5 && X_0[1] <= 0.5) detected in _calculate_cuts(), flipping the cell" << std::endl;
+      // std::cout << "Case (X_0[0] > 0.5 && X_0[1] <= 0.5) detected in _calculate_cuts(), flipping the cell" << std::endl;
       flip_the_cell = true;
       
       /*
@@ -808,10 +808,10 @@ namespace equivalent_polynomials
            y0 = X_0[1];
     double *vall = nullptr;
 
-    std::cout << "X0 = " << x0 << std::endl << "Y0 = " << y0 << std::endl;
-    std::cout << "NX = " << nx << std::endl << "NY = " << ny << std::endl;
-    std::cout << "MUA = " << ma << std::endl << "MUB = " << mb << std::endl << "jf = " << jf << std::endl;
-    std::cout << "Jit00 = " << Jit00 << std::endl << "Jit01 = " << Jit01 << std::endl << "Jit10 = " << Jit10 << std::endl << "Jit11 = " << Jit11 << std::endl;
+    // std::cout << "X0 = " << x0 << std::endl << "Y0 = " << y0 << std::endl;
+    // std::cout << "NX = " << nx << std::endl << "NY = " << ny << std::endl;
+    // std::cout << "MUA = " << ma << std::endl << "MUB = " << mb << std::endl << "jf = " << jf << std::endl;
+    // std::cout << "Jit00 = " << Jit00 << std::endl << "Jit01 = " << Jit01 << std::endl << "Jit10 = " << Jit10 << std::endl << "Jit11 = " << Jit11 << std::endl;
     // std::cout << "nx: " << nx << "\t ny: " << ny << std::endl;
     switch (nP_ifem)
     {
@@ -1246,7 +1246,7 @@ namespace equivalent_polynomials
             _calculate_polynomial_1D<nP>(xi, C_H, C_ImH, C_D, _H[q], _ImH[q], _D[q]);
           else if (nSpace == 2)
           {
-            std::cout << "Quadrature point: (" << xi[0] << ", " << xi[1] << ")\n";
+            // std::cout << "Quadrature point: (" << xi[0] << ", " << xi[1] << ")\n";
             // std::cout << "p order: " << sizeof(phi_dof[0]) << std::endl;
             _calculate_polynomial_2D<nP>(xi, C_H, C_ImH, C_D, _H[q], _ImH[q], _D[q]);
             _calculate_basis(xi, &_va[q * nP_ifem], &_vb[q * nP_ifem]);
@@ -1289,11 +1289,6 @@ namespace equivalent_polynomials
         {
           _calculate_polynomial_2D<nP>(xi, C_H, C_ImH, C_D, _H_ebq[ebq], _ImH_ebq[ebq], _D_ebq[ebq]);
           _calculate_basis(xi, &_va_ebq[ebq * nP_ifem], &_vb_ebq[ebq * nP_ifem]);
-          if (flip_the_cell)
-          {
-            flip_the_cell = false;
-            _calculate_permutation(phi_dof, phi_nodes); 
-          }
           _calculate_basis_gradients(xi, &_va_x_ebq[ebq * nP_ifem], &_va_y_ebq[ebq * nP_ifem], &_vb_x_ebq[ebq * nP_ifem], &_vb_y_ebq[ebq * nP_ifem]);
         }
         else if (nSpace == 3)

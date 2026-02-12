@@ -36,6 +36,10 @@ namespace proteus
 			sol = x * x + y * y + 1.0;
 		else if (test == 8.0) // Ji et al 2016, Example 1
 			sol = pow(x * x + y * y,3.0/2.0);
+		else if (test == 9.0) // PWCubic
+			sol = x * x * x + y * y * y + 1.0;
+		else if (test == 10.0) // trig solution
+			sol = sin(M_PI*x)*sin(M_PI*y);
 		else
 			assert(false && "Unknown test case in sol_inner");
 		return sol;
@@ -43,9 +47,8 @@ namespace proteus
 	double sol_outer(double test, double x, double y, double b, double C)
 	{
 		double sol = 0.0, r = sqrt(x * x + y * y);
-		;
 		if (test == 1.0) // Leveque & Li 1994, Example 1
-			sol = 1.0 + log(2 * sqrt(x * x + y * y));
+			sol = 1.0 + log(2 * r);
 		else if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
 			sol = (1.0 - 1.0 / (8.0 * b) - 1.0 / b) / 4.0 + ((r * r * r * r) / 2.0 + r * r) / b + C * log(2 * r) / b;
 		else if (test == 3.0) //
@@ -61,7 +64,11 @@ namespace proteus
 		else if (test == 7.0) //
 			sol = x * x + y * y;
 		else if (test == 8.0) // Ji et al 2016, Example 1
-			sol = pow(x*x + y*y,3.0/2.0)/b + (1.0 - 1.0/b)*0.125;
+			sol = pow(x*x + y*y,3.0/2.0)/b + (1.0 - 1.0/b)*pow(0.5,3.0);
+		else if (test == 9.0) // PWCubic
+			sol = x * x * x + y * y * y;
+		else if (test == 10.0) // trig solution
+			sol = sin(M_PI*x)*sin(M_PI*y);
 		else
 			assert(false && "Unknown test case in sol_outer");
 		return sol;
@@ -92,8 +99,8 @@ namespace proteus
 		std::valarray<bool> elementIsActive;
 		const int nDOF_test_X_trial_element;
 		CompKernelType ck;
-		GeneralizedFunctions<nSpace, nDOF_trial_element, 3, nQuadraturePoints_element, nQuadraturePoints_elementBoundary> gf_f;
-		GeneralizedFunctions<nSpace, nDOF_trial_element, 3, nQuadraturePoints_element, nQuadraturePoints_elementBoundary> gf_s;
+		GeneralizedFunctions<nSpace, nDOF_trial_element, 4, nQuadraturePoints_element, nQuadraturePoints_elementBoundary> gf_f;
+		GeneralizedFunctions<nSpace, nDOF_trial_element, 4, nQuadraturePoints_element, nQuadraturePoints_elementBoundary> gf_s;
 		cADR() : nDOF_test_X_trial_element(nDOF_test_element * nDOF_trial_element), ck()
 		{
 		}
@@ -393,7 +400,7 @@ namespace proteus
 				r -= (2 * x * immersedBoundary_normal[0] - 2 * y * immersedBoundary_normal[1]) * D_f;
 			else if (test == 4.1) // Leveque & Li 1994, Example 4l
 				r -= (immersedBoundary_normal[0] - immersedBoundary_normal[1]) * D_f;
-			// PWC,PWL,PWQ
+			// PWC,PWL,PWQ, PWCubic
 			// r-= 0.0;
 			dr = 0.0;
 			ham = 0.0;
@@ -465,24 +472,29 @@ namespace proteus
 											 xt::pyarray<double> &embeddedBoundary_u_q,
 											 const bool immersedBoundary,
 											 const double immersedBoundary_penalty,
+											 xt::pyarray<double> &immersedBoundary_sdf_q,
 											 xt::pyarray<double> &immersedBoundary_normal_q,
 											 xt::pyarray<double> &immersedBoundary_u_q,
+											 double *element_phi_f,
 											 bool &element_active,
 											 std::valarray<bool> &elementIsActive,
 											 double *JA,
 											 double *JB,
 											 double &L2_error,
-											 double test)
+											 double &Linfty_error,
+											 double test,
+											 double mua,
+											 double mub)
 		{
 			for (int i = 0; i < nDOF_test_element; i++)
 			{
 				elementResidual_u.data()[i] = 0.0;
 			}
-			std::cout << "Calculating element residual for element " << eN << std::endl;
+			// std::cout << "Calculating element residual for element " << eN << std::endl;
 			// loop over quadrature points and compute integrands
 			for (int k = 0; k < nQuadraturePoints_element; k++)
 			{
-				std::cout << "  quadrature point " << k << std::endl;
+				// std::cout << "  quadrature point " << k << "\t" << x_ref.data()[k*3 + 0] << "\t" << x_ref.data()[k*3 + 1] << std::endl;
 				gf_s.set_quad(k);
 				gf_f.set_quad(k);
 				// compute indeces and declare local storage
@@ -605,10 +617,11 @@ namespace proteus
 						//assert(fabs(vb_grad_trial[i * nSpace + 0] - u_grad_trial[i * nSpace + 0]) < 1.0e-8);
 						vb_grad_trial[i * nSpace + 1] = gf_f.VB_y(i);
 						//assert(fabs(vb_grad_trial[i * nSpace + 0] - u_grad_trial[i * nSpace + 0]) < 1.0e-8);
-						// std::cout << "i: " << i << ", va: " << va[i] << ", vb: " << vb[i] << std::endl;
+						// std::cout << "\ni: " << i << ", va: " << va[i] << ", vb: " << vb[i] << std::endl;
 						// std::cout << "i: " << i << ", va_x: " << va_grad_trial[i * nSpace + 0] << ", va_y: " << va_grad_trial[i * nSpace + 1] << std::endl;
 						// std::cout << "i: " << i << ", vb_x: " << vb_grad_trial[i * nSpace + 0] << ", vb_y: " << vb_grad_trial[i * nSpace + 1] << std::endl;
 					}	
+					// std::cout << "--------------------------------------------------------------------------------" << std::endl;
 					// std::cout << nDOF_trial_element << std::endl;
 					// std::cout << "va: " << va[0] << ", " << va[1] << ", " << va[2] << ", " << va[3] << ", " << va[4] << ", " << va[5] << std::endl;
 					// std::cout << "vb: " << vb[0] << ", " << vb[1] << ", " << vb[2] << ", " << vb[3] << ", " << vb[4] << ", " << vb[5] << std::endl;
@@ -630,14 +643,14 @@ namespace proteus
 					{
 						ua_test_dV[j] = va[j] * dV;
 						ub_test_dV[j] = vb[j] * dV;
-						for (int I = 0; I < nSpace; I++)
-						{
+							for (int I = 0; I < nSpace; I++)
+							{
 							ua_grad_trial[j * nSpace + I] = va_grad_trial[j * nSpace + I];
 							ub_grad_trial[j * nSpace + I] = vb_grad_trial[j * nSpace + I];
 							ua_grad_test_dV[j * nSpace + I] = va_grad_trial[j * nSpace + I] * dV;
 							ub_grad_test_dV[j * nSpace + I] = vb_grad_trial[j * nSpace + I] * dV;
+							}
 						}
-					}
 				}
 				if (icase_f == 0 && gf_f.exact.corner == true)
 				{
@@ -810,54 +823,29 @@ namespace proteus
 				//
 				// update element residual
 				//
+				// Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ, PWcubic
+				double a_loc[4] = {mua, 0.0, 0.0, mua};
+						
+						
 				for (int i = 0; i < nDOF_test_element; i++)
 				{
 					int i_nSpace = i * nSpace;
 					if (icase_f == 0)
 					{
-						// Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
-						double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
-						if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = x * x + y * y + 1.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 8.0) // Ji et al 2014, Example 1
-						{
-							a_loc[0] = 1.0;
-							a_loc[3] = a_loc[0];
-						}
+						a_loc[0] = mua;
+						a_loc[3] = mua;
 						elementResidual_u.data()[i] += ImH_f * H_s * (ck.Advection_weak(f, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ua, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_uja, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Reaction_weak(r, ua_test_dV[i]) + 
-							ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ua, &ua_grad_test_dV[i_nSpace]));
-
-						if (test == 2.0) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = 10.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 2.1) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = -3.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 8.0) // Ji et al 2014, Example 1
-						{
-							a_loc[0] = 1000.0;
-							a_loc[3] = a_loc[0];
-						}
+								ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ua, &ua_grad_test_dV[i_nSpace]) + 
+								ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_uja, &ua_grad_test_dV[i_nSpace]) + 
+								ck.Reaction_weak(r, ua_test_dV[i]) + 
+								ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ua, &ua_grad_test_dV[i_nSpace]));
+						a_loc[0] = mub;
+						a_loc[3] = mub;
 						elementResidual_u.data()[i] += H_f * H_s * (ck.Advection_weak(f, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ub, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ujb, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Reaction_weak(r, ub_test_dV[i]) + 
-						ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
-
-						double sol = sol_inner(test, x, y);
-						L2_error += ImH_f * (ua + uja - sol) * (ua + uja - sol) * dV;	
-						sol = sol_outer(test, x, y, a_loc[0], 0.1);
-						L2_error += H_f * (ub  + ujb - sol) * (ub + ujb  - sol) * dV;
+							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ub, &ub_grad_test_dV[i_nSpace]) + 
+							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ujb, &ub_grad_test_dV[i_nSpace]) + 
+							ck.Reaction_weak(r, ub_test_dV[i]) + 
+							ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
 					}
 					else
 					{
@@ -866,16 +854,6 @@ namespace proteus
 															  ck.Reaction_weak(r, u_test_dV[i]) +
 															  ck.SubgridError(subgridError_u, Lstar_u[i]) +
 															  ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_u, &u_grad_test_dV[i_nSpace]));
-						if (icase_f == -1)
-						{
-							double sol = sol_inner(test, x, y);
-							L2_error += (u - sol) * (u - sol) * dV;
-						}
-						if (icase_f == 1)
-						{
-							double sol = sol_outer(test, x, y, a[0], 0.1);
-							L2_error += (u - sol) * (u - sol) * dV;
-						}
 					}
 					if (embeddedBoundary)
 					{
@@ -886,13 +864,38 @@ namespace proteus
 					if (immersedBoundary)
 					{
 						if (!gf_f.exact.bminus && !gf_f.exact.corner)
-						elementResidual_u.data()[i] += (ck.Advection_weak(f_f, &u_grad_test_dV[i_nSpace]) +
-						ck.Reaction_weak(r_f, u_test_dV[i]) +
-						ck.Hamiltonian_weak(ham_f, u_test_dV[i]));
+						{
+							elementResidual_u.data()[i] += (ck.Advection_weak(f_f, &u_grad_test_dV[i_nSpace]) +
+							ck.Reaction_weak(r_f, u_test_dV[i]) +
+							ck.Hamiltonian_weak(ham_f, u_test_dV[i]));
+						}
 					}
 				}
+				double L2_contrib = 0.0;
+				if (icase_f == 0)
+				{
+					double sol = sol_inner(test, x, y);
+					L2_contrib += ImH_f * (ua + uja - sol) * (ua + uja - sol) * dV;	
+					sol = sol_outer(test, x, y, mub, 0.2);
+					L2_contrib += H_f * (ub  + ujb - sol) * (ub + ujb  - sol) * dV;
+				}
+				else
+				{
+					if (icase_f == -1)
+					{
+						double sol = sol_inner(test, x, y);
+						L2_contrib += (u - sol) * (u - sol) * dV;
+						Linfty_error = std::max(Linfty_error, std::fabs(u - sol));
+					}
+					if (icase_f == 1)
+					{
+						double sol = sol_outer(test, x, y, a[0], 0.2);
+						L2_contrib += (u - sol) * (u - sol) * dV;
+						Linfty_error = std::max(Linfty_error, std::fabs(u - sol));
+					}
+				}
+				L2_error += L2_contrib;
 			}
-			std::cout<<"icase_f="<<icase_f<<", L2_error="<<L2_error<<std::endl;
 		}
 
 		void calculateResidual(arguments_dict &args)
@@ -973,6 +976,9 @@ namespace proteus
 			xt::pyarray<double> &L2_error = args.array<double>("L2_error");
 			xt::pyarray<double> &Linfty_error = args.array<double>("Linfty_error");
 			const double test = args.scalar<double>("test");
+			const double mua = args.scalar<double>("mua");
+			const double mub = args.scalar<double>("mub");
+			const double jf = args.scalar<double>("jf");
 			gf_f.useExact = true;
 			gf_s.useExact = true;
 			ifem_boundaries.clear();
@@ -1017,7 +1023,7 @@ namespace proteus
 					int eN_j = eN * nDOF_trial_element + j;
 					element_phi_f[j] = immersedBoundary_sdf_nodes.data()[u_l2g.data()[eN_j]];
 				}
-				std::cout << std::endl;
+				// std::cout << std::endl;
 				double element_nodes[nDOF_trial_element * 3];
 				for (int i = 0; i < nDOF_trial_element; i++)
 				{
@@ -1025,6 +1031,7 @@ namespace proteus
 					for (int I = 0; I < 3; I++)
 						// element_nodes[i * 3 + I] = mesh_dof.data()[mesh_l2g.data()[eN_i] * 3 + I];
 						element_nodes[i * 3 + I] = mesh_dof.data()[u_l2g.data()[eN_i] * 3 + I];
+					// std::cout << "element node[" << i << "]:" << element_nodes[i * 3 + 0] << " " << element_nodes[i * 3 + 1] << " " << element_nodes[i * 3 + 2] << std::endl;
 					// std::cout << "element node[" << i << "]:" << element_nodes[i * 3 + 0] << " " << element_nodes[i * 3 + 1] << " " << element_nodes[i * 3 + 2] << std::endl;
 					// std::cout << "element phi_f[" << i << "]:" << element_phi_f[i] << std::endl << std::endl;
 				} // i
@@ -1039,26 +1046,6 @@ namespace proteus
 						if (elementBoundaryElementsArray.data()[ebN * 2 + 1] != -1 && (ebN < nElementBoundaries_owned))
 							cutfem_boundaries.insert(ebN);
 					}
-				}
-				// Leveque & Li 1994, Example 1, 3,4,4l, PWC, PWL, PWQ
-				double mua = 1.0, mub = 1.0, jf=0.0;
-				if (test == 2.0) // Leveque & Li 1994, Example 2a
-				{
-					//jf= -0.2;
-					mua = 1.25;
-					mub = 10.0;
-				}
-				else if (test == 2.1) // Leveque & Li 1994, Example 2b
-				{
-					//jf= -0.2;
-					mua = 1.25;
-					mub = -3.0;
-				}
-				else if (test == 8.0) // Ji et al 2014, Example 1
-				{
-					//jf= -0.2;
-					mua = 1.0;
-					mub = 1000.0;
 				}
 				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mub, mua, jf, false, false);
 				double JA[nDOF_trial_element];
@@ -1085,7 +1072,7 @@ namespace proteus
 						jump = -(gf_f.exact.cut_barycenter[0] * gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1] * gf_f.exact.cut_barycenter[1]);
 					else if (test == 4.1) // Leveque and Li 1994, Example 4l
 						jump = -(gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1]);
-					else if (test == 5.0 || test == 6.0 || test == 7.0) // PWC,PWL,PWQ
+					else if (test == 5.0 || test == 6.0 || test == 7.0 || test == 9.0) // PWC,PWL,PWQ
 						jump = -1;
 					if (gf_f.exact.corner == false)
 					{
@@ -1099,22 +1086,23 @@ namespace proteus
 							{
 								JA[i] = -jump;
 								JB[i] = 0.0;
-								double sol = sol_outer(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1], mub, 0.1);
-								std::cout << "Node: " << element_nodes[i * 3 + 0] << " , " << element_nodes[i * 3 + 1] << std::endl;
-								std::cout << "sol_outer at node " << i << " : " << sol << "\t element_u = " << element_u.data()[i] << std::endl;
-								Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
+								// double sol = sol_outer(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1], mub, 0.2);
+								// Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
+								// std::cout << "Node: " << element_nodes[i * 3 + 0] << " , " << element_nodes[i * 3 + 1] << std::endl;
+								// std::cout << "sol_outer at node " << i << " : " << sol << "\t element_u = " << element_u.data()[i] << std::endl;
 							}
 							// else if (gf_f.exact.phi_dof_corrected[i] <= 0.0)
 							else if (element_phi_f[i] <= 0.0)
 							{
 								JA[i] = 0.0;
 								JB[i] = jump;
-								double sol = sol_inner(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1]);
-								std::cout << "Node: " << element_nodes[i * 3 + 0] << " , " << element_nodes[i * 3 + 1] << std::endl;
-								std::cout << "sol_inner at node " << i << " : " << sol << "\t element_u = " << element_u.data()[i] << std::endl;
+								// double sol = sol_inner(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1]);
+								// Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
+								// std::cout << "Node: " << element_nodes[i * 3 + 0] << " , " << element_nodes[i * 3 + 1] << std::endl;
+								// std::cout << "sol_inner at node " << i << " : " << sol << "\t element_u = " << element_u.data()[i] << std::endl;
 							}
 						}
-						std::cout << "eN = " << eN << ", Linfty_error = " << Linfty_error.data()[0] << std::endl;
+						// std::cout << "eN = " << eN << ", Linfty_error = " << Linfty_error.data()[0] << std::endl;
 					}
 					else
 					{
@@ -1139,29 +1127,29 @@ namespace proteus
 								{
 									JA[i] = -jump;
 									JB[i] = 0.0;
-									double sol = sol_outer(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1], mub, 0.1);
-									Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
+									// double sol = sol_outer(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1], mub, 0.2);
+									// Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
 								}
 								else if (element_phi_f[i] < 0.0)
 								{
 									JA[i] = 0.0;
 									JB[i] = jump;
-									double sol = sol_inner(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1]);
-									Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
+									// double sol = sol_inner(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1]);
+									// Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
 								}
 								else if (element_phi_f[i] == 0.0 && plus == true)
 								{
 									JA[i] = 0.0;
 									JB[i] = jump;
-									double sol = sol_inner(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1]);
-									Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
+									// double sol = sol_inner(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1]);
+									// Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
 								}
 								else if (element_phi_f[i] == 0.0 && plus == false)
 								{
 									JA[i] = -jump;
 									JB[i] = 0.0;
-									double sol = sol_outer(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1], mub, 0.1);
-									Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
+									// double sol = sol_outer(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1], mub, 0.2);
+									// Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
 								}
 							}
 						}
@@ -1173,20 +1161,36 @@ namespace proteus
 								{
 									JA[i] = -jump;
 									JB[i] = 0.0;
-									double sol = sol_outer(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1], mub, 0.1);
-									Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
+									// double sol = sol_outer(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1], mub, 0.2);
+									// Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
 								}
 								else if (element_phi_f[i] <= 0.0)
 								{
 									JA[i] = 0.0;
 									JB[i] = jump;
-									double sol = sol_inner(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1]);
-									Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
+									// double sol = sol_inner(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1]);
+									// Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
 								}
 							}
 						}
 					}
 				}
+				// else if (icase_f == -1)
+				// {
+				// 	for (int i = 0; i < nDOF_trial_element; i++)
+				// 	{
+				// 		double sol = sol_inner(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1]);
+				// 		Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
+				// 	}
+				// }
+				// else if (icase_f == 1)
+				// {
+				// 	for (int i = 0; i < nDOF_trial_element; i++)
+				// 	{
+				// 		double sol = sol_outer(test, element_nodes[i * 3 + 0], element_nodes[i * 3 + 1], mub, 0.2);
+				// 		Linfty_error.data()[0] = std::max(Linfty_error.data()[0], fabs(element_u.data()[i] - sol));
+				// 	}
+				// }
 				calculateElementResidual(icase_f,
 										 mesh_trial_ref,
 										 mesh_grad_trial_ref,
@@ -1243,14 +1247,19 @@ namespace proteus
 										 embeddedBoundary_u_q,
 										 immersedBoundary,
 										 immersedBoundary_penalty,
+										 immersedBoundary_sdf_q,
 										 immersedBoundary_normal_q,
 										 immersedBoundary_u_q,
+										 element_phi_f,
 										 element_active,
 										 elementIsActive,
 										 JA,
 										 JB,
 										 L2_error.data()[0],
-										 test);
+										 Linfty_error.data()[0],
+											 test,
+											 mua,
+											 mub);
 				//
 				// load element into global residual and save element residual
 				//
@@ -1325,7 +1334,7 @@ namespace proteus
 							dS = metricTensorDetSqrt * dS_ref.data()[kb];
 							// compute shape and solution information
 							// shape
-							std::cout << "Calculating gradTrialFromRef from calculateResidual() 1" << std::endl;
+							// std::cout << "Calculating gradTrialFromRef from calculateResidual() 1" << std::endl;
 							ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace * nDOF_trial_element], jacInv_int, u_grad_trial_trace);
 							// solution and gradients
 							ck.valFromDOF(u_dof.data(), &u_l2g.data()[eN_nDOF_trial_element], &u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element], u_int);
@@ -1356,7 +1365,7 @@ namespace proteus
 			} // cutfem element boundaries
 			for (std::set<int>::iterator it = ifem_boundaries.begin(); it != ifem_boundaries.end();)
 			{
-				std::cout << "\t ifem boundary = " << *it << std::endl;
+				// std::cout << "\t ifem boundary = " << *it << std::endl;
 				if (elementIsActive[elementBoundaryElementsArray[(*it) * 2 + 0]] && elementIsActive[elementBoundaryElementsArray[(*it) * 2 + 1]])
 				{
 					std::map<int, double> Dwp_Dn_jump, Dw_Dn_jump;
@@ -1706,11 +1715,15 @@ namespace proteus
 											 xt::pyarray<double> &embeddedBoundary_u_q,
 											 const bool immersedBoundary,
 											 const double immersedBoundary_penalty,
+											 xt::pyarray<double> &immersedBoundary_sdf_q,
 											 xt::pyarray<double> &immersedBoundary_normal_q,
 											 xt::pyarray<double> &immersedBoundary_u_q,
-											 double test)
+											 double *element_phi_f,
+											 double test,
+											 double mua,
+											 double mub)
 		{
-			std::cout << "Calculating element Jacobian for element " << eN << std::endl;
+			// std::cout << "Calculating element Jacobian for element " << eN << std::endl;
 			for (int i = 0; i < nDOF_test_element; i++)
 				for (int j = 0; j < nDOF_trial_element; j++)
 				{
@@ -1718,7 +1731,7 @@ namespace proteus
 				}
 			for (int k = 0; k < nQuadraturePoints_element; k++)
 			{
-				std::cout << "  quadrature point " << k << std::endl;
+				// std::cout << "  quadrature point " << k << std::endl;
 				gf_s.set_quad(k);
 				gf_f.set_quad(k);
 				int eN_k = eN * nQuadraturePoints_element + k; // index to a scalar at a quadrature point
@@ -1787,7 +1800,7 @@ namespace proteus
 				// get metric tensor and friends
 				ck.calculateG(jacInv, G, G_dd_G, tr_G);
 				// get the trial function gradients
-				std::cout << "    calculating gradTrialfromRef from calculateElementJacobian() "<< std::endl;
+				// std::cout << "    calculating gradTrialfromRef from calculateElementJacobian() "<< std::endl;
 				ck.gradTrialFromRef(&u_grad_trial_ref.data()[k * nDOF_trial_element * nSpace], jacInv, u_grad_trial);
 				// get the solution
 				ck.valFromElementDOF(element_u.data(), &u_trial_ref.data()[k * nDOF_trial_element], u);
@@ -1814,6 +1827,10 @@ namespace proteus
 						vb[i] = gf_f.VB(i);
 						vb_grad_trial[i * nSpace + 0] = gf_f.VB_x(i);
 						vb_grad_trial[i * nSpace + 1] = gf_f.VB_y(i);
+						// std::cout << " va[" << i << "]=" << va[i] << std::endl;
+						// std::cout << " vb[" << i << "]=" << vb[i] << std::endl;
+						// std::cout << " va_grad_trial[" << i << "]=" << va_grad_trial[i * nSpace + 0] << "," << va_grad_trial[i * nSpace + 1] << std::endl;
+						// std::cout << " vb_grad_trial[" << i << "]=" << vb_grad_trial[i * nSpace + 0] << "," << vb_grad_trial[i * nSpace + 1] << std::endl;
 					}
 					ck.valFromElementDOF(element_u.data(), va, ua);
 					ck.gradFromElementDOF(element_u.data(), va_grad_trial, grad_ua);
@@ -1823,8 +1840,8 @@ namespace proteus
 					{
 						ua_test_dV[j] = va[j] * dV;
 						ub_test_dV[j] = vb[j] * dV;
-						for (int I = 0; I < nSpace; I++)
-						{
+							for (int I = 0; I < nSpace; I++)
+							{
 							ua_grad_trial[j * nSpace + I] = va_grad_trial[j * nSpace + I];
 							ub_grad_trial[j * nSpace + I] = vb_grad_trial[j * nSpace + I];
 							ua_grad_test_dV[j * nSpace + I] = va_grad_trial[j * nSpace + I] * dV;
@@ -1973,6 +1990,8 @@ namespace proteus
 				for (int j = 0; j < nDOF_trial_element; j++)
 					dsubgridError_u_u[j] = -tau * dpdeResidual_u_u[j];
 
+				// Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
+				double a_loc[4] = {mua, 0.0, 0.0, mua};
 				for (int i = 0; i < nDOF_test_element; i++)
 				{
 					int i_nSpace = i * nSpace;
@@ -1981,45 +2000,20 @@ namespace proteus
 						int j_nSpace = j * nSpace;
 						if (icase_f == 0)
 						{
-							// Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
-							double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
-							if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
-							{
-								a_loc[0] = x * x + y * y + 1;
-								a_loc[3] = a_loc[0];
-							}
-							if (test == 8.0) // Ji etal 2014, Example 1
-							{
-								a_loc[0] = 1.0;
-								a_loc[3] = a_loc[0];
-							}
-							// std::cout << "\n Updating elementJacobian with ua for ifem elements with ImH_f and H_s:" << ImH_f << " and " << H_s << std::endl;
+							a_loc[0] = mua;
+							a_loc[3] = mua;
 							elementJacobian_u_u.data()[i * nDOF_trial_element + j] += ImH_f * H_s * (ck.AdvectionJacobian_weak(df, ua_trial[j], &ua_grad_test_dV[i_nSpace]) + 
-							ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]) + 
-							ck.ReactionJacobian_weak(dr, ua_trial[j], ua_test_dV[i]) + 
-							ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]));
-							// std::cout << "  After ua:    elementJacobian_u_u[" << i << "," << j << "] = " << elementJacobian_u_u.data()[i * nDOF_trial_element + j];
-							if (test == 2.0) // Leveque & Li 1994, Example 2
-							{
-								a_loc[0] = 10.0;
-								a_loc[3] = a_loc[0];
-							}
-							else if (test == 2.1) // Leveque & Li 1994, Example 2
-							{
-								a_loc[0] = -3.0;
-								a_loc[3] = a_loc[0];
-							}
-							else if (test == 8.0) // Ji et al 2014, Example 1
-							{
-								a_loc[0] = 1000.0;
-								a_loc[3] = a_loc[0];
-							}
-							// std::cout << "\n Updating elementJacobian with ub for ifem elements with H_f and H_s:" << H_f << " and " << H_s << std::endl;
+								ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]) + 
+								ck.ReactionJacobian_weak(dr, ua_trial[j], ua_test_dV[i]) + 
+								ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]));
+							a_loc[0] = mub;
+							a_loc[3] = mub;
+								
 							elementJacobian_u_u.data()[i * nDOF_trial_element + j] += H_f * H_s * (ck.AdvectionJacobian_weak(df, ub_trial[j], &ub_grad_test_dV[i_nSpace]) + 
-							ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]) + 
-							ck.ReactionJacobian_weak(dr, ub_trial[j], ub_test_dV[i]) + 
-							ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]));
-							// std::cout << "  After ub:    elementJacobian_u_u[" << i << "," << j << "] = " << elementJacobian_u_u.data()[i * nDOF_trial_element + j];
+								ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]) + 
+								ck.ReactionJacobian_weak(dr, ub_trial[j], ub_test_dV[i]) + 
+								ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]));
+								// std::cout << "  After ub:    elementJacobian_u_u[" << i << "," << j << "] = " << elementJacobian_u_u.data()[i * nDOF_trial_element + j];
 						}
 						else
 						{
@@ -2044,11 +2038,11 @@ namespace proteus
 								ck.HamiltonianJacobian_weak(dham_f, &u_grad_trial[j_nSpace], u_test_dV[i]));
 							}
 						}
-						std::cout << "   elementJacobian_u_u[" << i << "," << j << "] = " << elementJacobian_u_u.data()[i * nDOF_trial_element + j];
+						// std::cout << "   elementJacobian_u_u[" << i << "," << j << "] = " << elementJacobian_u_u.data()[i * nDOF_trial_element + j];
 					} // j
-					std::cout << std::endl;
+					// std::cout << std::endl;
 				} // i
-				std::cout << std::endl;
+				// std::cout << std::endl;
 			} // k
 		}
 
@@ -2131,13 +2125,16 @@ namespace proteus
 			xt::pyarray<double> &elementBoundaryDiameter = args.array<double>("elementBoundaryDiameter");
 			xt::pyarray<double> &nodeDiametersArray = args.array<double>("nodeDiametersArray");
 			const double test = args.scalar<double>("test");
+			const double mua = args.scalar<double>("mua");
+			const double mub = args.scalar<double>("mub");
+			const double jf = args.scalar<double>("jf");
 			//
 			// loop over elements to compute volume integrals and load them into the element Jacobians and global Jacobian
 			//
-			std::cout << "We are computing the Jacobian...\n" << std::endl;
+			// std::cout << "We are computing the Jacobian...\n" << std::endl;
 			for (int eN = 0; eN < nElements_global; eN++)
 			{
-				std::cout << "element: " << eN << std::endl;
+				// std::cout << "element: " << eN << std::endl;
 				// double  elementJacobian_u_u.data()[nDOF_test_element*nDOF_trial_element],element_u[nDOF_trial_element];
 				auto elementJacobian_u_u = xt::pyarray<double>::from_shape({nDOF_test_element * nDOF_trial_element});
 				auto element_u = xt::pyarray<double>::from_shape({nDOF_trial_element});
@@ -2165,30 +2162,9 @@ namespace proteus
 					for (int I = 0; I < 3; I++)
 						// element_nodes[i * 3 + I] = mesh_dof.data()[mesh_l2g.data()[eN_i] * 3 + I];
 						element_nodes[i * 3 + I] = mesh_dof.data()[u_l2g.data()[eN_i] * 3 + I];
-					std::cout << "element_nodes[" << i << "] = (" << element_nodes[i * 3 + 0] << ", " << element_nodes[i * 3 + 1] << ", " << element_nodes[i * 3 + 2] << ")\n";
+					// std::cout << "element_nodes[" << i << "] = (" << element_nodes[i * 3 + 0] << ", " << element_nodes[i * 3 + 1] << ", " << element_nodes[i * 3 + 2] << ")\n";
 				} // i
 				int icase_s = gf_s.calculate(element_phi_s, element_nodes, x_ref.data(), false);
-				// Leveque & Li 1994, Example 1, 3,4,4l
-				// PWC,PWL,PWQ
-				double mua = 1.0, mub = 1.0, jf = 0.0;
-				if (test == 2.0) // Leveque & Li 1994, Example 2
-				{
-					//jf = -0.2;
-					mua = 1.25;
-					mub = 10.0;
-				}
-				else if (test == 2.1) // Leveque & Li 1994, Example 2
-				{
-					//jf = -0.2;
-					mua = 1.25;
-					mub = -3.0;
-				}
-				else if (test == 8.0) // Ji et al 2014, Example 1
-				{
-					//jf = -0.2;
-					mua = 1.0;
-					mub = 1000.0;
-				}
 				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mub, mua, jf, false, false);
 				calculateElementJacobian(icase_f,
 										 mesh_trial_ref,
@@ -2240,9 +2216,13 @@ namespace proteus
 										 embeddedBoundary_u_q,
 										 immersedBoundary,
 										 immersedBoundary_penalty,
+										 immersedBoundary_sdf_q,
 										 immersedBoundary_normal_q,
 										 immersedBoundary_u_q,
-										 test);
+										 element_phi_f,
+											 test,
+											 mua,
+											 mub);
 				//
 				// load into element Jacobian into global Jacobian
 				//
@@ -2316,7 +2296,7 @@ namespace proteus
 						dS = metricTensorDetSqrt * dS_ref.data()[kb];
 						// compute shape and solution information
 						// shape
-						std::cout << "Calculating gradTrialFromRef from calculateJacobian() 1" << std::endl;
+						// std::cout << "Calculating gradTrialFromRef from calculateJacobian() 1" << std::endl;
 						ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace * nDOF_trial_element], jacInv_int, u_grad_trial_trace);
 						for (int i = 0; i < nDOF_test_element; i++)
 						{
@@ -2369,6 +2349,7 @@ namespace proteus
 			} // cutfem element boundaries
 			for (std::set<int>::iterator it = ifem_boundaries.begin(); it != ifem_boundaries.end(); ++it)
 			{
+				// std::cout << "Calculating IFEM contributions for boundary " << *it << std::endl;
 				std::map<int, double> Dw_Dn_jump;
 				std::map<std::pair<int, int>, int> u_u_nz;
 				double gamma_ifem = immersedBoundary_ghost_penalty, h_ifem = elementBoundaryDiameter.data()[*it];
@@ -2427,7 +2408,7 @@ namespace proteus
 						dS = metricTensorDetSqrt * dS_ref.data()[kb];
 						// compute shape and solution information
 						// shape
-						std::cout << "Calculating gradTrialFromRef from calculateJacobian() 2" << std::endl;
+						// std::cout << "Calculating gradTrialFromRef from calculateJacobian() 2" << std::endl;
 						ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace * nDOF_trial_element], jacInv_int, u_grad_trial_trace);
 						for (int i = 0; i < nDOF_test_element; i++)
 						{
@@ -2545,7 +2526,7 @@ namespace proteus
 					ck.calculateG(jacInv_ext, G, G_dd_G, tr_G);
 					// compute shape and solution information
 					// shape
-					std::cout << "Calculating gradTrialFromRef from calculateJacobian() 3" << std::endl;
+					// std::cout << "Calculating gradTrialFromRef from calculateJacobian() 3" << std::endl;
 					ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace * nDOF_trial_element], jacInv_ext, u_grad_trial_trace);
 					// solution and gradients
 					ck.valFromDOF(u_dof.data(), &u_l2g.data()[eN_nDOF_trial_element], &u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element], u_ext);

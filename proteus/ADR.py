@@ -111,6 +111,9 @@ class Coefficients(TC_base):
                  useMetrics=0.0,
                  sc_uref=1.0,
                  sc_beta=1.0,
+                 mua=1.0,
+                 mub=1.0,
+                 jf=0.0,
                  embeddedBoundary=False,
                  embeddedBoundary_penalty=100.0,
                  embeddedBoundary_ghost_penalty=0.1,
@@ -144,6 +147,9 @@ class Coefficients(TC_base):
         self.aOfX = aOfX
         self.fOfX = fOfX
         self.velocity=velocity
+        self.mua = mua
+        self.mub = mub
+        self.jf = jf
         self.nd = nd
         self.l2proj = l2proj
         self.timeVaryingCoefficients=timeVaryingCoefficients
@@ -698,6 +704,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
         argsDict["isActiveDOF"] = self.isActiveDOF
         argsDict["test"] = self.coefficients.test
+        argsDict["mua"] = self.coefficients.mua
+        argsDict["mub"] = self.coefficients.mub
+        argsDict["jf"] = self.coefficients.jf
         self.L2_error = np.array((0.0,),'d')
         argsDict["L2_error"] = self.L2_error
         self.Linfty_error = np.array((0.0,),'d')
@@ -797,6 +806,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
         argsDict["isActiveDOF"] = self.isActiveDOF
         argsDict["test"] = self.coefficients.test
+        argsDict["mua"] = self.coefficients.mua
+        argsDict["mub"] = self.coefficients.mub
+        argsDict["jf"] = self.coefficients.jf
         self.adr.calculateJacobian(argsDict)
         if self.forceStrongConditions:
             for dofN in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.keys()):

@@ -54,12 +54,10 @@ femSpaces = {0:C0_AffineQuadraticOnSimplexWithNodalBasis}
 
 
 nnx=4*2**opts.refinement+1
-print("nnx=",nnx)
 
 nny = nnx
 genMesh = True
 triangleOptions = "VApq30Dena%8.8f" % (((L[0]/(nnx-1))**2)/2.0,)
-print("triangleOptions=",triangleOptions)
 nLevels = 1
 
 subgridError = None

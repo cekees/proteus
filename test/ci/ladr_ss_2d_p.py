@@ -138,7 +138,17 @@ class PWQ(AnalyticalSolutions.SteadyState):
             return x[0]**2 + x[1]**2 + 1.0
         else:
             return x[0]**2 + x[1]**2
- 
+
+class PWCubic(AnalyticalSolutions.SteadyState):
+    def __init__(self):
+        super(PWCubic, self).__init__()
+    def uOfX(self, x):
+        r = (x[0]**2 + x[1]**2)**0.5
+        if r <= 0.5:
+            return x[0]**3 + x[1]**3 + 1.0
+        else:
+            return x[0]**3 + x[1]**3
+
 class JiEtal14Example1(AnalyticalSolutions.SteadyState):
     def __init__(self, betaMinus=1.0, betaPlus=1000.0):
         self.betaMinus = betaMinus
@@ -150,6 +160,12 @@ class JiEtal14Example1(AnalyticalSolutions.SteadyState):
             return r**3/self.betaMinus
         else:
             return r**3/self.betaPlus + (1.0/self.betaMinus-1.0/self.betaPlus)*0.5**3
+
+class trigSolution(AnalyticalSolutions.SteadyState):
+    def __init__(self):
+        super(trigSolution, self).__init__()
+    def uOfX(self, x):
+        return math.sin(math.pi*x[0])*math.sin(math.pi*x[1])
 
 if opts.test == 1.0:
     ans = LevequeLiExample1()
@@ -169,48 +185,79 @@ elif opts.test == 7.0:
     ans = PWQ()
 elif opts.test == 8.0:
     ans = JiEtal14Example1(betaMinus=1.0, betaPlus=1000.0)
+elif opts.test == 9.0:
+    ans = PWCubic()
+elif opts.test == 10.0:
+    ans = trigSolution()
 else:
     assert False, "Unknown test %s" % opts.test
 
 analyticalSolution = {0:ans}
 initialConditions = None
 
+center = (0.0,0.0)
+radius = 0.5
+
+# Interface material parameters (diffusion on each side of the interface).
+# a(x) below uses these as the source of truth.
+mua = 1.0   # inner (r <= radius)
+mub = 1.0   # outer (r >  radius)
+jf  = 0.0
+if opts.test == 2.0:
+    mua = radius**2 + 1  # = 1.25, inner diffusion at the interface
+    mub = a0             # = 10.0
+elif opts.test == 2.1:
+    mua = radius**2 + 1  # = 1.25
+    mub = a0             # = -3.0
+elif opts.test == 8.0:
+    mub = 1000.0
+
 if opts.test == 2.0 or opts.test == 2.1:
-    # Leveque & Li 1994, Example 2
+    # Leveque & Li 1994, Example 2 — inner diffusion varies with position
     def a(x):
-        if (x[0]**2 + x[1]**2) <= 0.25:
+        if (x[0]**2 + x[1]**2) <= radius**2:
             _a = x[0]**2 + x[1]**2 + 1
         else:
-            _a = a0
+            _a = mub
         return numpy.array([[_a,0.0],[0.0,_a]])
     def f(x):
-        return -(8*(x[0]**2 + x[1]**2) + 4);
+        return -(8*(x[0]**2 + x[1]**2) + 4)
 
 if opts.test in [1.0, 3.0, 4.0, 4.1, 5.0, 6.0]:
-    # Leveque & Li 1994, Example 1, 3 & 4, PWQ, PWL
+    # Leveque & Li 1994, Example 1, 3 & 4, PWC, PWL
     def a(x):
-        return numpy.array([[1.0,0.0],[0.0,1.0]])
+        return numpy.array([[mua,0.0],[0.0,mua]])
     def f(x):
         return 0.0
 elif opts.test == 7.0:
     # PWQ
     def a(x):
-        return numpy.array([[1.0,0.0],[0.0,1.0]])
+        return numpy.array([[mua,0.0],[0.0,mua]])
     def f(x):
         return -4.0
 elif opts.test == 8.0:
+    # Ji et al 2014, Example 1 — piecewise constant diffusion
     def a(x):
-        if (x[0]**2 + x[1]**2) <= 0.25:
-            return numpy.array([[1.0,0.0],[0.0,1.0]])
+        if (x[0]**2 + x[1]**2) <= radius**2:
+            return numpy.array([[mua,0.0],[0.0,mua]])
         else:
-            return numpy.array([[1000.0,0.0],[0.0,1000.0]])
+            return numpy.array([[mub,0.0],[0.0,mub]])
     def f(x):
         return -9.0*(x[0]**2 + x[1]**2)**0.5
+elif opts.test == 9.0:
+    # PWCubic
+    def a(x):
+        return numpy.array([[mua,0.0],[0.0,mua]])
+    def f(x):
+        return -6.0*(x[0] + x[1])
+elif opts.test == 10.0:
+    # trig solution
+    def a(x):
+        return numpy.array([[mua,0.0],[0.0,mua]])
+    def f(x):
+        return 2.0*math.pi**2*math.sin(math.pi*x[0])*math.sin(math.pi*x[1])
 
 aOfX = {0:a}; fOfX = {0:f}
-
-center = (0.0,0.0)
-radius = 0.5
 
 def embeddedBoundary_sdf(x,t):
     xr = x[0] - center[0]
@@ -239,6 +286,9 @@ def embeddedBoundary_u(x,t):
 
 coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=B0_1c[0],nc=1,nd=nd,
                                 forceStrongDirichlet=True,
+                                mua=mua,
+                                mub=mub,
+                                jf=jf,
                                 immersedBoundary=True,
                                 immersedBoundary_sdf=embeddedBoundary_sdf,
                                 immersedBoundary_u=embeddedBoundary_u,
