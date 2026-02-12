@@ -1,14 +1,13 @@
 #!/bin/bash
-
 #SBATCH -N NUM_NODES
-#SBATCH -n TASKS_PER_NODE
-#SBATCH -t 20:00:00
-#SBATCH -p PARTITION_NAME 
-#SBATCH -A loni_ceds3d624
+#SBATCH --ntasks-per-node 192
+#SBATCH -t 04:00:00
+#SBATCH -q QUEUE_NAME 
+#SBATCH -A ARONC51302008
 #SBATCH -J "poisson test"
 #SBATCH -o poisson-%j.out	
 #SBATCH -e poisson-%j.err
-#SBATCH --mail-user=dnathawani@lsu.edu
+#SBATCH --mail-user=cekees@lsu.edu
 #SBATCH --mail-type=END,FAIL
 
 # below are job commands
@@ -19,35 +18,50 @@ echo ""
 echo "Slurm Nodes Allocated          = $SLURM_JOB_NODELIST"
 echo "Number of Nodes Allocated      = $SLURM_NNODES"
 echo "Number of Tasks Allocated      = $SLURM_NTASKS"
+eval "$(/p/home/cekees/miniforge3/bin/conda shell.bash hook)"
 
-module purge
-module load intel-mpi
+conda activate petsc-dev
 
-# Set some handy environment variables.
-export PROJECT_DIR=/project/$USER/proteus/test/ci
-export WORK_DIR=/work/$USER/poisson-${SLURM_NNODES}_${SLURM_NTASKS}
+export PROTEUS_ENV=/p/home/cekees/miniforge3/envs/petsc-dev
 
-export LD_LIBRARY_PATH=/project/darsh/miniforge/envs/petsc-dev/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH="$PROTEUS_ENV/lib:$LD_LIBRARY_PATH"
 
-# mamba activate petsc-dev
+export WORK_DIR=$WORKDIR/poisson-hd2-${SLURM_NNODES}_${SLURM_NTASKS}
+export MESH_DIR=$WORKDIR/poisson-${SLURM_NNODES}_${SLURM_NTASKS}
+
 #Make sure the WORK_DIR exists:
 mkdir -p $WORK_DIR
 
 # Copy files, jump to WORK_DIR, and execute a program
-cp $PROJECT_DIR/poisson_3d_tetgen_p.py $WORK_DIR
-cp $PROJECT_DIR/poisson_3d_tetgen_c0p1_n.py $WORK_DIR
-# cp poisson.sh $WORK_DIR
-
+cp $SLURM_SUBMIT_DIR/poisson_3d_tetgen_p.py $WORK_DIR
+cp $SLURM_SUBMIT_DIR/poisson_3d_tetgen_c0p1_n.py $WORK_DIR
+cp $SLURM_SUBMIT_DIR/poisson_slurm.sh $WORK_DIR
+cp $MESH_DIR/meshNoVessel.* $WORK_DIR
 cd $WORK_DIR
-
 start_time=$(date +%s)
-srun parun poisson_3d_tetgen_p.py poisson_3d_tetgen_c0p1_n.py -C "Refinement=NUM_REFINEMENT" -F -P "-ksp_rtol 1.0e-10 -ksp_type cg -pc_type bjacobi -sub_pc_type ilu -ksp_monitor" -p -l 2
+export FI_CXI_RX_MATCH_MODE=hybrid
+#export FI_CXI_REQ_BUF_SIZE=50331648
+#export FI_CXI_REQ_BUF_MIN_POSTED=24
+#export FI_CXI_DEFAULT_CQ_SIZE=262144
+export FI_CXI_REQ_BUF_SIZE=25165824
+export FI_CXI_REQ_BUF_MIN_POSTED=12
+export FI_CXI_DEFAULT_CQ_SIZE=131072
+export FI_MR_CACHE_MONITOR=memhooksenv
+srun parun poisson_3d_tetgen_p.py poisson_3d_tetgen_c0p1_n.py -C "Refinement=NUM_REFINEMENT genMesh=False" -F -P "-ksp_rtol 0.0 -ksp_atol 1.0e-9 -ksp_type cg -pc_type gamg -log_view" -l 5 -m
 end_time=$(date +%s)
 
 # Mark the time it finishes.
 echo "Date              = $(date)"
 echo "Total time to run the job is $(($end_time - $start_time))"
-echo $SLURM_NNODES  $SLURM_NTASKS  $(awk '/primitive calls/ {print $8}' $WORK_DIR/poisson_3d_tetgen_p.log | tail -n 1) >> ../poisson_time.txt
+echo $SLURM_NNODES  $SLURM_NTASKS  $(awk '/Newton it/ {
+    gsub(/\]/, "", $2);         # Clean the word
+    if (val == "") {            # If this is the first match
+        val = $2;               # Store it
+    } else {                    # If we already have a stored value
+        print $2 - val;         # Subtract current from stored and print
+        val = "";               # Reset if you expect more pairs
+    }
+}' $WORK_DIR/poisson_3d_tetgen_p.log) >> ../poisson_time-hd2.txt 
+#$(awk '/primitive calls/ {print $8}' $WORK_DIR/poisson_3d_tetgen_p.log | tail -n 1) >> ../poisson_time-hd2.txt
 # exit the job
 exit 0
-

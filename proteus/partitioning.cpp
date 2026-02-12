@@ -1588,7 +1588,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   valarray<int> element_nodes_old(4);
   vector<set<int>> nodeStar(nNodes_subdomain_old);
   vector<set<int>> nodeElements(nNodes_subdomain_old);
-  map<int,double> elementIds_old;
+  //map<int,double> elementIds_old;
   for (int ie = 0; ie < nElements_global; ie++)
     {
       int ne, nv;
@@ -1623,12 +1623,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                 }
 	      nodeElements[nN_star_subdomain].insert(ie);
             }
-          if (inSubdomain)//we don't know if these elements are owned
+	  /*          if (inSubdomain)//we don't know if these elements are owned
 			  //or not, could use element ownership scheme
 			  //used later, since we only need it to write to H5
             {
 	      elementIds_old[ie] = elementId_double;
 	    }
+	  */
         }
       elementFile >> eatline;
     }//end ie
@@ -1655,11 +1656,11 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   PetscInitialized(&isInitialized);
   PetscInt *nodeNeighborsOffsets_subdomain,*nodeNeighbors_subdomain,*weights_subdomain,*vertex_weights_subdomain;
   PetscReal *partition_weights;
-  PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old+1),&nodeNeighborsOffsets_subdomain);
-  PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old*max_nNodeNeighbors_node),&nodeNeighbors_subdomain);
-  PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old*max_nNodeNeighbors_node),&weights_subdomain);
-  PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old),&vertex_weights_subdomain);
-  PetscMalloc(sizeof(PetscReal)*(size),&partition_weights);
+  ierr = PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old+1),&nodeNeighborsOffsets_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old*max_nNodeNeighbors_node),&nodeNeighbors_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old*max_nNodeNeighbors_node),&weights_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old),&vertex_weights_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscMalloc(sizeof(PetscReal)*(size),&partition_weights);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   for (int sd=0;sd<size;sd++)
     partition_weights[sd] = 1.0/double(size);
   nodeNeighborsOffsets_subdomain[0] = 0;
@@ -1709,7 +1710,16 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //get petsc index set that has the new subdomain number for each node
   IS nodePartitioningIS_new;
   ierr = MatPartitioningApply(petscPartition,&nodePartitioningIS_new);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-  ierr = MatPartitioningDestroy(&petscPartition);CHKERRABORT(PROTEUS_COMM_WORLD, ierr); //gets petscAdjacency too I believe
+  ierr = MatDestroy(&petscAdjacency);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = MatPartitioningDestroy(&petscPartition);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  /*
+  //appears all of the below are destroyed by the above two calls
+  ierr = PetscFree(partition_weights);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscFree(vertex_weights_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscFree(weights_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscFree(nodeNeighbors_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscFree(nodeNeighborsOffsets_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);*/
+
   ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done applying partition");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 
   //determine the number of nodes per subdomain in new partitioning
@@ -1806,7 +1816,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 					    nodeElements_filespace_id,
 					    H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
   PetscInt *nodeElements_subdomain_array;
-  PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old*max_nElements_node),&nodeElements_subdomain_array);//cek replace with valarray
+  ierr = PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old*max_nElements_node),&nodeElements_subdomain_array);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);//cek replace with valarray
   valarray<hsize_t> new_nodeElements_indices(nNodes_subdomain_old*max_nElements_node*2);
   int offset=0;
   for (int nN = 0; nN < nNodes_subdomain_old; nN++)
@@ -1837,7 +1847,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   H5Dclose(nodeElements_dataset_id);
   H5Sclose(nodeElements_memspace_id);
   H5Sclose(nodeElements_filespace_id);
-  PetscFree(nodeElements_subdomain_array);
+  ierr = PetscFree(nodeElements_subdomain_array);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   //
   //test out of core
   //
@@ -1923,7 +1933,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   map<int, int> nodes_old2new_subdomain_map;
   //note any element index containers are in the old element numbering
   int eN_c_start = 0;//start of the collection of elements we are currently processing
-  const int nNodes_collection_max=250000;//nNodes_subdomain_max
+  const int nNodes_collection_max=10000;//nNodes_subdomain_max
   //get nodeElements for the new nodes (but their old elements)
   valarray<int> newNodeElements(nNodes_subdomain_new[rank]*max_nElements_node);
   nodeElements_dataset_id = H5Dopen1(file_id,"/nodeElements");
