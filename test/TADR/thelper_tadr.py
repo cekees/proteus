@@ -36,7 +36,7 @@ lag_shockCapturing_tadr=True
 nd=ct.nd
 
 # General parameters #
-parallel = False # if True use PETSc solvers
+parallel = True #False # if True use PETSc solvers
 linearSmoother = None
 checkMass = False
 

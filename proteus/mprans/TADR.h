@@ -99,7 +99,9 @@ namespace proteus
 void evaluateCoefficients(const int rowptr[nSpace],
 				                      const int colind[nnz],
                               const double v[nSpace],
-                              const double* q_a,
+                              const double alpha_L,
+                              const double alpha_T,
+                              const double Dm,
                               const double& u,
                               double& m,
                               double& dm,
@@ -110,15 +112,29 @@ void evaluateCoefficients(const int rowptr[nSpace],
     {
       m = u;
       dm= 1.0;
+      double v_mag = 0.0;
+      for (int I=0; I<nSpace; I++)
+        v_mag += v[I]*v[I];
+      v_mag = std::sqrt(v_mag);
+
+      double v_unit[nSpace] = {0.0};
+      if (v_mag > 1.0e-10)
+        for (int I=0; I<nSpace; I++)
+          v_unit[I] = v[I]/v_mag;
+
       for (int I=0; I < nSpace; I++)
         {
           f[I] = v[I]*u;
           df[I] = v[I];
-           for (int ii = rowptr[I]; ii < rowptr[I + 1]; ii++)
-        {
-            a[ii] = q_a[ii];
-            da[ii] = 0.0;
-        }
+          for (int ii = rowptr[I]; ii < rowptr[I + 1]; ii++)
+            {
+              const int J = colind[ii];
+              const double deltaIJ = (I == J) ? 1.0 : 0.0;
+              a[ii] = Dm*deltaIJ +
+                      alpha_L*v_unit[I]*v_unit[J]*v_mag +
+                      alpha_T*v_mag*(deltaIJ - v_unit[I]*v_unit[J]);
+              da[ii] = 0.0;
+            }
 
         } 
     }
@@ -164,7 +180,7 @@ inline
 	}
       else
 	{
-	  std::cerr << "warning, diffusion term with no boundary condition set, setting diffusive flux to 0.0" << std::endl;
+	  //std::cerr << "warning, diffusion term with no boundary condition set, setting diffusive flux to 0.0" << std::endl;
 	  flux = 0.0;
 	}
     }
@@ -307,7 +323,7 @@ inline
             }
           else
             {
-              std::cout<<"warning: TADR open boundary with no external trace, setting to zero for inflow"<<std::endl;
+              // std::cout<<"warning: TADR open boundary with no external trace, setting to zero for inflow"<<std::endl;
               flux = 0.0;
             }
 
@@ -421,9 +437,10 @@ inline
       xt::pyarray<double>& q_m = args.array<double>("q_m");
       xt::pyarray<double>& q_u = args.array<double>("q_u");
 
-      xt::pyarray<double>& q_a = args.array<double>("q_a");
       xt::pyarray<double>& q_r = args.array<double>("q_r");
-      xt::pyarray<double>& ebqe_a = args.array<double>("ebq_a");
+      const double alpha_L = args.scalar<double>("alpha_L");
+      const double alpha_T = args.scalar<double>("alpha_T");
+      const double Dm = args.scalar<double>("Dm");
       
 
       xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
@@ -438,6 +455,8 @@ inline
       xt::pyarray<double>& globalResidual = args.array<double>("globalResidual");
       int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
       xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
+      xt::pyarray<int>& elementBoundaryMaterialTypes = args.array<int>("elementBoundaryMaterialTypes");
+      xt::pyarray<int>& isExteriorBoundaryPhysical = args.array<int>("isExteriorBoundaryPhysical");
       xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
       xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
       xt::pyarray<double>& ebqe_velocity_ext = args.array<double>("ebqe_velocity_ext");
@@ -649,11 +668,12 @@ inline
               //
               //calculate pde coefficients at quadrature points
 
-              const double* q_a_ptr = &q_a[eN_k * a_rowptr[nSpace]];
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &velocity.data()[eN_k_nSpace],
-                                   q_a_ptr, //&q_a.data()[eN_k*a_rowptr.data()[nSpace]],//[eN_k*nnz],
+                                   alpha_L,
+                                   alpha_T,
+                                   Dm,
                                    u,
                                    m,
                                    dm,
@@ -670,7 +690,9 @@ inline
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &velocity.data()[eN_k_nSpace],
-                                   q_a_ptr, //&q_a.data()[eN_k*a_rowptr.data()[nSpace]],//[eN_k*a_rowptr.data()[nSpace]],//[eN_k*nnz],
+                                   alpha_L,
+                                   alpha_T,
+                                   Dm,
                                    un,
                                    mn,
                                    dmn,
@@ -954,6 +976,13 @@ inline
             eN  = elementBoundaryElementsArray.data()[ebN*2+0],
             ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+0],
             eN_nDOF_trial_element = eN*nDOF_trial_element;
+          const int eN_out = elementBoundaryElementsArray.data()[ebN*2+1];
+          const int ebFlag = elementBoundaryMaterialTypes.data()[ebN];
+          // Only integrate true physical exterior boundaries; skip partition/non-physical faces.
+          if (ebFlag <= 0 || isExteriorBoundaryPhysical.data()[ebNE] == 0 || eN_out >= 0)
+            {
+              continue;
+            }
           double elementResidual_u[nDOF_test_element],
             fluxTransport[nDOF_test_element][nDOF_trial_element];
           for (int i=0;i<nDOF_test_element;i++)
@@ -1091,11 +1120,12 @@ inline
               //
               //calculate the pde coefficients using the solution and the boundary values for the solution
               //
-              const double* qb_a_ptr = &ebqe_a[ebNE_kb * a_rowptr[nSpace]];
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &ebqe_velocity_ext.data()[ebNE_kb_nSpace],
-                                   qb_a_ptr, //&q_a.data()[ebNE * nQuadraturePoints_element * nnz + kb * nnz],//[ebNE_kb*a_rowptr.data()[nSpace]],//[ebNE_kb*nnz],
+                                   alpha_L,
+                                   alpha_T,
+                                   Dm,
                                    u_ext,
                                    m_ext,
                                    dm_ext,
@@ -1107,7 +1137,9 @@ inline
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &ebqe_velocity_ext.data()[ebNE_kb_nSpace],
-                                   qb_a_ptr,//&q_a.data()[ebNE * nQuadraturePoints_element * nnz + kb * nnz],//[ebNE_kb*a_rowptr.data()[nSpace]],//[ebNE_kb*nnz],
+                                   alpha_L,
+                                   alpha_T,
+                                   Dm,
                                    bc_u_ext,
                                    bc_m_ext,
                                    bc_dm_ext,
@@ -1473,6 +1505,8 @@ inline
       xt::pyarray<double>& globalJacobian = args.array<double>("globalJacobian");
       int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
       xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
+      xt::pyarray<int>& elementBoundaryMaterialTypes = args.array<int>("elementBoundaryMaterialTypes");
+      xt::pyarray<int>& isExteriorBoundaryPhysical = args.array<int>("isExteriorBoundaryPhysical");
       xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
       xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
       xt::pyarray<double>& ebqe_velocity_ext = args.array<double>("ebqe_velocity_ext");
@@ -1485,8 +1519,9 @@ inline
 //      ENTROPY ENTROPY_TYPE = static_cast<ENTROPY>(args.scalar<int>("ENTROPY_TYPE"));    
 //      STABILIZATION STABILIZATION_TYPE{args.scalar<int>("STABILIZATION_TYPE")};
       double physicalDiffusion = args.scalar<double>("physicalDiffusion");
-      xt::pyarray<double>& q_a = args.array<double>("q_a");
-      xt::pyarray<double>& ebqe_a = args.array<double>("ebq_a");
+      const double alpha_L = args.scalar<double>("alpha_L");
+      const double alpha_T = args.scalar<double>("alpha_T");
+      const double Dm = args.scalar<double>("Dm");
 
 
       double Ct_sge = 4.0;
@@ -1582,11 +1617,12 @@ inline
               //calculate pde coefficients and derivatives at quadrature points
               //
               
-              const double* q_a_ptr = &q_a[eN_k * a_rowptr[nSpace]];
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &velocity.data()[eN_k_nSpace],
-                                   q_a_ptr, //&q_a.data()[eN * nQuadraturePoints_element * nnz + k * nnz],//[eN_k*a_rowptr.data()[nSpace]],//[eN_k*nnz],
+                                   alpha_L,
+                                   alpha_T,
+                                   Dm,
                                    u,
                                    m,
                                    dm,
@@ -1727,6 +1763,10 @@ inline
           for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++)
             {
               int ebN = exteriorElementBoundariesArray.data()[ebNE];
+              const int eN_out = elementBoundaryElementsArray.data()[ebN*2+1];
+              const int ebFlag = elementBoundaryMaterialTypes.data()[ebN];
+              if (ebFlag <= 0 || isExteriorBoundaryPhysical.data()[ebNE] == 0 || eN_out >= 0)
+                continue;
               int eN  = elementBoundaryElementsArray.data()[ebN*2+0],
                 ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+0],
                 eN_nDOF_trial_element = eN*nDOF_trial_element;
@@ -1838,11 +1878,12 @@ inline
                   //calculate the internal and external trace of the pde coefficients
                   //
 
-                  const double* qb_a_ptr = &ebqe_a[ebNE_kb * a_rowptr[nSpace]];
                   evaluateCoefficients(a_rowptr.data(),
                                        a_colind.data(),
                                        &ebqe_velocity_ext.data()[ebNE_kb_nSpace],
-                                       qb_a_ptr,//&q_a.data()[ebNE * nQuadraturePoints_element * nnz + kb * nnz],//[ebNE_kb*a_rowptr.data()[nSpace]],//[ebNE_kb* nnz],
+                                       alpha_L,
+                                       alpha_T,
+                                       Dm,
                                        u_ext,
                                        m_ext,
                                        dm_ext,
@@ -1855,7 +1896,9 @@ inline
                   evaluateCoefficients(a_rowptr.data(),
                                        a_colind.data(),
                                        &ebqe_velocity_ext.data()[ebNE_kb_nSpace],
-                                       qb_a_ptr,//&q_a.data()[ebNE * nQuadraturePoints_element * nnz + kb * nnz],//[ebNE_kb*a_rowptr.data()[nSpace]],//[ebNE_kb* nnz],
+                                       alpha_L,
+                                       alpha_T,
+                                       Dm,
                                        bc_u_ext,
                                        bc_m_ext,
                                        bc_dm_ext,

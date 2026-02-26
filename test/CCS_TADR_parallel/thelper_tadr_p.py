@@ -13,7 +13,7 @@ except:
 LevelModelType = TADR.LevelModel
 logEvent = Profiling.logEvent
 name=soname
-a0= 0.01
+a0= 0.00
 def a(x):
     return np.array([[a0,0.0],[0.0,a0]])
 aOfX = {0:a}
@@ -22,6 +22,7 @@ nd=ct.nd
 coefficients = MyCoefficients(
     aOfX,
     checkMass=checkMass,
+    forceStrongConditions=False,
     FCT=ct.FCT,
     LUMPED_MASS_MATRIX=ct.LUMPED_MASS_MATRIX, 
     STABILIZATION_TYPE=ct.STABILIZATION_TYPE,
@@ -116,11 +117,11 @@ analyticalSolution = {0:init_cond(L)}
 def getDBC(x,flag):
      if ct.problem in [0,2]:      
          if flag == domain.boundaryTags['left']:
-             return lambda x,t:1.0
+             return lambda x,t:0.0
          if flag == domain.boundaryTags['top']:
              return lambda x,t:0.0
          if flag == domain.boundaryTags['bottom']:
-             return lambda x,t:1.0
+             return lambda x,t:0.0
          if flag == domain.boundaryTags['right']:
              return lambda x,t:0.0
      #else:

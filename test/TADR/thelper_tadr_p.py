@@ -10,16 +10,22 @@ except:
 LevelModelType = TADR.LevelModel
 logEvent = Profiling.logEvent
 name=soname
-
+a0= 0.00
+def a(x):
+    return np.array([[a0,0.0],[0.0,a0]])
+aOfX = {0:a}
 nd=ct.nd
 
 coefficients = MyCoefficients(
+    aOfX,
     checkMass=checkMass,
+    forceStrongConditions=False,
     FCT=ct.FCT,
     LUMPED_MASS_MATRIX=ct.LUMPED_MASS_MATRIX, 
     STABILIZATION_TYPE=ct.STABILIZATION_TYPE, 
-    ENTROPY_TYPE=ct.ENTROPY_TYPE, 
-    cE=ct.cE, cK=ct.cK, physicalDiffusion=ct.physicalDiffusion) 
+    ENTROPY_TYPE='LOG', #ct.ENTROPY_TYPE, 
+    cE=ct.cE, cK=ct.cK, physicalDiffusion=ct.physicalDiffusion,
+    Dm=0.0, alpha_L=0.0, alpha_T=0.0) 
 coefficients.variableNames=['u']
 
 ##################
@@ -92,7 +98,16 @@ def getDBC(x,flag):
     if ct.problem in [0,2]:
         None
     else:
-        return lambda x,t: 0.0
+        if flag == domain.boundaryTags['top']:
+             return lambda x,t:0.0
+        if flag == domain.boundaryTags['bottom']:
+             return lambda x,t:0.0
+        if flag == domain.boundaryTags['left']:
+             return lambda x,t:0.0
+        if flag == domain.boundaryTags['right']:
+             return lambda x,t:0.0
+
+        #return lambda x,t: 0.0
 dirichletConditions = {0:getDBC}
 
 #Periodic Boundary Conditions

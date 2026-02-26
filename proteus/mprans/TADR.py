@@ -16,7 +16,7 @@ from proteus.TransportCoefficients import TC_base
 from proteus.SubgridError import SGE_base
 from proteus.ShockCapturing import ShockCapturing_base
 from proteus.NumericalFlux import Advection_DiagonalUpwind_Diffusion_IIPG_exterior
-from proteus.LinearAlgebraTools import SparseMat
+from proteus.LinearAlgebraTools import SparseMat, ParVec_petsc4py
 from proteus.NonlinearSolvers import ExplicitLumpedMassMatrix,ExplicitConsistentMassMatrixForVOF,TwoStageNewton
 from proteus.mprans.cTADR import cTADR_base
 
@@ -280,7 +280,7 @@ class Coefficients(TC_base):
                  sc_uref=1.0,
                  sc_beta=1.0,
                  movingDomain=False,
-                 forceStrongConditions=True,
+                 forceStrongConditions=False,
                  STABILIZATION_TYPE='VMS',        
                  ENTROPY_TYPE='POWER',
                  diagonal_conductivity=True,
@@ -299,7 +299,11 @@ class Coefficients(TC_base):
                  #NULLSPACE INFO
                  nullSpace='NoNullSpace',
                  initialize=True,
-                 physicalDiffusion=0.0):
+                 physicalDiffusion=0.0,
+                 alpha_L=0.0,
+                 alpha_T=0.0,
+                 Dm=None,
+                 specified_velocity=True):
         self.variableNames = ['u']
         self.LS_modelIndex = LS_model
         self.V_model = V_model
@@ -345,6 +349,10 @@ class Coefficients(TC_base):
         self.nullSpace = nullSpace
         self.flowCoefficients = None
         self.physicalDiffusion=physicalDiffusion
+        self.alpha_L = alpha_L
+        self.alpha_T = alpha_T
+        self.Dm = physicalDiffusion if Dm is None else Dm
+        self.specified_velocity = specified_velocity
         self.sparseDiffusionTensors = sdInfo
         if initialize:
             self.initialize()
@@ -381,6 +389,10 @@ class Coefficients(TC_base):
         self.nullSpace = nullSpace
         self.flowCoefficients = None
         self.physicalDiffusion=physicalDiffusion
+        self.alpha_L = alpha_L
+        self.alpha_T = alpha_T
+        self.Dm = physicalDiffusion if Dm is None else Dm
+        self.specified_velocity = specified_velocity
         if initialize:
             self.initialize()
    
@@ -431,17 +443,23 @@ class Coefficients(TC_base):
             self.ebqe_phi = np.zeros(self.model.ebqe[('u', 0)].shape, 'd') # cek hack, we don't need this
         # flow model
         if self.V_model is not None:
-            if ('velocity', 0) in modelList[self.V_model].q:
-                self.q_v = modelList[self.V_model].q[('velocity', 0)]
-                self.ebqe_v = modelList[self.V_model].ebqe[('velocity', 0)]
+            if self.specified_velocity:
+                if ('velocity', 0) in modelList[self.V_model].q:
+                    self.q_v = modelList[self.V_model].q[('velocity', 0)]
+                    self.ebqe_v = modelList[self.V_model].ebqe[('velocity', 0)]
+                else:
+                    self.q_v = modelList[self.V_model].q[('f', 0)]
+                    self.ebqe_v = modelList[self.V_model].ebqe[('f', 0)]
+                if ('velocity', 0) in modelList[self.V_model].ebq:
+                    self.ebq_v = modelList[self.V_model].ebq[('velocity', 0)]
+                else:
+                    if ('f', 0) in modelList[self.V_model].ebq:
+                        self.ebq_v = modelList[self.V_model].ebq[('f', 0)]
             else:
-                self.q_v = modelList[self.V_model].q[('f', 0)]
-                self.ebqe_v = modelList[self.V_model].ebqe[('f', 0)]
-            if ('velocity', 0) in modelList[self.V_model].ebq:
-                self.ebq_v = modelList[self.V_model].ebq[('velocity', 0)]
-            else:
-                if ('f', 0) in modelList[self.V_model].ebq:
-                    self.ebq_v = modelList[self.V_model].ebq[('f', 0)]
+                # Use coupled velocity produced by Richards: ('velocity_couple', 0)
+                self.q_v = modelList[self.V_model].q[('velocity_couple', 0)]
+                self.ebqe_v = modelList[self.V_model].ebqe[('velocity_couple', 0)]
+                self.ebq_v = None
         else:
             self.q_v = np.ones(self.model.q[('u',0)].shape+(self.model.nSpace_global,),'d')
             self.ebqe_v = np.ones(self.model.ebqe[('u',0)].shape+(self.model.nSpace_global,),'d')
@@ -461,7 +479,7 @@ class Coefficients(TC_base):
         self.model.auxTaylorGalerkinFlag = 1
         
         # COMPUTE NEW VELOCITY (if given by user) #
-        if self.model.hasVelocityFieldAsFunction:
+        if self.model.hasVelocityFieldAsFunction and self.model.coefficients.specified_velocity:
             self.model.updateVelocityFieldAsFunction()
 
         if self.checkMass:
@@ -916,6 +934,19 @@ class LevelModel(OneLevelTransport):
         if not hasattr(self.numericalFlux, 'ebqe'):
             self.numericalFlux.ebqe = {('u', 0): np.zeros(self.ebqe[('u', 0)].shape, 'd')}
 
+        # Build an explicit mask of physical exterior boundaries.
+        # A face is physical if it has no "outside" element; processor
+        # interfaces typically have a neighboring (ghost) element.
+        self.isExteriorBoundaryPhysical = np.zeros((self.mesh.nExteriorElementBoundaries_global,), 'i')
+        ebe = self.mesh.elementBoundaryElementsArray
+        for ebNE in range(self.mesh.nExteriorElementBoundaries_global):
+            ebN = self.mesh.exteriorElementBoundariesArray[ebNE]
+            if ebe.ndim == 2:
+                outside_eN = ebe[ebN, 1]
+            else:
+                outside_eN = ebe[ebN * 2 + 1]
+            self.isExteriorBoundaryPhysical[ebNE] = 1 if outside_eN < 0 else 0
+
         #TODO how to handle redistancing calls for calculateCoefficients,calculateElementResidual etc
         self.globalResidualDummy = None
         compKernelFlag = 0
@@ -927,7 +958,9 @@ class LevelModel(OneLevelTransport):
                              self.nElementBoundaryQuadraturePoints_elementBoundary,
                              compKernelFlag)
 
-        self.forceStrongConditions = True #False
+        self.forceStrongConditions = bool(getattr(self.coefficients,
+                                                  "forceStrongConditions",
+                                                  False))
         if self.forceStrongConditions:
             self.dirichletConditionsForceDOF = DOFBoundaryConditions(self.u[0].femSpace, dofBoundaryConditionsSetterDict[0], weakDirichletConditions=False)
 
@@ -1124,6 +1157,22 @@ class LevelModel(OneLevelTransport):
         
     def initVectors(self):
         self.u_dof_old = np.copy(self.u[0].dof)
+        self.par_u_dof_old = None
+        par_u = None
+        if hasattr(self, "par_uList") and len(self.par_uList) > 0 and self.par_uList[0] is not None:
+            par_u = self.par_uList[0]
+        elif hasattr(self.u[0], "par_dof") and self.u[0].par_dof is not None:
+            par_u = self.u[0].par_dof
+        if par_u is not None:
+            self.par_u_dof_old = ParVec_petsc4py(self.u_dof_old,
+                                                 1,
+                                                 par_u.dim_proc,
+                                                 par_u.getSize(),
+                                                 par_u.nghosts,
+                                                 par_u.subdomain2global,
+                                                 ghosts=None,
+                                                 proteus2petsc_subdomain=par_u.proteus2petsc_subdomain,
+                                                 petsc2proteus_subdomain=par_u.petsc2proteus_subdomain)
         rowptr, colind, MC = self.MC_global.getCSRrepresentation()
         # This is dummy. I just care about the csr structure of the sparse matrix
         self.dt_times_dC_minus_dL = np.zeros(MC.shape, 'd')
@@ -1160,20 +1209,16 @@ class LevelModel(OneLevelTransport):
             self.numericalFlux.setDirichletValues(self.ebqe)
         # flux boundary conditions
         for t, g in list(self.fluxBoundaryConditionsObjectsDict[0].advectiveFluxBoundaryConditionsDict.items()):
-            print(f"Setting advective flux bc at boundary {t[0]}, point {t[1]}")
             self.ebqe[('advectiveFlux_bc', 0)][t[0], t[1]] = g(self.ebqe[('x')][t[0], t[1]], self.timeIntegration.t)
             self.ebqe[('advectiveFlux_bc_flag', 0)][t[0], t[1]] = 1
-            print(f"  advective flux bc value: {self.ebqe[('advectiveFlux_bc', 0)][t[0], t[1]]}")
 
 
         # Flux boundary conditions for diffusive terms
         for ck, diffusiveFluxBoundaryConditionsDict in self.fluxBoundaryConditionsObjectsDict[0].diffusiveFluxBoundaryConditionsDictDict.items():
             #self.ebqe[('diffusiveFlux_bc_flag', ck, 0)] = np.zeros(self.ebqe[('diffusiveFlux_bc', ck, 0)].shape, 'i')
             for t, g in diffusiveFluxBoundaryConditionsDict.items():
-                logEvent(f"Setting diffusive flux bc at boundary {t[0]}, point {t[1]}")
                 self.ebqe[('diffusiveFlux_bc', ck, 0)][t[0], t[1]] = g(self.ebqe[('x')][t[0], t[1]], self.timeIntegration.t)
                 self.ebqe[('diffusiveFlux_bc_flag', ck, 0)][t[0], t[1]] = 1
-                logEvent(f"  diffusive flux bc value: {self.ebqe[('diffusiveFlux_bc', ck, 0)][t[0], t[1]]}")
 
 
         if self.forceStrongConditions:
@@ -1242,6 +1287,8 @@ class LevelModel(OneLevelTransport):
         argsDict["globalResidual"] = r
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
+        argsDict["elementBoundaryMaterialTypes"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["isExteriorBoundaryPhysical"] = self.isExteriorBoundaryPhysical
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
         argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
@@ -1285,6 +1332,9 @@ class LevelModel(OneLevelTransport):
         argsDict["max_u_bc"] = self.max_u_bc
         argsDict["quantDOFs"] = self.quantDOFs
         argsDict["physicalDiffusion"] = self.coefficients.physicalDiffusion
+        argsDict["alpha_L"] = self.coefficients.alpha_L
+        argsDict["alpha_T"] = self.coefficients.alpha_T
+        argsDict["Dm"] = self.coefficients.Dm
         #argsDict["D"] = self.coefficients.DTypes
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag',0,0)]
         argsDict["isAdvectiveFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag',0)]
@@ -1297,6 +1347,17 @@ class LevelModel(OneLevelTransport):
     
         argsDict["a_rowptr"] = sdInfo[(0, 0)][0]
         argsDict["a_colind"] = sdInfo[(0, 0)][1]
+
+        # Keep ghost values synchronized for edge-based MPI couplings.
+        par_u = None
+        if hasattr(self, "par_uList") and len(self.par_uList) > 0 and self.par_uList[0] is not None:
+            par_u = self.par_uList[0]
+        elif hasattr(self.u[0], "par_dof") and self.u[0].par_dof is not None:
+            par_u = self.u[0].par_dof
+        if par_u is not None:
+            par_u.scatter_forward_insert()
+            if self.par_u_dof_old is not None:
+                self.par_u_dof_old.scatter_forward_insert()
 
         #argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         #argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
@@ -1385,6 +1446,8 @@ class LevelModel(OneLevelTransport):
         argsDict["globalJacobian"] = jacobian.getCSRrepresentation()[2]
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
+        argsDict["elementBoundaryMaterialTypes"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["isExteriorBoundaryPhysical"] = self.isExteriorBoundaryPhysical
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
         argsDict["ebqe_velocity_ext"] = self.coefficients.ebqe_v
@@ -1400,6 +1463,9 @@ class LevelModel(OneLevelTransport):
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0, 0)]
         argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
         argsDict["physicalDiffusion"] = self.coefficients.physicalDiffusion   
+        argsDict["alpha_L"] = self.coefficients.alpha_L
+        argsDict["alpha_T"] = self.coefficients.alpha_T
+        argsDict["Dm"] = self.coefficients.Dm
         argsDict["ebq_a"] = self.ebqe[('a',0,0)]
         #argsDict["D"] = self.coefficients.DTypes
 
