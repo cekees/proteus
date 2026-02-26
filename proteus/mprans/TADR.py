@@ -443,22 +443,23 @@ class Coefficients(TC_base):
             self.ebqe_phi = np.zeros(self.model.ebqe[('u', 0)].shape, 'd') # cek hack, we don't need this
         # flow model
         if self.V_model is not None:
+            self.vModel = modelList[self.V_model]
             if self.specified_velocity:
-                if ('velocity', 0) in modelList[self.V_model].q:
-                    self.q_v = modelList[self.V_model].q[('velocity', 0)]
-                    self.ebqe_v = modelList[self.V_model].ebqe[('velocity', 0)]
+                if ('velocity', 0) in self.vModel.q:
+                    self.q_v = self.vModel.q[('velocity', 0)]
+                    self.ebqe_v = self.vModel.ebqe[('velocity', 0)]
                 else:
-                    self.q_v = modelList[self.V_model].q[('f', 0)]
-                    self.ebqe_v = modelList[self.V_model].ebqe[('f', 0)]
-                if ('velocity', 0) in modelList[self.V_model].ebq:
-                    self.ebq_v = modelList[self.V_model].ebq[('velocity', 0)]
+                    self.q_v = self.vModel.q[('f', 0)]
+                    self.ebqe_v = self.vModel.ebqe[('f', 0)]
+                if ('velocity', 0) in self.vModel.ebq:
+                    self.ebq_v = self.vModel.ebq[('velocity', 0)]
                 else:
-                    if ('f', 0) in modelList[self.V_model].ebq:
-                        self.ebq_v = modelList[self.V_model].ebq[('f', 0)]
+                    if ('f', 0) in self.vModel.ebq:
+                        self.ebq_v = self.vModel.ebq[('f', 0)]
             else:
                 # Use coupled velocity produced by Richards: ('velocity_couple', 0)
-                self.q_v = modelList[self.V_model].q[('velocity_couple', 0)]
-                self.ebqe_v = modelList[self.V_model].ebqe[('velocity_couple', 0)]
+                self.q_v = self.vModel.q[('velocity_couple', 0)]
+                self.ebqe_v = self.vModel.ebqe[('velocity_couple', 0)]
                 self.ebq_v = None
         else:
             self.q_v = np.ones(self.model.q[('u',0)].shape+(self.model.nSpace_global,),'d')
@@ -481,6 +482,11 @@ class Coefficients(TC_base):
         # COMPUTE NEW VELOCITY (if given by user) #
         if self.model.hasVelocityFieldAsFunction and self.model.coefficients.specified_velocity:
             self.model.updateVelocityFieldAsFunction()
+        elif (not self.model.coefficients.specified_velocity and
+              self.V_model is not None):
+            # Refresh coupled velocity every step from Richards.
+            self.q_v[:] = self.vModel.q[('velocity_couple', 0)]
+            self.ebqe_v[:] = self.vModel.ebqe[('velocity_couple', 0)]
 
         if self.checkMass:
             self.m_pre = Norms.scalarDomainIntegral(self.model.q['dV_last'],
