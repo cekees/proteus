@@ -176,7 +176,7 @@ namespace equivalent_polynomials
     double cut_barycenter[3] ={0.,0.,0.};
     bool bminus;
     bool corner;
-  private:;
+    //private:;
     double _H_q, _ImH_q, _D_q, _va_q[nN], _vb_q[nN],
       _va_x[nN],_va_y[nN],_va_z[nN],_vb_x[nN],_vb_y[nN],_vb_z[nN];
     unsigned int root_node, permutation[nN];
@@ -317,12 +317,12 @@ namespace equivalent_polynomials
     {
       if (zcount == nN - 1) // interface is on an element boundary, don't integrate this orientation
       {
+	return -1;
         bminus = true;
-        // std::cout<<"zcount "<<zcount<<std::endl;
+        std::cout<<"zcount "<<zcount<<std::endl;
         if (nSpace > 1)
         {
           // note: see comment below about these two cases
-          // return -1;
           root_node = n_i;
         }
         else
@@ -339,7 +339,8 @@ namespace equivalent_polynomials
     {
       if (zcount == nN - 1) // interface is on an element boundary, integrate this orientation
       {
-        // std::cout<<"zcount "<<zcount<<std::endl;
+	return 1;
+        std::cout<<"zcount "<<zcount<<std::endl;
         // note: we are marking the element to the positive sdf side as cut,
         // which means the other element is fully in the -1 domain
         // for single-phase/cut cell methods, that means the fictitious domain
@@ -378,7 +379,7 @@ namespace equivalent_polynomials
     }
     else
     {
-      // std::cout<<"zcount "<<zcount<<"pcount "<<pcount<<"ncount "<<ncount<<std::endl;
+      std::cout<<"zcount "<<zcount<<"pcount "<<pcount<<"ncount "<<ncount<<std::endl;
       if (zcount >= nN - 1)
         std::cerr << "zcount " << zcount << " >= " << nN - 1 << std::endl;
       assert(zcount < nN - 1);
@@ -387,14 +388,14 @@ namespace equivalent_polynomials
       {
         root_node = z_i;
         inside_out = true;
+	return 1;
       }
-      // return 1;
       else if (ncount)
       {
         root_node = z_i;
         // inside_out = true;
+	return -1;
       }
-      // return -1;
       else
         assert(false);
     }
@@ -590,6 +591,7 @@ namespace equivalent_polynomials
     double nx=0.0,ny=0.0,fax=0.0,fay=0.0,fbx=0.0,fby=0.0;
     if (inside_out)
       {
+	//std::cout<<"inside out"<<std::endl;
         nx = -level_set_normal[0];
         ny = -level_set_normal[1];
       }
@@ -624,13 +626,29 @@ namespace equivalent_polynomials
         _b2[i] = (-2.0*Jit00*ma*nx*v[0]*y0 + 2.0*Jit00*ma*nx*v[2]*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[1]*x0*y0 - 2.0*Jit01*ma*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[2]*x0*y0 - 2.0*Jit10*ma*ny*v[0]*y0 + 2.0*Jit10*ma*ny*v[2]*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[1]*x0*y0 - 2.0*Jit11*ma*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[2]*x0*y0 - fax*nx*v[1]*x0*y0*y0 + fax*nx*v[2]*x0*y0*y0 - 2.0*fax*nx*v[2]*x0*y0 - fay*ny*v[1]*x0*y0*y0 + fay*ny*v[2]*x0*y0*y0 - 2.0*fay*ny*v[2]*x0*y0 + fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[2]*x0*y0*y0 + 2.0*fbx*nx*v[2]*x0*y0 + fby*ny*v[1]*x0*y0*y0 - fby*ny*v[2]*x0*y0*y0 + 2.0*fby*ny*v[2]*x0*y0 - 2.0*jf*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
         _b3[i] = (-2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[1]*x0*y0 + 2.0*Jit00*ma*nx*v[1]*y0 + 2.0*Jit00*ma*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[1]*x0*y0 - 2.0*Jit00*mb*nx*v[2]*x0*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[1]*x0 - 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[1]*y0 + 2.0*Jit10*ma*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[1]*x0*y0 - 2.0*Jit10*mb*ny*v[2]*x0*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[1]*x0 + fax*nx*v[1]*x0*x0*y0 - 2.0*fax*nx*v[1]*x0*y0 - fax*nx*v[2]*x0*x0*y0 + fay*ny*v[1]*x0*x0*y0 - 2.0*fay*ny*v[1]*x0*y0 - fay*ny*v[2]*x0*x0*y0 - fbx*nx*v[1]*x0*x0*y0 + 2.0*fbx*nx*v[1]*x0*y0 + fbx*nx*v[2]*x0*x0*y0 - fby*ny*v[1]*x0*x0*y0 + 2.0*fby*ny*v[1]*x0*y0 + fby*ny*v[2]*x0*x0*y0 - 2.0*jf*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
         */
+	/*
         _a1[i] = v[0];
         _a2[i] = (-2.0*Jit00*mb*nx*v[0]*y0 + 2.0*Jit00*mb*nx*v[2]*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[0]*y0 + 2.0*Jit01*ma*nx*v[1]*x0*y0 - 2.0*Jit01*ma*nx*v[1]*y0 - 2.0*Jit01*ma*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[0]*y0 - 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[1]*y0 + 2.0*Jit01*mb*nx*v[2]*x0*y0 - 2.0*Jit10*mb*ny*v[0]*y0 + 2.0*Jit10*mb*ny*v[2]*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[0]*y0 + 2.0*Jit11*ma*ny*v[1]*x0*y0 - 2.0*Jit11*ma*ny*v[1]*y0 - 2.0*Jit11*ma*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[0]*y0 - 2.0*Jit11*mb*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[1]*y0 + 2.0*Jit11*mb*ny*v[2]*x0*y0 - fax*nx*v[0]*x0*y0 - fax*nx*v[0]*y0*y0 + 2.0*fax*nx*v[0]*y0 - fax*nx*v[1]*x0*y0*y0 + fax*nx*v[1]*y0*y0 + fax*nx*v[2]*x0*y0*y0 - fax*nx*v[2]*x0*y0 - fay*ny*v[0]*x0*y0 - fay*ny*v[0]*y0*y0 + 2.0*fay*ny*v[0]*y0 - fay*ny*v[1]*x0*y0*y0 + fay*ny*v[1]*y0*y0 + fay*ny*v[2]*x0*y0*y0 - fay*ny*v[2]*x0*y0 + fbx*nx*v[0]*x0*y0 + fbx*nx*v[0]*y0*y0 - 2.0*fbx*nx*v[0]*y0 + fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[1]*y0*y0 - fbx*nx*v[2]*x0*y0*y0 + fbx*nx*v[2]*x0*y0 + fby*ny*v[0]*x0*y0 + fby*ny*v[0]*y0*y0 - 2.0*fby*ny*v[0]*y0 + fby*ny*v[1]*x0*y0*y0 - fby*ny*v[1]*y0*y0 - fby*ny*v[2]*x0*y0*y0 + fby*ny*v[2]*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
         _a3[i] = (2.0*Jit00*ma*nx*v[0]*x0 - 2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[1]*x0*y0 + 2.0*Jit00*ma*nx*v[1]*y0 + 2.0*Jit00*ma*nx*v[2]*x0*y0 - 2.0*Jit00*ma*nx*v[2]*x0 - 2.0*Jit00*mb*nx*v[0]*x0 + 2.0*Jit00*mb*nx*v[1]*x0*y0 - 2.0*Jit00*mb*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[0]*x0 + 2.0*Jit01*mb*nx*v[1]*x0 + 2.0*Jit10*ma*ny*v[0]*x0 - 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[1]*y0 + 2.0*Jit10*ma*ny*v[2]*x0*y0 - 2.0*Jit10*ma*ny*v[2]*x0 - 2.0*Jit10*mb*ny*v[0]*x0 + 2.0*Jit10*mb*ny*v[1]*x0*y0 - 2.0*Jit10*mb*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[0]*x0 + 2.0*Jit11*mb*ny*v[1]*x0 - fax*nx*v[0]*x0*x0 - fax*nx*v[0]*x0*y0 + 2.0*fax*nx*v[0]*x0 + fax*nx*v[1]*x0*x0*y0 - fax*nx*v[1]*x0*y0 - fax*nx*v[2]*x0*x0*y0 + fax*nx*v[2]*x0*x0 - fay*ny*v[0]*x0*x0 - fay*ny*v[0]*x0*y0 + 2.0*fay*ny*v[0]*x0 + fay*ny*v[1]*x0*x0*y0 - fay*ny*v[1]*x0*y0 - fay*ny*v[2]*x0*x0*y0 + fay*ny*v[2]*x0*x0 + fbx*nx*v[0]*x0*x0 + fbx*nx*v[0]*x0*y0 - 2.0*fbx*nx*v[0]*x0 - fbx*nx*v[1]*x0*x0*y0 + fbx*nx*v[1]*x0*y0 + fbx*nx*v[2]*x0*x0*y0 - fbx*nx*v[2]*x0*x0 + fby*ny*v[0]*x0*x0 + fby*ny*v[0]*x0*y0 - 2.0*fby*ny*v[0]*x0 - fby*ny*v[1]*x0*x0*y0 + fby*ny*v[1]*x0*y0 + fby*ny*v[2]*x0*x0*y0 - fby*ny*v[2]*x0*x0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
         _b1[i] = (2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[0]*x0 - 2.0*Jit01*ma*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[0]*x0 - 2.0*Jit11*ma*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[1]*x0*y0 + fax*nx*v[1]*x0*y0*y0 + fax*nx*v[2]*x0*x0*y0 + fay*ny*v[1]*x0*y0*y0 + fay*ny*v[2]*x0*x0*y0 - fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[2]*x0*x0*y0 - fby*ny*v[1]*x0*y0*y0 - fby*ny*v[2]*x0*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
         _b2[i] = (-2.0*Jit00*ma*nx*v[0]*y0 + 2.0*Jit00*ma*nx*v[2]*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[1]*x0*y0 - 2.0*Jit01*ma*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[2]*x0*y0 - 2.0*Jit10*ma*ny*v[0]*y0 + 2.0*Jit10*ma*ny*v[2]*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[1]*x0*y0 - 2.0*Jit11*ma*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[2]*x0*y0 - fax*nx*v[1]*x0*y0*y0 + fax*nx*v[2]*x0*y0*y0 - 2.0*fax*nx*v[2]*x0*y0 - fay*ny*v[1]*x0*y0*y0 + fay*ny*v[2]*x0*y0*y0 - 2.0*fay*ny*v[2]*x0*y0 + fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[2]*x0*y0*y0 + 2.0*fbx*nx*v[2]*x0*y0 + fby*ny*v[1]*x0*y0*y0 - fby*ny*v[2]*x0*y0*y0 + 2.0*fby*ny*v[2]*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
         _b3[i] = (-2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[1]*x0*y0 + 2.0*Jit00*ma*nx*v[1]*y0 + 2.0*Jit00*ma*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[1]*x0*y0 - 2.0*Jit00*mb*nx*v[2]*x0*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[1]*x0 - 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[1]*y0 + 2.0*Jit10*ma*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[1]*x0*y0 - 2.0*Jit10*mb*ny*v[2]*x0*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[1]*x0 + fax*nx*v[1]*x0*x0*y0 - 2.0*fax*nx*v[1]*x0*y0 - fax*nx*v[2]*x0*x0*y0 + fay*ny*v[1]*x0*x0*y0 - 2.0*fay*ny*v[1]*x0*y0 - fay*ny*v[2]*x0*x0*y0 - fbx*nx*v[1]*x0*x0*y0 + 2.0*fbx*nx*v[1]*x0*y0 + fbx*nx*v[2]*x0*x0*y0 - fby*ny*v[1]*x0*x0*y0 + 2.0*fby*ny*v[1]*x0*y0 + fby*ny*v[2]*x0*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
- 
+	*/
+	_a1[i] = v[0];
+	_a2[i] = (-Jit00*mb*nx*v[0]*y0 + Jit00*mb*nx*v[2]*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[0]*y0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*ma*nx*v[1]*y0 - Jit01*ma*nx*v[2]*x0*y0 + Jit01*ma*nx*v[2]*x0 - Jit01*mb*nx*v[0]*y0 - Jit01*mb*nx*v[1]*x0*y0 + Jit01*mb*nx*v[1]*y0 + Jit01*mb*nx*v[2]*x0*y0 - Jit10*mb*ny*v[0]*y0 + Jit10*mb*ny*v[2]*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[0]*y0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*ma*ny*v[1]*y0 - Jit11*ma*ny*v[2]*x0*y0 + Jit11*ma*ny*v[2]*x0 - Jit11*mb*ny*v[0]*y0 - Jit11*mb*ny*v[1]*x0*y0 + Jit11*mb*ny*v[1]*y0 + Jit11*mb*ny*v[2]*x0*y0)/(-Jit00*ma*nx*x0*y0 + Jit00*ma*nx*y0 + Jit00*mb*nx*x0*y0 - Jit01*ma*nx*x0*y0 + Jit01*ma*nx*x0 + Jit01*mb*nx*x0*y0 - Jit10*ma*ny*x0*y0 + Jit10*ma*ny*y0 + Jit10*mb*ny*x0*y0 - Jit11*ma*ny*x0*y0 + Jit11*ma*ny*x0 + Jit11*mb*ny*x0*y0) ;
+	_a3[i] = (Jit00*ma*nx*v[0]*x0 - Jit00*ma*nx*v[0]*y0 - Jit00*ma*nx*v[1]*x0*y0 + Jit00*ma*nx*v[1]*y0 + Jit00*ma*nx*v[2]*x0*y0 - Jit00*ma*nx*v[2]*x0 - Jit00*mb*nx*v[0]*x0 + Jit00*mb*nx*v[1]*x0*y0 - Jit00*mb*nx*v[2]*x0*y0 + Jit00*mb*nx*v[2]*x0 - Jit01*mb*nx*v[0]*x0 + Jit01*mb*nx*v[1]*x0 + Jit10*ma*ny*v[0]*x0 - Jit10*ma*ny*v[0]*y0 - Jit10*ma*ny*v[1]*x0*y0 + Jit10*ma*ny*v[1]*y0 + Jit10*ma*ny*v[2]*x0*y0 - Jit10*ma*ny*v[2]*x0 - Jit10*mb*ny*v[0]*x0 + Jit10*mb*ny*v[1]*x0*y0 - Jit10*mb*ny*v[2]*x0*y0 + Jit10*mb*ny*v[2]*x0 - Jit11*mb*ny*v[0]*x0 + Jit11*mb*ny*v[1]*x0)/(-Jit00*ma*nx*x0*y0 + Jit00*ma*nx*y0 + Jit00*mb*nx*x0*y0 - Jit01*ma*nx*x0*y0 + Jit01*ma*nx*x0 + Jit01*mb*nx*x0*y0 - Jit10*ma*ny*x0*y0 + Jit10*ma*ny*y0 + Jit10*mb*ny*x0*y0 - Jit11*ma*ny*x0*y0 + Jit11*ma*ny*x0 + Jit11*mb*ny*x0*y0) ;
+	_b1[i] = (Jit00*ma*nx*v[0]*y0 - Jit00*ma*nx*v[2]*x0*y0 + Jit00*mb*nx*v[2]*x0*y0 + Jit01*ma*nx*v[0]*x0 - Jit01*ma*nx*v[1]*x0*y0 + Jit01*mb*nx*v[1]*x0*y0 + Jit10*ma*ny*v[0]*y0 - Jit10*ma*ny*v[2]*x0*y0 + Jit10*mb*ny*v[2]*x0*y0 + Jit11*ma*ny*v[0]*x0 - Jit11*ma*ny*v[1]*x0*y0 + Jit11*mb*ny*v[1]*x0*y0)/(-Jit00*ma*nx*x0*y0 + Jit00*ma*nx*y0 + Jit00*mb*nx*x0*y0 - Jit01*ma*nx*x0*y0 + Jit01*ma*nx*x0 + Jit01*mb*nx*x0*y0 - Jit10*ma*ny*x0*y0 + Jit10*ma*ny*y0 + Jit10*mb*ny*x0*y0 - Jit11*ma*ny*x0*y0 + Jit11*ma*ny*x0 + Jit11*mb*ny*x0*y0) ;
+	_b2[i] = (-Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[2]*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*ma*nx*v[2]*x0*y0 + Jit01*ma*nx*v[2]*x0 - Jit01*mb*nx*v[1]*x0*y0 + Jit01*mb*nx*v[2]*x0*y0 - Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[2]*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*ma*ny*v[2]*x0*y0 + Jit11*ma*ny*v[2]*x0 - Jit11*mb*ny*v[1]*x0*y0 + Jit11*mb*ny*v[2]*x0*y0)/(-Jit00*ma*nx*x0*y0 + Jit00*ma*nx*y0 + Jit00*mb*nx*x0*y0 - Jit01*ma*nx*x0*y0 + Jit01*ma*nx*x0 + Jit01*mb*nx*x0*y0 - Jit10*ma*ny*x0*y0 + Jit10*ma*ny*y0 + Jit10*mb*ny*x0*y0 - Jit11*ma*ny*x0*y0 + Jit11*ma*ny*x0 + Jit11*mb*ny*x0*y0) ;
+	_b3[i] = (-Jit00*ma*nx*v[0]*y0 - Jit00*ma*nx*v[1]*x0*y0 + Jit00*ma*nx*v[1]*y0 + Jit00*ma*nx*v[2]*x0*y0 + Jit00*mb*nx*v[1]*x0*y0 - Jit00*mb*nx*v[2]*x0*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[1]*x0 - Jit10*ma*ny*v[0]*y0 - Jit10*ma*ny*v[1]*x0*y0 + Jit10*ma*ny*v[1]*y0 + Jit10*ma*ny*v[2]*x0*y0 + Jit10*mb*ny*v[1]*x0*y0 - Jit10*mb*ny*v[2]*x0*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[1]*x0)/(-Jit00*ma*nx*x0*y0 + Jit00*ma*nx*y0 + Jit00*mb*nx*x0*y0 - Jit01*ma*nx*x0*y0 + Jit01*ma*nx*x0 + Jit01*mb*nx*x0*y0 - Jit10*ma*ny*x0*y0 + Jit10*ma*ny*y0 + Jit10*mb*ny*x0*y0 - Jit11*ma*ny*x0*y0 + Jit11*ma*ny*x0 + Jit11*mb*ny*x0*y0) ;
+	if (fabs(x0*y0) < 1.0e-16)
+	  {
+	    _a1[i] = v[0] ;
+	    _a2[i] = -v[0] + v[2] ;
+	    _a3[i] = -v[0] + v[1] ;
+	    _b1[i] = v[0] ;
+	    _b2[i] = -v[0] + v[2] ;
+	    _b3[i] = -v[0] + v[1] ;
+	  }
         /* _a1[i] = v[0];
         _a2[i] =  (ny*v[1]*y0*(ma*x0 - ma - mb*x0 + mb) - v[0]*(ma*ny*x0 - ma*ny*y0 + mb*nx*y0 + mb*ny*y0) + v[2]*(-ma*ny*x0*y0 + ma*ny*x0 + mb*nx*y0 + mb*ny*x0*y0))/(-ma*nx*x0*y0 + ma*nx*y0 - ma*ny*x0*y0 + ma*ny*x0 + mb*nx*x0*y0 + mb*ny*x0*y0);
         _a3[i] = (nx*v[2]*x0*(ma*y0 - ma - mb*y0 + mb) - v[0]*(-ma*nx*x0 + ma*nx*y0 + mb*nx*x0 + mb*ny*x0) + v[1]*(-ma*nx*x0*y0 + ma*nx*y0 + mb*nx*x0*y0 + mb*ny*x0))/(-ma*nx*x0*y0 + ma*nx*y0 - ma*ny*x0*y0 + ma*ny*x0 + mb*nx*x0*y0 + mb*ny*x0*y0);
@@ -653,6 +671,10 @@ namespace equivalent_polynomials
         _vb_x[i] = grad_vb[0];
         _vb_y[i] = grad_vb[1]; 
       }
+    double flux_jump = 0.0;
+    for (int j=0; j < 3; j++)
+      flux_jump += ma*(_va_x[j]*nx +_va_y[j]*ny) - mb*(_vb_x[j]*nx +_vb_y[j]*ny);
+    //std::cout<<"eqp flux jump "<<flux_jump<<'\t'<<ma<<'\t'<<_va_x[0]<<'\t'<<_va_x[1]<<'\t'<<_va_x[2]<<'\t'<<_va_y[0]<<'\t'<<_va_y[1]<<'\t'<<_va_y[2]<<'\t'<<'\t'<<mb<<'\t'<<_vb_x[0]<<'\t'<<_vb_x[1]<<'\t'<<_vb_x[2]<<'\t'<<nx<<'\t'<<_vb_y[0]<<'\t'<<_vb_y[1]<<'\t'<<_vb_y[2]<<'\t'<<ny<<std::endl;
   }
 
   template<int nSpace, int nP, int nQ, int nEBQ>

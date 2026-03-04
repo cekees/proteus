@@ -794,84 +794,90 @@ namespace proteus
 				//
 				for (int i = 0; i < nDOF_test_element; i++)
 				{
-					int i_nSpace = i * nSpace;
-					if (icase_f == 0)
+				  int i_nSpace = i * nSpace;
+				  double sol=0.0;
+				  if (icase_f == 0)
+				    {
+				      double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
+				      // Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
+				      if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
 					{
-						// Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
-						double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
-						if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = x * x + y * y + 1.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 8.0) // Ji et al 2014, Example 1
-						{
-							a_loc[0] = 1.0;
-							a_loc[3] = a_loc[0];
-						}
-						elementResidual_u.data()[i] += ImH_f * H_s * (ck.Advection_weak(f, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ua, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_uja, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Reaction_weak(r, ua_test_dV[i]) + 
-							ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ua, &ua_grad_test_dV[i_nSpace]));
-
-						if (test == 2.0) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = 10.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 2.1) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = -3.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 8.0) // Ji et al 2014, Example 1
-						{
-							a_loc[0] = 1000.0;
-							a_loc[3] = a_loc[0];
-						}
-						elementResidual_u.data()[i] += H_f * H_s * (ck.Advection_weak(f, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ub, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ujb, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Reaction_weak(r, ub_test_dV[i]) + 
-						ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
-
-						double sol = sol_inner(test, x, y);
-						L2_error += ImH_f * (ua + uja - sol) * (ua + uja - sol) * dV;	
-						sol = sol_outer(test, x, y, a_loc[0], 0.1);
-						L2_error += H_f * (ub  + ujb - sol) * (ub + ujb  - sol) * dV;
+					  a_loc[0] = x * x + y * y + 1.0;
+					  a_loc[3] = a_loc[0];
 					}
-					else
+				      else if (test == 8.0) // Ji et al 2014, Example 1
 					{
-						elementResidual_u.data()[i] += H_s * (ck.Advection_weak(f, &u_grad_test_dV[i_nSpace]) +
-															  ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a, grad_u, &u_grad_test_dV[i_nSpace]) +
-															  ck.Reaction_weak(r, u_test_dV[i]) +
-															  ck.SubgridError(subgridError_u, Lstar_u[i]) +
-															  ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_u, &u_grad_test_dV[i_nSpace]));
-						if (icase_f == -1)
-						{
-							double sol = sol_inner(test, x, y);
-							L2_error += (u - sol) * (u - sol) * dV;
-						}
-						if (icase_f == 1)
-						{
-							double sol = sol_outer(test, x, y, a[0], 0.1);
-							L2_error += (u - sol) * (u - sol) * dV;
-						}
+					  a_loc[0] = 1.0;
+					  a_loc[3] = a_loc[0];
 					}
-					if (embeddedBoundary)
+				      double fluxJump = a_loc[0]*grad_ua[0]*gf_f.get_normal()[0] + a_loc[3]*grad_ua[1]*gf_f.get_normal()[1];
+				      elementResidual_u.data()[i] += ImH_f * H_s * (ck.Advection_weak(f, &ua_grad_test_dV[i_nSpace]) + 
+										    ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ua, &ua_grad_test_dV[i_nSpace]) + 
+										    ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_uja, &ua_grad_test_dV[i_nSpace]) + 
+										    ck.Reaction_weak(r, ua_test_dV[i]) + 
+										    ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ua, &ua_grad_test_dV[i_nSpace]));
+				      sol = sol_inner(test, x, y);
+				      L2_error += ImH_f * (ua + uja - sol) * (ua + uja - sol) * dV;	
+				      
+				      if (test == 2.0) // Leveque & Li 1994, Example 2
 					{
-						elementResidual_u.data()[i] += (ck.Advection_weak(f_s, &u_grad_test_dV[i_nSpace]) +
-														ck.Reaction_weak(r_s, u_test_dV[i]) +
-														ck.Hamiltonian_weak(ham_s, u_test_dV[i]));
+					  a_loc[0] = 10.0;
+					  a_loc[3] = a_loc[0];
 					}
-					if (immersedBoundary)
+				      else if (test == 2.1) // Leveque & Li 1994, Example 2
 					{
-						if (!gf_f.exact.bminus && !gf_f.exact.corner)
-							elementResidual_u.data()[i] += (ck.Advection_weak(f_f, &u_grad_test_dV[i_nSpace]) +
-															ck.Reaction_weak(r_f, u_test_dV[i]) +
-															ck.Hamiltonian_weak(ham_f, u_test_dV[i]));
+					  a_loc[0] = -3.0;
+					  a_loc[3] = a_loc[0];
 					}
+				      else if (test == 8.0) // Ji et al 2014, Example 1
+					{
+					  a_loc[0] = 1000.0;
+					  a_loc[3] = a_loc[0];
+					}
+				      fluxJump -= a_loc[0]*grad_ub[0]*gf_f.get_normal()[0] + a_loc[3]*grad_ub[1]*gf_f.get_normal()[1];
+				      elementResidual_u.data()[i] += H_f * H_s * (ck.Advection_weak(f, &ub_grad_test_dV[i_nSpace]) + 
+										  ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ub, &ub_grad_test_dV[i_nSpace]) + 
+										  ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ujb, &ub_grad_test_dV[i_nSpace]) + 
+										  ck.Reaction_weak(r, ub_test_dV[i]) + 
+										  ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
+				      sol = sol_outer(test, x, y, a_loc[0], 0.1);
+				      L2_error += H_f * (ub  + ujb - sol) * (ub + ujb  - sol) * dV;
+				      if (fabs(fluxJump) > 1.0e-12 && !gf_f.exact.corner)
+					{
+					  std::cout<<"adr flux jump "<<fluxJump<<'\t'<<gf_f.exact.corner<<'\t'<<gf_f.exact.bminus<<'\t'<<gf_f.exact.permutation[0]<<gf_f.exact.permutation[1]<<gf_f.exact.permutation[2]<<std::endl;
+					}
+				    }
+				  else
+				    {
+				      elementResidual_u.data()[i] += H_s * (ck.Advection_weak(f, &u_grad_test_dV[i_nSpace]) +
+									    ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a, grad_u, &u_grad_test_dV[i_nSpace]) +
+									    ck.Reaction_weak(r, u_test_dV[i]) +
+									    ck.SubgridError(subgridError_u, Lstar_u[i]) +
+									    ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_u, &u_grad_test_dV[i_nSpace]));
+				      if (icase_f == -1)
+					{
+					  double sol = sol_inner(test, x, y);
+					  L2_error += (u - sol) * (u - sol) * dV;
+					}
+				      if (icase_f == 1)
+					{
+					  double sol = sol_outer(test, x, y, a[0], 0.1);
+					  L2_error += (u - sol) * (u - sol) * dV;
+					}
+				    }
+				  if (embeddedBoundary)
+				    {
+				      elementResidual_u.data()[i] += (ck.Advection_weak(f_s, &u_grad_test_dV[i_nSpace]) +
+								      ck.Reaction_weak(r_s, u_test_dV[i]) +
+								      ck.Hamiltonian_weak(ham_s, u_test_dV[i]));
+				    }
+				  if (immersedBoundary)
+				    {
+				      if (!gf_f.exact.bminus && !gf_f.exact.corner)
+					elementResidual_u.data()[i] += (ck.Advection_weak(f_f, &u_grad_test_dV[i_nSpace]) +
+									ck.Reaction_weak(r_f, u_test_dV[i]) +
+									ck.Hamiltonian_weak(ham_f, u_test_dV[i]));
+				    }
 				}
 			}
 		}
@@ -1036,7 +1042,7 @@ namespace proteus
 					mua = 1.0;
 					mub = 1000.0;
 				}
-				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mub, mua, jf, false, false);
+				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mua, mub, jf, false, false);
 				double JA[3] = {0.0, 0.0, 0.0}, JB[3] = {0.0, 0.0, 0.0};
 				if (icase_f == 0)
 				{
@@ -1937,8 +1943,12 @@ namespace proteus
 						int j_nSpace = j * nSpace;
 						if (icase_f == 0)
 						{
+						  double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
+						  if(!gf_f.exact.corner || !gf_f.exact.inside_out)
+						    {
+
 							// Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
-							double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
+
 							if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
 							{
 								a_loc[0] = x * x + y * y + 1;
@@ -1953,6 +1963,9 @@ namespace proteus
 								ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]) + 
 								ck.ReactionJacobian_weak(dr, ua_trial[j], ua_test_dV[i]) + 
 								ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]));
+						    }
+						  if(!gf_f.exact.corner || gf_f.exact.inside_out)
+						    {
 							if (test == 2.0) // Leveque & Li 1994, Example 2
 							{
 								a_loc[0] = 10.0;
@@ -1972,6 +1985,7 @@ namespace proteus
 							ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]) + 
 							ck.ReactionJacobian_weak(dr, ub_trial[j], ub_test_dV[i]) + 
 							ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]));
+						    }
 						}
 						else
 						{
@@ -2132,7 +2146,7 @@ namespace proteus
 					mua = 1.0;
 					mub = 1000.0;
 				}
-				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mub, mua, jf, false, false);
+				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mua, mub, jf, false, false);
 				calculateElementJacobian(icase_f,
 										 mesh_trial_ref,
 										 mesh_grad_trial_ref,
