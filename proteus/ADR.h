@@ -36,6 +36,8 @@ namespace proteus
 			sol = x * x + y * y + 1.0;
 		else if (test == 8.0) // Ji et al 2016, Example 1
 			sol = pow(x * x + y * y,3.0/2.0);
+		else if (test == 9.0) // PWL linear
+		  sol = -(x-0.5);
 		else
 			assert(false && "Unknown test case in sol_inner");
 		return sol;
@@ -62,6 +64,8 @@ namespace proteus
 			sol = x * x + y * y;
 		else if (test == 8.0) // Ji et al 2016, Example 1
 			sol = pow(x*x + y*y,3.0/2.0)/b + (1.0 - 1.0/b)*0.125;
+		else if (test == 9.0) // PWL linear
+		  sol = -(x-0.5)/1000.0;
 		else
 			assert(false && "Unknown test case in sol_outer");
 		return sol;
@@ -581,6 +585,9 @@ namespace proteus
 					for (int I = 0; I < nSpace; I++)
 					{
 						u_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//PGIFEM
+						//ua_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//ub_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
 					}
 				}
 				if (icase_f == 0)
@@ -769,60 +776,60 @@ namespace proteus
 				for (int i = 0; i < nDOF_test_element; i++)
 				{
 					int i_nSpace = i * nSpace;
-					if (icase_f == 0 && !gf_f.exact.corner)
+					if (icase_f == 0)
 					{
-					  if(gf_f.exact.edge <= 0)//full cut or cut on boundary of negative cell
+					  // Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
+					  double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
+					  if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
 					    {
-						// Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
-						double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
-						if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = x * x + y * y + 1.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 8.0) // Ji et al 2014, Example 1
-						{
-							a_loc[0] = 1.0;
-							a_loc[3] = a_loc[0];
-						}
-						elementResidual_u.data()[i] += ImH_f * H_s * (ck.Advection_weak(f, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ua, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_uja, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Reaction_weak(r, ua_test_dV[i]) + 
-							ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ua, &ua_grad_test_dV[i_nSpace]));
+					      a_loc[0] = x * x + y * y + 1.0;
+					      a_loc[3] = a_loc[0];
 					    }
-					  if(gf_f.exact.edge >= 0)
+					  else if (test == 8.0 || test == 9.0) // Ji et al 2014, Example 1
 					    {
-						double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
-						if (test == 2.0) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = 10.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 2.1) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = -3.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 8.0) // Ji et al 2014, Example 1
-						{
-							a_loc[0] = 1000.0;
-							a_loc[3] = a_loc[0];
-						}
-						elementResidual_u.data()[i] += H_f * H_s * (ck.Advection_weak(f, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ub, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ujb, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Reaction_weak(r, ub_test_dV[i]) + 
-						ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
+					      a_loc[0] = 1.0;
+					      a_loc[3] = a_loc[0];
+					    }
+					  if(gf_f.exact.edge <= 0 && gf_f.exact.corner <=0)//full cut or cut on boundary of negative cell
+					    {
+					      elementResidual_u.data()[i] += ImH_f * H_s * (ck.Advection_weak(f, &ua_grad_test_dV[i_nSpace]) + 
+											    ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ua, &ua_grad_test_dV[i_nSpace]) + 
+											    ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_uja, &ua_grad_test_dV[i_nSpace]) + 
+											    ck.Reaction_weak(r, ua_test_dV[i]) + 
+											    ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ua, &ua_grad_test_dV[i_nSpace]));
+					    }
+					  double sol = sol_inner(test, x, y);
+					  L2_error += ImH_f * (ua + uja - sol) * (ua + uja - sol) * dV;	
+					  if (test == 2.0) // Leveque & Li 1994, Example 2
+					    {
+					      a_loc[0] = 10.0;
+					      a_loc[3] = a_loc[0];
+					    }
+					  else if (test == 2.1) // Leveque & Li 1994, Example 2
+					    {
+					      a_loc[0] = -3.0;
+					      a_loc[3] = a_loc[0];
+					    }
+					  else if (test == 8.0 || test==9.0) // Ji et al 2014, Example 1
+					    {
+					      a_loc[0] = 1000.0;
+					      a_loc[3] = a_loc[0];
+					    }
+					  if(gf_f.exact.edge >=  0 && gf_f.exact.corner >= 0)
+					    {
+					      elementResidual_u.data()[i] += H_f * H_s * (ck.Advection_weak(f, &ub_grad_test_dV[i_nSpace]) + 
+											  ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ub, &ub_grad_test_dV[i_nSpace]) + 
+											  ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ujb, &ub_grad_test_dV[i_nSpace]) + 
+											  ck.Reaction_weak(r, ub_test_dV[i]) + 
+											  ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
 
-						double sol = sol_inner(test, x, y);
-						L2_error += ImH_f * (ua + uja - sol) * (ua + uja - sol) * dV;	
-						sol = sol_outer(test, x, y, a_loc[0], 0.1);
-						L2_error += H_f * (ub  + ujb - sol) * (ub + ujb  - sol) * dV;
 					    }
+					  sol = sol_outer(test, x, y, a_loc[0], 0.1);
+					  L2_error += H_f * (ub  + ujb - sol) * (ub + ujb  - sol) * dV;
 					}
 					else
 					{
+
 						elementResidual_u.data()[i] += H_s * (ck.Advection_weak(f, &u_grad_test_dV[i_nSpace]) +
 															  ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a, grad_u, &u_grad_test_dV[i_nSpace]) +
 															  ck.Reaction_weak(r, u_test_dV[i]) +
@@ -1011,7 +1018,7 @@ namespace proteus
 					mua = 1.25;
 					mub = -3.0;
 				}
-				else if (test == 8.0) // Ji et al 2014, Example 1
+				else if (test == 8.0 || test==9.0) // Ji et al 2014, Example 1
 				{
 					//jf= -0.2;
 					mua = 1.0;
@@ -1204,7 +1211,6 @@ namespace proteus
 				for (int i = 0; i < nDOF_test_element; i++)
 				{
 					int eN_i = eN * nDOF_test_element + i;
-
 					globalResidual.data()[offset_u + stride_u * u_l2g.data()[eN_i]] += elementResidual_u.data()[i];
 					if (element_active)
 						isActiveDOF.data()[offset_u + stride_u * u_l2g.data()[eN_i]] = 1.0;
@@ -1739,6 +1745,9 @@ namespace proteus
 					for (int I = 0; I < nSpace; I++)
 					{
 						u_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//PGIFEM
+						//ua_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//ub_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
 					}
 				}
 				if (icase_f == 0)
@@ -1894,18 +1903,18 @@ namespace proteus
 					for (int j = 0; j < nDOF_trial_element; j++)
 					{
 						int j_nSpace = j * nSpace;
-						if (icase_f == 0 && !gf_f.exact.corner)
+						if (icase_f == 0)
 						{
-						  if(gf_f.exact.edge <= 0)
+						  double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
+						  if(gf_f.exact.edge <= 0 && gf_f.exact.corner<= 0)
 						    {
 							// Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
-							double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
 							if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
 							{
 								a_loc[0] = x * x + y * y + 1;
 								a_loc[3] = a_loc[0];
 							}
-							if (test == 8.0) // Ji etal 2014, Example 1
+							if (test == 8.0 || test==9.0) // Ji etal 2014, Example 1
 							{
 								a_loc[0] = 1.0;
 								a_loc[3] = a_loc[0];
@@ -1915,9 +1924,8 @@ namespace proteus
 								ck.ReactionJacobian_weak(dr, ua_trial[j], ua_test_dV[i]) + 
 								ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]));
 						    }
-						  if(gf_f.exact.edge >= 0)
+						  if(gf_f.exact.edge >= 0 && gf_f.exact.corner >=0)
 						    {
-						      double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
 							if (test == 2.0) // Leveque & Li 1994, Example 2
 							{
 								a_loc[0] = 10.0;
@@ -1928,7 +1936,7 @@ namespace proteus
 								a_loc[0] = -3.0;
 								a_loc[3] = a_loc[0];
 							}
-							else if (test == 8.0) // Ji et al 2014, Example 1
+							else if (test == 8.0 || test==9.0) // Ji et al 2014, Example 1
 							{
 								a_loc[0] = 1000.0;
 								a_loc[3] = a_loc[0];
@@ -2093,7 +2101,7 @@ namespace proteus
 					mua = 1.25;
 					mub = -3.0;
 				}
-				else if (test == 8.0) // Ji et al 2014, Example 1
+				else if (test == 8.0 || test==9.0) // Ji et al 2014, Example 1
 				{
 					//jf = -0.2;
 					mua = 1.0;
