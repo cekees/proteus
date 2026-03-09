@@ -174,6 +174,7 @@ namespace equivalent_polynomials
     static const unsigned int nN=nSpace+1;
     double phi_dof_corrected[nN];
     double cut_barycenter[3] ={0.,0.,0.};
+    double dir[nSpace];
     int edge, corner;
   private:;
     double _H_q, _ImH_q, _D_q, _va_q[nN], _vb_q[nN],
@@ -281,6 +282,7 @@ namespace equivalent_polynomials
     corner = 0;
     edge = 0;
     root_node = 0;
+    int dir_node = 1;
     inside_out = false;
     quad_cut = false;
     const double eps = 1.0e-8;//cek todo, think through use of tolerance for boundary intersection detections
@@ -317,13 +319,23 @@ namespace equivalent_polynomials
     else if (ncount == 1)
     {
       if (zcount == nN - 1) // interface is on the element boundary (edge) and cell is within negative domain
-	edge = -1;
+	{
+	  edge = -1;
+	  dir_node = z_i;
+	}
+      else
+	dir_node = p_i;
       root_node = n_i;
     }
     else if (pcount == 1)
     {
       if (zcount == nN - 1) // interface is on an element boundary (edge) and cell is within positive domain
-	edge = 1;
+	{
+	  edge = 1;
+	  dir_node = z_i;
+	}
+      else
+	dir_node = n_i;
       root_node = p_i;
       inside_out = true;
     }
@@ -332,6 +344,7 @@ namespace equivalent_polynomials
       // special case only in 3D
       quad_cut = true;
       root_node = n_i;
+      dir_node = p_i;
     }
     else
     {
@@ -344,16 +357,25 @@ namespace equivalent_polynomials
 	corner = 1;
 	assert(pcount == nN-1);
         root_node = z_i;
+	dir_node = p_i;
       }
       else if (ncount)
       {
 	corner = -1;
 	assert(ncount == nN-1);
         root_node = n_i;
+	dir_node = z_i;
       }
       else
         assert(false);
     }
+    for(int I=0;I<nSpace;I++)
+      dir[I] = phi_nodes[dir_node*3 + I] - phi_nodes[root_node*3 + I];
+    if (inside_out)
+      {
+	for(int I=0;I<nSpace;I++)
+	  dir[I]*=-1.0;
+      }
     for (unsigned int i = 0; i < nN; i++)
     {
       permutation[i] = (root_node + i) % nN;
@@ -544,18 +566,8 @@ namespace equivalent_polynomials
     assert(nSpace == 2);
     assert(nN==3);
     double nx=0.0,ny=0.0,fax=0.0,fay=0.0,fbx=0.0,fby=0.0;
-    //at the point where this function is called, the level set normal is not oriented properly for inside out
-    //it doesn't matter for zero jump in the normal derivative anyway...
-    if (inside_out)
-      {
-        nx = -level_set_normal[0];
-        ny = -level_set_normal[1];
-      }
-      else
-      {
-        nx = level_set_normal[0];
-	ny = level_set_normal[1];
-      }
+    nx = level_set_normal[0];
+    ny = level_set_normal[1];
     double Jit00 = inv_Jac[0*nSpace+0],
       Jit01 = inv_Jac[1*nSpace+0],
       Jit10 = inv_Jac[0*nSpace+1],
@@ -584,12 +596,12 @@ namespace equivalent_polynomials
 	  }
 	else
 	  {
-	    _a1[i] = v[0] ;
-	    _a2[i] = -(-Jit00*mb*nx*v[0]*y0 + Jit00*mb*nx*v[2]*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[0]*y0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*ma*nx*v[1]*y0 - Jit01*ma*nx*v[2]*x0*y0 + Jit01*ma*nx*v[2]*x0 - Jit01*mb*nx*v[0]*y0 - Jit01*mb*nx*v[1]*x0*y0 + Jit01*mb*nx*v[1]*y0 + Jit01*mb*nx*v[2]*x0*y0 - Jit10*mb*ny*v[0]*y0 + Jit10*mb*ny*v[2]*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[0]*y0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*ma*ny*v[1]*y0 - Jit11*ma*ny*v[2]*x0*y0 + Jit11*ma*ny*v[2]*x0 - Jit11*mb*ny*v[0]*y0 - Jit11*mb*ny*v[1]*x0*y0 + Jit11*mb*ny*v[1]*y0 + Jit11*mb*ny*v[2]*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0) ;
-	    _a3[i] = (-Jit00*ma*nx*v[0]*x0 + Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[1]*x0*y0 - Jit00*ma*nx*v[1]*y0 - Jit00*ma*nx*v[2]*x0*y0 + Jit00*ma*nx*v[2]*x0 + Jit00*mb*nx*v[0]*x0 - Jit00*mb*nx*v[1]*x0*y0 + Jit00*mb*nx*v[2]*x0*y0 - Jit00*mb*nx*v[2]*x0 + Jit01*mb*nx*v[0]*x0 - Jit01*mb*nx*v[1]*x0 - Jit10*ma*ny*v[0]*x0 + Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[1]*x0*y0 - Jit10*ma*ny*v[1]*y0 - Jit10*ma*ny*v[2]*x0*y0 + Jit10*ma*ny*v[2]*x0 + Jit10*mb*ny*v[0]*x0 - Jit10*mb*ny*v[1]*x0*y0 + Jit10*mb*ny*v[2]*x0*y0 - Jit10*mb*ny*v[2]*x0 + Jit11*mb*ny*v[0]*x0 - Jit11*mb*ny*v[1]*x0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0) ;
-	    _b1[i] = (-Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[2]*x0*y0 - Jit00*mb*nx*v[2]*x0*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*mb*nx*v[1]*x0*y0 - Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[2]*x0*y0 - Jit10*mb*ny*v[2]*x0*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*mb*ny*v[1]*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0) ;
-	    _b2[i] = -(-Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[2]*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*ma*nx*v[2]*x0*y0 + Jit01*ma*nx*v[2]*x0 - Jit01*mb*nx*v[1]*x0*y0 + Jit01*mb*nx*v[2]*x0*y0 - Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[2]*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*ma*ny*v[2]*x0*y0 + Jit11*ma*ny*v[2]*x0 - Jit11*mb*ny*v[1]*x0*y0 + Jit11*mb*ny*v[2]*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0) ;
-	    _b3[i] = (Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[1]*x0*y0 - Jit00*ma*nx*v[1]*y0 - Jit00*ma*nx*v[2]*x0*y0 - Jit00*mb*nx*v[1]*x0*y0 + Jit00*mb*nx*v[2]*x0*y0 + Jit01*ma*nx*v[0]*x0 - Jit01*ma*nx*v[1]*x0 + Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[1]*x0*y0 - Jit10*ma*ny*v[1]*y0 - Jit10*ma*ny*v[2]*x0*y0 - Jit10*mb*ny*v[1]*x0*y0 + Jit10*mb*ny*v[2]*x0*y0 + Jit11*ma*ny*v[0]*x0 - Jit11*ma*ny*v[1]*x0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0) ;
+	    _a1[i] = v[0];
+	    _a2[i] = -(-Jit00*mb*nx*v[0]*y0 + Jit00*mb*nx*v[2]*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[0]*y0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*ma*nx*v[1]*y0 - Jit01*ma*nx*v[2]*x0*y0 + Jit01*ma*nx*v[2]*x0 - Jit01*mb*nx*v[0]*y0 - Jit01*mb*nx*v[1]*x0*y0 + Jit01*mb*nx*v[1]*y0 + Jit01*mb*nx*v[2]*x0*y0 - Jit10*mb*ny*v[0]*y0 + Jit10*mb*ny*v[2]*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[0]*y0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*ma*ny*v[1]*y0 - Jit11*ma*ny*v[2]*x0*y0 + Jit11*ma*ny*v[2]*x0 - Jit11*mb*ny*v[0]*y0 - Jit11*mb*ny*v[1]*x0*y0 + Jit11*mb*ny*v[1]*y0 + Jit11*mb*ny*v[2]*x0*y0 - jf*x0*y0 + jf*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
+	    _a3[i] = (-Jit00*ma*nx*v[0]*x0 + Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[1]*x0*y0 - Jit00*ma*nx*v[1]*y0 - Jit00*ma*nx*v[2]*x0*y0 + Jit00*ma*nx*v[2]*x0 + Jit00*mb*nx*v[0]*x0 - Jit00*mb*nx*v[1]*x0*y0 + Jit00*mb*nx*v[2]*x0*y0 - Jit00*mb*nx*v[2]*x0 + Jit01*mb*nx*v[0]*x0 - Jit01*mb*nx*v[1]*x0 - Jit10*ma*ny*v[0]*x0 + Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[1]*x0*y0 - Jit10*ma*ny*v[1]*y0 - Jit10*ma*ny*v[2]*x0*y0 + Jit10*ma*ny*v[2]*x0 + Jit10*mb*ny*v[0]*x0 - Jit10*mb*ny*v[1]*x0*y0 + Jit10*mb*ny*v[2]*x0*y0 - Jit10*mb*ny*v[2]*x0 + Jit11*mb*ny*v[0]*x0 - Jit11*mb*ny*v[1]*x0 + jf*x0*y0 - jf*x0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
+	    _b1[i] = (-Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[2]*x0*y0 - Jit00*mb*nx*v[2]*x0*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*mb*nx*v[1]*x0*y0 - Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[2]*x0*y0 - Jit10*mb*ny*v[2]*x0*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*mb*ny*v[1]*x0*y0 - jf*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
+	    _b2[i] = -(-Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[2]*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*ma*nx*v[2]*x0*y0 + Jit01*ma*nx*v[2]*x0 - Jit01*mb*nx*v[1]*x0*y0 + Jit01*mb*nx*v[2]*x0*y0 - Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[2]*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*ma*ny*v[2]*x0*y0 + Jit11*ma*ny*v[2]*x0 - Jit11*mb*ny*v[1]*x0*y0 + Jit11*mb*ny*v[2]*x0*y0 - jf*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
+	    _b3[i] = (Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[1]*x0*y0 - Jit00*ma*nx*v[1]*y0 - Jit00*ma*nx*v[2]*x0*y0 - Jit00*mb*nx*v[1]*x0*y0 + Jit00*mb*nx*v[2]*x0*y0 + Jit01*ma*nx*v[0]*x0 - Jit01*ma*nx*v[1]*x0 + Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[1]*x0*y0 - Jit10*ma*ny*v[1]*y0 - Jit10*ma*ny*v[2]*x0*y0 - Jit10*mb*ny*v[1]*x0*y0 + Jit10*mb*ny*v[2]*x0*y0 + Jit11*ma*ny*v[0]*x0 - Jit11*ma*ny*v[1]*x0 + jf*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
 	  }
         grad_va_ref[0] = _a2[i];
         grad_va_ref[1] = _a3[i];
@@ -607,7 +619,7 @@ namespace equivalent_polynomials
         _vb_y[i] = grad_vb[1];
 	if (!(corner || edge))
 	  {
-	    assert(fabs(ma*grad_va[0]*nx + ma*grad_va[1]*ny-(mb*grad_vb[0]*nx + mb*grad_vb[1]*ny)) < 1.0e-8);
+	    assert(fabs(ma*grad_va[0]*nx + ma*grad_va[1]*ny-(mb*grad_vb[0]*nx + mb*grad_vb[1]*ny) - jf) < 1.0e-8);
 	  }
       }
   }
@@ -665,6 +677,14 @@ namespace equivalent_polynomials
       _calculate_cuts();                                           // X_0, array of interface cuts on reference simplex
       _calculate_normal<nSpace>(phys_nodes_cut, level_set_normal); // normal to interface
     }
+    double normal_sign=0.0;
+    for(int I=0;I<nSpace;I++)
+      normal_sign += level_set_normal[I]*dir[I];
+    if (normal_sign < 0.0)//dir points negative to positive
+      {
+	for (int I=0;I<nSpace;I++)
+	  level_set_normal[I] *= -1.0;
+      }
     double ma_scale, mb_scale;
     if (scale)
     {
@@ -686,7 +706,7 @@ namespace equivalent_polynomials
     {
       if (nN == 3)
       {
-        _calculate_basis_coefficients(mb_scale, ma_scale, jf);
+        _calculate_basis_coefficients(mb_scale, ma_scale, -jf);
         for (int i = 0; i < 3; i++)
         {
           double tmp;
@@ -795,10 +815,6 @@ namespace equivalent_polynomials
       }
       set_boundary_quad(0);
     }
-    //cek why wait until end to flip normal direction?
-    if (inside_out)
-      for (unsigned int I = 0; I < nSpace; I++)
-        level_set_normal[I] *= -1.0;
     return icase;
   }
 

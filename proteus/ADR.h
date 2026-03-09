@@ -1006,7 +1006,11 @@ namespace proteus
 				}
 				// Leveque & Li 1994, Example 1, 3,4,4l, PWC, PWL, PWQ
 				double mua = 1.0, mub = 1.0, jf=0.0;
-				if (test == 2.0) // Leveque & Li 1994, Example 2a
+				if (test == 1.0)
+				  {
+				    jf = -2.0;
+				  }
+				else if (test == 2.0) // Leveque & Li 1994, Example 2a
 				{
 					//jf= -0.2;
 					mua = 1.25;
@@ -1839,8 +1843,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateImmersedBoundaryTerms(immersedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,
@@ -2089,7 +2093,11 @@ namespace proteus
 				// Leveque & Li 1994, Example 1, 3,4,4l
 				// PWC,PWL,PWQ
 				double mua = 1.0, mub = 1.0, jf = 0.0;
-				if (test == 2.0) // Leveque & Li 1994, Example 2
+				if (test == 1.0)
+				  {
+				    jf = -2.0;
+				  }
+				else if (test == 2.0) // Leveque & Li 1994, Example 2
 				{
 					//jf = -0.2;
 					mua = 1.25;
