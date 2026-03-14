@@ -303,6 +303,11 @@ class Coefficients(TC_base):
                  alpha_L=0.0,
                  alpha_T=0.0,
                  Dm=None,
+                 dispersion_type=0,
+                 theta_s=1.0,
+                 theta_r=0.0,
+                 power_law_exponent=0.0,
+                 velocity_exponent=1.0,
                  specified_velocity=True):
         self.variableNames = ['u']
         self.LS_modelIndex = LS_model
@@ -352,6 +357,22 @@ class Coefficients(TC_base):
         self.alpha_L = alpha_L
         self.alpha_T = alpha_T
         self.Dm = physicalDiffusion if Dm is None else Dm
+        dispersion_types = {"Constant":0,
+                            "PowerLawSaturation":1,
+                            "VelocityBased":2}
+        try:
+            if isinstance(dispersion_type, int):
+                if dispersion_type not in [0, 1, 2]:
+                    raise ValueError
+                self.dispersion_type = dispersion_type
+            else:
+                self.dispersion_type = dispersion_types[dispersion_type]
+        except:
+            raise ValueError("dispersion_type must be one of "+str(dispersion_types.keys())+" or an int in [0,1,2], not "+str(dispersion_type))
+        self.theta_s = theta_s
+        self.theta_r = theta_r
+        self.power_law_exponent = power_law_exponent
+        self.velocity_exponent = velocity_exponent
         self.specified_velocity = specified_velocity
         self.sparseDiffusionTensors = sdInfo
         if initialize:
@@ -392,6 +413,10 @@ class Coefficients(TC_base):
         self.alpha_L = alpha_L
         self.alpha_T = alpha_T
         self.Dm = physicalDiffusion if Dm is None else Dm
+        self.theta_s = theta_s
+        self.theta_r = theta_r
+        self.power_law_exponent = power_law_exponent
+        self.velocity_exponent = velocity_exponent
         self.specified_velocity = specified_velocity
         if initialize:
             self.initialize()
@@ -461,9 +486,23 @@ class Coefficients(TC_base):
                 self.q_v = self.vModel.q[('velocity_couple', 0)]
                 self.ebqe_v = self.vModel.ebqe[('velocity_couple', 0)]
                 self.ebq_v = None
+            if ('m', 0) in self.vModel.q:
+                self.q_theta = self.vModel.q[('m', 0)]
+            else:
+                self.q_theta = np.ones(self.model.q[('u', 0)].shape, 'd')
+            if ('m', 0) in self.vModel.ebqe:
+                self.ebqe_theta = self.vModel.ebqe[('m', 0)]
+            else:
+                self.ebqe_theta = np.ones(self.model.ebqe[('u', 0)].shape, 'd')
+            self.q_v_old = self.q_v.copy()
+            self.q_theta_old = self.q_theta.copy()
         else:
             self.q_v = np.ones(self.model.q[('u',0)].shape+(self.model.nSpace_global,),'d')
             self.ebqe_v = np.ones(self.model.ebqe[('u',0)].shape+(self.model.nSpace_global,),'d')
+            self.q_theta = np.ones(self.model.q[('u', 0)].shape, 'd')
+            self.ebqe_theta = np.ones(self.model.ebqe[('u', 0)].shape, 'd')
+            self.q_v_old = self.q_v.copy()
+            self.q_theta_old = self.q_theta.copy()
         # VRANS
         if self.V_model is not None:
             self.flowCoefficients = modelList[self.V_model].coefficients
@@ -474,6 +513,8 @@ class Coefficients(TC_base):
     def preStep(self, t, firstStep=False):
         # SAVE OLD SOLUTION #
         self.model.u_dof_old[:] = self.model.u[0].dof
+        self.q_v_old[:] = self.q_v
+        self.q_theta_old[:] = self.q_theta
 
         # Restart flags for stages of taylor galerkin
         self.model.stage = 1
@@ -487,6 +528,10 @@ class Coefficients(TC_base):
             # Refresh coupled velocity every step from Richards.
             self.q_v[:] = self.vModel.q[('velocity_couple', 0)]
             self.ebqe_v[:] = self.vModel.ebqe[('velocity_couple', 0)]
+            if ('m', 0) in self.vModel.q:
+                self.q_theta[:] = self.vModel.q[('m', 0)]
+            if ('m', 0) in self.vModel.ebqe:
+                self.ebqe_theta[:] = self.vModel.ebqe[('m', 0)]
 
         if self.checkMass:
             self.m_pre = Norms.scalarDomainIntegral(self.model.q['dV_last'],
@@ -503,8 +548,43 @@ class Coefficients(TC_base):
                                                      self.model.q[('m', 0)],
                                                      self.model.mesh.nElements_owned)
             logEvent("Phase  0 mass after TADR step = %12.5e" % (self.m_post,), level=2)
+        #self._write_velocity_output(t)
         copyInstructions = {}
         return copyInstructions
+
+    # def _write_velocity_output(self, t):
+    #     comm = Comm.get()
+    #     rank = comm.rank()
+    #     mpicomm = comm.comm.tompi4py() if hasattr(comm.comm, "tompi4py") else comm.comm
+    #     nSpace = int(getattr(self.model, "nSpace_global", getattr(self.model, "nSpace", self.nd)))
+
+    #     # Avoid duplicate writes if postStep is revisited at the same time.
+    #     if hasattr(self, "_last_velocity_output_time") and abs(t - self._last_velocity_output_time) <= 1.0e-12:
+    #         return
+
+    #     if not hasattr(self, "_wrote_velocity_coords_once"):
+    #         qcoords_local = np.asarray(self.model.q['x']).reshape((-1, 3))
+    #         qcoords_all = mpicomm.gather(qcoords_local, root=0)
+    #         if rank == 0:
+    #             Q = np.vstack(qcoords_all)
+    #             np.savetxt("RE_q_coords_all.txt",
+    #                        Q,
+    #                        fmt="%.16e",
+    #                        header=f"columns: x y z | total_rows={Q.shape[0]}")
+    #             logEvent(f"[TADR.postStep] wrote RE_q_coords_all.txt rows={Q.shape[0]}")
+    #         self._wrote_velocity_coords_once = True
+
+    #     qv_local = np.asarray(self.q_v).reshape((-1, nSpace))
+    #     qv_all = mpicomm.gather(qv_local, root=0)
+    #     if rank == 0:
+    #         V = np.vstack(qv_all)
+    #         header_cols = "vx vy" if nSpace == 2 else "vx vy vz"
+    #         np.savetxt(f"RE_q_vel_all_t{t:.8e}.txt",
+    #                    V,
+    #                    fmt="%.16e",
+    #                    header=f"columns: {header_cols} | t={t:.16e} | total_rows={V.shape[0]}")
+    #         logEvent(f"[TADR.postStep] wrote RE_q_vel_all_t{t:.8e}.txt rows={V.shape[0]}")
+    #     self._last_velocity_output_time = t
 
     def evaluate(self, t, c):
         if c[('f', 0)].shape == self.q_v.shape:
@@ -839,12 +919,36 @@ class LevelModel(OneLevelTransport):
         a_rowptr = self.coefficients.sdInfo[(0, 0)][0]
         a_colind = self.coefficients.sdInfo[(0, 0)][1]
 
+        def _pack_diffusion_to_sd(a_full):
+            """
+            Pack dense diffusion tensor a_full into the sparse diffusion
+            layout defined by (a_rowptr, a_colind).
+            """
+            a_arr = np.asarray(a_full, dtype='d')
+            if a_arr.ndim == 0:
+                a_arr = a_arr.reshape((1, 1))
+            elif a_arr.ndim == 1 and a_arr.size == 1:
+                a_arr = a_arr.reshape((1, 1))
+
+            n_rows = a_rowptr.shape[0] - 1
+            if a_arr.ndim != 2 or a_arr.shape[0] < n_rows:
+                raise ValueError(
+                    f"Unexpected aOfX shape {a_arr.shape}; expected at least ({n_rows}, {n_rows})"
+                )
+
+            a_sd = np.zeros((a_rowptr[-1],), dtype='d')
+            for row in range(n_rows):
+                for offset in range(a_rowptr[row], a_rowptr[row + 1]):
+                    col = a_colind[offset]
+                    a_sd[offset] = a_arr[row, col]
+            return a_sd
+
          #########Dealing with element diffusion coefficient
         for eN in range(self.mesh.nElements_global):
             for k in range(self.nQuadraturePoints_element):
                 x = self.q['x'][eN, k, :]
                 a_full = self.coefficients.aOfX[0](x)
-                a_val = np.array([a_full[row, col] for row, col in zip(a_rowptr[:-1], a_colind)])
+                a_val = _pack_diffusion_to_sd(a_full)
 
                 if a_val.shape == (a_rowptr[-1],):
                     self.q[('a', 0, 0)][eN, k, :] = a_val
@@ -858,7 +962,7 @@ class LevelModel(OneLevelTransport):
             for kb in range(self.nElementBoundaryQuadraturePoints_elementBoundary):
                 x = self.ebqe['x'][ebNE, kb, :]
                 a_full = self.coefficients.aOfX[0](x)
-                a_val = np.array([a_full[row, col] for row, col in zip(a_rowptr[:-1], a_colind)])
+                a_val = _pack_diffusion_to_sd(a_full)
                 if a_val.shape == (a_rowptr[-1],):
                     self.ebqe[('a', 0, 0)][ebNE, kb, :] = a_val
                 else:
@@ -989,8 +1093,9 @@ class LevelModel(OneLevelTransport):
         if self.coefficients.LUMPED_MASS_MATRIX == True:
             cond = 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == ExplicitLumpedMassMatrix
             assert cond, "Use levelNonlinearSolver=ExplicitLumpedMassMatrix when the mass matrix is lumped"
-        if self.coefficients.FCT == True:
-            cond = self.coefficients.STABILIZATION_TYPE > 1, "Use FCT just with STABILIZATION_TYPE>1; i.e., edge based stabilization"
+        if self.coefficients.FCT is True:
+            assert self.coefficients.STABILIZATION_TYPE > 1, \
+                "Use FCT just with STABILIZATION_TYPE>1; i.e., edge based stabilization"
         if self.coefficients.STABILIZATION_TYPE==1:
             cond = 'levelNonlinearSolver' in dir(options) and  options.levelNonlinearSolver == TwoStageNewton
             assert cond, "If STABILIZATION_TYPE==1, use levelNonlinearSolver=TwoStageNewton"
@@ -1033,6 +1138,23 @@ class LevelModel(OneLevelTransport):
     #     self.coefficients.initializeElementQuadrature(self.timeIntegration.t, self.q)
                 
     def FCTStep(self):
+        # Explicit solvers call FCTStep() unconditionally.
+        # If FCT is disabled, advance with low-order solution (uLow).
+        if not self.coefficients.FCT:
+            fromFreeToGlobal = 0
+            cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns(
+                fromFreeToGlobal,
+                self.offset[0],
+                self.stride[0],
+                self.dirichletConditions[0].global2freeGlobal_global_dofs,
+                self.dirichletConditions[0].global2freeGlobal_free_dofs,
+                self.timeIntegration.u,
+                self.uLow,
+            )
+            # Keep model DOFs in sync with the low-order update.
+            self.u[0].dof[:] = self.uLow
+            return
+
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         limited_solution = np.zeros(self.u[0].dof.shape)
@@ -1271,8 +1393,11 @@ class LevelModel(OneLevelTransport):
         argsDict["u_dof"] = self.u[0].dof
         argsDict["u_dof_old"] = self.u_dof_old
         argsDict["velocity"] = self.coefficients.q_v
+        argsDict["velocity_old"] = self.coefficients.q_v_old
         argsDict["q_m"] = self.timeIntegration.m_tmp[0]
         argsDict["q_u"] = self.q[('u', 0)]
+        argsDict["q_theta"] = self.coefficients.q_theta
+        argsDict["q_theta_old"] = self.coefficients.q_theta_old
         ###########################################
         argsDict["q_a"] = self.q[('a',0,0)]
         argsDict["q_r"] = self.q[('r',0)]
@@ -1306,6 +1431,7 @@ class LevelModel(OneLevelTransport):
         argsDict["ebqe_bc_flux_u_ext"] = self.ebqe[('advectiveFlux_bc', 0)]
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag', 0, 0)]
         argsDict["ebqe_bc_diffusiveFlux_u_ext"] = self.ebqe[('diffusiveFlux_bc', 0, 0)]
+        argsDict["ebqe_theta"] = self.coefficients.ebqe_theta
         
 
 
@@ -1341,6 +1467,12 @@ class LevelModel(OneLevelTransport):
         argsDict["alpha_L"] = self.coefficients.alpha_L
         argsDict["alpha_T"] = self.coefficients.alpha_T
         argsDict["Dm"] = self.coefficients.Dm
+        argsDict["dispersion_type"] = self.coefficients.dispersion_type
+        argsDict["power_law_exponent"] = self.coefficients.power_law_exponent
+        argsDict["velocity_exponent"] = self.coefficients.velocity_exponent
+        if self.coefficients.dispersion_type == 1:
+            argsDict["theta_s"] = self.coefficients.theta_s
+            argsDict["theta_r"] = self.coefficients.theta_r
         #argsDict["D"] = self.coefficients.DTypes
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag',0,0)]
         argsDict["isAdvectiveFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag',0)]
@@ -1444,6 +1576,7 @@ class LevelModel(OneLevelTransport):
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["u_dof"] = self.u[0].dof
         argsDict["velocity"] = self.coefficients.q_v
+        argsDict["q_theta"] = self.coefficients.q_theta
         argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
         argsDict["cfl"] = self.q[('cfl', 0)]
         argsDict["q_numDiff_u_last"] = self.shockCapturing.numDiff_last[0]
@@ -1461,6 +1594,7 @@ class LevelModel(OneLevelTransport):
         argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u', 0)]
         argsDict["isFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag', 0)]
         argsDict["ebqe_bc_flux_u_ext"] = self.ebqe[('advectiveFlux_bc', 0)]
+        argsDict["ebqe_theta"] = self.coefficients.ebqe_theta
 
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag', 0, 0)]
         argsDict["ebqe_bc_diffusiveFlux_u_ext"] = self.ebqe[('diffusiveFlux_bc', 0, 0)]
@@ -1472,6 +1606,12 @@ class LevelModel(OneLevelTransport):
         argsDict["alpha_L"] = self.coefficients.alpha_L
         argsDict["alpha_T"] = self.coefficients.alpha_T
         argsDict["Dm"] = self.coefficients.Dm
+        argsDict["dispersion_type"] = self.coefficients.dispersion_type
+        argsDict["power_law_exponent"] = self.coefficients.power_law_exponent
+        argsDict["velocity_exponent"] = self.coefficients.velocity_exponent
+        if self.coefficients.dispersion_type == 1:
+            argsDict["theta_s"] = self.coefficients.theta_s
+            argsDict["theta_r"] = self.coefficients.theta_r
         argsDict["ebq_a"] = self.ebqe[('a',0,0)]
         #argsDict["D"] = self.coefficients.DTypes
 

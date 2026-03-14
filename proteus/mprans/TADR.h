@@ -27,6 +27,7 @@ namespace proteus
 {
   enum class STABILIZATION : int { Galerkin=-1, VMS=0, TaylorGalerkinEV=1, EntropyViscosity=2, SmoothnessIndicator=3, Kuzmin=4};
   enum class ENTROPY : int { POWER=0, LOG=1};
+  enum class DISPERSION : int { Constant=0, PowerLawSaturation=1, VelocityBased=2};
   // Power entropy //
   inline double EPOWER(const double& phi, const double& phiL, const double& phiR)
   {
@@ -102,6 +103,12 @@ void evaluateCoefficients(const int rowptr[nSpace],
                               const double alpha_L,
                               const double alpha_T,
                               const double Dm,
+                              const double theta,
+                              const DISPERSION dispersion_type,
+                              const double theta_s,
+                              const double theta_r,
+                              const double power_law_exponent,
+                              const double velocity_exponent,
                               const double& u,
                               double& m,
                               double& dm,
@@ -110,12 +117,28 @@ void evaluateCoefficients(const int rowptr[nSpace],
                               double a[nnz],
                               double da[nnz])
     {
-      m = u;
-      dm= 1.0;
+      m = u; //theta*u;
+      dm= 1.0; //theta;
       double v_mag = 0.0;
       for (int I=0; I<nSpace; I++)
         v_mag += v[I]*v[I];
       v_mag = std::sqrt(v_mag);
+
+      double alpha_L_eff = alpha_L;
+      double alpha_T_eff = alpha_T;
+      if (dispersion_type == DISPERSION::PowerLawSaturation)
+        {
+          const double denom = std::max(theta_s - theta_r, 1.0e-12);
+          const double Se = std::max((theta - theta_r)/denom, 1.0e-8);
+          alpha_L_eff = alpha_L*std::pow(Se, -power_law_exponent);
+          alpha_T_eff = alpha_T*alpha_L_eff;
+        }
+      else if (dispersion_type == DISPERSION::VelocityBased)
+        {
+          const double v_scale = std::pow(std::max(v_mag, 1.0e-12), velocity_exponent - 1.0);
+          alpha_L_eff = alpha_L*v_scale;
+          alpha_T_eff = alpha_T*v_scale;
+        }
 
       double v_unit[nSpace] = {0.0};
       if (v_mag > 1.0e-10)
@@ -131,8 +154,8 @@ void evaluateCoefficients(const int rowptr[nSpace],
               const int J = colind[ii];
               const double deltaIJ = (I == J) ? 1.0 : 0.0;
               a[ii] = Dm*deltaIJ +
-                      alpha_L*v_unit[I]*v_unit[J]*v_mag +
-                      alpha_T*v_mag*(deltaIJ - v_unit[I]*v_unit[J]);
+                      alpha_L_eff*v_unit[I]*v_unit[J]*v_mag +
+                      alpha_T_eff*v_mag*(deltaIJ - v_unit[I]*v_unit[J]);
               da[ii] = 0.0;
             }
 
@@ -434,13 +457,27 @@ inline
       xt::pyarray<double>& u_dof = args.array<double>("u_dof");
       xt::pyarray<double>& u_dof_old = args.array<double>("u_dof_old");
       xt::pyarray<double>& velocity = args.array<double>("velocity");
+      xt::pyarray<double>& velocity_old = args.array<double>("velocity_old");
       xt::pyarray<double>& q_m = args.array<double>("q_m");
       xt::pyarray<double>& q_u = args.array<double>("q_u");
+      xt::pyarray<double>& q_theta = args.array<double>("q_theta");
+      xt::pyarray<double>& q_theta_old = args.array<double>("q_theta_old");
 
       xt::pyarray<double>& q_r = args.array<double>("q_r");
       const double alpha_L = args.scalar<double>("alpha_L");
       const double alpha_T = args.scalar<double>("alpha_T");
       const double Dm = args.scalar<double>("Dm");
+      int dispersion_type_int = 0;
+      double theta_s = 1.0;
+      double theta_r = 0.0;
+      double power_law_exponent = 0.0;
+      double velocity_exponent = 1.0;
+      try { dispersion_type_int = args.scalar<int>("dispersion_type"); } catch(...) {}
+      try { theta_s = args.scalar<double>("theta_s"); } catch(...) {}
+      try { theta_r = args.scalar<double>("theta_r"); } catch(...) {}
+      try { power_law_exponent = args.scalar<double>("power_law_exponent"); } catch(...) {}
+      try { velocity_exponent = args.scalar<double>("velocity_exponent"); } catch(...) {}
+      DISPERSION DISPERSION_TYPE = static_cast<DISPERSION>(dispersion_type_int);
       
 
       xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
@@ -465,6 +502,7 @@ inline
       xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
       xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
       xt::pyarray<double>& ebqe_bc_diffusiveFlux_u_ext = args.array<double>("ebqe_bc_diffusiveFlux_u_ext");
+      xt::pyarray<double>& ebqe_theta = args.array<double>("ebqe_theta");
       
       double epsFact = args.scalar<double>("epsFact");
       xt::pyarray<double>& ebqe_u = args.array<double>("ebqe_u");
@@ -674,6 +712,12 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
+                                   q_theta.data()[eN_k],
+                                   DISPERSION_TYPE,
+                                   theta_s,
+                                   theta_r,
+                                   power_law_exponent,
+                                   velocity_exponent,
                                    u,
                                    m,
                                    dm,
@@ -686,13 +730,18 @@ inline
             //the correct starting index for D for the current element eN and 
             //quadrature point k, considering nnz as the number of non-zero entries for the sparse matrix. This ensures that the values for D are accessed correctly based on the element and quadrature point.
 
-              //cek todo, this should be velocity_old
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
-                                   &velocity.data()[eN_k_nSpace],
+                                   &velocity_old.data()[eN_k_nSpace],
                                    alpha_L,
                                    alpha_T,
                                    Dm,
+                                   q_theta_old.data()[eN_k],
+                                   DISPERSION_TYPE,
+                                   theta_s,
+                                   theta_r,
+                                   power_law_exponent,
+                                   velocity_exponent,
                                    un,
                                    mn,
                                    dmn,
@@ -1126,6 +1175,12 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
+                                   ebqe_theta.data()[ebNE_kb],
+                                   DISPERSION_TYPE,
+                                   theta_s,
+                                   theta_r,
+                                   power_law_exponent,
+                                   velocity_exponent,
                                    u_ext,
                                    m_ext,
                                    dm_ext,
@@ -1140,6 +1195,12 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
+                                   ebqe_theta.data()[ebNE_kb],
+                                   DISPERSION_TYPE,
+                                   theta_s,
+                                   theta_r,
+                                   power_law_exponent,
+                                   velocity_exponent,
                                    bc_u_ext,
                                    bc_m_ext,
                                    bc_dm_ext,
@@ -1497,6 +1558,7 @@ inline
       xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
       xt::pyarray<double>& u_dof = args.array<double>("u_dof");
       xt::pyarray<double>& velocity = args.array<double>("velocity");
+      xt::pyarray<double>& q_theta = args.array<double>("q_theta");
       xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
       xt::pyarray<double>& cfl = args.array<double>("cfl");
       xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
@@ -1514,6 +1576,7 @@ inline
       xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
       xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
       xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
+      xt::pyarray<double>& ebqe_theta = args.array<double>("ebqe_theta");
       xt::pyarray<int>& csrColumnOffsets_eb_u_u = args.array<int>("csrColumnOffsets_eb_u_u");
       STABILIZATION STABILIZATION_TYPE = static_cast<STABILIZATION>(args.scalar<int>("STABILIZATION_TYPE"));
 //      ENTROPY ENTROPY_TYPE = static_cast<ENTROPY>(args.scalar<int>("ENTROPY_TYPE"));    
@@ -1522,6 +1585,17 @@ inline
       const double alpha_L = args.scalar<double>("alpha_L");
       const double alpha_T = args.scalar<double>("alpha_T");
       const double Dm = args.scalar<double>("Dm");
+      int dispersion_type_int = 0;
+      double theta_s = 1.0;
+      double theta_r = 0.0;
+      double power_law_exponent = 0.0;
+      double velocity_exponent = 1.0;
+      try { dispersion_type_int = args.scalar<int>("dispersion_type"); } catch(...) {}
+      try { theta_s = args.scalar<double>("theta_s"); } catch(...) {}
+      try { theta_r = args.scalar<double>("theta_r"); } catch(...) {}
+      try { power_law_exponent = args.scalar<double>("power_law_exponent"); } catch(...) {}
+      try { velocity_exponent = args.scalar<double>("velocity_exponent"); } catch(...) {}
+      DISPERSION DISPERSION_TYPE = static_cast<DISPERSION>(dispersion_type_int);
 
 
       double Ct_sge = 4.0;
@@ -1623,6 +1697,12 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
+                                   q_theta.data()[eN_k],
+                                   DISPERSION_TYPE,
+                                   theta_s,
+                                   theta_r,
+                                   power_law_exponent,
+                                   velocity_exponent,
                                    u,
                                    m,
                                    dm,
@@ -1884,6 +1964,12 @@ inline
                                        alpha_L,
                                        alpha_T,
                                        Dm,
+                                       ebqe_theta.data()[ebNE_kb],
+                                       DISPERSION_TYPE,
+                                       theta_s,
+                                       theta_r,
+                                       power_law_exponent,
+                                       velocity_exponent,
                                        u_ext,
                                        m_ext,
                                        dm_ext,
@@ -1899,6 +1985,12 @@ inline
                                        alpha_L,
                                        alpha_T,
                                        Dm,
+                                       ebqe_theta.data()[ebNE_kb],
+                                       DISPERSION_TYPE,
+                                       theta_s,
+                                       theta_r,
+                                       power_law_exponent,
+                                       velocity_exponent,
                                        bc_u_ext,
                                        bc_m_ext,
                                        bc_dm_ext,
