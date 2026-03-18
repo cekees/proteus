@@ -86,7 +86,7 @@ femSpaces = {0: C0_AffineLinearOnSimplexWithNodalBasis}
 elementQuadrature = SimplexLobattoQuadrature(nd, 1)
 elementBoundaryQuadrature = SimplexLobattoQuadrature(nd - 1, 1)
 
-nnx = 81
+nnx = 161
 nny = 21
 nLevels = 1
 triangleFlag = 0
