@@ -828,6 +828,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.q[('velocity',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')
         self.q[('velocity_couple',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')      
         self.q[('m',0)] = self.q[('u',0)].copy()
+        self.q[('theta',0)] = self.q[('u',0)].copy()
         self.q[('mt',0)] = self.q[('u',0)].copy()
         self.q[('m_last',0)] = self.q[('u',0)].copy()
         self.q[('m_tmp',0)] = self.q[('u',0)].copy()
@@ -836,6 +837,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.numDiff_star = self.q[('numDiff',0,0)]
         self.q[('numDiff_last',0,0)] =  np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element),'d')
         self.ebqe[('u',0)] = np.zeros((self.mesh.nExteriorElementBoundaries_global,self.nElementBoundaryQuadraturePoints_elementBoundary),'d')
+        self.ebqe[('theta',0)] = np.zeros((self.mesh.nExteriorElementBoundaries_global,self.nElementBoundaryQuadraturePoints_elementBoundary),'d')
         self.ebqe[('grad(u)',0)] = np.zeros((self.mesh.nExteriorElementBoundaries_global,self.nElementBoundaryQuadraturePoints_elementBoundary,self.nSpace_global),'d')
         self.ebqe[('velocity',0)] = np.zeros((self.mesh.nExteriorElementBoundaries_global,self.nElementBoundaryQuadraturePoints_elementBoundary,self.nSpace_global),'d')
         self.ebqe[('velocity_couple',0)] = np.zeros((self.mesh.nExteriorElementBoundaries_global,self.nElementBoundaryQuadraturePoints_elementBoundary,self.nSpace_global),'d')       
@@ -1442,6 +1444,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["velocity_couple"] = self.q[('velocity_couple',0)]
 
         argsDict["q_m"] = self.timeIntegration.m_tmp[0]
+        argsDict["q_theta"] = self.q[('theta',0)]
         ############################################
         self.q[('m',0)][:] = self.timeIntegration.m_tmp[0]
         #############################################
@@ -1470,6 +1473,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["epsFact"] = 0.0
         #argsDict["ebqe_x"] = self.ebqe['x']
         argsDict["ebqe_u"] = self.ebqe[('u',0)]
+        argsDict["ebqe_theta"] = self.ebqe[('theta',0)]
         argsDict["ebqe_flux"] = self.ebqe[('advectiveFlux',0)]
         argsDict['STABILIZATION_TYPE'] = self.coefficients.STABILIZATION_TYPE
         # ENTROPY VISCOSITY and ARTIFICIAL COMRPESSION
@@ -1682,6 +1686,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["u_dof_old"] = self.u[0].dof
         argsDict["velocity"] = self.q['velocity',0]
         argsDict["q_m"] = self.timeIntegration.m_tmp[0]
+        argsDict["q_theta"] = self.q[('theta',0)]
         argsDict["q_u"] = self.q[('u',0)]
         argsDict["q_dV"] = self.q[('dV_u',0)]
         argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
@@ -1703,6 +1708,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["ebqe_phi"] = self.ebqe[('u',0)]
         argsDict["epsFact"] = 0.0
         argsDict["ebqe_u"] = self.ebqe[('u',0)]
+        argsDict["ebqe_theta"] = self.ebqe[('theta',0)]
         argsDict["ebqe_flux"] = self.ebqe[('advectiveFlux',0)]
         argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
         argsDict["cE"] = self.coefficients.cE

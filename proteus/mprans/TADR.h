@@ -117,8 +117,8 @@ void evaluateCoefficients(const int rowptr[nSpace],
                               double a[nnz],
                               double da[nnz])
     {
-      m = u; //theta*u;
-      dm= 1.0; //theta;
+      m = theta*u;
+      dm= theta;
       double v_mag = 0.0;
       for (int I=0; I<nSpace; I++)
         v_mag += v[I]*v[I];

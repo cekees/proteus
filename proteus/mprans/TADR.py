@@ -486,11 +486,15 @@ class Coefficients(TC_base):
                 self.q_v = self.vModel.q[('velocity_couple', 0)]
                 self.ebqe_v = self.vModel.ebqe[('velocity_couple', 0)]
                 self.ebq_v = None
-            if ('m', 0) in self.vModel.q:
+            if (not self.specified_velocity and ('theta', 0) in self.vModel.q):
+                self.q_theta = self.vModel.q[('theta', 0)]
+            elif ('m', 0) in self.vModel.q:
                 self.q_theta = self.vModel.q[('m', 0)]
             else:
                 self.q_theta = np.ones(self.model.q[('u', 0)].shape, 'd')
-            if ('m', 0) in self.vModel.ebqe:
+            if (not self.specified_velocity and ('theta', 0) in self.vModel.ebqe):
+                self.ebqe_theta = self.vModel.ebqe[('theta', 0)]
+            elif ('m', 0) in self.vModel.ebqe:
                 self.ebqe_theta = self.vModel.ebqe[('m', 0)]
             else:
                 self.ebqe_theta = np.ones(self.model.ebqe[('u', 0)].shape, 'd')
@@ -528,9 +532,13 @@ class Coefficients(TC_base):
             # Refresh coupled velocity every step from Richards.
             self.q_v[:] = self.vModel.q[('velocity_couple', 0)]
             self.ebqe_v[:] = self.vModel.ebqe[('velocity_couple', 0)]
-            if ('m', 0) in self.vModel.q:
+            if ('theta', 0) in self.vModel.q:
+                self.q_theta[:] = self.vModel.q[('theta', 0)]
+            elif ('m', 0) in self.vModel.q:
                 self.q_theta[:] = self.vModel.q[('m', 0)]
-            if ('m', 0) in self.vModel.ebqe:
+            if ('theta', 0) in self.vModel.ebqe:
+                self.ebqe_theta[:] = self.vModel.ebqe[('theta', 0)]
+            elif ('m', 0) in self.vModel.ebqe:
                 self.ebqe_theta[:] = self.vModel.ebqe[('m', 0)]
 
         if self.checkMass:
