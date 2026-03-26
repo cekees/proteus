@@ -447,136 +447,63 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             np.isnan(c[('dm',0,0)]).any()):
             import pdb
             pdb.set_trace()
-
     
-    # def attachModels(self, modelList):
-    #     # Keep self.model for symmetry with other coeffs
-    #     self.model = modelList[self.modelIndex] 
-    #     if self.DENSITY_MODEL is None:
-    #         return
-    #     densityModel = modelList[self.DENSITY_MODEL]
-    #     self.model.q['rho']    = densityModel.q['rho']
-    #     self.model.ebqe['rho'] = densityModel.ebqe['rho']
-
-
-    # def preStep(self, t, firstStep=False):
-    #     dm = getattr(self, 'densityModel', None)
-    #     if dm is None:
+    # def postStep(self, t, firstStep=False):
+    #     if not self.outputQuantDOFs:
+    #         return {}
+    #     if (self.model is None or
+    #             ('velocity_couple', 0) not in self.model.q or
+    #             ('grad(u_v)', 0) not in self.model.q):
     #         return {}
 
-    #     self.model.q['rho'] = dm.q['rho']
-    #     self.model.ebqe['rho'] = dm.ebqe['rho']
-
-    #     return {}ls
-
-    # def postStep(self, t, firstStep=False):
-    #     from proteus import Comm
-    #     import numpy as np
-    #     from proteus.Profiling import logEvent
-    #     comm = Comm.get()
-    #     r = comm.rank()
-
-    #     # ---------- (A) coords ONCE ----------
-    #     if not hasattr(self, "_wrote_coords_once"):
-    #         self._wrote_coords_once = True
-
-    #         # local coords: (nElem_local, nQP, 3) -> (nLocalRows, 3)
-    #         qcoords_local = self.model.q['x'].reshape((-1, self.model.q['x'].shape[-1]))
-
-    #         # gather list of arrays to master
-    #         qcoords_all = comm.comm.gather(qcoords_local, root=0)
-
-    #         if comm.isMaster():
-    #             Q = np.vstack(qcoords_all)  # concatenate in rank order
-    #             np.savetxt(
-    #                 "RE_q_coords_all.txt",
-    #                 Q,
-    #                 fmt="%.16e",
-    #                 header=f"columns: x y z | total_rows={Q.shape[0]}"
-    #             )
-    #             logEvent(f"[postStep] wrote RE_q_coords_all.txt with rows={Q.shape[0]}")
-
-    #     # ---------- (B) velocity EVERY STEP ----------
-    #     qv_local = self.model.q[('velocity_couple', 0)].reshape(
-    #         (-1, self.model.q[('velocity_couple', 0)].shape[-1])
-    #     )
-
-    #     qv_all = comm.comm.gather(qv_local, root=0)
-
-    #     if comm.isMaster():
-    #         V = np.vstack(qv_all)
-    #         np.savetxt(
-    #             f"RE_q_vel_all_t{t:.8e}.txt",
-    #             V,
-    #             fmt="%.16e",
-    #             header=f"columns: vx vy vz | t={t:.16e} | total_rows={V.shape[0]}"
-    #         )
-    #     qmin_local = float(np.min(qv))
-    #     qmax_local = float(np.max(qv))
-
-    #     ebmin_local = float(np.min(ebqv))
-    #     ebmax_local = float(np.max(ebqv))
-
-    #     # global extrema across MPI
-    #     qmin = comm.globalMin(qmin_local)
-    #     qmax = comm.globalMax(qmax_local)
-    #     ebmin = comm.globalMin(ebmin_local)
-    #     ebmax = comm.globalMax(ebmax_local)
-
-    #     if comm.isMaster():
-    #         logEvent(f"[velocity_couple:q ] t={t:.6e} min={qmin:.6e} max={qmax:.6e}")
-    #         logEvent(f"[velocity_couple:eb] t={t:.6e} min={ebmin:.6e} max={ebmax:.6e}")
-        
-    #     return {}
-    # def postStep(self, t, firstStep=False):
-    #     from proteus import Comm
-    #     from proteus.Profiling import logEvent
-    #     import numpy as np
-
-    #     comm = Comm.get()
-
-    #     # --- get an mpi4py communicator safely ---
-    #     try:
-    #         mpicomm = comm.comm.tompi4py()   # petsc4py -> mpi4py
-    #     except Exception:
-    #         from mpi4py import MPI
-    #         mpicomm = MPI.COMM_WORLD
-
+    #     mpicomm = self._get_mpi_comm()
     #     rank = mpicomm.Get_rank()
+    #     nSpace = int(getattr(self.model, 'nSpace_global',
+    #                          getattr(self.model, 'nSpace', self.nd)))
+    #     n_owned = self._get_owned_element_count()
+    #     stab_tag = f"stab{self.STABILIZATION_TYPE}"
 
-    #     # Use the actual spatial dimension (2 for 2D, 3 for 3D)
-    #     nSpace = int(getattr(self.model, "nSpace_global", getattr(self.model, "nSpace", 3)))
+    #     qcoords_local = self._get_q_coordinates().reshape((-1, 3))
+    #     qv_local = np.asarray(self.model.q[('velocity_couple', 0)][:n_owned]).reshape((-1, nSpace))
+    #     qgrad_local = np.asarray(self.model.q[('grad(u_v)', 0)][:n_owned]).reshape((-1, nSpace))
 
-    #     # -----------------------------
-    #     # (A) coordinates ONCE
-    #     # -----------------------------
-    #     if not hasattr(self, "_wrote_coords_once"):
-    #         self._wrote_coords_once = True
-
-    #         # q['x'] is (nElem_owned, nQP, 3) in your Python allocation
-    #         qcoords_local = np.asarray(self.model.q['x']).reshape((-1, 3))
-
+    #     if not hasattr(self, '_wrote_q_coords_once'):
     #         qcoords_all = mpicomm.gather(qcoords_local, root=0)
-
     #         if rank == 0:
-    #             Q = np.vstack(qcoords_all)
-    #             np.savetxt("RE_q_coords_all.txt", Q, fmt="%.16e",
-    #                     header=f"columns: x y z | total_rows={Q.shape[0]}")
-    #             logEvent(f"[postStep] wrote RE_q_coords_all.txt rows={Q.shape[0]}")
+    #             qcoords = np.vstack(qcoords_all)
+    #             np.savetxt(f"richards_q_coordinates_{stab_tag}.txt",
+    #                        qcoords,
+    #                        fmt="%.16e",
+    #                        header=f"columns: x y z | total_rows={qcoords.shape[0]}")
+    #             logEvent(f"[Richards postStep] wrote richards_q_coordinates_{stab_tag}.txt rows={qcoords.shape[0]}")
+    #         self._wrote_q_coords_once = True
 
-    #     # -----------------------------
-    #     # (B) velocity EVERY STEP
-    #     # -----------------------------
-    #     qv = np.asarray(self.model.q[('velocity_couple', 0)])  # (nElem_owned, nQP, nSpace)
-    #     qv_local = qv.reshape((-1, nSpace))
-
-    #     qv_all = mpicomm.gather(qv_local, root=0)
+    #     q_profile_local = np.hstack((qcoords_local, qv_local))
+    #     q_profile_all = mpicomm.gather(q_profile_local, root=0)
+    #     q_grad_profile_local = np.hstack((qcoords_local, qgrad_local))
+    #     q_grad_profile_all = mpicomm.gather(q_grad_profile_local, root=0)
+    #     velocity_magnitude_local = np.linalg.norm(qv_local, axis=1) if qv_local.size else np.zeros((0,), 'd')
+    #     vmax_local = float(velocity_magnitude_local.max()) if velocity_magnitude_local.size else 0.0
+    #     vmax = Comm.get().globalMax(vmax_local)
+    #     grad_magnitude_local = np.linalg.norm(qgrad_local, axis=1) if qgrad_local.size else np.zeros((0,), 'd')
+    #     gmax_local = float(grad_magnitude_local.max()) if grad_magnitude_local.size else 0.0
+    #     gmax = Comm.get().globalMax(gmax_local)
 
     #     if rank == 0:
-    #         V = np.vstack(qv_all)
-    #         header_cols = "vx vy" if nSpace == 2 else "vx vy vz"
-    #         np.savetxt(f"RE_q_vel_all_t{t:.8e}.txt", V, fmt="%.16e",
-    #                 header=f"columns: {header_cols} | t={t:.16e} | total_rows={V.shape[0]}")
+    #         q_profile = np.vstack(q_profile_all)
+    #         q_grad_profile = np.vstack(q_grad_profile_all)
+    #         header_cols = "x y z vx vy" if nSpace == 2 else "x y z vx vy vz"
+    #         header_grad_cols = "x y z gx gy" if nSpace == 2 else "x y z gx gy gz"
+    #         np.savetxt(f"richards_q_velocity_profile_{stab_tag}_t{t:.8e}.txt",
+    #                    q_profile,
+    #                    fmt="%.16e",
+    #                    header=f"columns: {header_cols} | t={t:.16e} | total_rows={q_profile.shape[0]}")
+    #         logEvent(f"[Richards postStep] wrote richards_q_velocity_profile_{stab_tag}_t{t:.8e}.txt vmax={vmax:.6e}")
+    #         np.savetxt(f"richards_q_grad_u_profile_{stab_tag}_t{t:.8e}.txt",
+    #                    q_grad_profile,
+    #                    fmt="%.16e",
+    #                    header=f"columns: {header_grad_cols} | t={t:.16e} | total_rows={q_grad_profile.shape[0]}")
+    #         logEvent(f"[Richards postStep] wrote richards_q_grad_u_profile_{stab_tag}_t{t:.8e}.txt gmax={gmax:.6e}")
     #     return {}
 
 
@@ -957,6 +884,14 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.fluxCorrection = np.zeros(self.u[0].dof.shape, 'd')
         self.mn = np.zeros(self.u[0].dof.shape, 'd')
         self.anb_seepage_flux_n = np.zeros(self.u[0].dof.shape, 'd')
+        self.freeDOFMaterialTypes = np.zeros((self.nFreeDOF_global[0],), 'i')
+        if hasattr(self.mesh, 'nodeMaterialTypes'):
+            free_l2g = np.asarray(self.l2g[0]['freeGlobal']).ravel()
+            dof_l2g = np.asarray(self.u[0].femSpace.dofMap.l2g).ravel()
+            node_material_types = np.asarray(self.mesh.nodeMaterialTypes)
+            for free_dof, global_dof in zip(free_l2g, dof_l2g):
+                if 0 <= free_dof < self.freeDOFMaterialTypes.shape[0]:
+                    self.freeDOFMaterialTypes[free_dof] = node_material_types[global_dof]
         comm = Comm.get()
         self.comm=comm
         if comm.size() > 1:
@@ -1080,17 +1015,17 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         mLim  = limited_solution.copy()
         uLim  = self.u[0].dof.copy()
         du_inf = np.linalg.norm(uLim - uHigh, np.inf)
-        DU_INF_MAX = 0.5  # Conservative value to avoid instability due to large corrections
+        DU_INF_MAX = 1.0  # Conservative value to avoid instability due to large corrections
         if (not np.isfinite(du_inf)) or (du_inf > DU_INF_MAX):
             self.u[0].dof[:] = uHigh
             self.timeIntegration.u[:] = self.u[0].dof
-            print("[FCT] SKIPPED: du_inf =", du_inf, "dt =", self.timeIntegration.dt)
+            #print("[FCT] SKIPPED: du_inf =", du_inf, "dt =", self.timeIntegration.dt)
         else:
             self.timeIntegration.u[:] = self.u[0].dof
-            print("[FCT] ACCEPTED: du_inf =", du_inf, "dt =", self.timeIntegration.dt)
-        print("dt =", self.timeIntegration.dt)
-        print("||mLim - mLow||inf =", np.linalg.norm(mLim - self.mLow, np.inf))
-        print("||uLim - uHigh||inf =", np.linalg.norm(uLim - uHigh, np.inf))
+            #print("[FCT] ACCEPTED: du_inf =", du_inf, "dt =", self.timeIntegration.dt)
+        # print("dt =", self.timeIntegration.dt)
+        # print("||mLim - mLow||inf =", np.linalg.norm(mLim - self.mLow, np.inf))
+        # print("||uLim - uHigh||inf =", np.linalg.norm(uLim - uHigh, np.inf))
 
     
     def kth_FCT_step(self):
@@ -1522,6 +1457,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["quantDOFs"] = self.quantDOFs
         argsDict["mn"] = self.mn
         argsDict["anb_seepage_flux_n"]= self.anb_seepage_flux_n
+        argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
         ######################################################################################
         argsDict["pn"] = self.u[0].dof
         argsDict["mHigh"] = self.mHigh
@@ -1619,6 +1555,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         import copy
     
         self.mHigh[:] = u
+        if ulow is not None:
+            self.u[0].dof[:] = ulow
     
         rowptr, colind, nzval = self.jacobian.getCSRrepresentation()
         nnz = nzval.shape[-1]
@@ -1743,6 +1681,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
         argsDict["limited_solution"] = u
         argsDict["mLow"] = self.u[0].dof
+        argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
         argsDict["USE_NEWTON_INVERT"] = 1 if (self.coefficients.FCT==1 and self.coefficients.nd > 1) else 0
         self.richards.invert(argsDict)
      
