@@ -175,6 +175,7 @@ namespace equivalent_polynomials
     double phi_dof_corrected[nN];
     double cut_barycenter[3] ={0.,0.,0.};
     double dir[nSpace];
+    double normal_sign;
     int edge, corner;
   private:;
     double _H_q, _ImH_q, _D_q, _va_q[nN], _vb_q[nN],
@@ -557,6 +558,7 @@ namespace equivalent_polynomials
       {
         phi_dof_corrected[i] *= -1.0;
       }
+      //std::cout<<"phi "<<phi_dof[i]<<'\t'<<" phi corrected "<<phi_dof_corrected[i]<<std::endl;
     }
   }
 
@@ -597,12 +599,12 @@ namespace equivalent_polynomials
 	else
 	  {
 	    _a1[i] = v[0];
-	    _a2[i] = -(-Jit00*mb*nx*v[0]*y0 + Jit00*mb*nx*v[2]*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[0]*y0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*ma*nx*v[1]*y0 - Jit01*ma*nx*v[2]*x0*y0 + Jit01*ma*nx*v[2]*x0 - Jit01*mb*nx*v[0]*y0 - Jit01*mb*nx*v[1]*x0*y0 + Jit01*mb*nx*v[1]*y0 + Jit01*mb*nx*v[2]*x0*y0 - Jit10*mb*ny*v[0]*y0 + Jit10*mb*ny*v[2]*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[0]*y0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*ma*ny*v[1]*y0 - Jit11*ma*ny*v[2]*x0*y0 + Jit11*ma*ny*v[2]*x0 - Jit11*mb*ny*v[0]*y0 - Jit11*mb*ny*v[1]*x0*y0 + Jit11*mb*ny*v[1]*y0 + Jit11*mb*ny*v[2]*x0*y0 - jf*x0*y0 + jf*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
-	    _a3[i] = (-Jit00*ma*nx*v[0]*x0 + Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[1]*x0*y0 - Jit00*ma*nx*v[1]*y0 - Jit00*ma*nx*v[2]*x0*y0 + Jit00*ma*nx*v[2]*x0 + Jit00*mb*nx*v[0]*x0 - Jit00*mb*nx*v[1]*x0*y0 + Jit00*mb*nx*v[2]*x0*y0 - Jit00*mb*nx*v[2]*x0 + Jit01*mb*nx*v[0]*x0 - Jit01*mb*nx*v[1]*x0 - Jit10*ma*ny*v[0]*x0 + Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[1]*x0*y0 - Jit10*ma*ny*v[1]*y0 - Jit10*ma*ny*v[2]*x0*y0 + Jit10*ma*ny*v[2]*x0 + Jit10*mb*ny*v[0]*x0 - Jit10*mb*ny*v[1]*x0*y0 + Jit10*mb*ny*v[2]*x0*y0 - Jit10*mb*ny*v[2]*x0 + Jit11*mb*ny*v[0]*x0 - Jit11*mb*ny*v[1]*x0 + jf*x0*y0 - jf*x0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
-	    _b1[i] = (-Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[2]*x0*y0 - Jit00*mb*nx*v[2]*x0*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*mb*nx*v[1]*x0*y0 - Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[2]*x0*y0 - Jit10*mb*ny*v[2]*x0*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*mb*ny*v[1]*x0*y0 - jf*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
-	    _b2[i] = -(-Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[2]*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*ma*nx*v[2]*x0*y0 + Jit01*ma*nx*v[2]*x0 - Jit01*mb*nx*v[1]*x0*y0 + Jit01*mb*nx*v[2]*x0*y0 - Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[2]*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*ma*ny*v[2]*x0*y0 + Jit11*ma*ny*v[2]*x0 - Jit11*mb*ny*v[1]*x0*y0 + Jit11*mb*ny*v[2]*x0*y0 - jf*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
-	    _b3[i] = (Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[1]*x0*y0 - Jit00*ma*nx*v[1]*y0 - Jit00*ma*nx*v[2]*x0*y0 - Jit00*mb*nx*v[1]*x0*y0 + Jit00*mb*nx*v[2]*x0*y0 + Jit01*ma*nx*v[0]*x0 - Jit01*ma*nx*v[1]*x0 + Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[1]*x0*y0 - Jit10*ma*ny*v[1]*y0 - Jit10*ma*ny*v[2]*x0*y0 - Jit10*mb*ny*v[1]*x0*y0 + Jit10*mb*ny*v[2]*x0*y0 + Jit11*ma*ny*v[0]*x0 - Jit11*ma*ny*v[1]*x0 + jf*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
-	  }
+	    _a2[i] = -(-Jit00*mb*nx*v[0]*y0 + Jit00*mb*nx*v[2]*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[0]*y0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*ma*nx*v[1]*y0 - Jit01*ma*nx*v[2]*x0*y0 + Jit01*ma*nx*v[2]*x0 - Jit01*mb*nx*v[0]*y0 - Jit01*mb*nx*v[1]*x0*y0 + Jit01*mb*nx*v[1]*y0 + Jit01*mb*nx*v[2]*x0*y0 - Jit10*mb*ny*v[0]*y0 + Jit10*mb*ny*v[2]*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[0]*y0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*ma*ny*v[1]*y0 - Jit11*ma*ny*v[2]*x0*y0 + Jit11*ma*ny*v[2]*x0 - Jit11*mb*ny*v[0]*y0 - Jit11*mb*ny*v[1]*x0*y0 + Jit11*mb*ny*v[1]*y0 + Jit11*mb*ny*v[2]*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
+	    _a3[i] = (-Jit00*ma*nx*v[0]*x0 + Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[1]*x0*y0 - Jit00*ma*nx*v[1]*y0 - Jit00*ma*nx*v[2]*x0*y0 + Jit00*ma*nx*v[2]*x0 + Jit00*mb*nx*v[0]*x0 - Jit00*mb*nx*v[1]*x0*y0 + Jit00*mb*nx*v[2]*x0*y0 - Jit00*mb*nx*v[2]*x0 + Jit01*mb*nx*v[0]*x0 - Jit01*mb*nx*v[1]*x0 - Jit10*ma*ny*v[0]*x0 + Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[1]*x0*y0 - Jit10*ma*ny*v[1]*y0 - Jit10*ma*ny*v[2]*x0*y0 + Jit10*ma*ny*v[2]*x0 + Jit10*mb*ny*v[0]*x0 - Jit10*mb*ny*v[1]*x0*y0 + Jit10*mb*ny*v[2]*x0*y0 - Jit10*mb*ny*v[2]*x0 + Jit11*mb*ny*v[0]*x0 - Jit11*mb*ny*v[1]*x0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
+	    _b1[i] = (-Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[2]*x0*y0 - Jit00*mb*nx*v[2]*x0*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*mb*nx*v[1]*x0*y0 - Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[2]*x0*y0 - Jit10*mb*ny*v[2]*x0*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*mb*ny*v[1]*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
+	    _b2[i] = -(-Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[2]*y0 - Jit01*ma*nx*v[0]*x0 + Jit01*ma*nx*v[1]*x0*y0 - Jit01*ma*nx*v[2]*x0*y0 + Jit01*ma*nx*v[2]*x0 - Jit01*mb*nx*v[1]*x0*y0 + Jit01*mb*nx*v[2]*x0*y0 - Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[2]*y0 - Jit11*ma*ny*v[0]*x0 + Jit11*ma*ny*v[1]*x0*y0 - Jit11*ma*ny*v[2]*x0*y0 + Jit11*ma*ny*v[2]*x0 - Jit11*mb*ny*v[1]*x0*y0 + Jit11*mb*ny*v[2]*x0*y0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
+	    _b3[i] = (Jit00*ma*nx*v[0]*y0 + Jit00*ma*nx*v[1]*x0*y0 - Jit00*ma*nx*v[1]*y0 - Jit00*ma*nx*v[2]*x0*y0 - Jit00*mb*nx*v[1]*x0*y0 + Jit00*mb*nx*v[2]*x0*y0 + Jit01*ma*nx*v[0]*x0 - Jit01*ma*nx*v[1]*x0 + Jit10*ma*ny*v[0]*y0 + Jit10*ma*ny*v[1]*x0*y0 - Jit10*ma*ny*v[1]*y0 - Jit10*ma*ny*v[2]*x0*y0 - Jit10*mb*ny*v[1]*x0*y0 + Jit10*mb*ny*v[2]*x0*y0 + Jit11*ma*ny*v[0]*x0 - Jit11*ma*ny*v[1]*x0)/(Jit00*ma*nx*x0*y0 - Jit00*ma*nx*y0 - Jit00*mb*nx*x0*y0 + Jit01*ma*nx*x0*y0 - Jit01*ma*nx*x0 - Jit01*mb*nx*x0*y0 + Jit10*ma*ny*x0*y0 - Jit10*ma*ny*y0 - Jit10*mb*ny*x0*y0 + Jit11*ma*ny*x0*y0 - Jit11*ma*ny*x0 - Jit11*mb*ny*x0*y0);
+ 	  }
         grad_va_ref[0] = _a2[i];
         grad_va_ref[1] = _a3[i];
         grad_vb_ref[0] = _b2[i];
@@ -677,14 +679,20 @@ namespace equivalent_polynomials
       _calculate_cuts();                                           // X_0, array of interface cuts on reference simplex
       _calculate_normal<nSpace>(phys_nodes_cut, level_set_normal); // normal to interface
     }
-    double normal_sign=0.0;
+    normal_sign=0.0;
     for(int I=0;I<nSpace;I++)
       normal_sign += level_set_normal[I]*dir[I];
     if (normal_sign < 0.0)//dir points negative to positive
       {
+	//std::cout<<"FLIPPED"<<std::endl;
+	/*
 	for (int I=0;I<nSpace;I++)
 	  level_set_normal[I] *= -1.0;
+       */
+       normal_sign=-1.0;
       }
+    else
+      normal_sign=1.0;
     double ma_scale, mb_scale;
     if (scale)
     {
@@ -706,7 +714,7 @@ namespace equivalent_polynomials
     {
       if (nN == 3)
       {
-        _calculate_basis_coefficients(mb_scale, ma_scale, -jf);
+	_calculate_basis_coefficients(mb_scale, ma_scale, jf);
         for (int i = 0; i < 3; i++)
         {
           double tmp;

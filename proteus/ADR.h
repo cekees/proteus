@@ -67,7 +67,7 @@ namespace proteus
 		else if (test == 9.0) // PWL linear
 		  sol = -(x-0.5)/1000.0;
 		else
-			assert(false && "Unknown test case in sol_outer");
+		  assert(false && "Unknown test case in sol_outer");
 		return sol;
 	}
 	template <int nSpace, int nP, int nQ, int nEBQ>
@@ -474,6 +474,7 @@ namespace proteus
 											 std::valarray<bool> &elementIsActive,
 											 double *JA,
 											 double *JB,
+											 double &Linfty_error,
 											 double &L2_error,
 											 double test)
 		{
@@ -481,6 +482,7 @@ namespace proteus
 			{
 				elementResidual_u.data()[i] = 0.0;
 			}
+			//std::cout<<"=========================================================="<<std::endl;
 			// loop over quadrature points and compute integrands
 			for (int k = 0; k < nQuadraturePoints_element; k++)
 			{
@@ -592,6 +594,152 @@ namespace proteus
 				}
 				if (icase_f == 0)
 				{
+				  double flux_jump=0.0;
+				  if (test == 1.0)
+				    flux_jump=2.0;
+				  if (fabs(flux_jump)>0.0 && !gf_f.exact.corner && !gf_f.exact.edge)
+				    {
+				      int method=1;
+				      if (method == 0)
+					{
+				      double dv[nDOF_mesh_trial_element];
+				      int j[2]={0,0};
+				      double dMax=0.0,dMin=0.0;
+				      assert(gf_f.get_normal()[0]*gf_f.get_normal()[0] + gf_f.get_normal()[1]*gf_f.get_normal()[1] - 1.0 < 1.0e-8); 
+				      for (int i=0; i<nDOF_mesh_trial_element;i++)
+					{
+					  dv[i] = 0.0;
+					  for (int I=0;I<nSpace;I++)
+					    dv[i] += u_grad_trial[i*nSpace+I]*gf_f.get_normal()[I]*gf_f.exact.normal_sign;
+					  if (dv[i] > dMax)
+					    {
+					      j[1] = i;
+					      dMax = dv[i];
+					    }
+					  else if (dv[i] < dMin)
+					    {
+					      j[0]=i;
+					      dMin = dv[i];
+					    }
+					}
+				      assert(j[0] != j[1]);
+				      int j_other;
+				      for (int i=0; i<nDOF_mesh_trial_element;i++)
+					if (i != j[0] && i !=j[1])
+					  j_other = i;
+				      //std::cout<<j[0]<<'\t'<<j[1]<<'\t'<<j_other<<std::endl;
+				      if(gf_f.exact.phi_dof_corrected[j[0]]*gf_f.exact.phi_dof_corrected[j[1]] >= 0.0);
+				      {
+					if(gf_f.exact.phi_dof_corrected[j[1]]*gf_f.exact.phi_dof_corrected[j_other] < 0.0)
+					  {
+					    int tmp=j[0];
+					    j[0] = j_other;
+					    j_other=tmp;
+					  }
+					else
+					  {
+					    int tmp=j[1];
+					    j[1] = j_other;
+					    j_other=tmp;
+					  }
+				      }
+				      if (gf_f.exact.phi_dof_corrected[j[0]] > 0.0)
+					{
+					  int tmp=j[0];
+					  j[0] = j[1];
+					  j[1] = tmp;
+					}
+				      //std::cout<<j[0]<<'\t'<<j[1]<<'\t'<<j_other<<std::endl;
+				      //std::cout<<"phi "<<gf_f.exact.phi_dof_corrected[j[0]]<<'\t'<<gf_f.exact.phi_dof_corrected[j[1]]<<'\t'<<gf_f.exact.phi_dof_corrected[j_other]<<std::endl;				      
+				      assert(gf_f.exact.phi_dof_corrected[j[0]]*gf_f.exact.phi_dof_corrected[j[1]] < 0.0);				      
+				      double xc = 0.5 - 0.5*(gf_f.exact.phi_dof_corrected[j[1]] + gf_f.exact.phi_dof_corrected[j[0]])/(gf_f.exact.phi_dof_corrected[j[1]]-gf_f.exact.phi_dof_corrected[j[0]]);
+				      double v[2] = {1.0-xc, xc};
+				      JA[j[1]] = flux_jump*v[0]/(dv[j[0]]*v[1] - dv[j[1]]*v[0]);
+				      JB[j[0]] = flux_jump*v[1]/(dv[j[0]]*v[1] - dv[j[1]]*v[0]);
+				      //std::cout<<"JA "<<JA[j[1]]<<'\t'<<JB[j[0]]<<std::endl;
+				      //std::cout<<"fluxes "<<JA[j[1]]*dv[j[1]]<<'\t'<<JB[j[0]]*dv[j[0]]<<std::endl;
+				      assert(fabs(JB[j[0]]*dv[j[0]] - JA[j[1]]*dv[j[1]] - flux_jump) < 1.0e-8);
+				      assert(fabs(JB[j[0]]*v[0] - JA[j[1]]*v[1]) < 1.0e-8);
+					}
+				      if (method == 1)
+					{
+					  double dv[nDOF_mesh_trial_element];
+					  int np=0;
+					  int pos[2]={-1,-1};
+					  int nn=0;
+					  int neg[2]={-1,-1};
+					  bool inside_out=false;
+					  for (int i=0; i<nDOF_mesh_trial_element;i++)
+					    {
+					      dv[i] = 0.0;
+					      for (int I=0;I<nSpace;I++)
+						dv[i] += u_grad_trial[i*nSpace+I]*gf_f.get_normal()[I]*gf_f.exact.normal_sign;
+					      if (gf_f.exact.phi_dof_corrected[i] >=0.0)
+						{
+						  pos[np] = i;
+						  np+=1;
+						}
+					      else
+						{
+						  neg[nn] = i;
+						  nn+=1;
+						}
+					    }
+					  assert(nn+np==3);
+					  int base=0;
+					  int* tips;
+					  if (nn==2)
+					    {
+					      base=pos[0];
+					      tips=neg;
+					    }
+					  else
+					    {
+					      base=neg[0];
+					      tips=pos;
+					    }
+					  if (nn==2)
+					    inside_out=true;
+					  assert(gf_f.exact.phi_dof_corrected[base]*gf_f.exact.phi_dof_corrected[tips[0]] <= 0.0);				      
+					  assert(gf_f.exact.phi_dof_corrected[base]*gf_f.exact.phi_dof_corrected[tips[1]] <= 0.0);				      
+					  double xc[2] = {0.5 - 0.5*(gf_f.exact.phi_dof_corrected[tips[0]] + gf_f.exact.phi_dof_corrected[base])/(gf_f.exact.phi_dof_corrected[tips[0]]-gf_f.exact.phi_dof_corrected[base]),
+							  0.5 - 0.5*(gf_f.exact.phi_dof_corrected[tips[1]] + gf_f.exact.phi_dof_corrected[base])/(gf_f.exact.phi_dof_corrected[tips[1]]-gf_f.exact.phi_dof_corrected[base])};
+					  /*
+					    std::cout<<base<<'\t'<<tips[0]<<'\t'<<tips[1]<<std::endl;
+					  std::cout<<"phi "<<gf_f.exact.phi_dof_corrected[base]<<'\t'
+						   <<gf_f.exact.phi_dof_corrected[tips[0]]<<'\t'
+						   <<gf_f.exact.phi_dof_corrected[tips[1]]<<std::endl;
+					  std::cout<<"xc "<<xc[0]<<'\t'<<xc[1]<<std::endl;
+					  */
+					  double v[2][3];
+					  v[0][base]= 1.0-xc[0];
+					  v[0][tips[0]] = xc[0];
+					  v[0][tips[1]] = 0.0;
+					  
+					  v[1][base]= 1.0-xc[1];
+					  v[1][tips[0]] = 0.0;
+					  v[1][tips[1]] = xc[1];
+					  if (inside_out)
+					    {
+					      JB[base]    =  flux_jump*(v[0][tips[0]]*v[1][tips[1]] - v[0][tips[1]]*v[1][tips[0]])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					      JA[tips[0]] =  flux_jump*(v[0][base]*v[1][tips[1]] - v[0][tips[1]]*v[1][base])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					      JA[tips[1]] =   -flux_jump*(v[0][base]*v[1][tips[0]] - v[0][tips[0]]*v[1][base])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					    }
+					  else
+					    {
+					      JA[base]    =  -flux_jump*(v[0][tips[0]]*v[1][tips[1]] - v[0][tips[1]]*v[1][tips[0]])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					      JB[tips[0]] =  -flux_jump*(v[0][base]*v[1][tips[1]] - v[0][tips[1]]*v[1][base])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					      JB[tips[1]] =   flux_jump*(v[0][base]*v[1][tips[0]] - v[0][tips[0]]*v[1][base])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					    }
+					  //std::cout<<"JA "<<JA[j[1]]<<'\t'<<JB[j[0]]<<std::endl;
+					  //std::cout<<"fluxes "<<JA[j[1]]*dv[j[1]]<<'\t'<<JB[j[0]]*dv[j[0]]<<std::endl;
+					  //std::cout<<"du/dn B "<<JB[0]*dv[0]+JB[1]*dv[1]+JB[2]*dv[2]<<std::endl;
+					  //std::cout<<"du/dn A "<<JA[0]*dv[0]+JA[1]*dv[1]+JA[2]*dv[2]<<std::endl;
+					  assert(fabs(JB[0]*dv[0]+JB[1]*dv[1]+JB[2]*dv[2]-(JA[0]*dv[0]+JA[1]*dv[1]+JA[2]*dv[2]) - flux_jump) < 1.0e-8);
+					  assert(fabs(JB[0]*v[0][0]+JB[1]*v[0][1]+JB[2]*v[0][2]-(JA[0]*v[0][0]+JA[1]*v[0][1]+JA[2]*v[0][2])) < 1.0e-8);
+					  assert(fabs(JB[0]*v[1][0]+JB[1]*v[1][1]+JB[2]*v[1][2]-(JA[0]*v[1][0]+JA[1]*v[1][1]+JA[2]*v[1][2])) < 1.0e-8);
+					} 
+				    }
 				  double va[nDOF_trial_element], va_grad_trial[nDOF_trial_element * nSpace], vb[nDOF_trial_element], vb_grad_trial[nDOF_trial_element * nSpace];
 				  for (int i = 0; i < nDOF_trial_element; i++)
 				    {
@@ -616,6 +764,7 @@ namespace proteus
 				  ck.gradFromElementDOF(JA, va_grad_trial, grad_uja);
 				  ck.valFromElementDOF(JB, vb, ujb);
 				  ck.gradFromElementDOF(JB, vb_grad_trial, grad_ujb);
+				  //std::cout<<"[[u]]"<<ub+ujb-ua-uja<<std::endl;
 				  for (int j = 0; j < nDOF_trial_element; j++)
 				    {
 				      ua_test_dV[j] = va[j] * dV;
@@ -658,8 +807,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,
@@ -698,8 +847,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateImmersedBoundaryTerms(immersedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,
@@ -773,6 +922,14 @@ namespace proteus
 				//
 				// update element residual
 				//
+				/*
+				if(icase_f == 0 && immersedBoundary_u_q.data()[eN_k] < 0)
+				  std::cout<<x<<'\t'<<y<<'\t'<<ua+uja<<std::endl;
+				else if (icase_f == 0 && immersedBoundary_u_q.data()[eN_k] >= 0)  
+				  std::cout<<x<<'\t'<<y<<'\t'<<ub+ujb<<std::endl;
+				else
+				  std::cout<<x<<'\t'<<y<<'\t'<<u<<std::endl;
+				*/
 				for (int i = 0; i < nDOF_test_element; i++)
 				{
 					int i_nSpace = i * nSpace;
@@ -824,6 +981,9 @@ namespace proteus
 											  ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
 
 					    }
+					  if(!gf_f.exact.corner && !gf_f.exact.edge)
+					    std::cout<<"[[du/dn]]"
+						     <<gf_f.exact.normal_sign*((grad_ub[0]+grad_ujb[0])*gf_f.exact.get_normal()[0]+(grad_ub[1]+grad_ujb[1])*gf_f.exact.get_normal()[1]-((grad_ua[0]+grad_uja[0])*gf_f.exact.get_normal()[0]+(grad_ua[1]+grad_uja[1])*gf_f.exact.get_normal()[1]))<<std::endl;
 					  sol = sol_outer(test, x, y, a_loc[0], 0.1);
 					  L2_error += H_f * (ub  + ujb - sol) * (ub + ujb  - sol) * dV;
 					}
@@ -1008,7 +1168,9 @@ namespace proteus
 				double mua = 1.0, mub = 1.0, jf=0.0;
 				if (test == 1.0)
 				  {
-				    jf = -2.0;
+				    jf = 0.0;//-2.0;
+				    //mua = 2.0;
+				    //mub = 1.0;
 				  }
 				else if (test == 2.0) // Leveque & Li 1994, Example 2a
 				{
@@ -1040,15 +1202,15 @@ namespace proteus
 						if (elementBoundaryElementsArray.data()[ebN * 2 + 1] != -1 && (ebN < nElementBoundaries_owned))
 							ifem_boundaries.insert(ebN);
 					}
-					double jump = 0.0; // Leveque & Li 1994, Example 1, 2
+					double jump = 0.0;// Leveque & Li 1994, Example 1, 2
 					if (test == 3.0)   // Leveque and Li 1994, Example 3
-						jump = -exp(gf_f.exact.cut_barycenter[0]) * cos(gf_f.exact.cut_barycenter[1]);
+					  jump = -exp(gf_f.exact.cut_barycenter[0]) * cos(gf_f.exact.cut_barycenter[1]);
 					else if (test == 4.0) // Leveque and Li 1994, Example 4
-						jump = -(gf_f.exact.cut_barycenter[0] * gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1] * gf_f.exact.cut_barycenter[1]);
+					  jump = -(gf_f.exact.cut_barycenter[0] * gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1] * gf_f.exact.cut_barycenter[1]);
 					else if (test == 4.1) // Leveque and Li 1994, Example 4l
-						jump = -(gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1]);
+					  jump = -(gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1]);
 					else if (test == 5.0 || test == 6.0 || test == 7.0) // PWC,PWL,PWQ
-						jump = -1;
+					  jump = -1;
 					if (!gf_f.exact.corner)
 					{
 						for (int i = 0; i < nDOF_mesh_trial_element; i++)
@@ -1207,6 +1369,7 @@ namespace proteus
 										 elementIsActive,
 										 JA,
 										 JB,
+										 Linfty_error.data()[0],
 										 L2_error.data()[0],
 										 test);
 				//
@@ -1809,8 +1972,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,
@@ -2095,7 +2258,9 @@ namespace proteus
 				double mua = 1.0, mub = 1.0, jf = 0.0;
 				if (test == 1.0)
 				  {
-				    jf = -2.0;
+				    jf = 0.0;//-2.0;
+				    //mua = 2.0;
+				    //mub = 1.0;
 				  }
 				else if (test == 2.0) // Leveque & Li 1994, Example 2
 				{
