@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH -N NUM_NODES
-#SBATCH --ntasks-per-node 192
-#SBATCH -t 04:00:00
+#SBATCH --ntasks-per-node 128
+#SBATCH -t 00:30:00
 #SBATCH -q QUEUE_NAME 
 #SBATCH -A ARONC51302008
 #SBATCH -J "poisson test"
@@ -11,7 +11,7 @@
 #SBATCH --mail-type=END,FAIL
 
 # below are job commands
-
+module swap cray-mpich cray-mpich-ucx
 echo "Hostname          = $(hostname -s)"
 echo "Working Directory = $(pwd)"
 echo ""
@@ -35,19 +35,12 @@ mkdir -p $WORK_DIR
 # Copy files, jump to WORK_DIR, and execute a program
 cp $SLURM_SUBMIT_DIR/poisson_3d_tetgen_p.py $WORK_DIR
 cp $SLURM_SUBMIT_DIR/poisson_3d_tetgen_c0p1_n.py $WORK_DIR
-cp $SLURM_SUBMIT_DIR/poisson_slurm.sh $WORK_DIR
-cp $MESH_DIR/meshNoVessel.* $WORK_DIR
+cp $SLURM_SUBMIT_DIR/poisson.sh $WORK_DIR
+#cp $MESH_DIR/meshNoVessel.* $WORK_DIR
 cd $WORK_DIR
 start_time=$(date +%s)
-export FI_CXI_RX_MATCH_MODE=hybrid
-#export FI_CXI_REQ_BUF_SIZE=50331648
-#export FI_CXI_REQ_BUF_MIN_POSTED=24
-#export FI_CXI_DEFAULT_CQ_SIZE=262144
-export FI_CXI_REQ_BUF_SIZE=25165824
-export FI_CXI_REQ_BUF_MIN_POSTED=12
-export FI_CXI_DEFAULT_CQ_SIZE=131072
-export FI_MR_CACHE_MONITOR=memhooksenv
-srun parun poisson_3d_tetgen_p.py poisson_3d_tetgen_c0p1_n.py -C "Refinement=NUM_REFINEMENT genMesh=False" -F -P "-ksp_rtol 0.0 -ksp_atol 1.0e-9 -ksp_type cg -pc_type gamg -log_view" -l 5 -m
+export UCX_UD_TIMEOUT=2m
+srun parun poisson_3d_tetgen_p.py poisson_3d_tetgen_c0p1_n.py -C "Refinement=NUM_REFINEMENT genMesh=True" -F -P "-ksp_rtol 0.0 -ksp_atol 1.0e-9 -ksp_type cg -pc_type gamg -log_view" -l 5 -m
 end_time=$(date +%s)
 
 # Mark the time it finishes.

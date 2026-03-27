@@ -1,9 +1,9 @@
 #!/bin/bash
 
-num_nodes=(1 2 4 8 16 32 64 128)
-queue_name=(standard standard standard standard standard standard standard standard) 
-#num_nodes=(1 2) # 4 8 16 32 64 84)
-#queue_name=(debug debug) # standard standard standard standard standard standard) 
+#num_nodes=(1 2 4 8 16 32 64 128)
+#queue_name=(standard standard standard standard standard standard standard standard) 
+num_nodes=(1 2) # 4 8 16 32 64 84)
+queue_name=(debug debug) # standard standard standard standard standard standard) 
 #num_nodes=(1 2 4 8)
 #queue_name=(debug debug debug debug)
 i=0

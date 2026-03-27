@@ -1710,7 +1710,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //get petsc index set that has the new subdomain number for each node
   IS nodePartitioningIS_new;
   ierr = MatPartitioningApply(petscPartition,&nodePartitioningIS_new);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-  ierr = MatDestroy(&petscAdjacency);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  //ierr = MatDestroy(&petscAdjacency);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   ierr = MatPartitioningDestroy(&petscPartition);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   /*
   //appears all of the below are destroyed by the above two calls
