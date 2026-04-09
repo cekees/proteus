@@ -635,6 +635,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # argsDict["mesh_dof"] = self.mesh.nodeArray
         argsDict["mesh_l2g"] = self.mesh.elementNodesArray
         argsDict["x_ref"] = self.elementQuadraturePoints
+        argsDict["xB_ref"] = self.elementBoundaryQuadraturePoints
         argsDict["dV_ref"] = self.elementQuadratureWeights[('u',0)]
         argsDict["u_trial_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_trial_ref"] = self.u[0].femSpace.grad_psi
@@ -715,6 +716,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
                 self.u[0].dof[dofN] = g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN], self.timeIntegration.t)
         self.adr.calculateResidual(argsDict)
+        self.L2_error[0] = globalSum(self.L2_error[0])
+        self.Linfty_error[0] = globalMax(self.Linfty_error[0])
         if self.forceStrongConditions:
             for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
                 r[self.offset[0] + self.stride[0] * dofN] = self.u[0].dof[dofN] - g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN], self.timeIntegration.t)
@@ -736,6 +739,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # argsDict["mesh_dof"] = self.mesh.nodeArray
         argsDict["mesh_l2g"] = self.mesh.elementNodesArray
         argsDict["x_ref"] = self.elementQuadraturePoints
+        argsDict["xB_ref"] = self.elementBoundaryQuadraturePoints
         argsDict["dV_ref"] = self.elementQuadratureWeights[('u',0)]
         argsDict["u_trial_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_trial_ref"] = self.u[0].femSpace.grad_psi

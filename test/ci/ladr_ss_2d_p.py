@@ -33,9 +33,12 @@ opts = Context.Options([
 name = opts.name
 nd = 2
 L=(2.0,2.0)#,2.0)
-if opts.unstructured:
-    L=(2.0,2.0+opts.skew)#,2.0)#throw off rectangular domain
 x0 = (-1.0,-1.0)#,-1.0)
+if opts.test == 12.0:
+    L = (1.0,1.0)
+    x0 = (0.0,0.0)
+elif opts.unstructured:
+    L=(2.0,2.0+opts.skew)#,2.0)#throw off rectangular domain
 domainR = Domain.RectangularDomain(L=L,x=x0,name="adr",units="m")
 domainR.writePoly("ladr_ss_2d_p")
 domainUS = Domain.PlanarStraightLineGraphDomain("ladr_ss_2d_p")
@@ -70,7 +73,7 @@ class LevequeLiExample2(AnalyticalSolutions.SteadyState):
         super(LevequeLiExample2, self).__init__()
     def uOfX(self, x):
         b=a0
-        C=0.1
+        C=0.2
         r = (x[0]**2 + x[1]**2)**0.5
         if r <= 0.5:
             return r**2
@@ -149,6 +152,16 @@ class PWCubic(AnalyticalSolutions.SteadyState):
         else:
             return x[0]**3 + x[1]**3
 
+class PWLStraight(AnalyticalSolutions.SteadyState):
+    def __init__(self):
+        super(PWLStraight, self).__init__()
+        self.jump_x = 0.35#0.001
+    def uOfX(self, x):
+        if x[0] <=self.jump_x:
+            return -(x[0]-self.jump_x)
+        else:
+            return -(x[0]-self.jump_x)/1000.0
+
 class JiEtal14Example1(AnalyticalSolutions.SteadyState):
     def __init__(self, betaMinus=1.0, betaPlus=1000.0):
         self.betaMinus = betaMinus
@@ -166,6 +179,27 @@ class trigSolution(AnalyticalSolutions.SteadyState):
         super(trigSolution, self).__init__()
     def uOfX(self, x):
         return math.sin(math.pi*x[0])*math.sin(math.pi*x[1])
+
+class AdjeridEtal16Example5p1(AnalyticalSolutions.SteadyState):
+    def __init__(self, betaMinus=1.0, betaPlus=1000.0):
+        self.betaMinus = betaMinus
+        self.betaPlus = betaPlus
+        super(AdjeridEtal16Example5p1, self).__init__()
+
+    def uOfX(self, x):
+        xx = x[0]
+        yy = x[1]
+        psi = yy**2 - xx**2 - (4.0/3.0)*yy + 4.0/9.0
+        eta = 2.0/3.0 - xx - yy
+        p1 = 6.0*xx**2 + 6.0*xx*yy - 4.0*xx + 3.0
+        p2 = 2.0 + 3.0*xx - 3.0*yy
+        common = p1*math.cos(psi) + p2*math.sin(eta)
+        phi = yy - xx - 2.0/3.0
+        if phi >= 0.0:
+            return common/(3.0*self.betaPlus)
+        else:
+            jump_term = (self.betaMinus/self.betaPlus - 1.0)*(3.0 - 8.0*xx + 12.0*xx*yy)
+            return (jump_term + common)/(3.0*self.betaMinus)
 
 if opts.test == 1.0:
     ans = LevequeLiExample1()
@@ -189,11 +223,16 @@ elif opts.test == 9.0:
     ans = PWCubic()
 elif opts.test == 10.0:
     ans = trigSolution()
+elif opts.test == 11.0:
+    ans = PWLStraight()
+elif opts.test == 12.0:
+    ans = AdjeridEtal16Example5p1(betaMinus=1.0, betaPlus=1000.0)
 else:
     assert False, "Unknown test %s" % opts.test
 
 analyticalSolution = {0:ans}
 initialConditions = None
+# initialConditions = {0:ans}
 
 center = (0.0,0.0)
 radius = 0.5
@@ -209,7 +248,10 @@ if opts.test == 2.0:
 elif opts.test == 2.1:
     mua = radius**2 + 1  # = 1.25
     mub = a0             # = -3.0
-elif opts.test == 8.0:
+elif opts.test == 8.0 or opts.test == 11.0:
+    mub = 1000.0
+elif opts.test == 12.0:
+    mua = 1.0
     mub = 1000.0
 
 if opts.test == 2.0 or opts.test == 2.1:
@@ -256,6 +298,44 @@ elif opts.test == 10.0:
         return numpy.array([[mua,0.0],[0.0,mua]])
     def f(x):
         return 2.0*math.pi**2*math.sin(math.pi*x[0])*math.sin(math.pi*x[1])
+elif opts.test == 11.0:
+    # PWLStraight
+    def a(x):
+        if x[0] <= ans.jump_x:
+            return numpy.array([[mua,0.0],[0.0,mua]])
+        else:
+            return numpy.array([[mub,0.0],[0.0,mub]])
+    def f(x):
+        return 0.0
+elif opts.test == 12.0:
+    # Adjerid et al. 2016, Example 5.1
+    def a(x):
+        phi = x[1] - x[0] - 2.0/3.0
+        if phi >= 0.0:
+            aa = mub  # Omega+
+        else:
+            aa = mua  # Omega-
+        return numpy.array([[aa,0.0],[0.0,aa]])
+
+    def f(x):
+        xx = x[0]
+        yy = x[1]
+        psi = yy**2 - xx**2 - (4.0/3.0)*yy + 4.0/9.0
+        eta = 2.0/3.0 - xx - yy
+        p1 = 6.0*xx**2 + 6.0*xx*yy - 4.0*xx + 3.0
+        p2 = 2.0 + 3.0*xx - 3.0*yy
+
+        dp1_dx = 12.0*xx + 6.0*yy - 4.0
+        dp1_dy = 6.0*xx
+        dpsi_dx = -2.0*xx
+        dpsi_dy = 2.0*yy - 4.0/3.0
+
+        grad_psi_sq = dpsi_dx*dpsi_dx + dpsi_dy*dpsi_dy
+        dp1_dot_dpsi = dp1_dx*dpsi_dx + dp1_dy*dpsi_dy
+
+        lap_g = (12.0 - p1*grad_psi_sq)*math.cos(psi) - 2.0*dp1_dot_dpsi*math.sin(psi) - 2.0*p2*math.sin(eta)
+        return -(1.0/3.0)*lap_g
+
 
 aOfX = {0:a}; fOfX = {0:f}
 
@@ -270,6 +350,18 @@ def embeddedBoundary_sdf(x,t):
     sdf = r - radius
     return sdf,n
 
+def embeddedBoundary_sdf_straight(x,t):
+    return x[0]-ans.jump_x,(1.0,0.0,0.0)
+
+def embeddedBoundary_sdf_diag(x,t):
+    sdf = (x[1] - x[0] - 2.0/3.0)/2.0**0.5
+    n = (1.0/2.0**0.5,-1.0/2.0**0.5,0.0)
+    return sdf,n
+
+if opts.test == 11.0:
+    embeddedBoundary_sdf = embeddedBoundary_sdf_straight
+elif opts.test == 12.0:
+    embeddedBoundary_sdf = embeddedBoundary_sdf_diag
 #n = (1.0/2.0**0.5,-1.0/2.0**0.5,0.0)
 #def embeddedBoundary_sdf(x,t):
 #    n = (1.0/2.0**0.5,-1.0/2.0**0.5,0.0)
@@ -306,7 +398,7 @@ dirichletConditions = {0:getDBC}
 fluxBoundaryConditions = {0:'noFlow'}
 
 def getFlux(x,flag):
-    pass
+    return lambda x,t: 0.0
 
 advectiveFluxBoundaryConditions =  {0:getFlux}
 

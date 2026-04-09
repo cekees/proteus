@@ -212,6 +212,10 @@ namespace equivalent_polynomials
     Ainv[1] = -oneOverDet*A[1];
     Ainv[2] = -oneOverDet*A[2];
     Ainv[3] = oneOverDet*A[0];
+    assert(fabs(Ainv[0]*A[0]+Ainv[1]*A[2]-1.0) < 1.0e-10);
+    assert(fabs(Ainv[0]*A[1]+Ainv[1]*A[3]) < 1.0e-10);
+    assert(fabs(Ainv[2]*A[0]+Ainv[3]*A[2]) < 1.0e-10);
+    assert(fabs(Ainv[2]*A[1]+Ainv[3]*A[3]-1.0) < 1.0e-10);
   }
 
   template<>

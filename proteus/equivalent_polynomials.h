@@ -1,9 +1,12 @@
 #ifndef EQUIVALENT_POLYNOMIALS_H
 #define EQUIVALENT_POLYNOMIALS_H
+#include <array>
 #include <cmath>
 #include <cassert>
+#include <cstring>
 #include <iostream>
 #include <iomanip>
+#include <stdexcept>
 #include "ifemBasisCoefficients_wrapper.h"
 #include "equivalent_polynomials_coefficients.h"
 #include "equivalent_polynomials_coefficients_quad.h"
@@ -17,9 +20,19 @@ namespace equivalent_polynomials
   public:
     Regularized(bool useExact = false)
     {
+      (void)useExact;
     }
     inline int calculate(const double *phi_dof, const double *phi_nodes, const double *xi_r, double ma, double mb, double jf, bool isBoundary, bool scale)
     {
+      (void)phi_dof;
+      (void)phi_nodes;
+      (void)xi_r;
+      (void)ma;
+      (void)mb;
+      (void)jf;
+      (void)isBoundary;
+      (void)scale;
+      return 0;
     }
     inline int calculate(const double *phi_dof, const double *phi_nodes, const double *xi_r, double ma, double mb, bool isBoundary, bool scale)
     {
@@ -31,13 +44,15 @@ namespace equivalent_polynomials
     }
     inline double *get_normal()
     {
-      return NULL;
+      return nullptr;
     }
     inline void set_quad(unsigned int q)
     {
+      (void)q;
     }
     inline void set_boundary_quad(unsigned int ebq)
     {
+      (void)ebq;
     }
     inline double H(double eps, double phi)
     {
@@ -113,14 +128,28 @@ namespace equivalent_polynomials
     {
       assert(q >= 0);
       assert(q < nQ);
-      if (inside_out)
+      if (edge == -1 || corner == -1)
       {
+        _H_q = 0.0;
+        _ImH_q = 1.0;
+        _D_q = 0.0;
+      }
+      else if (edge == 1 || corner == 1)
+      {
+        _H_q = 1.0;
+        _ImH_q = 0.0;
+        _D_q = 0.0;
+      }
+      else if (inside_out)
+      {
+        // std::cout << "Inside out \t corner " << corner << "\t edge " << edge << std::endl;
         _H_q = _ImH[q];
         _ImH_q = _H[q];
         _D_q = _D[q];
       }
       else
       {
+        // std::cout << "corner " << corner << "\t edge " << edge << std::endl;
         _H_q = _H[q];
         _ImH_q = _ImH[q];
         _D_q = _D[q];
@@ -135,8 +164,10 @@ namespace equivalent_polynomials
       {
         _va_x_q[i] = _va_x[q * nP_ifem + i];
         _va_y_q[i] = _va_y[q * nP_ifem + i];
+        _va_z_q[i] = _va_z[q * nP_ifem + i];
         _vb_x_q[i] = _vb_x[q * nP_ifem + i];
         _vb_y_q[i] = _vb_y[q * nP_ifem + i];
+        _vb_z_q[i] = _vb_z[q * nP_ifem + i];
       }
     }
 
@@ -144,7 +175,19 @@ namespace equivalent_polynomials
     {
       assert(ebq >= 0);
       assert(ebq < nEBQ);
-      if (inside_out)
+      if (edge == -1 || corner == -1)
+      {
+        _H_q = 0.0;
+        _ImH_q = 1.0;
+        _D_q = 0.0;
+      }
+      else if (edge == 1 || corner == 1)
+      {
+        _H_q = 1.0;
+        _ImH_q = 0.0;
+        _D_q = 0.0;
+      }
+      else if (inside_out)
       {
         _H_q = _ImH_ebq[ebq];
         _ImH_q = _H_ebq[ebq];
@@ -193,13 +236,12 @@ namespace equivalent_polynomials
     static const unsigned int nN = nSpace + 1;
     double phi_dof_corrected[nP_ifem];
     double cut_barycenter[3] = {0., 0., 0.};
-    bool bminus;
-    bool corner;
-    bool flip_the_cell=false;
+    int edge, corner;
+    bool split = false;
+    bool flip_the_cell = false;
 
   private:
-    ;
-    int    P2_ifem_case;
+    int P2_ifem_case;
     double _H_q, _ImH_q, _D_q, _va_q[nP_ifem], _vb_q[nP_ifem],
         _va_x_q[nP_ifem], _va_y_q[nP_ifem], _va_z_q[nP_ifem], _vb_x_q[nP_ifem], _vb_y_q[nP_ifem], _vb_z_q[nP_ifem];
     unsigned int root_node, permutation[nP_ifem];
@@ -219,7 +261,7 @@ namespace equivalent_polynomials
     double _H[nQ], _ImH[nQ], _D[nQ], _va[nQ * nP_ifem], _vb[nQ * nP_ifem];
     double _H_ebq[nEBQ], _ImH_ebq[nEBQ], _D_ebq[nEBQ], _va_ebq[nEBQ * nP_ifem], _vb_ebq[nEBQ * nP_ifem]; // cek hack: this is confusing because we use no suffice for the q arrays and _ebq for the ebq arrays, then use _q above for generic quad point
     double _va_x[nQ * nP_ifem], _va_y[nQ * nP_ifem], _va_z[nQ * nP_ifem], _vb_x[nQ * nP_ifem], _vb_y[nQ * nP_ifem], _vb_z[nQ * nP_ifem];
-      double _va_x_ebq[nEBQ * nP_ifem], _va_y_ebq[nEBQ * nP_ifem], _va_z_ebq[nEBQ * nP_ifem], _vb_x_ebq[nEBQ * nP_ifem], _vb_y_ebq[nEBQ * nP_ifem], _vb_z_ebq[nEBQ * nP_ifem];
+    double _va_x_ebq[nEBQ * nP_ifem], _va_y_ebq[nEBQ * nP_ifem], _va_z_ebq[nEBQ * nP_ifem], _vb_x_ebq[nEBQ * nP_ifem], _vb_y_ebq[nEBQ * nP_ifem], _vb_z_ebq[nEBQ * nP_ifem];
     inline void _calculate_basis_coefficients(const double ma, const double mb, const double jf);
     inline void _calculate_basis(const double *xi, double *va, double *vb);
     inline void _calculate_basis_gradients(const double *xi, double *va_x, double *va_y, double *vb_x, double *vb_y);
@@ -251,10 +293,10 @@ namespace equivalent_polynomials
         C_D[i] = 0.0;
         for (unsigned int j = 0; j < nDOF; j++)
         {
-          assert(!isnan(Ainv[i * nDOF + j]));
-          assert(!isnan(b_H[j]));
-          assert(!isnan(b_ImH[j]));
-          assert(!isnan(b_D[j]));
+          assert(!std::isnan(Ainv[i * nDOF + j]));
+          assert(!std::isnan(b_H[j]));
+          assert(!std::isnan(b_ImH[j]));
+          assert(!std::isnan(b_D[j]));
           C_H[i] += Ainv[i * nDOF + j] * b_H[j];
           C_ImH[i] += Ainv[i * nDOF + j] * b_ImH[j];
           C_D[i] += Ainv[i * nDOF + j] * b_D[j];
@@ -295,7 +337,7 @@ namespace equivalent_polynomials
 
   template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
   inline int Simplex<nSpace, nP_ifem, nP, nQ, nEBQ>::_calculate_permutation(const double *phi_dof, const double *phi_nodes)
-  {    
+  {
     if (flip_the_cell)
     {
       //  std::cout << "Flipping the permutation from: " << std::endl;
@@ -311,24 +353,25 @@ namespace equivalent_polynomials
       permutation[3] = permutation[5];
       permutation[5] = temp;
       flip_the_cell = false;
-      
+
       // std::cout << "Flipping the permutation to: " << std::endl;
       // for (unsigned int i = 0; i < nP_ifem; i++)
       // {
       //   std::cout << permutation[i] << " ";
       // }
       // std::cout << std::endl;
-    }  
+    }
     else
     {
       int p_i, pcount = 0, n_i, ncount = 0, z_i, zcount = 0;
-      corner = false;
-      bminus = false;
+      corner = 0;
+      edge = 0;
       root_node = 0;
       inside_out = false;
       quad_cut = false;
-      
+
       const double eps = 1.0e-8;
+
       for (unsigned int i = 0; i < nN; i++)
       { 
         // std::cout << "phi_nodes[" << i << "] = " << phi_nodes[i*3+0] << ", " << phi_nodes[i*3+1] << ", " << phi_nodes[i*3+2] << std::endl;
@@ -347,76 +390,47 @@ namespace equivalent_polynomials
         }
         else
         {
-          z_i = i;
+          if (zcount == 0)
+            z_i = i;
           zcount += 1;
         }
       }
+      // std::cout << "zcount " << zcount << "\t pcount " << pcount << "\t ncount " << ncount << std::endl;
       if (pcount == nN)
       {
         // All positive: element is fully in the +1 domain
+        // std::cout << "This is a fully positive element." << std::endl;
         return 1;
       }
       else if (ncount == nN)
       {
         // All negative: element is fully in the -1 domain
+        // std::cout << "This is a fully negative element." << std::endl;
         return -1;
       }
       else if (ncount == 1)
       {
-        if (zcount == nN - 1) // for P1 ifem, interface is on an element boundary, don't integrate this orientation
+        if (zcount == nN - 1) // for P1 ifem, interface is on an element boundary and the element is fully in the -1 domain.
         {
-          bminus = true;
-          // std::cout<<"zcount "<<zcount<<std::endl;
-          if (nSpace > 1)
-          {
-            // note: see comment below about these two cases
-            // return -1;
-            root_node = n_i;
-          }
-          else
-          {
-            root_node = n_i;
-          }
+          edge = -1;
+          // std::cout << "This is a edge case with negative side element." << std::endl;
         }
-        else
+        else if (zcount == 1 && pcount == 1)
         {
-          root_node = n_i;
+          // std::cout << "This is a true split element" << std::endl;
+          split = true;
         }
+        root_node = n_i;
       }
       else if (pcount == 1)
       {
-        if (zcount == nN - 1) // for P1 ifem, interface is on an element boundary, integrate this orientation
+        if (zcount == nN - 1) // for P1 ifem, interface is on an element boundary and the element is fully in the +1 domain.
         {
-          // std::cout<<"zcount "<<zcount<<std::endl;
-          // note: we are marking the element to the positive sdf side as cut,
-          // which means the other element is fully in the -1 domain
-          // for single-phase/cut cell methods, that means the fictitious domain
-          // is excluded. This affects how ghost penalties and inactive nodes are set.
-          // This choice is more robust.
-          if (nSpace > 1)
-          {
-            root_node = p_i;
-            inside_out = true;
-          }
-          else
-          {
-            root_node = p_i;
-            inside_out = true;
-            // return 1;
-          }
+          edge = 1;
+          // std::cout << "This is a edge case with positive side element." << std::endl;
         }
-        else
-        {
-          if (nSpace > 1)
-          {
-            root_node = p_i;
-            inside_out = true;
-          }
-          else
-          {
-            root_node = n_i;
-          }
-        }
+        root_node = p_i;
+        inside_out = true;
       }
       else if (nSpace == 3 && pcount == 2 && ncount == 2)
       {
@@ -424,82 +438,23 @@ namespace equivalent_polynomials
         quad_cut = true;
         root_node = n_i;
       }
-      /*
-      else if (nSpace == 2 && nP_ifem == 6)
-      {
-        if (pcount == 2) {
-          root_node = p_i;
-          inside_out = true;
-        }
-        else if (ncount == 2){
-          root_node = n_i;
-        }
-        else if (pcount == 3 && ncount ==3)
-        {
-          int pcount_temp = 0;
-          int ncount_temp = 0;
-          for (unsigned int mesh_i=0; mesh_i<3; mesh_i++){
-            if (phi_dof[mesh_i]>eps) {
-              pcount_temp +=1;
-            }
-            else if (phi_dof[mesh_i]<-eps) {
-              ncount_temp +=1;
-            }
-            if (ncount_temp == 1){
-              root_node = n_i;
-            }
-            else if (pcount_temp == 1) {
-              root_node = p_i;
-              inside_out = true;
-            }
-          }
-        }
-        else if (zcount == 3){
-          if (ncount == 3){
-            bminus = true;
-            root_node = n_i;
-          }
-          else {
-            root_node = p_i;
-            inside_out = true;
-          }
-        }
-        else {
-          assert(zcount == 1);
-          corner = true; // The interface passes through a corner node
-          if (pcount)
-          {
-            root_node = z_i;
-            inside_out = true;
-          }
-          else if (ncount)
-          {
-            root_node = z_i;
-          }
-          else assert(false);
-        }
-      }
-      */
       else
       {
-        // std::cout << "zcount: " << zcount << "\t pcount " << pcount << "\t ncount " << ncount << std::endl;
-        if (zcount >= nN - 1)
-          std::cerr << "zcount " << zcount << " >= " << nN - 1 << std::endl;
         assert(zcount < nN - 1);
-        corner = true; // The interface passes through a corner node
         // std::cout << "corner case: zcount " << zcount << "\t pcount " << pcount << "\t ncount " << ncount << std::endl;
-        if (pcount)
+        if (pcount && !ncount)
         {
+          corner = 1; // The interface passes through a corner node and element is in + side
+          assert(pcount == nN - 1);
           root_node = z_i;
           inside_out = true;
         }
-        // return 1;
-        else if (ncount)
+        else if (ncount && !pcount)
         {
+          corner = -1; // The interface passes through a corner node and element is in - side
+          assert(ncount == nN - 1);
           root_node = z_i;
-          // inside_out = true;
         }
-        // return -1;
         else
           assert(false);
       }
@@ -605,7 +560,15 @@ namespace equivalent_polynomials
     const double eps = 1.0e-8;
     for (unsigned int i = 0; i < nN - 1; i++)
     {
-      if (phi[i + 1] * phi[0] < 0.0)
+      if (corner == 1 || corner == -1)
+      {
+        X_0[i] = 0.0;
+        for (unsigned int I = 0; I < 3; I++)
+        {
+          phys_nodes_cut[i * 3 + I] = nodes[I];
+        }
+      }
+      else if (phi[i + 1] * phi[0] < 0.0)
       {
         X_0[i] = 0.5 - 0.5 * (phi[i + 1] + phi[0]) / (phi[i + 1] - phi[0]);
         assert(X_0[i] <= 1.0);
@@ -649,73 +612,6 @@ namespace equivalent_polynomials
     {
       // std::cout << "Case (X_0[0] > 0.5 && X_0[1] <= 0.5) detected in _calculate_cuts(), flipping the cell" << std::endl;
       flip_the_cell = true;
-      
-      /*
-      std::cout << "Flipping the permutation from: " << std::endl;
-      for (unsigned int i = 0; i < nP_ifem; i++)
-      {
-        std::cout << permutation[i] << " ";
-      }
-      std::cout << std::endl;
-      int temp = permutation[1];
-      permutation[1] = permutation[2];
-      permutation[2] = temp;
-      temp = permutation[3];
-      permutation[3] = permutation[5];
-      permutation[5] = temp;
-      
-      std::cout << "Flipping the permutation to: " << std::endl;
-      for (unsigned int i = 0; i < nP_ifem; i++)
-      {
-        std::cout << permutation[i] << " ";
-      }
-      std::cout << std::endl;
-
-      std::cout << "Flipping the phi values" << std::endl;
-      double temp = phi[1];
-      phi[1] = phi[2];
-      phi[2] = temp;
-      temp = phi[3];
-      phi[3] = phi[5];
-      phi[5] = temp;
-
-      for (unsigned int i = 0; i < nN - 1; i++)
-      {
-        if (phi[i + 1] * phi[0] < 0.0)
-        {
-          X_0[i] = 0.5 - 0.5 * (phi[i + 1] + phi[0]) / (phi[i + 1] - phi[0]);
-          assert(X_0[i] <= 1.0);
-          assert(X_0[i] >= 0.0);
-          for (unsigned int I = 0; I < 3; I++)
-          {
-            phys_nodes_cut[i * 3 + I] = (1 - X_0[i]) * nodes[I] + X_0[i] * nodes[(1 + i) * 3 + I];
-            // std::cout << "nodes[" << I << "] = " << nodes[I] << std::endl;
-            // std::cout << "phys_nodes_cut[" << i*3 + I << "] = " << phys_nodes_cut[i*3 + I] << std::endl << std::endl;
-          }
-        }
-        else
-        {
-          // assert(phi[i+1] < eps);
-          if (phi[i + 1] < eps)
-          {
-            X_0[i] = 1.0;
-            for (unsigned int I = 0; I < 3; I++)
-            {
-              phys_nodes_cut[i * 3 + I] = nodes[(1 + i) * 3 + I];
-            }
-          }
-          else
-          {
-            X_0[i] = 0.0;
-            for (unsigned int I = 0; I < 3; I++)
-            {
-              phys_nodes_cut[i * 3 + I] = nodes[I];
-            }
-          }
-        }
-      }
-      std::cout << "X_0 after flipping: \t" << X_0[0] << ", " << X_0[1] << std::endl;
-      */
     }
   }
 
@@ -760,9 +656,9 @@ namespace equivalent_polynomials
     {
       for (unsigned int i = 0; i < nN - 1; i++)
       {
-        assert(!isnan(phys_nodes_cut[i * 3 + 0]));
-        assert(!isnan(phys_nodes_cut[i * 3 + 1]));
-        assert(!isnan(phys_nodes_cut[i * 3 + 2]));
+        assert(!std::isnan(phys_nodes_cut[i * 3 + 0]));
+        assert(!std::isnan(phys_nodes_cut[i * 3 + 1]));
+        assert(!std::isnan(phys_nodes_cut[i * 3 + 2]));
         for (unsigned int I = 0; I < nSpace; I++)
           cut_barycenter[I] += phys_nodes_cut[i * 3 + I] * one_by_nNm1;
       }
@@ -787,7 +683,7 @@ namespace equivalent_polynomials
   {
     assert(nSpace == 2);
     assert(nN == 3);
-    double nx = 0.0, ny = 0.0, fax = 0.0, fay = 0.0, fbx = 0.0, fby = 0.0;
+    double nx = 0.0, ny = 0.0;
     if (inside_out)
     {
       nx = -level_set_normal[0];
@@ -798,28 +694,29 @@ namespace equivalent_polynomials
       nx = level_set_normal[0];
       ny = level_set_normal[1];
     }
-    nx = level_set_normal[0];
-    ny = level_set_normal[1];
     double Jit00 = inv_Jac[0 * nSpace + 0],
            Jit01 = inv_Jac[1 * nSpace + 0],
            Jit10 = inv_Jac[0 * nSpace + 1],
            Jit11 = inv_Jac[1 * nSpace + 1];
     double x0 = X_0[0],
            y0 = X_0[1];
-    double *vall = nullptr;
+    const double *vall = nullptr;
 
     // std::cout << "X0 = " << x0 << std::endl << "Y0 = " << y0 << std::endl;
     // std::cout << "NX = " << nx << std::endl << "NY = " << ny << std::endl;
     // std::cout << "MUA = " << ma << std::endl << "MUB = " << mb << std::endl << "jf = " << jf << std::endl;
     // std::cout << "Jit00 = " << Jit00 << std::endl << "Jit01 = " << Jit01 << std::endl << "Jit10 = " << Jit10 << std::endl << "Jit11 = " << Jit11 << std::endl;
     // std::cout << "nx: " << nx << "\t ny: " << ny << std::endl;
+
     switch (nP_ifem)
     {
     case 3:
-      vall = new double[9]{1., 0., 0.,
-        0., 1., 0.,
-        0., 0., 1.
-        };
+    {
+      static const double vall_p1[9] = {
+          1., 0., 0.,
+          0., 1., 0.,
+          0., 0., 1.};
+      vall = vall_p1;
       for (int j = 0; j < 3; j++)
       {
         int i = permutation[j];
@@ -827,78 +724,59 @@ namespace equivalent_polynomials
         v[0] = vall[j * 3 + 0];
         v[1] = vall[j * 3 + 1];
         v[2] = vall[j * 3 + 2];
-        
-        const std::array<double, 3> nodal_values = {v[0], v[1], v[2]};
-        const std::array<double, 6> coeffs = proteus::solve_ifem_basis_coefficients(
-            1, x0, y0, nx, ny, ma, mb, jf, Jit00, Jit01, Jit10, Jit11, nodal_values);
+
+        if (corner || edge)
+        {
+          _a1[i] = v[0];
+          _a2[i] = -v[0] + v[1];
+          _a3[i] = -v[0] + v[2];
+          _b1[i] = v[0];
+          _b2[i] = -v[0] + v[1];
+          _b3[i] = -v[0] + v[2];
+        }
+        else
+        {
+          // nathawani: Implement inside out case directly here.
+          const std::array<double, 3> nodal_values = {v[0], v[1], v[2]};
+          if (inside_out)
+          {
+            const std::array<double, 6> coeffs = proteus::solve_ifem_basis_coefficients(
+              1, x0, y0, nx, ny, mb, ma, jf, Jit00, Jit01, Jit10, Jit11, nodal_values);
+              
+            _b1[i] = coeffs[0];
+            _b2[i] = coeffs[1];
+            _b3[i] = coeffs[2];
+            _a1[i] = coeffs[3];
+            _a2[i] = coeffs[4];
+            _a3[i] = coeffs[5];
+          }
+          else
+          {
+
+            const std::array<double, 6> coeffs = proteus::solve_ifem_basis_coefficients(
+              1, x0, y0, nx, ny, ma, mb, jf, Jit00, Jit01, Jit10, Jit11, nodal_values);
             
-        _a1[i] = coeffs[0];
-        _a2[i] = coeffs[1];
-        _a3[i] = coeffs[2];
-        _b1[i] = coeffs[3];
-        _b2[i] = coeffs[4];
-        _b3[i] = coeffs[5];
-
-        /*
-        _a1[i] = v[0];
-        _a2[i] = (-2.0*Jit00*mb*nx*v[0]*y0 + 2.0*Jit00*mb*nx*v[2]*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[0]*y0 + 2.0*Jit01*ma*nx*v[1]*x0*y0 - 2.0*Jit01*ma*nx*v[1]*y0 - 2.0*Jit01*ma*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[0]*y0 - 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[1]*y0 + 2.0*Jit01*mb*nx*v[2]*x0*y0 - 2.0*Jit10*mb*ny*v[0]*y0 + 2.0*Jit10*mb*ny*v[2]*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[0]*y0 + 2.0*Jit11*ma*ny*v[1]*x0*y0 - 2.0*Jit11*ma*ny*v[1]*y0 - 2.0*Jit11*ma*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[0]*y0 - 2.0*Jit11*mb*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[1]*y0 + 2.0*Jit11*mb*ny*v[2]*x0*y0 - fax*nx*v[0]*x0*y0 - fax*nx*v[0]*y0*y0 + 2.0*fax*nx*v[0]*y0 - fax*nx*v[1]*x0*y0*y0 + fax*nx*v[1]*y0*y0 + fax*nx*v[2]*x0*y0*y0 - fax*nx*v[2]*x0*y0 - fay*ny*v[0]*x0*y0 - fay*ny*v[0]*y0*y0 + 2.0*fay*ny*v[0]*y0 - fay*ny*v[1]*x0*y0*y0 + fay*ny*v[1]*y0*y0 + fay*ny*v[2]*x0*y0*y0 - fay*ny*v[2]*x0*y0 + fbx*nx*v[0]*x0*y0 + fbx*nx*v[0]*y0*y0 - 2.0*fbx*nx*v[0]*y0 + fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[1]*y0*y0 - fbx*nx*v[2]*x0*y0*y0 + fbx*nx*v[2]*x0*y0 + fby*ny*v[0]*x0*y0 + fby*ny*v[0]*y0*y0 - 2.0*fby*ny*v[0]*y0 + fby*ny*v[1]*x0*y0*y0 - fby*ny*v[1]*y0*y0 - fby*ny*v[2]*x0*y0*y0 + fby*ny*v[2]*x0*y0 - 2.0*jf*x0*y0 + 2.0*jf*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
-        _a3[i] = (2.0*Jit00*ma*nx*v[0]*x0 - 2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[1]*x0*y0 + 2.0*Jit00*ma*nx*v[1]*y0 + 2.0*Jit00*ma*nx*v[2]*x0*y0 - 2.0*Jit00*ma*nx*v[2]*x0 - 2.0*Jit00*mb*nx*v[0]*x0 + 2.0*Jit00*mb*nx*v[1]*x0*y0 - 2.0*Jit00*mb*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[0]*x0 + 2.0*Jit01*mb*nx*v[1]*x0 + 2.0*Jit10*ma*ny*v[0]*x0 - 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[1]*y0 + 2.0*Jit10*ma*ny*v[2]*x0*y0 - 2.0*Jit10*ma*ny*v[2]*x0 - 2.0*Jit10*mb*ny*v[0]*x0 + 2.0*Jit10*mb*ny*v[1]*x0*y0 - 2.0*Jit10*mb*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[0]*x0 + 2.0*Jit11*mb*ny*v[1]*x0 - fax*nx*v[0]*x0*x0 - fax*nx*v[0]*x0*y0 + 2.0*fax*nx*v[0]*x0 + fax*nx*v[1]*x0*x0*y0 - fax*nx*v[1]*x0*y0 - fax*nx*v[2]*x0*x0*y0 + fax*nx*v[2]*x0*x0 - fay*ny*v[0]*x0*x0 - fay*ny*v[0]*x0*y0 + 2.0*fay*ny*v[0]*x0 + fay*ny*v[1]*x0*x0*y0 - fay*ny*v[1]*x0*y0 - fay*ny*v[2]*x0*x0*y0 + fay*ny*v[2]*x0*x0 + fbx*nx*v[0]*x0*x0 + fbx*nx*v[0]*x0*y0 - 2.0*fbx*nx*v[0]*x0 - fbx*nx*v[1]*x0*x0*y0 + fbx*nx*v[1]*x0*y0 + fbx*nx*v[2]*x0*x0*y0 - fbx*nx*v[2]*x0*x0 + fby*ny*v[0]*x0*x0 + fby*ny*v[0]*x0*y0 - 2.0*fby*ny*v[0]*x0 - fby*ny*v[1]*x0*x0*y0 + fby*ny*v[1]*x0*y0 + fby*ny*v[2]*x0*x0*y0 - fby*ny*v[2]*x0*x0 - 2.0*jf*x0*y0 + 2.0*jf*x0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
-        _b1[i] = (2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[0]*x0 - 2.0*Jit01*ma*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[0]*x0 - 2.0*Jit11*ma*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[1]*x0*y0 + fax*nx*v[1]*x0*y0*y0 + fax*nx*v[2]*x0*x0*y0 + fay*ny*v[1]*x0*y0*y0 + fay*ny*v[2]*x0*x0*y0 - fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[2]*x0*x0*y0 - fby*ny*v[1]*x0*y0*y0 - fby*ny*v[2]*x0*x0*y0 + 2.0*jf*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
-        _b2[i] = (-2.0*Jit00*ma*nx*v[0]*y0 + 2.0*Jit00*ma*nx*v[2]*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[1]*x0*y0 - 2.0*Jit01*ma*nx*v[2]*x0*y0 + 2.0*Jit01*ma*nx*v[2]*x0 - 2.0*Jit01*mb*nx*v[1]*x0*y0 + 2.0*Jit01*mb*nx*v[2]*x0*y0 - 2.0*Jit10*ma*ny*v[0]*y0 + 2.0*Jit10*ma*ny*v[2]*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[1]*x0*y0 - 2.0*Jit11*ma*ny*v[2]*x0*y0 + 2.0*Jit11*ma*ny*v[2]*x0 - 2.0*Jit11*mb*ny*v[1]*x0*y0 + 2.0*Jit11*mb*ny*v[2]*x0*y0 - fax*nx*v[1]*x0*y0*y0 + fax*nx*v[2]*x0*y0*y0 - 2.0*fax*nx*v[2]*x0*y0 - fay*ny*v[1]*x0*y0*y0 + fay*ny*v[2]*x0*y0*y0 - 2.0*fay*ny*v[2]*x0*y0 + fbx*nx*v[1]*x0*y0*y0 - fbx*nx*v[2]*x0*y0*y0 + 2.0*fbx*nx*v[2]*x0*y0 + fby*ny*v[1]*x0*y0*y0 - fby*ny*v[2]*x0*y0*y0 + 2.0*fby*ny*v[2]*x0*y0 - 2.0*jf*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
-        _b3[i] = (-2.0*Jit00*ma*nx*v[0]*y0 - 2.0*Jit00*ma*nx*v[1]*x0*y0 + 2.0*Jit00*ma*nx*v[1]*y0 + 2.0*Jit00*ma*nx*v[2]*x0*y0 + 2.0*Jit00*mb*nx*v[1]*x0*y0 - 2.0*Jit00*mb*nx*v[2]*x0*y0 - 2.0*Jit01*ma*nx*v[0]*x0 + 2.0*Jit01*ma*nx*v[1]*x0 - 2.0*Jit10*ma*ny*v[0]*y0 - 2.0*Jit10*ma*ny*v[1]*x0*y0 + 2.0*Jit10*ma*ny*v[1]*y0 + 2.0*Jit10*ma*ny*v[2]*x0*y0 + 2.0*Jit10*mb*ny*v[1]*x0*y0 - 2.0*Jit10*mb*ny*v[2]*x0*y0 - 2.0*Jit11*ma*ny*v[0]*x0 + 2.0*Jit11*ma*ny*v[1]*x0 + fax*nx*v[1]*x0*x0*y0 - 2.0*fax*nx*v[1]*x0*y0 - fax*nx*v[2]*x0*x0*y0 + fay*ny*v[1]*x0*x0*y0 - 2.0*fay*ny*v[1]*x0*y0 - fay*ny*v[2]*x0*x0*y0 - fbx*nx*v[1]*x0*x0*y0 + 2.0*fbx*nx*v[1]*x0*y0 + fbx*nx*v[2]*x0*x0*y0 - fby*ny*v[1]*x0*x0*y0 + 2.0*fby*ny*v[1]*x0*y0 + fby*ny*v[2]*x0*x0*y0 - 2.0*jf*x0*y0)/(-2.0*Jit00*ma*nx*x0*y0 + 2.0*Jit00*ma*nx*y0 + 2.0*Jit00*mb*nx*x0*y0 - 2.0*Jit01*ma*nx*x0*y0 + 2.0*Jit01*ma*nx*x0 + 2.0*Jit01*mb*nx*x0*y0 - 2.0*Jit10*ma*ny*x0*y0 + 2.0*Jit10*ma*ny*y0 + 2.0*Jit10*mb*ny*x0*y0 - 2.0*Jit11*ma*ny*x0*y0 + 2.0*Jit11*ma*ny*x0 + 2.0*Jit11*mb*ny*x0*y0 + fax*nx*x0*x0*y0 + fax*nx*x0*y0*y0 - 2.0*fax*nx*x0*y0 + fay*ny*x0*x0*y0 + fay*ny*x0*y0*y0 - 2.0*fay*ny*x0*y0 - fbx*nx*x0*x0*y0 - fbx*nx*x0*y0*y0 + 2.0*fbx*nx*x0*y0 - fby*ny*x0*x0*y0 - fby*ny*x0*y0*y0 + 2.0*fby*ny*x0*y0);
-        */
-       /*
-        _a1[i] = v[0];
-        _a2[i] = (-2.0 * Jit00 * mb * nx * v[0] * y0 + 2.0 * Jit00 * mb * nx * v[2] * y0 - 2.0 * Jit01 * ma * nx * v[0] * x0 + 2.0 * Jit01 * ma * nx * v[0] * y0 + 2.0 * Jit01 * ma * nx * v[1] * x0 * y0 - 2.0 * Jit01 * ma * nx * v[1] * y0 - 2.0 * Jit01 * ma * nx * v[2] * x0 * y0 + 2.0 * Jit01 * ma * nx * v[2] * x0 - 2.0 * Jit01 * mb * nx * v[0] * y0 - 2.0 * Jit01 * mb * nx * v[1] * x0 * y0 + 2.0 * Jit01 * mb * nx * v[1] * y0 + 2.0 * Jit01 * mb * nx * v[2] * x0 * y0 - 2.0 * Jit10 * mb * ny * v[0] * y0 + 2.0 * Jit10 * mb * ny * v[2] * y0 - 2.0 * Jit11 * ma * ny * v[0] * x0 + 2.0 * Jit11 * ma * ny * v[0] * y0 + 2.0 * Jit11 * ma * ny * v[1] * x0 * y0 - 2.0 * Jit11 * ma * ny * v[1] * y0 - 2.0 * Jit11 * ma * ny * v[2] * x0 * y0 + 2.0 * Jit11 * ma * ny * v[2] * x0 - 2.0 * Jit11 * mb * ny * v[0] * y0 - 2.0 * Jit11 * mb * ny * v[1] * x0 * y0 + 2.0 * Jit11 * mb * ny * v[1] * y0 + 2.0 * Jit11 * mb * ny * v[2] * x0 * y0 - fax * nx * v[0] * x0 * y0 - fax * nx * v[0] * y0 * y0 + 2.0 * fax * nx * v[0] * y0 - fax * nx * v[1] * x0 * y0 * y0 + fax * nx * v[1] * y0 * y0 + fax * nx * v[2] * x0 * y0 * y0 - fax * nx * v[2] * x0 * y0 - fay * ny * v[0] * x0 * y0 - fay * ny * v[0] * y0 * y0 + 2.0 * fay * ny * v[0] * y0 - fay * ny * v[1] * x0 * y0 * y0 + fay * ny * v[1] * y0 * y0 + fay * ny * v[2] * x0 * y0 * y0 - fay * ny * v[2] * x0 * y0 + fbx * nx * v[0] * x0 * y0 + fbx * nx * v[0] * y0 * y0 - 2.0 * fbx * nx * v[0] * y0 + fbx * nx * v[1] * x0 * y0 * y0 - fbx * nx * v[1] * y0 * y0 - fbx * nx * v[2] * x0 * y0 * y0 + fbx * nx * v[2] * x0 * y0 + fby * ny * v[0] * x0 * y0 + fby * ny * v[0] * y0 * y0 - 2.0 * fby * ny * v[0] * y0 + fby * ny * v[1] * x0 * y0 * y0 - fby * ny * v[1] * y0 * y0 - fby * ny * v[2] * x0 * y0 * y0 + fby * ny * v[2] * x0 * y0) / (-2.0 * Jit00 * ma * nx * x0 * y0 + 2.0 * Jit00 * ma * nx * y0 + 2.0 * Jit00 * mb * nx * x0 * y0 - 2.0 * Jit01 * ma * nx * x0 * y0 + 2.0 * Jit01 * ma * nx * x0 + 2.0 * Jit01 * mb * nx * x0 * y0 - 2.0 * Jit10 * ma * ny * x0 * y0 + 2.0 * Jit10 * ma * ny * y0 + 2.0 * Jit10 * mb * ny * x0 * y0 - 2.0 * Jit11 * ma * ny * x0 * y0 + 2.0 * Jit11 * ma * ny * x0 + 2.0 * Jit11 * mb * ny * x0 * y0 + fax * nx * x0 * x0 * y0 + fax * nx * x0 * y0 * y0 - 2.0 * fax * nx * x0 * y0 + fay * ny * x0 * x0 * y0 + fay * ny * x0 * y0 * y0 - 2.0 * fay * ny * x0 * y0 - fbx * nx * x0 * x0 * y0 - fbx * nx * x0 * y0 * y0 + 2.0 * fbx * nx * x0 * y0 - fby * ny * x0 * x0 * y0 - fby * ny * x0 * y0 * y0 + 2.0 * fby * ny * x0 * y0);
-        _a3[i] = (2.0 * Jit00 * ma * nx * v[0] * x0 - 2.0 * Jit00 * ma * nx * v[0] * y0 - 2.0 * Jit00 * ma * nx * v[1] * x0 * y0 + 2.0 * Jit00 * ma * nx * v[1] * y0 + 2.0 * Jit00 * ma * nx * v[2] * x0 * y0 - 2.0 * Jit00 * ma * nx * v[2] * x0 - 2.0 * Jit00 * mb * nx * v[0] * x0 + 2.0 * Jit00 * mb * nx * v[1] * x0 * y0 - 2.0 * Jit00 * mb * nx * v[2] * x0 * y0 + 2.0 * Jit00 * mb * nx * v[2] * x0 - 2.0 * Jit01 * mb * nx * v[0] * x0 + 2.0 * Jit01 * mb * nx * v[1] * x0 + 2.0 * Jit10 * ma * ny * v[0] * x0 - 2.0 * Jit10 * ma * ny * v[0] * y0 - 2.0 * Jit10 * ma * ny * v[1] * x0 * y0 + 2.0 * Jit10 * ma * ny * v[1] * y0 + 2.0 * Jit10 * ma * ny * v[2] * x0 * y0 - 2.0 * Jit10 * ma * ny * v[2] * x0 - 2.0 * Jit10 * mb * ny * v[0] * x0 + 2.0 * Jit10 * mb * ny * v[1] * x0 * y0 - 2.0 * Jit10 * mb * ny * v[2] * x0 * y0 + 2.0 * Jit10 * mb * ny * v[2] * x0 - 2.0 * Jit11 * mb * ny * v[0] * x0 + 2.0 * Jit11 * mb * ny * v[1] * x0 - fax * nx * v[0] * x0 * x0 - fax * nx * v[0] * x0 * y0 + 2.0 * fax * nx * v[0] * x0 + fax * nx * v[1] * x0 * x0 * y0 - fax * nx * v[1] * x0 * y0 - fax * nx * v[2] * x0 * x0 * y0 + fax * nx * v[2] * x0 * x0 - fay * ny * v[0] * x0 * x0 - fay * ny * v[0] * x0 * y0 + 2.0 * fay * ny * v[0] * x0 + fay * ny * v[1] * x0 * x0 * y0 - fay * ny * v[1] * x0 * y0 - fay * ny * v[2] * x0 * x0 * y0 + fay * ny * v[2] * x0 * x0 + fbx * nx * v[0] * x0 * x0 + fbx * nx * v[0] * x0 * y0 - 2.0 * fbx * nx * v[0] * x0 - fbx * nx * v[1] * x0 * x0 * y0 + fbx * nx * v[1] * x0 * y0 + fbx * nx * v[2] * x0 * x0 * y0 - fbx * nx * v[2] * x0 * x0 + fby * ny * v[0] * x0 * x0 + fby * ny * v[0] * x0 * y0 - 2.0 * fby * ny * v[0] * x0 - fby * ny * v[1] * x0 * x0 * y0 + fby * ny * v[1] * x0 * y0 + fby * ny * v[2] * x0 * x0 * y0 - fby * ny * v[2] * x0 * x0) / (-2.0 * Jit00 * ma * nx * x0 * y0 + 2.0 * Jit00 * ma * nx * y0 + 2.0 * Jit00 * mb * nx * x0 * y0 - 2.0 * Jit01 * ma * nx * x0 * y0 + 2.0 * Jit01 * ma * nx * x0 + 2.0 * Jit01 * mb * nx * x0 * y0 - 2.0 * Jit10 * ma * ny * x0 * y0 + 2.0 * Jit10 * ma * ny * y0 + 2.0 * Jit10 * mb * ny * x0 * y0 - 2.0 * Jit11 * ma * ny * x0 * y0 + 2.0 * Jit11 * ma * ny * x0 + 2.0 * Jit11 * mb * ny * x0 * y0 + fax * nx * x0 * x0 * y0 + fax * nx * x0 * y0 * y0 - 2.0 * fax * nx * x0 * y0 + fay * ny * x0 * x0 * y0 + fay * ny * x0 * y0 * y0 - 2.0 * fay * ny * x0 * y0 - fbx * nx * x0 * x0 * y0 - fbx * nx * x0 * y0 * y0 + 2.0 * fbx * nx * x0 * y0 - fby * ny * x0 * x0 * y0 - fby * ny * x0 * y0 * y0 + 2.0 * fby * ny * x0 * y0);
-        _b1[i] = (2.0 * Jit00 * ma * nx * v[0] * y0 - 2.0 * Jit00 * ma * nx * v[2] * x0 * y0 + 2.0 * Jit00 * mb * nx * v[2] * x0 * y0 + 2.0 * Jit01 * ma * nx * v[0] * x0 - 2.0 * Jit01 * ma * nx * v[1] * x0 * y0 + 2.0 * Jit01 * mb * nx * v[1] * x0 * y0 + 2.0 * Jit10 * ma * ny * v[0] * y0 - 2.0 * Jit10 * ma * ny * v[2] * x0 * y0 + 2.0 * Jit10 * mb * ny * v[2] * x0 * y0 + 2.0 * Jit11 * ma * ny * v[0] * x0 - 2.0 * Jit11 * ma * ny * v[1] * x0 * y0 + 2.0 * Jit11 * mb * ny * v[1] * x0 * y0 + fax * nx * v[1] * x0 * y0 * y0 + fax * nx * v[2] * x0 * x0 * y0 + fay * ny * v[1] * x0 * y0 * y0 + fay * ny * v[2] * x0 * x0 * y0 - fbx * nx * v[1] * x0 * y0 * y0 - fbx * nx * v[2] * x0 * x0 * y0 - fby * ny * v[1] * x0 * y0 * y0 - fby * ny * v[2] * x0 * x0 * y0) / (-2.0 * Jit00 * ma * nx * x0 * y0 + 2.0 * Jit00 * ma * nx * y0 + 2.0 * Jit00 * mb * nx * x0 * y0 - 2.0 * Jit01 * ma * nx * x0 * y0 + 2.0 * Jit01 * ma * nx * x0 + 2.0 * Jit01 * mb * nx * x0 * y0 - 2.0 * Jit10 * ma * ny * x0 * y0 + 2.0 * Jit10 * ma * ny * y0 + 2.0 * Jit10 * mb * ny * x0 * y0 - 2.0 * Jit11 * ma * ny * x0 * y0 + 2.0 * Jit11 * ma * ny * x0 + 2.0 * Jit11 * mb * ny * x0 * y0 + fax * nx * x0 * x0 * y0 + fax * nx * x0 * y0 * y0 - 2.0 * fax * nx * x0 * y0 + fay * ny * x0 * x0 * y0 + fay * ny * x0 * y0 * y0 - 2.0 * fay * ny * x0 * y0 - fbx * nx * x0 * x0 * y0 - fbx * nx * x0 * y0 * y0 + 2.0 * fbx * nx * x0 * y0 - fby * ny * x0 * x0 * y0 - fby * ny * x0 * y0 * y0 + 2.0 * fby * ny * x0 * y0);
-        _b2[i] = (-2.0 * Jit00 * ma * nx * v[0] * y0 + 2.0 * Jit00 * ma * nx * v[2] * y0 - 2.0 * Jit01 * ma * nx * v[0] * x0 + 2.0 * Jit01 * ma * nx * v[1] * x0 * y0 - 2.0 * Jit01 * ma * nx * v[2] * x0 * y0 + 2.0 * Jit01 * ma * nx * v[2] * x0 - 2.0 * Jit01 * mb * nx * v[1] * x0 * y0 + 2.0 * Jit01 * mb * nx * v[2] * x0 * y0 - 2.0 * Jit10 * ma * ny * v[0] * y0 + 2.0 * Jit10 * ma * ny * v[2] * y0 - 2.0 * Jit11 * ma * ny * v[0] * x0 + 2.0 * Jit11 * ma * ny * v[1] * x0 * y0 - 2.0 * Jit11 * ma * ny * v[2] * x0 * y0 + 2.0 * Jit11 * ma * ny * v[2] * x0 - 2.0 * Jit11 * mb * ny * v[1] * x0 * y0 + 2.0 * Jit11 * mb * ny * v[2] * x0 * y0 - fax * nx * v[1] * x0 * y0 * y0 + fax * nx * v[2] * x0 * y0 * y0 - 2.0 * fax * nx * v[2] * x0 * y0 - fay * ny * v[1] * x0 * y0 * y0 + fay * ny * v[2] * x0 * y0 * y0 - 2.0 * fay * ny * v[2] * x0 * y0 + fbx * nx * v[1] * x0 * y0 * y0 - fbx * nx * v[2] * x0 * y0 * y0 + 2.0 * fbx * nx * v[2] * x0 * y0 + fby * ny * v[1] * x0 * y0 * y0 - fby * ny * v[2] * x0 * y0 * y0 + 2.0 * fby * ny * v[2] * x0 * y0) / (-2.0 * Jit00 * ma * nx * x0 * y0 + 2.0 * Jit00 * ma * nx * y0 + 2.0 * Jit00 * mb * nx * x0 * y0 - 2.0 * Jit01 * ma * nx * x0 * y0 + 2.0 * Jit01 * ma * nx * x0 + 2.0 * Jit01 * mb * nx * x0 * y0 - 2.0 * Jit10 * ma * ny * x0 * y0 + 2.0 * Jit10 * ma * ny * y0 + 2.0 * Jit10 * mb * ny * x0 * y0 - 2.0 * Jit11 * ma * ny * x0 * y0 + 2.0 * Jit11 * ma * ny * x0 + 2.0 * Jit11 * mb * ny * x0 * y0 + fax * nx * x0 * x0 * y0 + fax * nx * x0 * y0 * y0 - 2.0 * fax * nx * x0 * y0 + fay * ny * x0 * x0 * y0 + fay * ny * x0 * y0 * y0 - 2.0 * fay * ny * x0 * y0 - fbx * nx * x0 * x0 * y0 - fbx * nx * x0 * y0 * y0 + 2.0 * fbx * nx * x0 * y0 - fby * ny * x0 * x0 * y0 - fby * ny * x0 * y0 * y0 + 2.0 * fby * ny * x0 * y0);
-        _b3[i] = (-2.0 * Jit00 * ma * nx * v[0] * y0 - 2.0 * Jit00 * ma * nx * v[1] * x0 * y0 + 2.0 * Jit00 * ma * nx * v[1] * y0 + 2.0 * Jit00 * ma * nx * v[2] * x0 * y0 + 2.0 * Jit00 * mb * nx * v[1] * x0 * y0 - 2.0 * Jit00 * mb * nx * v[2] * x0 * y0 - 2.0 * Jit01 * ma * nx * v[0] * x0 + 2.0 * Jit01 * ma * nx * v[1] * x0 - 2.0 * Jit10 * ma * ny * v[0] * y0 - 2.0 * Jit10 * ma * ny * v[1] * x0 * y0 + 2.0 * Jit10 * ma * ny * v[1] * y0 + 2.0 * Jit10 * ma * ny * v[2] * x0 * y0 + 2.0 * Jit10 * mb * ny * v[1] * x0 * y0 - 2.0 * Jit10 * mb * ny * v[2] * x0 * y0 - 2.0 * Jit11 * ma * ny * v[0] * x0 + 2.0 * Jit11 * ma * ny * v[1] * x0 + fax * nx * v[1] * x0 * x0 * y0 - 2.0 * fax * nx * v[1] * x0 * y0 - fax * nx * v[2] * x0 * x0 * y0 + fay * ny * v[1] * x0 * x0 * y0 - 2.0 * fay * ny * v[1] * x0 * y0 - fay * ny * v[2] * x0 * x0 * y0 - fbx * nx * v[1] * x0 * x0 * y0 + 2.0 * fbx * nx * v[1] * x0 * y0 + fbx * nx * v[2] * x0 * x0 * y0 - fby * ny * v[1] * x0 * x0 * y0 + 2.0 * fby * ny * v[1] * x0 * y0 + fby * ny * v[2] * x0 * x0 * y0) / (-2.0 * Jit00 * ma * nx * x0 * y0 + 2.0 * Jit00 * ma * nx * y0 + 2.0 * Jit00 * mb * nx * x0 * y0 - 2.0 * Jit01 * ma * nx * x0 * y0 + 2.0 * Jit01 * ma * nx * x0 + 2.0 * Jit01 * mb * nx * x0 * y0 - 2.0 * Jit10 * ma * ny * x0 * y0 + 2.0 * Jit10 * ma * ny * y0 + 2.0 * Jit10 * mb * ny * x0 * y0 - 2.0 * Jit11 * ma * ny * x0 * y0 + 2.0 * Jit11 * ma * ny * x0 + 2.0 * Jit11 * mb * ny * x0 * y0 + fax * nx * x0 * x0 * y0 + fax * nx * x0 * y0 * y0 - 2.0 * fax * nx * x0 * y0 + fay * ny * x0 * x0 * y0 + fay * ny * x0 * y0 * y0 - 2.0 * fay * ny * x0 * y0 - fbx * nx * x0 * x0 * y0 - fbx * nx * x0 * y0 * y0 + 2.0 * fbx * nx * x0 * y0 - fby * ny * x0 * x0 * y0 - fby * ny * x0 * y0 * y0 + 2.0 * fby * ny * x0 * y0);
-        */
-        /* _a1[i] = v[0];
-        _a2[i] =  (ny*v[1]*y0*(ma*x0 - ma - mb*x0 + mb) - v[0]*(ma*ny*x0 - ma*ny*y0 + mb*nx*y0 + mb*ny*y0) + v[2]*(-ma*ny*x0*y0 + ma*ny*x0 + mb*nx*y0 + mb*ny*x0*y0))/(-ma*nx*x0*y0 + ma*nx*y0 - ma*ny*x0*y0 + ma*ny*x0 + mb*nx*x0*y0 + mb*ny*x0*y0);
-        _a3[i] = (nx*v[2]*x0*(ma*y0 - ma - mb*y0 + mb) - v[0]*(-ma*nx*x0 + ma*nx*y0 + mb*nx*x0 + mb*ny*x0) + v[1]*(-ma*nx*x0*y0 + ma*nx*y0 + mb*nx*x0*y0 + mb*ny*x0))/(-ma*nx*x0*y0 + ma*nx*y0 - ma*ny*x0*y0 + ma*ny*x0 + mb*nx*x0*y0 + mb*ny*x0*y0);
-        _b1[i] =  (ma*v[0]*(nx*y0 + ny*x0) - nx*v[2]*x0*y0*(ma - mb) - ny*v[1]*x0*y0*(ma - mb))/(-ma*nx*x0*y0 + ma*nx*y0 - ma*ny*x0*y0 + ma*ny*x0 + mb*nx*x0*y0 + mb*ny*x0*y0);
-        _b2[i] =  (-ma*v[0]*(nx*y0 + ny*x0) + ny*v[1]*x0*y0*(ma - mb) + v[2]*(ma*nx*y0 - ma*ny*x0*y0 + ma*ny*x0 + mb*ny*x0*y0))/(-ma*nx*x0*y0 + ma*nx*y0 - ma*ny*x0*y0 + ma*ny*x0 + mb*nx*x0*y0 + mb*ny*x0*y0);
-        _b3[i] =  (-ma*v[0]*(nx*y0 + ny*x0) + nx*v[2]*x0*y0*(ma - mb) + v[1]*(-ma*nx*x0*y0 + ma*nx*y0 + ma*ny*x0 + mb*nx*x0*y0))/(-ma*nx*x0*y0 + ma*nx*y0 - ma*ny*x0*y0 + ma*ny*x0 + mb*nx*x0*y0 + mb*ny*x0*y0);
-        */
-        // // std::cout << "Inverse jacobian: [" << inv_Jac[0] << ", " << inv_Jac[1] << ", " << inv_Jac[2] << ", " << inv_Jac[3] << "]\n"; 
-        // double grad_va[2] = {0.0, 0.0}, grad_vb[2] = {0.0, 0.0}, grad_va_ref[2] = {0.0, 0.0}, grad_vb_ref[2] = {0.0, 0.0};
-        // grad_va_ref[0] = _a2[i];
-        // grad_va_ref[1] = _a3[i];
-        // grad_vb_ref[0] = _b2[i];
-        // grad_vb_ref[1] = _b3[i];
-        // for (int I = 0; I < nSpace; I++)
-        // {
-        //   for (int J = 0; J < nSpace; J++)
-        //   {
-        //     // std::cout << "inv_Jac[" << I * nSpace + J << "] = " << inv_Jac[I * nSpace + J] << "\t grad_va_ref[" << J << "] = " << grad_va_ref[J] << std::endl;
-        //     grad_va[I] += inv_Jac[I * nSpace + J] * grad_va_ref[J];
-        //     grad_vb[I] += inv_Jac[I * nSpace + J] * grad_vb_ref[J];
-        //   }
-        // }
-
-        // // std::cout << i << "\t Ref: \t va_x: " << grad_va_ref[0] << ", va_y: " << grad_va_ref[1] 
-        //           << ", vb_x: " << grad_vb_ref[0] << ", vb_y: " << grad_vb_ref[1] << std::endl;
-        
-        // // std::cout << i << "\t Real: \t va_x: " << grad_va[0] << ", va_y: " << grad_va[1] 
-        //           << ", vb_x: " << grad_vb[0] << ", vb_y: " << grad_vb[1] << std::endl;
-
-        // _va_x[i] = grad_va[0];
-        // _va_y[i] = grad_va[1];
-        // _vb_x[i] = grad_vb[0];
-        // _vb_y[i] = grad_vb[1];
+            _a1[i] = coeffs[0];
+            _a2[i] = coeffs[1];
+            _a3[i] = coeffs[2];
+            _b1[i] = coeffs[3];
+            _b2[i] = coeffs[4];
+            _b3[i] = coeffs[5];
+          }
+        }
       }
       break;
+    }
     case 6:
     {
-      vall = new double[36]{1., 0., 0., 0., 0., 0.,
-        0., 1., 0., 0., 0., 0.,
-        0., 0., 1., 0., 0., 0.,
-        0., 0., 0., 1., 0., 0.,
-        0., 0., 0., 0., 1., 0.,
-        0., 0., 0., 0., 0., 1.
-      };
+      static const double vall_p2[36] = {
+          1., 0., 0., 0., 0., 0.,
+          0., 1., 0., 0., 0., 0.,
+          0., 0., 1., 0., 0., 0.,
+          0., 0., 0., 1., 0., 0.,
+          0., 0., 0., 0., 1., 0.,
+          0., 0., 0., 0., 0., 1.};
+      vall = vall_p2;
       
       for (int j = 0; j < 6; j++)
       {
@@ -913,63 +791,68 @@ namespace equivalent_polynomials
         v[5] = vall[j * 6 + 5];
 
         // std::cout << "v: " << v[0] << "\t" << v[1] << "\t" << v[2] << "\t" << v[3] << "\t" << v[4] << "\t" << v[5] << std::endl;
+         if (corner || edge)
+        {
+          _a1[i] = v[0];
+            _a2[i] = - 3 * v[0] - v[1] + 4 * v[3];
+            _a3[i] = - 3 * v[0] - v[2] + 4 * v[5];
+            _a4[i] = 4 * v[0] - 4 * v[3] + 4 * v[4] - 4 * v[5];
+            _a5[i] = 2 * v[0] + 2 * v[1] - 4 * v[3];
+            _a6[i] = 2 * v[0] + 2 * v[2] - 4 * v[5];
+          _b1[i] = v[0];
+            _b2[i] = - 3 * v[0] - v[1] + 4 * v[3];
+            _b3[i] = - 3 * v[0] - v[2] + 4 * v[5];
+            _b4[i] = 4 * v[0] - 4 * v[3] + 4 * v[4] - 4 * v[5];
+            _b5[i] = 2 * v[0] + 2 * v[1] - 4 * v[3];
+            _b6[i] = 2 * v[0] + 2 * v[2] - 4 * v[5]; 
+        }
+        else
+        {
+          if (inside_out)
+          {
+             const std::array<double, 6> nodal_values = {v[0], v[1], v[2], v[3], v[4], v[5]};
+             const std::array<double, 12> coeffs = proteus::solve_ifem_basis_coefficients(
+              2, x0, y0, nx, ny, mb, ma, jf, Jit00, Jit01, Jit10, Jit11, nodal_values);
+            
+            _b1[i] = coeffs[0];
+            _b2[i] = coeffs[1];
+            _b3[i] = coeffs[2];
+            _b4[i] = coeffs[3];
+            _b5[i] = coeffs[4];
+            _b6[i] = coeffs[5];
+            _a1[i] = coeffs[6];
+            _a2[i] = coeffs[7];
+            _a3[i] = coeffs[8];
+            _a4[i] = coeffs[9];
+            _a5[i] = coeffs[10];
+            _a6[i] = coeffs[11];
+          }
+          else
+          {
+            const std::array<double, 6> nodal_values = {v[0], v[1], v[2], v[3], v[4], v[5]};
+            const std::array<double, 12> coeffs = proteus::solve_ifem_basis_coefficients(
+              2, x0, y0, nx, ny, ma, mb, jf, Jit00, Jit01, Jit10, Jit11, nodal_values);
 
-        const std::array<double, 6> nodal_values = {v[0], v[1], v[2], v[3], v[4], v[5]};
-        const std::array<double, 12> coeffs = proteus::solve_ifem_basis_coefficients(
-            2, x0, y0, nx, ny, ma, mb, jf, Jit00, Jit01, Jit10, Jit11, nodal_values);
-
-            
-            _a1[i] = coeffs[0];
-            _a2[i] = coeffs[1];
-            _a3[i] = coeffs[2];
-            _a4[i] = coeffs[3];
-            _a5[i] = coeffs[4];
-            _a6[i] = coeffs[5];
-            _b1[i] = coeffs[6];
-            _b2[i] = coeffs[7];
-            _b3[i] = coeffs[8];
-            _b4[i] = coeffs[9];
-            _b5[i] = coeffs[10];
-            _b6[i] = coeffs[11];
-            
-            // grad_va_ref[0] = _a2[i] + _a4[i] * y0 + 2.0 * _a5[i] * x0;
-            // grad_va_ref[1] = _a3[i] + _a4[i] * x0 + 2.0 * _a6[i] * y0;
-            // grad_vb_ref[0] = _b2[i] + _b4[i] * y0 + 2.0 * _b5[i] * x0;
-            // grad_vb_ref[1] = _b3[i] + _b4[i] * x0 + 2.0 * _b6[i] * y0;
-            
-            // // std::cout << i << "Ref: \t va_x: " << grad_va_ref[0] << ", va_y: " << grad_va_ref[1] << std::endl
-            // //           << ", vb_x: " << grad_vb_ref[0] << ", vb_y: " << grad_vb_ref[1] << std::endl;
-            
-            // for (int I = 0; I < nSpace; I++)
-            // {
-              //   for (int J = 0; J < nSpace; J++)
-              //   {
-                //     grad_va[I] += inv_Jac[J * nSpace + I] * grad_va_ref[J];
-                //     grad_vb[I] += inv_Jac[J * nSpace + I] * grad_vb_ref[J];
-                //   }
-                // }
-                // _va_x[i] = grad_va[0];
-                // _va_y[i] = grad_va[1];
-                // _vb_x[i] = grad_vb[0];
-                // _vb_y[i] = grad_vb[1];
-                
-                // std::cout << i << "Real: \t va_x: " << _va_x[i] << ", va_y: " << _va_y[i] << std::endl
-                //           << ", vb_x: " << _vb_x[i] << ", vb_y: " << _vb_y[i] << std::endl;
-                
-        // std::cout << "Coefficients for real node " << i << " and reference node " << j << " :"<< std::endl;
-        // std::cout << "a: \t [" << _a1[i] << ", " << _a2[i] << ", " << _a3[i] << ", " << _a4[i] << ", " << _a5[i] << ", " << _a6[i] << "]" << std::endl;
-        // std::cout << "b: \t [" << _b1[i] << ", " << _b2[i] << ", " << _b3[i] << ", " << _b4[i] << ", " << _b5[i] << ", " << _b6[i] << "]" << std::endl;
-                 
-                  
+              _a1[i] = coeffs[0];
+              _a2[i] = coeffs[1];
+              _a3[i] = coeffs[2];
+              _a4[i] = coeffs[3];
+              _a5[i] = coeffs[4];
+              _a6[i] = coeffs[5];
+              _b1[i] = coeffs[6];
+              _b2[i] = coeffs[7];
+              _b3[i] = coeffs[8];
+              _b4[i] = coeffs[9];
+              _b5[i] = coeffs[10];
+              _b6[i] = coeffs[11];
+          }
+        }
       }
-      // throw std::runtime_error("Simplex::_calculate_coefficients not implemented for nP_ifem=6");
       break;
     }
     default:
       throw std::runtime_error("Simplex::_calculate_coefficients not implemented for order > 2");
     }
-    if (vall)
-      delete[] vall;
   }
 
   template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
@@ -983,13 +866,19 @@ namespace equivalent_polynomials
       {
         va[i] = _a1[i] + _a2[i] * xi[0] + _a3[i] * xi[1];
         vb[i] = _b1[i] + _b2[i] * xi[0] + _b3[i] * xi[1];
+
+        // std::cout << "\nCoefficients for real node " << i << " at quadrature point: " << xi[0] << ", " << xi[1] << std::endl;
+        // std::cout << "a: \t [" << _a1[i] << ", " << _a2[i] << ", " << _a3[i] << "]" << std::endl;
+        // std::cout << "b: \t [" << _b1[i] << ", " << _b2[i] << ", " << _b3[i] << "]" << std::endl;
+                 
+        // std::cout << "va[" << i << "] = " << va[i] << "\t vb[" << i << "] = " << vb[i] << std::endl;
       }
       break;
     case 6:
       for (int i = 0; i < nP_ifem; i++)
       {
-        va[i] = _a1[i] + _a2[i]*xi[0] + _a3[i]*xi[1] + _a4[i]*xi[0]*xi[1] + _a5[i]*xi[0]*xi[0] + _a6[i]*xi[1]*xi[1];
-        vb[i] = _b1[i] + _b2[i]*xi[0] + _b3[i]*xi[1] + _b4[i]*xi[0]*xi[1] + _b5[i]*xi[0]*xi[0] + _b6[i]*xi[1]*xi[1];
+        va[i] = _a1[i] + _a2[i] * xi[0] + _a3[i] * xi[1] + _a4[i] * xi[0] * xi[1] + _a5[i] * xi[0] * xi[0] + _a6[i] * xi[1] * xi[1];
+        vb[i] = _b1[i] + _b2[i] * xi[0] + _b3[i] * xi[1] + _b4[i] * xi[0] * xi[1] + _b5[i] * xi[0] * xi[0] + _b6[i] * xi[1] * xi[1];
 
         // std::cout << "\nCoefficients for real node " << i << " at quadrature point: " << xi[0] << ", " << xi[1] << std::endl;
         // std::cout << "a: \t [" << _a1[i] << ", " << _a2[i] << ", " << _a3[i] << ", " << _a4[i] << ", " << _a5[i] << ", " << _a6[i] << "]" << std::endl;
@@ -1030,19 +919,19 @@ namespace equivalent_polynomials
             grad_vb[I] += inv_Jac[J * nSpace + I] * grad_vb_ref[J];
           }
         }
-        if (inside_out){
-          va_x[i] = grad_vb[0];
-          va_y[i] = grad_vb[1];
-          vb_x[i] = grad_va[0];
-          vb_y[i] = grad_va[1];
-        }
-        else
-        {
+        // if (inside_out){
+        //   va_x[i] = grad_vb[0];
+        //   va_y[i] = grad_vb[1];
+        //   vb_x[i] = grad_va[0];
+        //   vb_y[i] = grad_va[1];
+        // }
+        // else
+        // {
           va_x[i] = grad_va[0];
           va_y[i] = grad_va[1];
           vb_x[i] = grad_vb[0];
           vb_y[i] = grad_vb[1];
-        }
+        // }
 
         // // std::cout << "Inverse jacobian: [" << inv_Jac[0] << ", " << inv_Jac[1] << ", " << inv_Jac[2] << ", " << inv_Jac[3] << "]\n"; 
 
@@ -1081,19 +970,19 @@ namespace equivalent_polynomials
         // va_y[i] = grad_va[1];
         // vb_x[i] = grad_vb[0];
         // vb_y[i] = grad_vb[1];
-        if (inside_out){
-          va_x[i] = grad_vb[0];
-          va_y[i] = grad_vb[1];
-          vb_x[i] = grad_va[0];
-          vb_y[i] = grad_va[1];
-        }
-        else
-        {
+        // if (inside_out){
+        //   va_x[i] = grad_vb[0];
+        //   va_y[i] = grad_vb[1];
+        //   vb_x[i] = grad_va[0];
+        //   vb_y[i] = grad_va[1];
+        // }
+        // else
+        // {
           va_x[i] = grad_va[0];
           va_y[i] = grad_va[1];
           vb_x[i] = grad_vb[0];
           vb_y[i] = grad_vb[1];
-        }
+        // }
       }
       break;
     default:
@@ -1108,7 +997,6 @@ namespace equivalent_polynomials
     for (unsigned int i = 0; i < nP_ifem; i++)
       phi_dof_corrected[i] = phi_dof[i];
     int icase = _calculate_permutation(phi_dof, phi_nodes); // permuation, Jac,inv_Jac...
-    // std::cout << "icase= " << icase << std::endl << std::endl;
     if (icase == 1)
     {
       for (unsigned int q = 0; q < nQ; q++)
@@ -1154,12 +1042,13 @@ namespace equivalent_polynomials
     {
       _calculate_cuts();                                           // X_0, array of interface cuts on reference simplex
       _calculate_normal<nSpace>(phys_nodes_cut, level_set_normal); // normal to interface
-      // if (flip_the_cell) {
-      //   int icase = _calculate_permutation(phi_dof, phi_nodes);
-      //   _calculate_cuts();                                           // X_0, array of interface cuts on reference simplex
-      // }
     }
     _correct_phi(phi_dof, phi_nodes);
+    if (flip_the_cell)
+    {
+      _calculate_permutation(phi_dof, phi_nodes);
+      _calculate_cuts();                                           // X_0, array of interface cuts on reference simplex
+    }
     _calculate_C(); // coefficients of equiv poly
     double ma_scale, mb_scale;
     if (scale)
@@ -1178,41 +1067,14 @@ namespace equivalent_polynomials
       ma_scale = ma;
       mb_scale = mb;
     }
-    if (flip_the_cell) 
-    {
-        int icase = _calculate_permutation(phi_dof, phi_nodes);
-        _calculate_cuts();                                           // X_0, array of interface cuts on reference simplex
-      }
-    if (inside_out && !corner)
-    {
-      // std::cout << "Inside out case detected, swapping ma and mb" << std::endl;
-      if (nN == 3)
-      {
-        _calculate_basis_coefficients(mb_scale, ma_scale, jf);
-        // for (int i = 0; i < nP_ifem; i++) // Todo for nP_ifem > 1
-        // {
-        //   double tmp;
-        //   tmp = _va_x[i];
-        //   _va_x[i] = _vb_x[i];
-        //   _vb_x[i] = tmp;
-        //   tmp = _va_y[i];
-        //   _va_y[i] = _vb_y[i];
-        //   _vb_y[i] = tmp;
-        // }
-      }
-    }
-    else
-    {
-      if (nN == 3 && !corner)
-         _calculate_basis_coefficients(ma_scale, mb_scale, jf);
-    }
+    _calculate_basis_coefficients(ma_scale, mb_scale, jf);
     // compute the default affine map based on phi_nodes[0]
     double Jac_0[nSpace * nSpace];
     for (unsigned int i = 0; i < nN - 1; i++)
       for (unsigned int I = 0; I < nSpace; I++)
         Jac_0[I * nSpace + i] = phi_nodes[(1 + i) * 3 + I] - phi_nodes[I];
 
-    if (not isBoundary)
+    if (!isBoundary)
     {
       for (unsigned int q = 0; q < nQ; q++)
       {
@@ -1237,24 +1099,16 @@ namespace equivalent_polynomials
             xi[I] += inv_Jac[I * nSpace + J] * (x[J] - nodes[J]);
           }
         }
-        // for (unsigned int I = 0; I < nSpace; I++)
-        // {
-        //   xi[I] = xi_r[q * 3 + I];
-        // }
-        if (!corner){
           if (nSpace == 1)
             _calculate_polynomial_1D<nP>(xi, C_H, C_ImH, C_D, _H[q], _ImH[q], _D[q]);
           else if (nSpace == 2)
           {
-            // std::cout << "Quadrature point: (" << xi[0] << ", " << xi[1] << ")\n";
-            // std::cout << "p order: " << sizeof(phi_dof[0]) << std::endl;
             _calculate_polynomial_2D<nP>(xi, C_H, C_ImH, C_D, _H[q], _ImH[q], _D[q]);
             _calculate_basis(xi, &_va[q * nP_ifem], &_vb[q * nP_ifem]);
             _calculate_basis_gradients(xi, &_va_x[q * nP_ifem], &_va_y[q * nP_ifem], &_vb_x[q * nP_ifem], &_vb_y[q * nP_ifem]);
           }
           else if (nSpace == 3)
             _calculate_polynomial_3D<nP>(xi, C_H, C_ImH, C_D, _H[q], _ImH[q], _D[q]);
-        }
       }
       set_quad(0);
     }

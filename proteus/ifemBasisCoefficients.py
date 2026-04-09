@@ -138,7 +138,7 @@ def _solveCoefficients_P2(x0, y0, nx, ny, ma, mb, jf, Jit00, Jit01, Jit10, Jit11
     vb_nn = tx**2 * vb_xx + 2*tx*ty * vb_xy + ty**2 * vb_yy
 
     assert not ((x0==0 and y0==0) or (x0==1 and y0==0) or (x0==0 and y0==1)), "Invalid interface location for quadratic basis functions. Interface passes through one of the triangle vertices."
-    # assert not (x0<=0.5 and y0>0.5), f"Invalid interface location for quadratic basis functions. You set the interface with {x0}<=0.5 and {y0}>0.5 but it can be transformed into {x0}>0.5 and {y0}<=0.5."
+    assert not (x0>0.5 and y0<=0.5), f"Invalid interface location for quadratic basis functions. You set the interface with {x0}>0.5 and {y0}<=0.5 but it can be transformed into {x0}<=0.5 and {y0}>0.5."
     # ------------------------------------------------------------------
     # Constraints (use exact rationals!)
     # ------------------------------------------------------------------
@@ -149,9 +149,9 @@ def _solveCoefficients_P2(x0, y0, nx, ny, ma, mb, jf, Jit00, Jit01, Jit10, Jit11
     if (x0<=0.5 and y0<=0.5):
         c4 = vb.subs({x:Rational(1,2),y:0})  - v4
         c6 = vb.subs({x:0,y:Rational(1,2)})  - v6
-    elif (x0>0.5 and y0<=0.5):
-        c4 = va.subs({x:Rational(1,2),y:0})  - v4
-        c6 = vb.subs({x:0,y:Rational(1,2)})  - v6
+    # elif (x0>0.5 and y0<=0.5):
+    #     c4 = va.subs({x:Rational(1,2),y:0})  - v4
+    #     c6 = vb.subs({x:0,y:Rational(1,2)})  - v6
     elif (x0<=0.5 and y0>0.5):
         c4 = vb.subs({x:Rational(1,2), y:0}) - v4
         c6 = va.subs({x:0, y:Rational(1,2)}) - v6
