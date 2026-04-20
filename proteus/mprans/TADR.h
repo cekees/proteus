@@ -63,6 +63,7 @@ namespace proteus
     virtual ~TADR_base(){}
     virtual void calculateResidual(arguments_dict& args)=0;
     virtual void calculateJacobian(arguments_dict& args)=0;
+    virtual void invert(arguments_dict& args)=0;
     virtual void FCTStep(arguments_dict& args)=0;
   };
 
@@ -204,6 +205,8 @@ namespace proteus
       cfl = nrm_v/h;
     }
 
+    
+
     inline
 void evaluateCoefficients(const int rowptr[nSpace],
 				                      const int colind[nnz],
@@ -258,6 +261,23 @@ void evaluateCoefficients(const int rowptr[nSpace],
             }
 
         }
+    }
+inline
+double inversevaluateCoefficients(const double storage,
+                             const double porosity,
+                             const double rho_f,
+                             const double rho_s) 
+    {
+      const double mass_scale = std::max(porosity*rho_f, 1.0e-14);
+      const double epsilon = (rho_s - rho_f)/rho_f;
+      const double rhs = storage/mass_scale;
+      if (std::fabs(epsilon) < 1.0e-14)
+        return rhs;
+      const double discriminant = std::max(1.0 + 4.0*epsilon*rhs, 0.0);
+      const double sqrt_discriminant = std::sqrt(discriminant);
+      if (epsilon > 0.0)
+        return 2.0*rhs/(1.0 + sqrt_discriminant);
+      return (-1.0 + sqrt_discriminant)/(2.0*epsilon);
     }
 
 inline
@@ -1719,6 +1739,18 @@ inline
             }//i
         }//edge-based
     }
+
+  void invert(arguments_dict& args)
+  {
+    int numDOFs = args.scalar<int>("numDOFs");
+    xt::pyarray<double>& mIn = args.array<double>("mIn");
+    xt::pyarray<double>& uOut = args.array<double>("uOut");
+    const double porosity = args.scalar<double>("porosity");
+    const double rho_f = args.scalar<double>("rho_f");
+    const double rho_s = args.scalar<double>("rho_s");
+    for (int i=0; i<numDOFs; i++)
+      uOut.data()[i] = inversevaluateCoefficients(mIn.data()[i], porosity, rho_f, rho_s);
+  }
   
 
     void calculateJacobian(arguments_dict& args)
@@ -2276,6 +2308,9 @@ inline
     xt::pyarray<double>& min_u_bc = args.array<double>("min_u_bc");
     xt::pyarray<double>& max_u_bc = args.array<double>("max_u_bc");
     int LUMPED_MASS_MATRIX = args.scalar<int>("LUMPED_MASS_MATRIX");
+    const double porosity = args.scalar<double>("porosity");
+    const double rho_f = args.scalar<double>("rho_f");
+    const double rho_s = args.scalar<double>("rho_s");
 //    STABILIZATION STABILIZATION_TYPE{args.scalar<int>("STABILIZATION_TYPE")};
     STABILIZATION STABILIZATION_TYPE = static_cast<STABILIZATION>(args.scalar<int>("STABILIZATION_TYPE"));
 //      ENTROPY ENTROPY_TYPE = static_cast<ENTROPY>(args.scalar<int>("ENTROPY_TYPE"));    
@@ -2289,9 +2324,12 @@ inline
         //read some vectors
         double solHi = solH.data()[i];
         double solni = soln.data()[i];
-        double mi = lumped_mass_matrix.data()[i];
+        const double lumped_volume = lumped_mass_matrix.data()[i];
         double uLowi = uLow.data()[i];
-        double uDotLowi = (uLowi - solni)/dt;
+        double mLowi = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowi)*uLowi;
+        double solHmi = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solHi)*solHi;
+        double solnmi = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solni)*solni;
+        double uDotLowi = (mLowi - solnmi)/dt;
         double mini=min_u_bc.data()[i], maxi=max_u_bc.data()[i]; // init min/max with value at BCs (NOTE: if no boundary then min=1E10, max=-1E10)
         double Pposi=0, Pnegi=0;
         // Loop over neighbors (j)
@@ -2306,7 +2344,10 @@ inline
             mini = fmin(mini,solnj);
             maxi = fmax(maxi,solnj);
             double uLowj = uLow.data()[j];
-            double uDotLowj = (uLowj - solnj)/dt;
+            double mLowj = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowj)*uLowj;
+            double solHmj = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solH.data()[j])*solH.data()[j];
+            double solnmj = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solnj)*solnj;
+            double uDotLowj = (mLowj - solnmj)/dt;
             // i-th row of flux correction matrix
             if (STABILIZATION_TYPE == STABILIZATION::Kuzmin)
               {
@@ -2316,16 +2357,16 @@ inline
             else
               {
                 double ML_minus_MC =
-                  (LUMPED_MASS_MATRIX == 1 ? 0. : (i==j ? 1. : 0.)*mi - MassMatrix.data()[ij]);
-                FluxCorrectionMatrix[ij] = ML_minus_MC * (solH.data()[j]-solnj - (solHi-solni))
+                  (LUMPED_MASS_MATRIX == 1 ? 0. : (i==j ? 1. : 0.)*lumped_volume - MassMatrix.data()[ij]);
+                FluxCorrectionMatrix[ij] = ML_minus_MC * (solHmj-solnmj - (solHmi-solnmi))
                   + dt_times_dH_minus_dL.data()[ij]*(solnj-solni);
               }
             Pposi += FluxCorrectionMatrix[ij]*((FluxCorrectionMatrix[ij] > 0) ? 1. : 0.);
             Pnegi += FluxCorrectionMatrix[ij]*((FluxCorrectionMatrix[ij] < 0) ? 1. : 0.);
             ij+=1;
           }//j
-        double Qposi = mi*(maxi-uLow.data()[i]);
-        double Qnegi = mi*(mini-uLow.data()[i]);
+        const double Qposi = lumped_volume*(porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*maxi)*maxi - mLowi);
+        const double Qnegi = lumped_volume*(porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*mini)*mini - mLowi);
         Rpos[i] = ((Pposi==0) ? 1. : fmin(1.0,Qposi/Pposi));
         Rneg[i] = ((Pnegi==0) ? 1. : fmin(1.0,Qnegi/Pnegi));
       }//i
@@ -2334,6 +2375,7 @@ inline
       {
         double ith_Limiter_times_FluxCorrectionMatrix = 0.;
         double Rposi = Rpos[i], Rnegi = Rneg[i];
+        const double lumped_volume = lumped_mass_matrix.data()[i];
         for (int offset=csrRowIndeces_DofLoops.data()[i]; offset<csrRowIndeces_DofLoops.data()[i+1]; offset++)
           {
             assert(offset == ij); // (CSR matrix consistency
@@ -2343,7 +2385,9 @@ inline
             ith_Limiter_times_FluxCorrectionMatrix += Lij * FluxCorrectionMatrix[ij];
             ij+=1;
           }
-        limited_solution.data()[i] = uLow.data()[i] + 1./lumped_mass_matrix.data()[i]*ith_Limiter_times_FluxCorrectionMatrix;
+        const double uLowi = uLow.data()[i];
+        const double mLowi = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowi)*uLowi;
+        limited_solution.data()[i] = mLowi + 1./lumped_volume*ith_Limiter_times_FluxCorrectionMatrix;
       }
     }//FCTStep
   };//TADR

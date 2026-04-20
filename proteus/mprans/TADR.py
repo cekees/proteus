@@ -495,15 +495,15 @@ class Coefficients(TC_base):
                 self.q_v = self.vModel.q[('velocity_couple', 0)]
                 self.ebqe_v = self.vModel.ebqe[('velocity_couple', 0)]
                 self.ebq_v = None
-            self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_s, 'd')
-            self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_s, 'd')
+            self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_f, 'd')
+            self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_f, 'd')
             self.q_v_old = self.q_v.copy()
             self.q_rho_old = self.q_rho.copy()
         else:
             self.q_v = np.ones(self.model.q[('u',0)].shape+(self.model.nSpace_global,),'d')
             self.ebqe_v = np.ones(self.model.ebqe[('u',0)].shape+(self.model.nSpace_global,),'d')
-            self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_s, 'd')
-            self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_s, 'd')
+            self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_f, 'd')
+            self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_f, 'd')
             self.q_v_old = self.q_v.copy()
             self.q_rho_old = self.q_rho.copy()
         # VRANS
@@ -1156,6 +1156,7 @@ class LevelModel(OneLevelTransport):
 
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
+        limited_mass = np.zeros(self.u[0].dof.shape)
         limited_solution = np.zeros(self.u[0].dof.shape)
 
         argsDict = cArgumentsDict.ArgumentsDict()
@@ -1167,7 +1168,7 @@ class LevelModel(OneLevelTransport):
         argsDict["solH"] = self.timeIntegration.u
         argsDict["uLow"] = self.uLow
         argsDict["dLow"] = self.dLow
-        argsDict["limited_solution"] = limited_solution
+        argsDict["limited_solution"] = limited_mass
         argsDict["csrRowIndeces_DofLoops"] = rowptr
         argsDict["csrColumnOffsets_DofLoops"] = colind
         argsDict["MassMatrix"] = MassMatrix
@@ -1176,7 +1177,18 @@ class LevelModel(OneLevelTransport):
         argsDict["max_u_bc"] = self.max_u_bc
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
+        argsDict["porosity"] = self.coefficients.porosity
+        argsDict["rho_f"] = self.coefficients.rho_f
+        argsDict["rho_s"] = self.coefficients.rho_s
         self.adr.FCTStep(argsDict)
+        invertArgs = cArgumentsDict.ArgumentsDict()
+        invertArgs["numDOFs"] = len(rowptr) - 1
+        invertArgs["mIn"] = limited_mass
+        invertArgs["uOut"] = limited_solution
+        invertArgs["porosity"] = self.coefficients.porosity
+        invertArgs["rho_f"] = self.coefficients.rho_f
+        invertArgs["rho_s"] = self.coefficients.rho_s
+        self.adr.invert(invertArgs)
         #self.timeIntegration.u[:] = limited_solution
         fromFreeToGlobal=0 #direction copying
         cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns(fromFreeToGlobal,

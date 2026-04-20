@@ -225,7 +225,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  beta,
                  diagonal_conductivity=True,
                  getSeepageFace=None,
-                 #DENSITY_MODEL= None,
+                 density_model=None,
+                 DENSITY_MODEL=None,
                 # FOR EDGE BASED EV
                  STABILIZATION_TYPE='Implicit_FCT',
                  ENTROPY_TYPE=2,  # logarithmic
@@ -245,7 +246,9 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  outputQuantDOFs=False,
                   ):
         self.VMS=VMS
-        #self.DENSITY_MODEL=DENSITY_MODEL
+        if density_model is None:
+            density_model = DENSITY_MODEL
+        self.density_model = density_model
         self.modelIndex=1
         self.SC=SC
         self.anb_seepage_flux= 0.00
@@ -340,6 +343,26 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                          variableNames,
                          sparseDiffusionTensors = sparseDiffusionTensors,
                          useSparseDiffusion = True)
+
+    def attachModels(self, modelList):
+        self.model = modelList[self.modelIndex]
+        if self.density_model is None:
+            return
+        self.densityModel = modelList[self.density_model]
+        self._sync_density_from_coupled_model()
+
+    def _sync_density_from_coupled_model(self):
+        if self.density_model is None or not hasattr(self, 'densityModel'):
+            return
+        coeffs = getattr(self.densityModel, 'coefficients', None)
+        if coeffs is None:
+            return
+        q_rho = getattr(coeffs, 'q_rho', None)
+        ebqe_rho = getattr(coeffs, 'ebqe_rho', None)
+        if q_rho is not None and hasattr(self.model, 'q') and 'rho' in self.model.q:
+            self.model.q['rho'] = q_rho
+        if ebqe_rho is not None and hasattr(self.model, 'ebqe') and 'rho' in self.model.ebqe:
+            self.model.ebqe['rho'] = ebqe_rho
         
 
     def initializeMesh(self,mesh):
@@ -1086,6 +1109,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         """
         Calculate the element residuals and add in to the global residual
         """
+        self.coefficients._sync_density_from_coupled_model()
         cfemIntegrals.zeroJacobian_CSR(self.nNonzerosInJacobian,
                                        self.jacobian)
         if self.u_dof_old is None:
@@ -1696,6 +1720,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.richards.invert(argsDict)
      
     def getJacobian(self,jacobian):
+        self.coefficients._sync_density_from_coupled_model()
         if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
             cfemIntegrals.zeroJacobian_CSR(self.nNonzerosInJacobian,
                                            jacobian)

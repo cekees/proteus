@@ -26,5 +26,6 @@ PYBIND11_MODULE(cTADR, m)
         .def(py::init(&proteus::newTADR))
         .def("calculateResidual", &TADR_base::calculateResidual)
         .def("calculateJacobian", &TADR_base::calculateJacobian)
+        .def("invert", &TADR_base::invert)
         .def("FCTStep", &TADR_base::FCTStep);
 }
