@@ -1718,41 +1718,41 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           velocity.data()[eN_k_nSpace + I] = -acc;
           velocity_couple.data()[eN_k_nSpace + I] = -acc;
         }
-        static int debug_ev_prints = 0;
-        if (debug_ev_prints < 6 && eN < 2 && k < 2)
-        {
-          std::cout << "[Richards EV fixed] eN=" << eN
-                    << " k=" << k
-                    << " u=" << u
-                    << " un=" << un
-                    << " grad_phi=(" << grad_phi[0];
-          for (int I = 1; I < nSpace; ++I)
-            std::cout << "," << grad_phi[I];
-          std::cout << ") grad_u_velocity=(" << grad_u_velocity[0];
-          for (int I = 1; I < nSpace; ++I)
-            std::cout << "," << grad_u_velocity[I];
-          std::cout << ") velocity_couple=(" << velocity_couple.data()[eN_k_nSpace + 0];
-          for (int I = 1; I < nSpace; ++I)
-            std::cout << "," << velocity_couple.data()[eN_k_nSpace + I];
-          std::cout << ")" << std::endl;
-          for (int j = 0; j < nDOF_trial_element; ++j)
-          {
-            const int u_gj = u_l2g.data()[eN_nDOF_trial_element + j];
-            const int x_gj = mesh_l2g.data()[eN_nDOF_mesh_trial_element + j];
-            const int free_gj = r_l2g.data()[eN_nDOF_trial_element + j];
-            std::cout << "  [EV fixed dof] j=" << j
-                      << " mapped_u=" << u_dof.data()[u_gj]
-                      << " mapped_u_old=" << u_dof_old.data()[u_gj]
-                      << " free_material=" << freeDOFMaterialTypes.data()[free_gj]
-                      << " mapped_x=(" << mesh_dof.data()[x_gj * 3 + 0]
-                      << "," << mesh_dof.data()[x_gj * 3 + 1]
-                      << "," << mesh_dof.data()[x_gj * 3 + 2]
-                      << ") Phi=" << Phi[j]
-                      << " Phi_n=" << Phi_n[j]
-                      << std::endl;
-          }
-          debug_ev_prints++;
-        }
+        // static int debug_ev_prints = 0;
+        // if (debug_ev_prints < 6 && eN < 2 && k < 2)
+        // {
+        //   std::cout << "[Richards EV fixed] eN=" << eN
+        //             << " k=" << k
+        //             << " u=" << u
+        //             << " un=" << un
+        //             << " grad_phi=(" << grad_phi[0];
+        //   for (int I = 1; I < nSpace; ++I)
+        //     std::cout << "," << grad_phi[I];
+        //   std::cout << ") grad_u_velocity=(" << grad_u_velocity[0];
+        //   for (int I = 1; I < nSpace; ++I)
+        //     std::cout << "," << grad_u_velocity[I];
+        //   std::cout << ") velocity_couple=(" << velocity_couple.data()[eN_k_nSpace + 0];
+        //   for (int I = 1; I < nSpace; ++I)
+        //     std::cout << "," << velocity_couple.data()[eN_k_nSpace + I];
+        //   std::cout << ")" << std::endl;
+        //   for (int j = 0; j < nDOF_trial_element; ++j)
+        //   {
+        //     const int u_gj = u_l2g.data()[eN_nDOF_trial_element + j];
+        //     const int x_gj = mesh_l2g.data()[eN_nDOF_mesh_trial_element + j];
+        //     const int free_gj = r_l2g.data()[eN_nDOF_trial_element + j];
+        //     std::cout << "  [EV fixed dof] j=" << j
+        //               << " mapped_u=" << u_dof.data()[u_gj]
+        //               << " mapped_u_old=" << u_dof_old.data()[u_gj]
+        //               << " free_material=" << freeDOFMaterialTypes.data()[free_gj]
+        //               << " mapped_x=(" << mesh_dof.data()[x_gj * 3 + 0]
+        //               << "," << mesh_dof.data()[x_gj * 3 + 1]
+        //               << "," << mesh_dof.data()[x_gj * 3 + 2]
+        //               << ") Phi=" << Phi[j]
+        //               << " Phi_n=" << Phi_n[j]
+        //               << std::endl;
+        //   }
+        //   debug_ev_prints++;
+        // }
        // if (nSpace != 2) {std::cout << "WARNING nSpace=" << nSpace << std::endl;}
         //
         //moving mesh
@@ -2148,8 +2148,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
         double dLowij, dLij, dEVij, dHij, fH, fL, fA=0.0;
         double fL_CN =0.0, fA_CN=0.0 ; 
-//        fH = -Theta * TransportMatrixConsistent[ij] * (phi_j - phi_i) - (1 - Theta) * TransportMatrixConsistentn[ij] * (phin_j - phin_i);
-        fH = -Theta_h * TransportMatrixConsistent[ij] * (phi_j - phi_i) - (1 - Theta_h) * TransportMatrixConsistentn[ij] * (phin_j - phin_i); //previous: Theta
+        fH = -Theta * TransportMatrixConsistent[ij] * (phi_j - phi_i) - (1 - Theta) * TransportMatrixConsistentn[ij] * (phin_j - phin_i);
+        // fH = -Theta_h * TransportMatrixConsistent[ij] * (phi_j - phi_i) - (1 - Theta_h) * TransportMatrixConsistentn[ij] * (phin_j - phin_i); //previous: Theta
         ith_consistent_flux_term += fH;
         fA = fH;
         fA_CN = fH;
@@ -2200,8 +2200,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           fA -= fL;
           fA_CN -= fL_CN;
         }
-        //dt_times_fH_minus_fL.data()[ij] = dt * fA;
-        dt_times_fH_minus_fL.data()[ij] = dt * fA_CN;
+        dt_times_fH_minus_fL.data()[ij] = dt * fA;
+        //dt_times_fH_minus_fL.data()[ij] = dt * fA_CN;
         ij += 1;
       }
       mDotLow.data()[i] = ith_flux_term/MLi;
@@ -2256,22 +2256,25 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
 
     for (int i = 0; i < numDOFs; i++) {
       const int material_i = freeDOFMaterialTypes.data()[i];
-      double dm, f[nSpace], df[nSpace], a[nnz], da[nnz];
       double mMin = rho * thetaR.data()[material_i];
       double mMax = rho * (thetaR.data()[material_i] + thetaSR.data()[material_i]);
-
+      double dm, f[nSpace], df[nSpace], a[nnz], da[nnz];
+      // double mMin = rho * thetaR.data()[elementMaterialTypes.data()[0]];
+      // double mMax = rho * (thetaR.data()[elementMaterialTypes.data()[0]] + thetaSR.data()[elementMaterialTypes.data()[0]]);
       // if (mIn.data()[i] < mMin - 0.001 || mIn.data()[i] > mMax + 0.001) { std::cout << "mass out of bounds " << mMin << '\t' << mIn.data()[i] << '\t' << mMax << std::endl; }
-      if (USE_NEWTON_INVERT)
+      if (USE_NEWTON_INVERT){     
         evaluateInverseCoefficients_Newton(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(), alpha.data()[material_i], n.data()[material_i], thetaR.data()[material_i],
                                           thetaSR.data()[material_i], &KWs.data()[material_i * nnz],
                                           pOut.data()[i], mIn.data()[i],
                                           dm, f, df, a, da);
-      else
-         evaluateInverseCoefficients(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(), alpha.data()[material_i], n.data()[material_i], thetaR.data()[material_i],
-                                  thetaSR.data()[material_i], &KWs.data()[material_i * nnz],
-                                  pOut.data()[i], mIn.data()[i],
-                                  dm, f, df, a, da);
-    }
+      }
+        else{
+        evaluateInverseCoefficients(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[0]], n.data()[elementMaterialTypes.data()[0]], thetaR.data()[elementMaterialTypes.data()[0]],
+                                          thetaSR.data()[elementMaterialTypes.data()[0]], &KWs.data()[elementMaterialTypes.data()[0] * nnz],
+                                          pOut.data()[i], mIn.data()[i],
+                                          dm, f, df, a, da);        
+        }
+      }
   }
 
   void calculateMassMatrix(arguments_dict &args)
@@ -2359,7 +2362,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         int eN_k                  = eN * nQuadraturePoints_element + k, //index to a scalar at a quadrature point
           eN_k_nSpace             = eN_k * nSpace,
             eN_nDOF_trial_element = eN * nDOF_trial_element; //index to a vector at a quadrature point
-
         //declare local storage
         double u = 0.0, grad_u[nSpace], m = 0.0, dm = 0.0, f[nSpace], df[nSpace], a[nnz], da[nnz], as[nnz], m_t = 0.0, dm_t = 0.0, dpdeResidual_u_u[nDOF_trial_element], Lstar_u[nDOF_test_element], dsubgridError_u_u[nDOF_trial_element], tau = 0.0, tau0 = 0.0, tau1 = 0.0, jac[nSpace * nSpace], jacDet, jacInv[nSpace * nSpace], u_grad_trial[nDOF_trial_element * nSpace], dV, u_test_dV[nDOF_test_element], u_grad_test_dV[nDOF_test_element * nSpace], x, y, z, xt, yt, zt,
           G[nSpace * nSpace], G_dd_G, tr_G;

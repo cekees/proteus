@@ -1,6 +1,7 @@
 #ifndef TADR_H
 #define TADR_H
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <valarray>
 #include "CompKernel.h"
@@ -82,6 +83,113 @@ namespace proteus
       ck()
     {}
 
+    //inline
+    // void logInteriorState(const char* stage,
+    //                       const int eN,
+    //                       const int k,
+    //                       const double x,
+    //                       const double y,
+    //                       const double z,
+    //                       const double& u,
+    //                       const double& m,
+    //                       const double f[nSpace],
+    //                       const double a[nnz]) const
+    // {
+    //   const double boundary_strip_width = 5.0e-2;
+    //   if (!(x >= 2.0 - boundary_strip_width))
+    //     return;
+    //   double f_norm = 0.0, a_max = 0.0;
+    //   for (int I=0; I<nSpace; I++)
+    //     f_norm += f[I]*f[I];
+    //   f_norm = std::sqrt(f_norm);
+    //   for (int ii=0; ii<nnz; ii++)
+    //     a_max = fmax(a_max, fabs(a[ii]));
+    //   if (fabs(u) > 1.0e-12 || fabs(m) > 1.0e-12)
+    //     {
+    //       std::cout << std::scientific
+    //                 << "[TADR] " << stage
+    //                 << " eN=" << eN
+    //                 << " k=" << k
+    //                 << " x=" << x
+    //                 << " y=" << y;
+    //       if (nSpace > 2)
+    //         std::cout << " z=" << z;
+    //       std::cout << " u=" << u
+    //                 << " m=" << m
+    //                 << " |f|=" << f_norm
+    //                 << " max|a|=" << a_max
+    //                 << std::defaultfloat
+    //                 << std::endl;
+    //     }
+    // }
+
+    // inline
+    // void logBoundaryState(const char* stage,
+    //                       const int ebNE,
+    //                       const int kb,
+    //                       const double x,
+    //                       const double y,
+    //                       const double z,
+    //                       const int isDOFBoundary,
+    //                       const double& u_ext,
+    //                       const double& bc_u_ext) const
+    // {
+    //   if (isDOFBoundary == 1 && fabs(x-2.0) < 1.0e-8)
+    //     {
+    //       std::cout << std::scientific
+    //                 << "[TADR] " << stage
+    //                 << " ebNE=" << ebNE
+    //                 << " kb=" << kb
+    //                 << " x=" << x
+    //                 << " y=" << y;
+    //       if (nSpace > 2)
+    //         std::cout << " z=" << z;
+    //       std::cout << " isDOFBoundary=1"
+    //                 << " u_ext=" << u_ext
+    //                 << " bc_u_ext=" << bc_u_ext
+    //                 << " jump=" << (u_ext-bc_u_ext)
+    //                 << std::defaultfloat
+    //                 << std::endl;
+    //     }
+    // }
+
+    // inline
+    // void logBoundaryFluxState(const char* stage,
+    //                           const int ebNE,
+    //                           const int kb,
+    //                           const double x,
+    //                           const double y,
+    //                           const double z,
+    //                           const int isDOFBoundary,
+    //                           const double& u_ext,
+    //                           const double& bc_u_ext,
+    //                           const double& flow,
+    //                           const double& flux_total,
+    //                           const double& flux_adv,
+    //                           const double& flux_diff) const
+    // {
+    //   if (isDOFBoundary == 1 && (fabs(u_ext-bc_u_ext) > 1.0e-8 || fabs(x-2.0) < 1.0e-8))
+    //     {
+    //       std::cout << std::scientific
+    //                 << "[TADR] " << stage
+    //                 << " ebNE=" << ebNE
+    //                 << " kb=" << kb
+    //                 << " x=" << x
+    //                 << " y=" << y;
+    //       if (nSpace > 2)
+    //         std::cout << " z=" << z;
+    //       std::cout << " u_ext=" << u_ext
+    //                 << " bc_u_ext=" << bc_u_ext
+    //                 << " jump=" << (u_ext-bc_u_ext)
+    //                 << " flow=" << flow
+    //                 << " flux_total=" << flux_total
+    //                 << " flux_adv=" << flux_adv
+    //                 << " flux_diff=" << flux_diff
+    //                 << std::defaultfloat
+    //                 << std::endl;
+    //     }
+    // }
+
     inline
     void calculateCFL(const double& elementDiameter,
                       const double df[nSpace],
@@ -103,13 +211,11 @@ void evaluateCoefficients(const int rowptr[nSpace],
                               const double alpha_L,
                               const double alpha_T,
                               const double Dm,
-                              const double theta,
-                              const DISPERSION dispersion_type,
-                              const double theta_s,
-                              const double theta_r,
-                              const double power_law_exponent,
-                              const double velocity_exponent,
+                              const double porosity,
+                              const double rho_f,
+                              const double rho_s,
                               const double& u,
+                              double& rho_out,
                               double& m,
                               double& dm,
                               double f[nSpace],
@@ -117,8 +223,12 @@ void evaluateCoefficients(const int rowptr[nSpace],
                               double a[nnz],
                               double da[nnz])
     {
-      m = theta*u;
-      dm= theta;
+      const double epsilon = (rho_s - rho_f)/rho_f;
+      rho_out = rho_f*(1.0 + epsilon*u);
+      const double drho_du = rho_f*epsilon;
+      const double rho_transport = rho_out;
+      m = porosity*rho_transport*u;
+      dm = porosity*(rho_transport + u*drho_du);
       double v_mag = 0.0;
       for (int I=0; I<nSpace; I++)
         v_mag += v[I]*v[I];
@@ -126,20 +236,6 @@ void evaluateCoefficients(const int rowptr[nSpace],
 
       double alpha_L_eff = alpha_L;
       double alpha_T_eff = alpha_T;
-      if (dispersion_type == DISPERSION::PowerLawSaturation)
-        {
-          const double denom = std::max(theta_s - theta_r, 1.0e-12);
-          const double Se = std::max((theta - theta_r)/denom, 1.0e-8);
-          alpha_L_eff = alpha_L*std::pow(Se, -power_law_exponent);
-          alpha_T_eff = alpha_T*alpha_L_eff;
-        }
-      else if (dispersion_type == DISPERSION::VelocityBased)
-        {
-          const double v_scale = std::pow(std::max(v_mag, 1.0e-12), velocity_exponent - 1.0);
-          alpha_L_eff = alpha_L*v_scale;
-          alpha_T_eff = alpha_T*v_scale;
-        }
-
       double v_unit[nSpace] = {0.0};
       if (v_mag > 1.0e-10)
         for (int I=0; I<nSpace; I++)
@@ -147,19 +243,21 @@ void evaluateCoefficients(const int rowptr[nSpace],
 
       for (int I=0; I < nSpace; I++)
         {
-          f[I] = v[I]*u;
-          df[I] = v[I];
+          f[I] = rho_transport*v[I]*u;
+          df[I] = (rho_transport + u*drho_du)*v[I];
           for (int ii = rowptr[I]; ii < rowptr[I + 1]; ii++)
             {
               const int J = colind[ii];
               const double deltaIJ = (I == J) ? 1.0 : 0.0;
-              a[ii] = Dm*deltaIJ +
-                      alpha_L_eff*v_unit[I]*v_unit[J]*v_mag +
-                      alpha_T_eff*v_mag*(deltaIJ - v_unit[I]*v_unit[J]);
-              da[ii] = 0.0;
+              const double dispersion_tensor =
+                Dm*deltaIJ +
+                alpha_L_eff*v_unit[I]*v_unit[J]*v_mag +
+                alpha_T_eff*v_mag*(deltaIJ - v_unit[I]*v_unit[J]);
+              a[ii] = porosity*rho_transport*dispersion_tensor;
+              da[ii] = porosity*drho_du*dispersion_tensor;
             }
 
-        } 
+        }
     }
 
 inline
@@ -305,34 +403,28 @@ inline
     void exteriorNumericalAdvectiveFlux(const int& isDOFBoundary_u,
                                         const int& isFluxBoundary_u,
                                         const double n[nSpace],
-                                        const double& bc_u,
                                         const double& bc_flux_u,
-                                        const double& u,
+                                        const double f[nSpace],
+                                        const double bc_f[nSpace],
                                         const double velocity[nSpace],
                                         double& flux)
     {
-    //   // Debug: Print input values
-    // std:: cout << "Exterior Numerical Advective Flux Function"<< std::endl;
-    // std::cout << "isDOFBoundary_u: " << isDOFBoundary_u << ", isFluxBoundary_u: " << isFluxBoundary_u << std::endl;
-    // std::cout << "bc_u: " << bc_u << ", bc_flux_u: " << bc_flux_u << ", u: " << u << std::endl;
-    // std::cout << "velocity: [" << velocity[0] << ", " << velocity[1] << ", " << velocity[2] << "]" << std::endl;
-    // std::cout << "Normal: [" << n[0] << ", " << n[1] << ", " << n[2] << "]\n";
-    // std ::cout <<"End Line"<< "\n";
-
+      // Use n·velocity (= n·df/du) to determine upwind direction.
+      // Since df/du = (rho + u*drho/du)*v and rho > 0, this has the same
+      // sign as n·v, so it is a valid upwind indicator.
+      // Use the actual flux vectors f and bc_f for the flux value so that
+      // the nonlinear flux n·(rho(u)*v*u) is evaluated correctly.
       double flow=0.0;
       for (int I=0; I < nSpace; I++)
         flow += n[I]*velocity[I];
 
       if (isDOFBoundary_u == 1)
         {
+          flux = 0.0;
           if (flow >= 0.0)
-            {
-              flux = u*flow;
-            }
+            for (int I=0; I < nSpace; I++) flux += n[I]*f[I];
           else
-            {
-              flux = bc_u*flow;
-            }
+            for (int I=0; I < nSpace; I++) flux += n[I]*bc_f[I];
         }
       else if (isFluxBoundary_u == 1)
         {
@@ -340,16 +432,10 @@ inline
         }
       else
         {
+          flux = 0.0;
           if (flow >= 0.0)
-            {
-              flux = u*flow;
-            }
-          else
-            {
-              // std::cout<<"warning: TADR open boundary with no external trace, setting to zero for inflow"<<std::endl;
-              flux = 0.0;
-            }
-
+            for (int I=0; I < nSpace; I++) flux += n[I]*f[I];
+          // else: open boundary with inflow, no external trace — flux = 0
         }
     }
 
@@ -388,7 +474,7 @@ inline
             }
         }
     }
-    inline
+inline
 
   void exteriorNumericalDiffusiveFluxDerivative(const int& isDOFBoundary,
                                                 const int& isDiffusiveFluxBoundary,
@@ -399,19 +485,21 @@ inline
                                                 const double da[nnz],
                                                 const double grad_psi[nSpace],
                                                 const double grad_v[nSpace],
-                                                const double v[nSpace],
+                                                const double& v,
                                                 const double penalty,
                                                 double& fluxJacobian)
 {
     if (isDiffusiveFluxBoundary == 0 && isDOFBoundary == 1)
     {
         fluxJacobian = 0.0;
+        double max_a = 0.0;
         for (int I = 0; I < nSpace; I++) {
-            fluxJacobian += penalty * v[I];
             for(int m=rowptr[I]; m<rowptr[I+1]; m++)
         {
-            fluxJacobian -= (a[m] * grad_v[colind[m]] + da[m] * v[I] * grad_psi[colind[m]]) * n[I];
+            max_a = fmax(max_a, a[m]);
+            fluxJacobian -= (a[m] * grad_v[colind[m]] + da[m] * v * grad_psi[colind[m]]) * n[I];
         }
+            fluxJacobian += max_a * penalty * v;
         }
     }
     else
@@ -419,6 +507,89 @@ inline
         fluxJacobian = 0.0;
     }
 }
+
+    inline
+    void exteriorNumericalFlux(int* rowptr,
+                               int* colind,
+                               const int& isDOFBoundary_u,
+                               const int& isFluxBoundary_u,
+                               const int& isDiffusiveFluxBoundary_u,
+                               const double n[nSpace],
+                               double* bc_a,
+                               const double& bc_u,
+                               const double& bc_flux_u,
+                               const double& bc_diffusive_flux_u,
+                               double* a,
+                               const double grad_u[nSpace],
+                               const double& u,
+                               const double f[nSpace],
+                               const double bc_f[nSpace],
+                               const double velocity[nSpace],
+                               const double& penalty,
+                               double& flux,
+                               double& flux_adv,
+                               double& flux_diff)
+    {
+      exteriorNumericalAdvectiveFlux(isDOFBoundary_u,
+                                     isFluxBoundary_u,
+                                     n,
+                                     bc_flux_u,
+                                     f,
+                                     bc_f,
+                                     velocity,
+                                     flux_adv);
+      exteriorNumericalDiffusiveFlux(rowptr,
+                                     colind,
+                                     isDOFBoundary_u,
+                                     isDiffusiveFluxBoundary_u,
+                                     n,
+                                     bc_a,
+                                     bc_u,
+                                     bc_diffusive_flux_u,
+                                     a,
+                                     grad_u,
+                                     u,
+                                     penalty,
+                                     flux_diff);
+      flux = flux_adv + flux_diff;
+    }
+
+    inline
+    void exteriorNumericalFluxJacobian(const int rowptr[nSpace],
+                                       const int colind[nnz],
+                                       const int& isDOFBoundary_u,
+                                       const int& isFluxBoundary_u,
+                                       const int& isDiffusiveFluxBoundary_u,
+                                       const double n[nSpace],
+                                       const double a[nnz],
+                                       const double da[nnz],
+                                       const double grad_u[nSpace],
+                                       const double velocity[nSpace],
+                                       const double grad_v[nSpace],
+                                       const double& v,
+                                       const double& penalty,
+                                       double& fluxJacobian)
+    {
+      double advJacobian = 0.0, diffJacobian = 0.0;
+      exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u,
+                                               isFluxBoundary_u,
+                                               n,
+                                               velocity,
+                                               advJacobian);
+      exteriorNumericalDiffusiveFluxDerivative(isDOFBoundary_u,
+                                               isDiffusiveFluxBoundary_u,
+                                               rowptr,
+                                               colind,
+                                               n,
+                                               a,
+                                               da,
+                                               grad_u,
+                                               grad_v,
+                                               v,
+                                               penalty,
+                                               diffJacobian);
+      fluxJacobian = advJacobian*v + diffJacobian;
+    }
 
  void calculateResidual(arguments_dict& args)
     {
@@ -460,26 +631,22 @@ inline
       xt::pyarray<double>& velocity_old = args.array<double>("velocity_old");
       xt::pyarray<double>& q_m = args.array<double>("q_m");
       xt::pyarray<double>& q_u = args.array<double>("q_u");
-      xt::pyarray<double>& q_theta = args.array<double>("q_theta");
-      xt::pyarray<double>& q_theta_old = args.array<double>("q_theta_old");
+      const double porosity = args.scalar<double>("porosity");
+      xt::pyarray<double>& q_rho = args.array<double>("q_rho");
+      xt::pyarray<double>& q_rho_old = args.array<double>("q_rho_old");
 
       xt::pyarray<double>& q_r = args.array<double>("q_r");
       const double alpha_L = args.scalar<double>("alpha_L");
       const double alpha_T = args.scalar<double>("alpha_T");
       const double Dm = args.scalar<double>("Dm");
-      int dispersion_type_int = 0;
-      double theta_s = 1.0;
-      double theta_r = 0.0;
-      double power_law_exponent = 0.0;
-      double velocity_exponent = 1.0;
-      try { dispersion_type_int = args.scalar<int>("dispersion_type"); } catch(...) {}
-      try { theta_s = args.scalar<double>("theta_s"); } catch(...) {}
-      try { theta_r = args.scalar<double>("theta_r"); } catch(...) {}
-      try { power_law_exponent = args.scalar<double>("power_law_exponent"); } catch(...) {}
-      try { velocity_exponent = args.scalar<double>("velocity_exponent"); } catch(...) {}
-      DISPERSION DISPERSION_TYPE = static_cast<DISPERSION>(dispersion_type_int);
-      
-
+      // const int dispersion_type_int = args.scalar<int>("dispersion_type");
+      // const double theta_s = args.scalar<double>("theta_s");
+      // const double theta_r = args.scalar<double>("theta_r");
+      // const double power_law_exponent = args.scalar<double>("power_law_exponent");
+      // const double velocity_exponent = args.scalar<double>("velocity_exponent");
+      const double rho_f = args.scalar<double>("rho_f");
+      const double rho_s = args.scalar<double>("rho_s");
+      // DISPERSION DISPERSION_TYPE = static_cast<DISPERSION>(dispersion_type_int);
       xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
       xt::pyarray<double>& q_dV = args.array<double>("q_dV");
       xt::pyarray<double>& q_dV_last = args.array<double>("q_dV_last");
@@ -502,7 +669,8 @@ inline
       xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
       xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
       xt::pyarray<double>& ebqe_bc_diffusiveFlux_u_ext = args.array<double>("ebqe_bc_diffusiveFlux_u_ext");
-      xt::pyarray<double>& ebqe_theta = args.array<double>("ebqe_theta");
+      const double ebqe_porosity = args.scalar<double>("ebqe_porosity");
+      xt::pyarray<double>& ebqe_rho = args.array<double>("ebqe_rho");
       
       double epsFact = args.scalar<double>("epsFact");
       xt::pyarray<double>& ebqe_u = args.array<double>("ebqe_u");
@@ -624,6 +792,7 @@ inline
                 entVisc_minus_artComp,
                 u=0.0,un=0.0,
                 grad_u[nSpace],grad_u_old[nSpace],grad_uTilde[nSpace],
+                rho_out=0.0,rho_out_old=0.0,
                 m=0.0,dm=0.0,mn=0.0,dmn=0.0,
                 H=0.0,Hn=0.0,HTilde=0.0,
                 f[nSpace],fn[nSpace],df[nSpace],dfn[nSpace],
@@ -712,19 +881,18 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
-                                   q_theta.data()[eN_k],
-                                   DISPERSION_TYPE,
-                                   theta_s,
-                                   theta_r,
-                                   power_law_exponent,
-                                   velocity_exponent,
+                                   porosity,
+                                   rho_f,
+                                   rho_s,
                                    u,
+                                   rho_out,
                                    m,
                                    dm,
                                    f,
                                    df,
                                    a,
                                    da);
+              q_rho.data()[eN_k] = rho_out;
 
             //D.data()[eN * nQuadraturePoints_element * nnz + k * nnz] calculates 
             //the correct starting index for D for the current element eN and 
@@ -736,13 +904,11 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
-                                   q_theta_old.data()[eN_k],
-                                   DISPERSION_TYPE,
-                                   theta_s,
-                                   theta_r,
-                                   power_law_exponent,
-                                   velocity_exponent,
+                                   porosity,
+                                   rho_f,
+                                   rho_s,
                                    un,
+                                   rho_out_old,
                                    mn,
                                    dmn,
                                    fn,
@@ -980,6 +1146,8 @@ inline
               //
               q_u.data()[eN_k] = u;
               q_m.data()[eN_k] = m;
+              //logInteriorState("storeQuadrature", eN, k, x, y, z, u, m, f, a);
+        
               }//k
           //
           //load element into global residual and save element residual
@@ -1067,6 +1235,7 @@ inline
                 bc_m_ext=0.0,
                 bc_dm_ext=0.0,
 
+                flux_adv_ext=0.0,
                 flux_diff_ext=0.0,
                 difffluxjacobian_ext=0.0,
                 bc_f_ext[nSpace],
@@ -1164,30 +1333,39 @@ inline
               //
               bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+
                           (1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
+              // logBoundaryState("boundaryResidual",
+              //                  ebNE,
+              //                  kb,
+              //                  x_ext,
+              //                  y_ext,
+              //                  z_ext,
+              //                  isDOFBoundary_u.data()[ebNE_kb],
+              //                  u_ext,
+              //                  bc_u_ext);
 
                       //
               //
               //calculate the pde coefficients using the solution and the boundary values for the solution
               //
+              double rho_out_ext=0.0,rho_out_bc=0.0;
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &ebqe_velocity_ext.data()[ebNE_kb_nSpace],
                                    alpha_L,
                                    alpha_T,
                                    Dm,
-                                   ebqe_theta.data()[ebNE_kb],
-                                   DISPERSION_TYPE,
-                                   theta_s,
-                                   theta_r,
-                                   power_law_exponent,
-                                   velocity_exponent,
+                                   ebqe_porosity,
+                                   rho_f,
+                                   rho_s,
                                    u_ext,
+                                   rho_out_ext,
                                    m_ext,
                                    dm_ext,
                                    f_ext,
                                    df_ext,
                                    a_ext,
                                    da_ext);
+              ebqe_rho.data()[ebNE_kb] = rho_out_ext;
               
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
@@ -1195,13 +1373,11 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
-                                   ebqe_theta.data()[ebNE_kb],
-                                   DISPERSION_TYPE,
-                                   theta_s,
-                                   theta_r,
-                                   power_law_exponent,
-                                   velocity_exponent,
+                                   ebqe_porosity,
+                                   rho_f,
+                                   rho_s,
                                    bc_u_ext,
+                                   rho_out_bc,
                                    bc_m_ext,
                                    bc_dm_ext,
                                    bc_f_ext,
@@ -1225,39 +1401,46 @@ inline
               //
               //calculate the numerical fluxes
               //
-              exteriorNumericalDiffusiveFlux(a_rowptr.data(),
-                                             a_colind.data(),
-                                             isDOFBoundary_u.data()[ebNE_kb],
-                                             isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                             normal,
-                                             a_ext,
-                                             bc_u_ext,
-                                             ebqe_bc_diffusiveFlux_u_ext.data()[ebNE_kb],
-                                             a_ext,
-                                             grad_u_ext,
-                                             u_ext,
-                                             ebqe_penalty_ext.data()[ebNE_kb],
-                                             flux_diff_ext);
+              exteriorNumericalFlux(a_rowptr.data(),
+                                    a_colind.data(),
+                                    isDOFBoundary_u.data()[ebNE_kb],
+                                    isFluxBoundary_u.data()[ebNE_kb],
+                                    isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                    normal,
+                                    a_ext,
+                                    bc_u_ext,
+                                    ebqe_bc_flux_u_ext.data()[ebNE_kb],
+                                    ebqe_bc_diffusiveFlux_u_ext.data()[ebNE_kb],
+                                    a_ext,
+                                    grad_u_ext,
+                                    u_ext,
+                                    f_ext,
+                                    bc_f_ext,
+                                    df_ext,
+                                    ebqe_penalty_ext.data()[ebNE_kb],
+                                    flux_ext,
+                                    flux_adv_ext,
+                                    flux_diff_ext);
+              double boundary_flow = 0.0;
+              for (int I=0; I<nSpace; I++)
+                boundary_flow += normal[I]*df_ext[I];
+              // logBoundaryFluxState("boundaryFluxResidual",
+              //                      ebNE,
+              //                      kb,
+              //                      x_ext,
+              //                      y_ext,
+              //                      z_ext,
+              //                      isDOFBoundary_u.data()[ebNE_kb],
+              //                      u_ext,
+              //                      bc_u_ext,
+              //                      boundary_flow,
+              //                      flux_ext,
+              //                      flux_adv_ext,
+              //                      flux_diff_ext);
 
-              exteriorNumericalAdvectiveFlux(isDOFBoundary_u.data()[ebNE_kb],
-                                             isFluxBoundary_u.data()[ebNE_kb],
-                                             normal,
-                                             bc_u_ext,
-                                             ebqe_bc_flux_u_ext.data()[ebNE_kb],
-                                             u_ext,
-                                             df_ext,
-                                             flux_ext);
-            
-                  
-    
-              
                //std::cout<<"Advection EXT"<<flux_ext<<std::endl;
                //std::cout<<"Diffusion  Ext"<<flux_diff_ext<<std::endl;
-                    
-              flux_ext += flux_diff_ext;  
-              //std::cout<<"Combine EXT"<<flux_ext<<std::endl;
               ebqe_flux.data()[ebNE_kb] = flux_ext;
-              //save for other models? cek need to be consistent with numerical flux
               if(flux_ext >= 0.0)
                 ebqe_u.data()[ebNE_kb] = u_ext;
               else
@@ -1297,46 +1480,58 @@ inline
                   else if (STABILIZATION_TYPE == STABILIZATION::EntropyViscosity or 
                       STABILIZATION_TYPE == STABILIZATION::SmoothnessIndicator or 
                       STABILIZATION_TYPE == STABILIZATION::Kuzmin)
-                    {                 
+                    {
+                      const double boundaryAdvectiveContribution =
+                        ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i]);
+                      const double boundaryDiffusiveContribution =
+                        ck.ExteriorElementBoundaryDiffusionAdjoint(isDOFBoundary_u.data()[ebNE_kb],
+                                                                   isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                                                   eb_adjoint_sigma,
+                                                                   u_ext,
+                                                                   bc_u_ext,
+                                                                   normal,
+                                                                   a_rowptr.data(),
+                                                                   a_colind.data(),
+                                                                   a_ext,
+                                                                   &u_grad_test_dS[i*nSpace]);
+                      const double boundaryResidualContribution =
+                        boundaryAdvectiveContribution + boundaryDiffusiveContribution;
                       exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
                                                            isFluxBoundary_u.data()[ebNE_kb],
                                                            normal,
                                                            df_ext,
                                                            dflux_u_u_ext);  
-                      exteriorNumericalDiffusiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
-                                                           isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                                           a_rowptr.data(),
-                                                           a_colind.data(),
-                                                           normal,
-                                                           a_ext,
-                                                           da_ext,
-                                                           grad_u_ext,
-                                                           &u_grad_trial_trace[nSpace],
-                                                           &u_trial_trace_ref.data()[ebN_local_kb*nSpace],
-                                                           ebqe_penalty_ext.data()[ebNE_kb],
-                                                           difffluxjacobian_ext);                 
                       
                       if (dflux_u_u_ext> 0.0)
-                      { 
-                        int ebN_local_kb_i = ebN_local_kb*nDOF_test_element+i;
+                      {
+                        double boundaryTransportContribution = 0.0;
                         for (int j=0;j<nDOF_trial_element;j++)
-                          fluxTransport[j][i] += (dflux_u_u_ext + difffluxjacobian_ext)*
-                            u_trial_trace_ref.data()[ebN_local_kb_i]*
-                            u_test_dS[j];
-                           
+                        {
+                          int ebN_local_kb_j=ebN_local_kb*nDOF_trial_element+j;
+                          exteriorNumericalFluxJacobian(a_rowptr.data(),
+                                                        a_colind.data(),
+                                                        isDOFBoundary_u.data()[ebNE_kb],
+                                                        isFluxBoundary_u.data()[ebNE_kb],
+                                                        isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                                        normal,
+                                                        a_ext,
+                                                        da_ext,
+                                                        grad_u_ext,
+                                                        df_ext,
+                                                        &u_grad_trial_trace[j*nSpace],
+                                                        u_trial_trace_ref.data()[ebN_local_kb_j],
+                                                        ebqe_penalty_ext.data()[ebNE_kb],
+                                                        difffluxjacobian_ext);
+                          const double localFluxTransportContribution =
+                            difffluxjacobian_ext*u_test_dS[i];
+                          fluxTransport[i][j] += localFluxTransportContribution;
+                          boundaryTransportContribution +=
+                            localFluxTransportContribution*u_dof_old.data()[u_l2g.data()[eN_nDOF_trial_element+j]];
+                        }
+                        elementResidual_u[i] += boundaryResidualContribution - boundaryTransportContribution;
                       }
                       else
-                        elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i])+
-                                                ck.ExteriorElementBoundaryDiffusionAdjoint(isDOFBoundary_u.data()[ebNE_kb],
-                                                                                            isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                                                                            eb_adjoint_sigma,
-                                                                                            u_ext,
-                                                                                            bc_u_ext,
-                                                                                            normal,
-                                                                                            a_rowptr.data(),
-                                                                                            a_colind.data(),
-                                                                                            a_ext,
-                                                                                            &u_grad_test_dS[i*nSpace]);                                                                                        
+                        elementResidual_u[i] += boundaryResidualContribution;
                     }                   
                 }//i
               // local min/max at boundary
@@ -1558,7 +1753,8 @@ inline
       xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
       xt::pyarray<double>& u_dof = args.array<double>("u_dof");
       xt::pyarray<double>& velocity = args.array<double>("velocity");
-      xt::pyarray<double>& q_theta = args.array<double>("q_theta");
+      const double porosity = args.scalar<double>("porosity");
+      xt::pyarray<double>& q_rho = args.array<double>("q_rho");
       xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
       xt::pyarray<double>& cfl = args.array<double>("cfl");
       xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
@@ -1576,7 +1772,8 @@ inline
       xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
       xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
       xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
-      xt::pyarray<double>& ebqe_theta = args.array<double>("ebqe_theta");
+      const double ebqe_porosity = args.scalar<double>("ebqe_porosity");
+      xt::pyarray<double>& ebqe_rho = args.array<double>("ebqe_rho");
       xt::pyarray<int>& csrColumnOffsets_eb_u_u = args.array<int>("csrColumnOffsets_eb_u_u");
       STABILIZATION STABILIZATION_TYPE = static_cast<STABILIZATION>(args.scalar<int>("STABILIZATION_TYPE"));
 //      ENTROPY ENTROPY_TYPE = static_cast<ENTROPY>(args.scalar<int>("ENTROPY_TYPE"));    
@@ -1585,17 +1782,15 @@ inline
       const double alpha_L = args.scalar<double>("alpha_L");
       const double alpha_T = args.scalar<double>("alpha_T");
       const double Dm = args.scalar<double>("Dm");
-      int dispersion_type_int = 0;
-      double theta_s = 1.0;
-      double theta_r = 0.0;
-      double power_law_exponent = 0.0;
-      double velocity_exponent = 1.0;
-      try { dispersion_type_int = args.scalar<int>("dispersion_type"); } catch(...) {}
-      try { theta_s = args.scalar<double>("theta_s"); } catch(...) {}
-      try { theta_r = args.scalar<double>("theta_r"); } catch(...) {}
-      try { power_law_exponent = args.scalar<double>("power_law_exponent"); } catch(...) {}
-      try { velocity_exponent = args.scalar<double>("velocity_exponent"); } catch(...) {}
-      DISPERSION DISPERSION_TYPE = static_cast<DISPERSION>(dispersion_type_int);
+      // const int dispersion_type_int = args.scalar<int>("dispersion_type");
+      // const double theta_s = args.scalar<double>("theta_s");
+      // const double theta_r = args.scalar<double>("theta_r");
+      // const double power_law_exponent = args.scalar<double>("power_law_exponent");
+      // const double velocity_exponent = args.scalar<double>("velocity_exponent");
+      const double rho_f = args.scalar<double>("rho_f");
+      const double rho_s = args.scalar<double>("rho_s");
+      
+      // DISPERSION DISPERSION_TYPE = static_cast<DISPERSION>(dispersion_type_int);
 
 
       double Ct_sge = 4.0;
@@ -1691,19 +1886,18 @@ inline
               //calculate pde coefficients and derivatives at quadrature points
               //
               
+              double rho_out=0.0;
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &velocity.data()[eN_k_nSpace],
                                    alpha_L,
                                    alpha_T,
                                    Dm,
-                                   q_theta.data()[eN_k],
-                                   DISPERSION_TYPE,
-                                   theta_s,
-                                   theta_r,
-                                   power_law_exponent,
-                                   velocity_exponent,
+                                   porosity,
+                                   rho_f,
+                                   rho_s,
                                    u,
+                                   rho_out,
                                    m,
                                    dm,
                                    f,
@@ -1953,24 +2147,32 @@ inline
                   //load the boundary values
                   //
                   bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+(1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
+                  // logBoundaryState("boundaryJacobian",
+                  //                  ebNE,
+                  //                  kb,
+                  //                  x_ext,
+                  //                  y_ext,
+                  //                  z_ext,
+                  //                  isDOFBoundary_u.data()[ebNE_kb],
+                  //                  u_ext,
+                  //                  bc_u_ext);
                   //
                   //
                   //calculate the internal and external trace of the pde coefficients
                   //
 
+                  double rho_out_ext=0.0,rho_out_bc=0.0;
                   evaluateCoefficients(a_rowptr.data(),
                                        a_colind.data(),
                                        &ebqe_velocity_ext.data()[ebNE_kb_nSpace],
                                        alpha_L,
                                        alpha_T,
                                        Dm,
-                                       ebqe_theta.data()[ebNE_kb],
-                                       DISPERSION_TYPE,
-                                       theta_s,
-                                       theta_r,
-                                       power_law_exponent,
-                                       velocity_exponent,
+                                       ebqe_porosity,
+                                       rho_f,
+                                       rho_s,
                                        u_ext,
+                                       rho_out_ext,
                                        m_ext,
                                        dm_ext,
                                        f_ext,
@@ -1985,13 +2187,11 @@ inline
                                        alpha_L,
                                        alpha_T,
                                        Dm,
-                                       ebqe_theta.data()[ebNE_kb],
-                                       DISPERSION_TYPE,
-                                       theta_s,
-                                       theta_r,
-                                       power_law_exponent,
-                                       velocity_exponent,
+                                       ebqe_porosity,
+                                       rho_f,
+                                       rho_s,
                                        bc_u_ext,
+                                       rho_out_bc,
                                        bc_m_ext,
                                        bc_dm_ext,
                                        bc_f_ext,
@@ -2015,25 +2215,6 @@ inline
                   //
                   //calculate the numerical fluxes
                   //
-                  exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
-                                                           isFluxBoundary_u.data()[ebNE_kb],
-                                                           normal,
-                                                           df_ext,
-                                                           dflux_u_u_ext);
-                  exteriorNumericalDiffusiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
-                                                           isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                                           a_rowptr.data(),
-                                                           a_colind.data(),
-                                                           normal,
-                                                           a_ext,
-                                                           da_ext,
-                                                           grad_u_ext,
-                                                           &u_grad_trial_trace[nSpace],
-                                                           &u_trial_trace_ref.data()[ebN_local_kb*nSpace],
-                                                           ebqe_penalty_ext.data()[ebNE_kb],
-                                                           difffluxjacobian_ext);
-                  
-                  
                   //
                   //calculate the flux jacobian
                   //
@@ -2042,16 +2223,21 @@ inline
                       {
                         int ebN_local_kb_j=ebN_local_kb*nDOF_trial_element+j;
   
-                        fluxJacobian_u_u[i][j]+=ck.ExteriorNumericalAdvectiveFluxJacobian(dflux_u_u_ext,u_trial_trace_ref.data()[ebN_local_kb_j])*u_test_dS[i]+
-                                                ExteriorNumericalDiffusiveFluxJacobian(a_rowptr.data(),
-                                                                                       a_colind.data(),
-                                                                                       isDOFBoundary_u.data()[ebNE_kb],
-                                                                                       isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                                                                       normal,
-                                                                                       a_ext,
-                                                                                       u_trial_trace_ref.data()[ebN_local_kb_j],
-                                                                                       &u_grad_trial_trace[j*nSpace],
-                                                                                       ebqe_penalty_ext.data()[ebNE_kb])*u_test_dS[i];
+                        exteriorNumericalFluxJacobian(a_rowptr.data(),
+                                                      a_colind.data(),
+                                                      isDOFBoundary_u.data()[ebNE_kb],
+                                                      isFluxBoundary_u.data()[ebNE_kb],
+                                                      isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                                      normal,
+                                                      a_ext,
+                                                      da_ext,
+                                                      grad_u_ext,
+                                                      df_ext,
+                                                      &u_grad_trial_trace[j*nSpace],
+                                                      u_trial_trace_ref.data()[ebN_local_kb_j],
+                                                      ebqe_penalty_ext.data()[ebNE_kb],
+                                                      difffluxjacobian_ext);
+                        fluxJacobian_u_u[i][j] += difffluxjacobian_ext*u_test_dS[i];
                       }//j
 
               //

@@ -303,11 +303,14 @@ class Coefficients(TC_base):
                  alpha_L=0.0,
                  alpha_T=0.0,
                  Dm=None,
+                 porosity=1.0,
                  dispersion_type=0,
                  theta_s=1.0,
                  theta_r=0.0,
                  power_law_exponent=0.0,
                  velocity_exponent=1.0,
+                 rho_f=1.0,
+                 rho_s=1.0,
                  specified_velocity=True):
         self.variableNames = ['u']
         self.LS_modelIndex = LS_model
@@ -357,6 +360,7 @@ class Coefficients(TC_base):
         self.alpha_L = alpha_L
         self.alpha_T = alpha_T
         self.Dm = physicalDiffusion if Dm is None else Dm
+        self.porosity = porosity
         dispersion_types = {"Constant":0,
                             "PowerLawSaturation":1,
                             "VelocityBased":2}
@@ -373,6 +377,8 @@ class Coefficients(TC_base):
         self.theta_r = theta_r
         self.power_law_exponent = power_law_exponent
         self.velocity_exponent = velocity_exponent
+        self.rho_f = rho_f
+        self.rho_s = rho_s
         self.specified_velocity = specified_velocity
         self.sparseDiffusionTensors = sdInfo
         if initialize:
@@ -413,10 +419,13 @@ class Coefficients(TC_base):
         self.alpha_L = alpha_L
         self.alpha_T = alpha_T
         self.Dm = physicalDiffusion if Dm is None else Dm
+        self.porosity = porosity
         self.theta_s = theta_s
         self.theta_r = theta_r
         self.power_law_exponent = power_law_exponent
         self.velocity_exponent = velocity_exponent
+        self.rho_f = rho_f
+        self.rho_s = rho_s
         self.specified_velocity = specified_velocity
         if initialize:
             self.initialize()
@@ -486,27 +495,17 @@ class Coefficients(TC_base):
                 self.q_v = self.vModel.q[('velocity_couple', 0)]
                 self.ebqe_v = self.vModel.ebqe[('velocity_couple', 0)]
                 self.ebq_v = None
-            if (not self.specified_velocity and ('theta', 0) in self.vModel.q):
-                self.q_theta = self.vModel.q[('theta', 0)]
-            elif ('m', 0) in self.vModel.q:
-                self.q_theta = self.vModel.q[('m', 0)]
-            else:
-                self.q_theta = np.ones(self.model.q[('u', 0)].shape, 'd')
-            if (not self.specified_velocity and ('theta', 0) in self.vModel.ebqe):
-                self.ebqe_theta = self.vModel.ebqe[('theta', 0)]
-            elif ('m', 0) in self.vModel.ebqe:
-                self.ebqe_theta = self.vModel.ebqe[('m', 0)]
-            else:
-                self.ebqe_theta = np.ones(self.model.ebqe[('u', 0)].shape, 'd')
+            self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_s, 'd')
+            self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_s, 'd')
             self.q_v_old = self.q_v.copy()
-            self.q_theta_old = self.q_theta.copy()
+            self.q_rho_old = self.q_rho.copy()
         else:
             self.q_v = np.ones(self.model.q[('u',0)].shape+(self.model.nSpace_global,),'d')
             self.ebqe_v = np.ones(self.model.ebqe[('u',0)].shape+(self.model.nSpace_global,),'d')
-            self.q_theta = np.ones(self.model.q[('u', 0)].shape, 'd')
-            self.ebqe_theta = np.ones(self.model.ebqe[('u', 0)].shape, 'd')
+            self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_s, 'd')
+            self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_s, 'd')
             self.q_v_old = self.q_v.copy()
-            self.q_theta_old = self.q_theta.copy()
+            self.q_rho_old = self.q_rho.copy()
         # VRANS
         if self.V_model is not None:
             self.flowCoefficients = modelList[self.V_model].coefficients
@@ -518,7 +517,7 @@ class Coefficients(TC_base):
         # SAVE OLD SOLUTION #
         self.model.u_dof_old[:] = self.model.u[0].dof
         self.q_v_old[:] = self.q_v
-        self.q_theta_old[:] = self.q_theta
+        self.q_rho_old[:] = self.q_rho
 
         # Restart flags for stages of taylor galerkin
         self.model.stage = 1
@@ -532,14 +531,6 @@ class Coefficients(TC_base):
             # Refresh coupled velocity every step from Richards.
             self.q_v[:] = self.vModel.q[('velocity_couple', 0)]
             self.ebqe_v[:] = self.vModel.ebqe[('velocity_couple', 0)]
-            if ('theta', 0) in self.vModel.q:
-                self.q_theta[:] = self.vModel.q[('theta', 0)]
-            elif ('m', 0) in self.vModel.q:
-                self.q_theta[:] = self.vModel.q[('m', 0)]
-            if ('theta', 0) in self.vModel.ebqe:
-                self.ebqe_theta[:] = self.vModel.ebqe[('theta', 0)]
-            elif ('m', 0) in self.vModel.ebqe:
-                self.ebqe_theta[:] = self.vModel.ebqe[('m', 0)]
 
         if self.checkMass:
             self.m_pre = Norms.scalarDomainIntegral(self.model.q['dV_last'],
@@ -1404,8 +1395,9 @@ class LevelModel(OneLevelTransport):
         argsDict["velocity_old"] = self.coefficients.q_v_old
         argsDict["q_m"] = self.timeIntegration.m_tmp[0]
         argsDict["q_u"] = self.q[('u', 0)]
-        argsDict["q_theta"] = self.coefficients.q_theta
-        argsDict["q_theta_old"] = self.coefficients.q_theta_old
+        argsDict["porosity"] = self.coefficients.porosity
+        argsDict["q_rho"] = self.coefficients.q_rho
+        argsDict["q_rho_old"] = self.coefficients.q_rho_old
         ###########################################
         argsDict["q_a"] = self.q[('a',0,0)]
         argsDict["q_r"] = self.q[('r',0)]
@@ -1439,7 +1431,8 @@ class LevelModel(OneLevelTransport):
         argsDict["ebqe_bc_flux_u_ext"] = self.ebqe[('advectiveFlux_bc', 0)]
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag', 0, 0)]
         argsDict["ebqe_bc_diffusiveFlux_u_ext"] = self.ebqe[('diffusiveFlux_bc', 0, 0)]
-        argsDict["ebqe_theta"] = self.coefficients.ebqe_theta
+        argsDict["ebqe_porosity"] = self.coefficients.porosity
+        argsDict["ebqe_rho"] = self.coefficients.ebqe_rho
         
 
 
@@ -1478,9 +1471,10 @@ class LevelModel(OneLevelTransport):
         argsDict["dispersion_type"] = self.coefficients.dispersion_type
         argsDict["power_law_exponent"] = self.coefficients.power_law_exponent
         argsDict["velocity_exponent"] = self.coefficients.velocity_exponent
-        if self.coefficients.dispersion_type == 1:
-            argsDict["theta_s"] = self.coefficients.theta_s
-            argsDict["theta_r"] = self.coefficients.theta_r
+        argsDict["rho_f"] = self.coefficients.rho_f
+        argsDict["rho_s"] = self.coefficients.rho_s
+        argsDict["theta_s"] = self.coefficients.theta_s
+        argsDict["theta_r"] = self.coefficients.theta_r
         #argsDict["D"] = self.coefficients.DTypes
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag',0,0)]
         argsDict["isAdvectiveFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag',0)]
@@ -1584,7 +1578,8 @@ class LevelModel(OneLevelTransport):
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["u_dof"] = self.u[0].dof
         argsDict["velocity"] = self.coefficients.q_v
-        argsDict["q_theta"] = self.coefficients.q_theta
+        argsDict["porosity"] = self.coefficients.porosity
+        argsDict["q_rho"] = self.coefficients.q_rho
         argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
         argsDict["cfl"] = self.q[('cfl', 0)]
         argsDict["q_numDiff_u_last"] = self.shockCapturing.numDiff_last[0]
@@ -1602,7 +1597,8 @@ class LevelModel(OneLevelTransport):
         argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u', 0)]
         argsDict["isFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag', 0)]
         argsDict["ebqe_bc_flux_u_ext"] = self.ebqe[('advectiveFlux_bc', 0)]
-        argsDict["ebqe_theta"] = self.coefficients.ebqe_theta
+        argsDict["ebqe_porosity"] = self.coefficients.porosity
+        argsDict["ebqe_rho"] = self.coefficients.ebqe_rho
 
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag', 0, 0)]
         argsDict["ebqe_bc_diffusiveFlux_u_ext"] = self.ebqe[('diffusiveFlux_bc', 0, 0)]
@@ -1617,9 +1613,10 @@ class LevelModel(OneLevelTransport):
         argsDict["dispersion_type"] = self.coefficients.dispersion_type
         argsDict["power_law_exponent"] = self.coefficients.power_law_exponent
         argsDict["velocity_exponent"] = self.coefficients.velocity_exponent
-        if self.coefficients.dispersion_type == 1:
-            argsDict["theta_s"] = self.coefficients.theta_s
-            argsDict["theta_r"] = self.coefficients.theta_r
+        argsDict["rho_f"] = self.coefficients.rho_f
+        argsDict["rho_s"] = self.coefficients.rho_s
+        argsDict["theta_s"] = self.coefficients.theta_s
+        argsDict["theta_r"] = self.coefficients.theta_r
         argsDict["ebq_a"] = self.ebqe[('a',0,0)]
         #argsDict["D"] = self.coefficients.DTypes
 

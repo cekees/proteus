@@ -1528,6 +1528,16 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         if self.delta_x_ij is None:
             self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
         self.calculateResidual(argsDict)
+        if getattr(self, "_theta_log_count", 0) < 5:
+            q_theta = self.q[('theta',0)]
+            ebqe_theta = self.ebqe[('theta',0)]
+            logEvent("[Richards q_theta] t={:.6e} q(min,max,mean)=({:.6e},{:.6e},{:.6e}) ebqe(min,max,mean)=({:.6e},{:.6e},{:.6e}) q_zero_count={} ebqe_zero_count={}".format(
+                     self.timeIntegration.t,
+                     float(np.min(q_theta)), float(np.max(q_theta)), float(np.mean(q_theta)),
+                     float(np.min(ebqe_theta)), float(np.max(ebqe_theta)), float(np.mean(ebqe_theta)),
+                     int(np.count_nonzero(q_theta == 0.0)), int(np.count_nonzero(ebqe_theta == 0.0))),
+                     level=2)
+            self._theta_log_count = getattr(self, "_theta_log_count", 0) + 1
         
 
 
