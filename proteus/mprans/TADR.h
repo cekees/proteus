@@ -214,7 +214,7 @@ void evaluateCoefficients(const int rowptr[nSpace],
                               const double alpha_L,
                               const double alpha_T,
                               const double Dm,
-                              const double porosity,
+                              const double thetaW,
                               const double rho_f,
                               const double rho_s,
                               const double& u,
@@ -230,8 +230,8 @@ void evaluateCoefficients(const int rowptr[nSpace],
       rho_out = rho_f*(1.0 + epsilon*u);
       const double drho_du = rho_f*epsilon;
       const double rho_transport = rho_out;
-      m = porosity*rho_transport*u;
-      dm = porosity*(rho_transport + u*drho_du);
+      m = thetaW*rho_transport*u;
+      dm = thetaW*(rho_transport + u*drho_du);
       double v_mag = 0.0;
       for (int I=0; I<nSpace; I++)
         v_mag += v[I]*v[I];
@@ -256,8 +256,8 @@ void evaluateCoefficients(const int rowptr[nSpace],
                 Dm*deltaIJ +
                 alpha_L_eff*v_unit[I]*v_unit[J]*v_mag +
                 alpha_T_eff*v_mag*(deltaIJ - v_unit[I]*v_unit[J]);
-              a[ii] = porosity*rho_transport*dispersion_tensor;
-              da[ii] = porosity*drho_du*dispersion_tensor;
+              a[ii] = thetaW*rho_transport*dispersion_tensor;
+              da[ii] = thetaW*drho_du*dispersion_tensor;
             }
 
         }
@@ -651,7 +651,7 @@ inline
       xt::pyarray<double>& velocity_old = args.array<double>("velocity_old");
       xt::pyarray<double>& q_m = args.array<double>("q_m");
       xt::pyarray<double>& q_u = args.array<double>("q_u");
-      const double porosity = args.scalar<double>("porosity");
+      xt::pyarray<double>& q_porosity = args.array<double>("q_porosity");
       xt::pyarray<double>& q_rho = args.array<double>("q_rho");
       xt::pyarray<double>& q_rho_old = args.array<double>("q_rho_old");
 
@@ -689,7 +689,7 @@ inline
       xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
       xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
       xt::pyarray<double>& ebqe_bc_diffusiveFlux_u_ext = args.array<double>("ebqe_bc_diffusiveFlux_u_ext");
-      const double ebqe_porosity = args.scalar<double>("ebqe_porosity");
+      xt::pyarray<double>& ebqe_porosity = args.array<double>("ebqe_porosity");
       xt::pyarray<double>& ebqe_rho = args.array<double>("ebqe_rho");
       
       double epsFact = args.scalar<double>("epsFact");
@@ -901,7 +901,7 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
-                                   porosity,
+                                   q_porosity.data()[eN*nQuadraturePoints_element+k],
                                    rho_f,
                                    rho_s,
                                    u,
@@ -924,7 +924,7 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
-                                   porosity,
+                                   q_porosity.data()[eN*nQuadraturePoints_element+k],
                                    rho_f,
                                    rho_s,
                                    un,
@@ -1374,7 +1374,7 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
-                                   ebqe_porosity,
+                                   ebqe_porosity.data()[ebNE_kb],
                                    rho_f,
                                    rho_s,
                                    u_ext,
@@ -1393,7 +1393,7 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
-                                   ebqe_porosity,
+                                   ebqe_porosity.data()[ebNE_kb],
                                    rho_f,
                                    rho_s,
                                    bc_u_ext,
@@ -1745,11 +1745,11 @@ inline
     int numDOFs = args.scalar<int>("numDOFs");
     xt::pyarray<double>& mIn = args.array<double>("mIn");
     xt::pyarray<double>& uOut = args.array<double>("uOut");
-    const double porosity = args.scalar<double>("porosity");
+    xt::pyarray<double>& nodal_porosity = args.array<double>("nodal_porosity");
     const double rho_f = args.scalar<double>("rho_f");
     const double rho_s = args.scalar<double>("rho_s");
     for (int i=0; i<numDOFs; i++)
-      uOut.data()[i] = inversevaluateCoefficients(mIn.data()[i], porosity, rho_f, rho_s);
+      uOut.data()[i] = inversevaluateCoefficients(mIn.data()[i], nodal_porosity.data()[i], rho_f, rho_s);
   }
   
 
@@ -1785,7 +1785,7 @@ inline
       xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
       xt::pyarray<double>& u_dof = args.array<double>("u_dof");
       xt::pyarray<double>& velocity = args.array<double>("velocity");
-      const double porosity = args.scalar<double>("porosity");
+      xt::pyarray<double>& q_porosity = args.array<double>("q_porosity");
       xt::pyarray<double>& q_rho = args.array<double>("q_rho");
       xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
       xt::pyarray<double>& cfl = args.array<double>("cfl");
@@ -1804,7 +1804,7 @@ inline
       xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
       xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
       xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
-      const double ebqe_porosity = args.scalar<double>("ebqe_porosity");
+      xt::pyarray<double>& ebqe_porosity = args.array<double>("ebqe_porosity");
       xt::pyarray<double>& ebqe_rho = args.array<double>("ebqe_rho");
       xt::pyarray<int>& csrColumnOffsets_eb_u_u = args.array<int>("csrColumnOffsets_eb_u_u");
       STABILIZATION STABILIZATION_TYPE = static_cast<STABILIZATION>(args.scalar<int>("STABILIZATION_TYPE"));
@@ -1925,7 +1925,7 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
-                                   porosity,
+                                   q_porosity.data()[eN*nQuadraturePoints_element+k],
                                    rho_f,
                                    rho_s,
                                    u,
@@ -2200,7 +2200,7 @@ inline
                                        alpha_L,
                                        alpha_T,
                                        Dm,
-                                       ebqe_porosity,
+                                   ebqe_porosity.data()[ebNE_kb],
                                        rho_f,
                                        rho_s,
                                        u_ext,
@@ -2219,7 +2219,7 @@ inline
                                        alpha_L,
                                        alpha_T,
                                        Dm,
-                                       ebqe_porosity,
+                                   ebqe_porosity.data()[ebNE_kb],
                                        rho_f,
                                        rho_s,
                                        bc_u_ext,
@@ -2308,7 +2308,7 @@ inline
     xt::pyarray<double>& min_u_bc = args.array<double>("min_u_bc");
     xt::pyarray<double>& max_u_bc = args.array<double>("max_u_bc");
     int LUMPED_MASS_MATRIX = args.scalar<int>("LUMPED_MASS_MATRIX");
-    const double porosity = args.scalar<double>("porosity");
+    xt::pyarray<double>& nodal_porosity = args.array<double>("nodal_porosity");
     const double rho_f = args.scalar<double>("rho_f");
     const double rho_s = args.scalar<double>("rho_s");
 //    STABILIZATION STABILIZATION_TYPE{args.scalar<int>("STABILIZATION_TYPE")};
@@ -2326,9 +2326,10 @@ inline
         double solni = soln.data()[i];
         const double lumped_volume = lumped_mass_matrix.data()[i];
         double uLowi = uLow.data()[i];
-        double mLowi = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowi)*uLowi;
-        double solHmi = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solHi)*solHi;
-        double solnmi = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solni)*solni;
+        const double theta_i = nodal_porosity.data()[i];
+        double mLowi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowi)*uLowi;
+        double solHmi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solHi)*solHi;
+        double solnmi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solni)*solni;
         double uDotLowi = (mLowi - solnmi)/dt;
         double mini=min_u_bc.data()[i], maxi=max_u_bc.data()[i]; // init min/max with value at BCs (NOTE: if no boundary then min=1E10, max=-1E10)
         double Pposi=0, Pnegi=0;
@@ -2344,9 +2345,10 @@ inline
             mini = fmin(mini,solnj);
             maxi = fmax(maxi,solnj);
             double uLowj = uLow.data()[j];
-            double mLowj = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowj)*uLowj;
-            double solHmj = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solH.data()[j])*solH.data()[j];
-            double solnmj = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solnj)*solnj;
+            const double theta_j = nodal_porosity.data()[j];
+            double mLowj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowj)*uLowj;
+            double solHmj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solH.data()[j])*solH.data()[j];
+            double solnmj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solnj)*solnj;
             double uDotLowj = (mLowj - solnmj)/dt;
             // i-th row of flux correction matrix
             if (STABILIZATION_TYPE == STABILIZATION::Kuzmin)
@@ -2365,8 +2367,8 @@ inline
             Pnegi += FluxCorrectionMatrix[ij]*((FluxCorrectionMatrix[ij] < 0) ? 1. : 0.);
             ij+=1;
           }//j
-        const double Qposi = lumped_volume*(porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*maxi)*maxi - mLowi);
-        const double Qnegi = lumped_volume*(porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*mini)*mini - mLowi);
+        const double Qposi = lumped_volume*(theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*maxi)*maxi - mLowi);
+        const double Qnegi = lumped_volume*(theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*mini)*mini - mLowi);
         Rpos[i] = ((Pposi==0) ? 1. : fmin(1.0,Qposi/Pposi));
         Rneg[i] = ((Pnegi==0) ? 1. : fmin(1.0,Qnegi/Pnegi));
       }//i
@@ -2386,7 +2388,8 @@ inline
             ij+=1;
           }
         const double uLowi = uLow.data()[i];
-        const double mLowi = porosity*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowi)*uLowi;
+        const double theta_i = nodal_porosity.data()[i];
+        const double mLowi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowi)*uLowi;
         limited_solution.data()[i] = mLowi + 1./lumped_volume*ith_Limiter_times_FluxCorrectionMatrix;
       }
     }//FCTStep

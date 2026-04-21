@@ -495,6 +495,15 @@ class Coefficients(TC_base):
                 self.q_v = self.vModel.q[('velocity_couple', 0)]
                 self.ebqe_v = self.vModel.ebqe[('velocity_couple', 0)]
                 self.ebq_v = None
+            if (not self.specified_velocity and
+                    ('theta', 0) in self.vModel.q and
+                    ('theta', 0) in self.vModel.ebqe):
+                # Use Richards water content in the transport mass/storage term.
+                self.q_porosity = self.vModel.q[('theta', 0)]
+                self.ebqe_porosity = self.vModel.ebqe[('theta', 0)]
+            else:
+                self.q_porosity = np.full(self.model.q[('u', 0)].shape, self.porosity, 'd')
+                self.ebqe_porosity = np.full(self.model.ebqe[('u', 0)].shape, self.porosity, 'd')
             self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_f, 'd')
             self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_f, 'd')
             self.q_v_old = self.q_v.copy()
@@ -502,6 +511,8 @@ class Coefficients(TC_base):
         else:
             self.q_v = np.ones(self.model.q[('u',0)].shape+(self.model.nSpace_global,),'d')
             self.ebqe_v = np.ones(self.model.ebqe[('u',0)].shape+(self.model.nSpace_global,),'d')
+            self.q_porosity = np.full(self.model.q[('u', 0)].shape, self.porosity, 'd')
+            self.ebqe_porosity = np.full(self.model.ebqe[('u', 0)].shape, self.porosity, 'd')
             self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_f, 'd')
             self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_f, 'd')
             self.q_v_old = self.q_v.copy()
@@ -1154,6 +1165,23 @@ class LevelModel(OneLevelTransport):
             self.u[0].dof[:] = self.uLow
             return
 
+        nodal_porosity = np.full(self.u[0].dof.shape, self.coefficients.porosity, 'd')
+        if (hasattr(self, "mesh") and
+                self.u[0].dof.shape[0] == self.mesh.nNodes_global and
+                hasattr(self.mesh, "elementNodesArray") and
+                hasattr(self.coefficients, "q_porosity")):
+            porosity_sum = np.zeros(self.mesh.nNodes_global, 'd')
+            porosity_count = np.zeros(self.mesh.nNodes_global, 'd')
+            q_porosity = self.coefficients.q_porosity
+            for eN in range(self.mesh.nElements_global):
+                theta_e = float(np.mean(q_porosity[eN, :]))
+                for i in range(self.mesh.nNodes_element):
+                    I = self.mesh.elementNodesArray[eN, i]
+                    porosity_sum[I] += theta_e
+                    porosity_count[I] += 1.0
+            mask = porosity_count > 0.0
+            nodal_porosity[mask] = porosity_sum[mask]/porosity_count[mask]
+
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         limited_mass = np.zeros(self.u[0].dof.shape)
@@ -1177,18 +1205,13 @@ class LevelModel(OneLevelTransport):
         argsDict["max_u_bc"] = self.max_u_bc
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
-        argsDict["porosity"] = self.coefficients.porosity
+        argsDict["nodal_porosity"] = nodal_porosity
         argsDict["rho_f"] = self.coefficients.rho_f
         argsDict["rho_s"] = self.coefficients.rho_s
         self.adr.FCTStep(argsDict)
-        invertArgs = cArgumentsDict.ArgumentsDict()
-        invertArgs["numDOFs"] = len(rowptr) - 1
-        invertArgs["mIn"] = limited_mass
-        invertArgs["uOut"] = limited_solution
-        invertArgs["porosity"] = self.coefficients.porosity
-        invertArgs["rho_f"] = self.coefficients.rho_f
-        invertArgs["rho_s"] = self.coefficients.rho_s
-        self.adr.invert(invertArgs)
+        argsDict["mIn"] = limited_mass
+        argsDict["uOut"] = limited_solution
+        self.adr.invert(argsDict)
         #self.timeIntegration.u[:] = limited_solution
         fromFreeToGlobal=0 #direction copying
         cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns(fromFreeToGlobal,
@@ -1407,7 +1430,7 @@ class LevelModel(OneLevelTransport):
         argsDict["velocity_old"] = self.coefficients.q_v_old
         argsDict["q_m"] = self.timeIntegration.m_tmp[0]
         argsDict["q_u"] = self.q[('u', 0)]
-        argsDict["porosity"] = self.coefficients.porosity
+        argsDict["q_porosity"] = self.coefficients.q_porosity
         argsDict["q_rho"] = self.coefficients.q_rho
         argsDict["q_rho_old"] = self.coefficients.q_rho_old
         ###########################################
@@ -1443,7 +1466,7 @@ class LevelModel(OneLevelTransport):
         argsDict["ebqe_bc_flux_u_ext"] = self.ebqe[('advectiveFlux_bc', 0)]
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag', 0, 0)]
         argsDict["ebqe_bc_diffusiveFlux_u_ext"] = self.ebqe[('diffusiveFlux_bc', 0, 0)]
-        argsDict["ebqe_porosity"] = self.coefficients.porosity
+        argsDict["ebqe_porosity"] = self.coefficients.ebqe_porosity
         argsDict["ebqe_rho"] = self.coefficients.ebqe_rho
         
 
@@ -1590,7 +1613,7 @@ class LevelModel(OneLevelTransport):
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["u_dof"] = self.u[0].dof
         argsDict["velocity"] = self.coefficients.q_v
-        argsDict["porosity"] = self.coefficients.porosity
+        argsDict["q_porosity"] = self.coefficients.q_porosity
         argsDict["q_rho"] = self.coefficients.q_rho
         argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
         argsDict["cfl"] = self.q[('cfl', 0)]
@@ -1609,7 +1632,7 @@ class LevelModel(OneLevelTransport):
         argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u', 0)]
         argsDict["isFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag', 0)]
         argsDict["ebqe_bc_flux_u_ext"] = self.ebqe[('advectiveFlux_bc', 0)]
-        argsDict["ebqe_porosity"] = self.coefficients.porosity
+        argsDict["ebqe_porosity"] = self.coefficients.ebqe_porosity
         argsDict["ebqe_rho"] = self.coefficients.ebqe_rho
 
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag', 0, 0)]
