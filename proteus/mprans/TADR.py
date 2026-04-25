@@ -492,8 +492,8 @@ class Coefficients(TC_base):
                         self.ebq_v = self.vModel.ebq[('f', 0)]
             else:
                 # Use coupled velocity produced by Richards: ('velocity_couple', 0)
-                self.q_v = self.vModel.q[('velocity_couple', 0)]
-                self.ebqe_v = self.vModel.ebqe[('velocity_couple', 0)]
+                self.q_v = self.vModel.q[('velocity_couple', 0)].copy()
+                self.ebqe_v = self.vModel.ebqe[('velocity_couple', 0)].copy()
                 self.ebq_v = None
             if (not self.specified_velocity and
                     ('theta', 0) in self.vModel.q and
@@ -1165,32 +1165,23 @@ class LevelModel(OneLevelTransport):
             self.u[0].dof[:] = self.uLow
             return
 
-        nodal_porosity = np.full(self.u[0].dof.shape, self.coefficients.porosity, 'd')
-        if (hasattr(self, "mesh") and
-                self.u[0].dof.shape[0] == self.mesh.nNodes_global and
-                hasattr(self.mesh, "elementNodesArray") and
-                hasattr(self.coefficients, "q_porosity")):
-            porosity_sum = np.zeros(self.mesh.nNodes_global, 'd')
-            porosity_count = np.zeros(self.mesh.nNodes_global, 'd')
-            q_porosity = self.coefficients.q_porosity
-            for eN in range(self.mesh.nElements_global):
-                theta_e = float(np.mean(q_porosity[eN, :]))
-                for i in range(self.mesh.nNodes_element):
-                    I = self.mesh.elementNodesArray[eN, i]
-                    porosity_sum[I] += theta_e
-                    porosity_count[I] += 1.0
-            mask = porosity_count > 0.0
-            nodal_porosity[mask] = porosity_sum[mask]/porosity_count[mask]
-
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         limited_mass = np.zeros(self.u[0].dof.shape)
         limited_solution = np.zeros(self.u[0].dof.shape)
+        numDOFs = len(rowptr) - 1
+        theta_dof_out_arr = np.zeros(numDOFs, 'd')
+
+        q_porosity_arr = np.ascontiguousarray(self.coefficients.q_porosity)
+        q_rho_arr = np.ascontiguousarray(self.coefficients.q_rho)
+        q_dV_arr = np.ascontiguousarray(self.q['dV_last'])
+        u_l2g_arr = np.ascontiguousarray(self.u[0].femSpace.dofMap.l2g)
+        u_test_ref_arr = np.ascontiguousarray(self.u[0].femSpace.psi)
 
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["dt"] = self.timeIntegration.dt
         argsDict["NNZ"] = self.nnz
-        argsDict["numDOFs"] = len(rowptr) - 1
+        argsDict["numDOFs"] = numDOFs
         argsDict["lumped_mass_matrix"] = self.ML
         argsDict["soln"] = self.u_dof_old
         argsDict["solH"] = self.timeIntegration.u
@@ -1205,12 +1196,21 @@ class LevelModel(OneLevelTransport):
         argsDict["max_u_bc"] = self.max_u_bc
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
-        argsDict["nodal_porosity"] = nodal_porosity
+        argsDict["q_porosity_fct"] = q_porosity_arr
+        argsDict["q_rho_fct"] = q_rho_arr
+        argsDict["q_dV_fct"] = q_dV_arr
+        argsDict["u_l2g_fct"] = u_l2g_arr
+        argsDict["u_test_ref_fct"] = u_test_ref_arr
+        argsDict["theta_dof_out"] = theta_dof_out_arr
+        argsDict["nElements_global_fct"] = self.mesh.nElements_global
+        argsDict["nQuadraturePoints_element_fct"] = self.nQuadraturePoints_element
+        argsDict["nDOF_trial_element_fct"] = self.nDOF_trial_element[0]
         argsDict["rho_f"] = self.coefficients.rho_f
         argsDict["rho_s"] = self.coefficients.rho_s
         self.adr.FCTStep(argsDict)
         argsDict["mIn"] = limited_mass
         argsDict["uOut"] = limited_solution
+        argsDict["nodal_porosity"] = theta_dof_out_arr
         self.adr.invert(argsDict)
         #self.timeIntegration.u[:] = limited_solution
         fromFreeToGlobal=0 #direction copying

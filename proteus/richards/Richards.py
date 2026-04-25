@@ -1459,6 +1459,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["CTy"] = CTy
         argsDict["CTz"] = CTz
         argsDict["ML"] = self.ML
+        if self.delta_x_ij is None:
+            self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
         argsDict["delta_x_ij"] = self.delta_x_ij
         argsDict["MC"] = self.MC_a
         # PARAMETERS FOR 1st or 2nd ORDER MPP METHOD

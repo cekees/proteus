@@ -236,6 +236,7 @@ void evaluateCoefficients(const int rowptr[nSpace],
       for (int I=0; I<nSpace; I++)
         v_mag += v[I]*v[I];
       v_mag = std::sqrt(v_mag);
+      const double v_pore_mag = (thetaW > 1.0e-8) ? v_mag / thetaW : 0.0;
 
       double alpha_L_eff = alpha_L;
       double alpha_T_eff = alpha_T;
@@ -254,8 +255,8 @@ void evaluateCoefficients(const int rowptr[nSpace],
               const double deltaIJ = (I == J) ? 1.0 : 0.0;
               const double dispersion_tensor =
                 Dm*deltaIJ +
-                alpha_L_eff*v_unit[I]*v_unit[J]*v_mag +
-                alpha_T_eff*v_mag*(deltaIJ - v_unit[I]*v_unit[J]);
+                alpha_L_eff*v_unit[I]*v_unit[J]*v_pore_mag +
+                alpha_T_eff*v_pore_mag*(deltaIJ - v_unit[I]*v_unit[J]);
               a[ii] = thetaW*rho_transport*dispersion_tensor;
               da[ii] = thetaW*drho_du*dispersion_tensor;
             }
@@ -965,6 +966,10 @@ inline
                      m_t,
                      dm_t);
 
+              const double thetaW_k = std::max(q_porosity.data()[eN_k], 1.0e-8);
+              double dfn_pore[nSpace];
+              for (int I=0; I<nSpace; I++) dfn_pore[I] = dfn[I] / thetaW_k;
+
               if (STABILIZATION_TYPE==STABILIZATION::TaylorGalerkinEV)
                 {
                   double normVel=0., norm_grad_un=0.;
@@ -981,7 +986,7 @@ inline
                   norm_grad_un = std::sqrt(norm_grad_un)+1E-10;
 
                   // calculate CFL
-                  calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
+                  calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn_pore,cfl.data()[eN_k]);
 
 
                   // compute max velocity at cell
@@ -1048,10 +1053,10 @@ inline
                 for (int I=0;I<nSpace;I++)
                   aux_entropy_residual += dfn[I]*grad_u_old[I];
                 DENTROPY_un = ENTROPY_TYPE==ENTROPY::POWER ? DEPOWER(un,uL,uR) : DELOG(un,uL,uR);
-                calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
+                calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn_pore,cfl.data()[eN_k]);
               }
               else
-                calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
+                calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn_pore,cfl.data()[eN_k]);
 
               for(int i=0;i<nDOF_test_element;i++)
                 {
@@ -2308,12 +2313,44 @@ inline
     xt::pyarray<double>& min_u_bc = args.array<double>("min_u_bc");
     xt::pyarray<double>& max_u_bc = args.array<double>("max_u_bc");
     int LUMPED_MASS_MATRIX = args.scalar<int>("LUMPED_MASS_MATRIX");
-    xt::pyarray<double>& nodal_porosity = args.array<double>("nodal_porosity");
+    // projection arrays replacing nodal_porosity
+    xt::pyarray<double>& q_porosity_fct   = args.array<double>("q_porosity_fct");
+    xt::pyarray<double>& q_rho_fct        = args.array<double>("q_rho_fct");
+    xt::pyarray<double>& q_dV_fct         = args.array<double>("q_dV_fct");
+    xt::pyarray<int>&    u_l2g_fct        = args.array<int>("u_l2g_fct");
+    xt::pyarray<double>& u_test_ref_fct   = args.array<double>("u_test_ref_fct");
+    xt::pyarray<double>& theta_dof_out    = args.array<double>("theta_dof_out");
+    int nElements_global_fct              = args.scalar<int>("nElements_global_fct");
+    int nQuadraturePoints_element_fct     = args.scalar<int>("nQuadraturePoints_element_fct");
+    int nDOF_trial_element_fct            = args.scalar<int>("nDOF_trial_element_fct");
     const double rho_f = args.scalar<double>("rho_f");
     const double rho_s = args.scalar<double>("rho_s");
 //    STABILIZATION STABILIZATION_TYPE{args.scalar<int>("STABILIZATION_TYPE")};
     STABILIZATION STABILIZATION_TYPE = static_cast<STABILIZATION>(args.scalar<int>("STABILIZATION_TYPE"));
 //      ENTROPY ENTROPY_TYPE = static_cast<ENTROPY>(args.scalar<int>("ENTROPY_TYPE"));    
+    // --- L2 projection: quadrature → DOF ---
+    std::vector<double> theta_dof(numDOFs, 0.0);
+    std::vector<double> rho_dof(numDOFs, 0.0);
+    std::vector<double> ML_proj(numDOFs, 0.0);
+    for (int eN = 0; eN < nElements_global_fct; eN++) {
+      for (int k = 0; k < nQuadraturePoints_element_fct; k++) {
+        const int eN_k = eN * nQuadraturePoints_element_fct + k;
+        const double dV_k    = q_dV_fct.data()[eN_k];
+        const double theta_k = q_porosity_fct.data()[eN_k];
+        const double rho_k   = q_rho_fct.data()[eN_k];
+        for (int i = 0; i < nDOF_trial_element_fct; i++) {
+          const int gi = u_l2g_fct.data()[eN * nDOF_trial_element_fct + i];
+          const double w = u_test_ref_fct.data()[k * nDOF_trial_element_fct + i] * dV_k;
+          theta_dof[gi] += theta_k * w;
+          rho_dof[gi]   += rho_k   * w;
+          ML_proj[gi]   += w;
+        }
+      }
+    }
+    for (int i = 0; i < numDOFs; i++) {
+      if (ML_proj[i] > 1.0e-14) { theta_dof[i] /= ML_proj[i]; rho_dof[i] /= ML_proj[i]; }
+      else { theta_dof[i] = 1.0; rho_dof[i] = rho_f; }
+    }
     Rpos.resize(numDOFs,0.0);
     Rneg.resize(numDOFs,0.0);
     FluxCorrectionMatrix.resize(NNZ,0.0);
@@ -2326,7 +2363,7 @@ inline
         double solni = soln.data()[i];
         const double lumped_volume = lumped_mass_matrix.data()[i];
         double uLowi = uLow.data()[i];
-        const double theta_i = nodal_porosity.data()[i];
+        const double theta_i = theta_dof[i];
         double mLowi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowi)*uLowi;
         double solHmi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solHi)*solHi;
         double solnmi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solni)*solni;
@@ -2345,7 +2382,7 @@ inline
             mini = fmin(mini,solnj);
             maxi = fmax(maxi,solnj);
             double uLowj = uLow.data()[j];
-            const double theta_j = nodal_porosity.data()[j];
+            const double theta_j = theta_dof[j];
             double mLowj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowj)*uLowj;
             double solHmj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solH.data()[j])*solH.data()[j];
             double solnmj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solnj)*solnj;
@@ -2360,8 +2397,17 @@ inline
               {
                 double ML_minus_MC =
                   (LUMPED_MASS_MATRIX == 1 ? 0. : (i==j ? 1. : 0.)*lumped_volume - MassMatrix.data()[ij]);
+                // Scale the dH-dL antidiffusive term by theta_ij*rho_ij so that
+                // the flux correction matrix is in m-space (theta*rho*u), consistent
+                // with the Zalesak Q bounds which are also in m-space.  Without this
+                // factor the ratio Q/P is biased: Q ~ theta*rho*(u_max-uLow) but
+                // P ~ (u_j-u_i), so the limiter over-clips in the unsaturated zone
+                // (small theta) and under-clips in the saturated zone.
+                // Using the edge-average theta preserves FCM anti-symmetry (FCM_ij=-FCM_ji).
+                const double theta_ij_avg = 0.5*(theta_i + theta_j);
+                const double rho_ij_avg = 0.5*(rho_dof[i] + rho_dof[j]);
                 FluxCorrectionMatrix[ij] = ML_minus_MC * (solHmj-solnmj - (solHmi-solnmi))
-                  + dt_times_dH_minus_dL.data()[ij]*(solnj-solni);
+                  + theta_ij_avg * rho_ij_avg * dt_times_dH_minus_dL.data()[ij]*(solnj-solni);
               }
             Pposi += FluxCorrectionMatrix[ij]*((FluxCorrectionMatrix[ij] > 0) ? 1. : 0.);
             Pnegi += FluxCorrectionMatrix[ij]*((FluxCorrectionMatrix[ij] < 0) ? 1. : 0.);
@@ -2388,9 +2434,10 @@ inline
             ij+=1;
           }
         const double uLowi = uLow.data()[i];
-        const double theta_i = nodal_porosity.data()[i];
+        const double theta_i = theta_dof[i];
         const double mLowi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowi)*uLowi;
         limited_solution.data()[i] = mLowi + 1./lumped_volume*ith_Limiter_times_FluxCorrectionMatrix;
+        theta_dof_out.data()[i] = theta_dof[i];
       }
     }//FCTStep
   };//TADR

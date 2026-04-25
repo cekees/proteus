@@ -1633,11 +1633,14 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       for (int j = 0; j < nDOF_trial_element; j++) {
         const int u_gj = u_l2g.data()[eN_nDOF_trial_element + j];
         const int x_gj = mesh_l2g.data()[eN_nDOF_mesh_trial_element + j];
+        // For Lobatto quadrature on P1 simplices, QP index == local DOF index.
+        const double rho_j_loc = q_rho.data()[eN * nQuadraturePoints_element + j];
+        const double rho_node_j = std::fabs(rho_j_loc) > 1.0e-12 ? rho_j_loc : rho;
         Phi[j]   = u_dof.data()[u_gj];
         Phi_n[j] = u_dof_old.data()[u_gj];
         for (int I = 0; I < nSpace; I++) {
-          Phi[j] -= rho * mesh_dof.data()[x_gj * 3 + I] * gravity[I];
-          Phi_n[j] -= rho * mesh_dof.data()[x_gj * 3 + I] * gravity[I];
+          Phi[j]   -= rho_node_j * mesh_dof.data()[x_gj * 3 + I] * gravity[I];
+          Phi_n[j] -= rho_node_j * mesh_dof.data()[x_gj * 3 + I] * gravity[I];
         }
       }
       for (int i = 0; i < nDOF_test_element; i++) {
@@ -1792,6 +1795,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           // VECTOR OF ENTROPY RESIDUAL //
           int eN_i = eN * nDOF_test_element + i;
           ML2[u_l2g.data()[eN_i]] += u_test_dV[i];
+          rho_dof[u_l2g.data()[eN_i]] += q_rho.data()[eN_k] * u_test_dV[i];
+          ML_rho[u_l2g.data()[eN_i]] += u_test_dV[i];
           if (STABILIZATION_TYPE == STABILIZATION::EV_Stab) // EV stab
           {
             int    gi                 = offset_u + stride_u * u_l2g.data()[eN_i]; //global i-th index
@@ -2120,9 +2125,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     /////////////////////////////////////////////
     // ** LOOP IN DOFs FOR EDGE BASED TERMS ** //
     /////////////////////////////////////////////
-  //   for (int i = 0; i < numDOFs; ++i) {
-  // if (ML_rho[i] > 0.0) rho_dof[i] /= ML_rho[i];
-  // }
+    for (int i = 0; i < numDOFs; ++i) {
+      if (ML_rho[i] > 0.0) rho_dof[i] /= ML_rho[i];
+      else rho_dof[i] = rho;
+    }
 
     ij = 0;
     for (int i = 0; i < numDOFs; i++) {
@@ -2138,11 +2144,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       double m, dm, f[nSpace], df[nSpace], a[nnz], da[nnz], as[nnz];
       double dmn, fn[nSpace], dfn[nSpace], an[nnz], dan[nnz], asn[nnz];
 
-      // const double rho_i = rho_dof[i];
+      const double rho_i = rho_dof[i];
 
       for (int I = 0; I < nSpace; I++) {
-        phi_i -= rho * gravity.data()[I] * mesh_dof.data()[i * 3 + I];
-        phin_i -= rho * gravity.data()[I] * mesh_dof.data()[i * 3 + I];
+        phi_i -= rho_i * gravity.data()[I] * mesh_dof.data()[i * 3 + I];
+        phin_i -= rho_i * gravity.data()[I] * mesh_dof.data()[i * 3 + I];
       }
       double thetaW_tmp = 0.0;
       // loop over the sparsity pattern of the i-th DOF
@@ -2150,10 +2156,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         int j = csrColumnOffsets_DofLoops.data()[offset];
         if (i == j) ii = ij;
         double phi_j  = u_free_dof[j], phin_j = u_free_dof_old[j];
-        //const double rho_j = rho_dof[j];
+        const double rho_j = rho_dof[j];
         for (int I = 0; I < nSpace; I++) {
-          phi_j -= rho * gravity.data()[I] * mesh_dof.data()[j * 3 + I];
-          phin_j -= rho * gravity.data()[I] * mesh_dof.data()[j * 3 + I];
+          phi_j -= rho_j * gravity.data()[I] * mesh_dof.data()[j * 3 + I];
+          phin_j -= rho_j * gravity.data()[I] * mesh_dof.data()[j * 3 + I];
         }
         double dLowij, dLij, dEVij, dHij, fH, fL, fA=0.0;
         double fL_CN =0.0, fA_CN=0.0 ; 
@@ -2164,12 +2170,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         fA_CN = fH;
 
         if (-TransportMatrix[ij] * (phi_j - phi_i) <= 0.0) {
-          evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho, beta, gravity.data(),
+          evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_i, beta, gravity.data(),
                                alpha.data()[elementMaterialTypes.data()[0]], //cek hack, only for 1 material
                                n.data()[elementMaterialTypes.data()[0]], thetaR.data()[elementMaterialTypes.data()[0]], thetaSR.data()[elementMaterialTypes.data()[0]], &KWs.data()[elementMaterialTypes.data()[0] * nnz], u_free_dof[i], m, dm, f, df, a, da, as, Kr, dKr, thetaW_tmp);
           fL = Theta * Kr * fmax(0.0, -TransportMatrix[ij]) * (phi_j - phi_i);
           fL_CN = Theta_h * Kr * fmax(0.0, -TransportMatrix[ij]) * (phi_j - phi_i);
-          
+
           if (i != j) {
             globalJacobian.data()[ij] -= Theta * Kr * fmax(0.0, -TransportMatrix[ij]);
             J_ii -= -Theta * Kr * fmax(0.0, -TransportMatrix[ij]) + Theta * dKr * fmax(0.0, -TransportMatrix[ij]) * (phi_j - phi_i);
@@ -2177,7 +2183,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           ith_flux_term += fL;
           fA -= fL;
         } else {
-          evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho, beta, gravity.data(),
+          evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_j, beta, gravity.data(),
                                alpha.data()[elementMaterialTypes.data()[0]], //cek hack, only for 1 material
                                n.data()[elementMaterialTypes.data()[0]], thetaR.data()[elementMaterialTypes.data()[0]], thetaSR.data()[elementMaterialTypes.data()[0]], &KWs.data()[elementMaterialTypes.data()[0] * nnz], u_free_dof[j], m, dm, f, df, a, da, as, Kr, dKr, thetaW_tmp);
           fL = Theta * Kr * fmax(0.0, -TransportMatrix[ij]) * (phi_j - phi_i);
@@ -2191,7 +2197,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           fA -= fL;
         }
         if (-TransportMatrixn[ij] * (phin_j - phin_i) <= 0.0) {
-          evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho, beta, gravity.data(),
+          evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_i, beta, gravity.data(),
                                alpha.data()[elementMaterialTypes.data()[0]], //cek hack, only for 1 material
                                n.data()[elementMaterialTypes.data()[0]], thetaR.data()[elementMaterialTypes.data()[0]], thetaSR.data()[elementMaterialTypes.data()[0]], &KWs.data()[elementMaterialTypes.data()[0] * nnz], u_free_dof_old[i], m, dm, f, df, a, da, as, Kr, dKr, thetaW_tmp);
           fL = (1 - Theta) * Kr * fmax(0.0, -TransportMatrixn[ij]) * (phin_j - phin_i);
@@ -2200,11 +2206,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           fA -= fL;
           fA_CN -= fL_CN;
         } else {
-          evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho, beta, gravity.data(),
+          evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_j, beta, gravity.data(),
                                alpha.data()[elementMaterialTypes.data()[0]], //cek hack, only for 1 material
                                n.data()[elementMaterialTypes.data()[0]], thetaR.data()[elementMaterialTypes.data()[0]], thetaSR.data()[elementMaterialTypes.data()[0]], &KWs.data()[elementMaterialTypes.data()[0] * nnz], u_free_dof_old[j], m, dm, f, df, a, da, as, Kr, dKr, thetaW_tmp);
           fL = (1 - Theta) * Kr * fmax(0.0, -TransportMatrixn[ij]) * (phin_j - phin_i);
-          fL_CN += (1 - Theta_h) * Kr * fmax(0.0, -TransportMatrixn[ij]) * (phin_j - phin_i); 
+          fL_CN += (1 - Theta_h) * Kr * fmax(0.0, -TransportMatrixn[ij]) * (phin_j - phin_i);
           ith_flux_term += fL;
           fA -= fL;
           fA_CN -= fL_CN;
@@ -2215,10 +2221,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       }
       mDotLow.data()[i] = ith_flux_term/MLi;
       cflux[i] = ith_consistent_flux_term;
-      evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho, beta, gravity.data(),
+      evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_i, beta, gravity.data(),
                            alpha.data()[elementMaterialTypes.data()[0]], //cek hack, only for 1 material
                            n.data()[elementMaterialTypes.data()[0]], thetaR.data()[elementMaterialTypes.data()[0]], thetaSR.data()[elementMaterialTypes.data()[0]], &KWs.data()[elementMaterialTypes.data()[0] * nnz], u_free_dof[i], m, dm, f, df, a, da, as, Kr, dKr, thetaW_tmp);
-      evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho, beta, gravity.data(),
+      evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_i, beta, gravity.data(),
                            alpha.data()[elementMaterialTypes.data()[0]], //cek hack, only for 1 material
                            n.data()[elementMaterialTypes.data()[0]], thetaR.data()[elementMaterialTypes.data()[0]], thetaSR.data()[elementMaterialTypes.data()[0]], &KWs.data()[elementMaterialTypes.data()[0] * nnz], u_free_dof_old[i], mn.data()[i], dmn, fn, dfn, an, dan, asn, Krn, dKrn, thetaW_tmp);
       mLow.data()[i] = m;
