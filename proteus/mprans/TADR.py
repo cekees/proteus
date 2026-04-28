@@ -558,6 +558,41 @@ class Coefficients(TC_base):
                                                      self.model.q[('m', 0)],
                                                      self.model.mesh.nElements_owned)
             logEvent("Phase  0 mass after TADR step = %12.5e" % (self.m_post,), level=2)
+
+        # ---- coupling diagnostic: MPI-reduced, print on rank 0 ----
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+
+        def _global_stats(local):
+            a = np.asarray(local)
+            lo = comm.allreduce(float(a.min()) if a.size else float('inf'), op=MPI.MIN)
+            hi = comm.allreduce(float(a.max()) if a.size else float('-inf'), op=MPI.MAX)
+            ssum = comm.allreduce(float(a.sum()), op=MPI.SUM)
+            n = comm.allreduce(int(a.size), op=MPI.SUM)
+            return lo, hi, (ssum / n if n > 0 else float('nan'))
+
+        q_rho = getattr(self, 'q_rho', None)
+        ebqe_rho = getattr(self, 'ebqe_rho', None)
+        u_field = self.model.q[('u', 0)]
+        if q_rho is not None:
+            u_lo, u_hi, u_mn = _global_stats(u_field)
+            r_lo, r_hi, r_mn = _global_stats(q_rho)
+            if comm.Get_rank() == 0:
+                logEvent(
+                    "[Coupling rho q] TADR.postStep t={:.6e} "
+                    "u (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
+                    "TADR.q_rho (min,max,mean)=({:.6e},{:.6e},{:.6e})".format(
+                        float(t), u_lo, u_hi, u_mn, r_lo, r_hi, r_mn),
+                    level=2)
+        if ebqe_rho is not None:
+            e_lo, e_hi, e_mn = _global_stats(ebqe_rho)
+            if comm.Get_rank() == 0:
+                logEvent(
+                    "[Coupling rho ebqe] TADR.postStep t={:.6e} "
+                    "TADR.ebqe_rho (min,max,mean)=({:.6e},{:.6e},{:.6e})".format(
+                        float(t), e_lo, e_hi, e_mn),
+                    level=2)
+
         #self._write_velocity_output(t)
         copyInstructions = {}
         return copyInstructions

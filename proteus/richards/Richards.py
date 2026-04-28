@@ -345,25 +345,75 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                          useSparseDiffusion = True)
 
     def attachModels(self, modelList):
-        self.model = modelList[self.modelIndex]
+        # NOTE: self.model is already set to this Richards LevelModel by
+        # OneLevelTransport.__init__ (`self.coefficients.model = self`).
+        # Do NOT overwrite it from self.modelIndex — that hardcoded index (=1)
+        # points to TADR in the standard pnList, which corrupts Richards'
+        # self.model and silently breaks density coupling.
         if self.density_model is None:
             return
         self.densityModel = modelList[self.density_model]
-        self._sync_density_from_coupled_model()
 
-    def _sync_density_from_coupled_model(self):
+    def preStep(self, t, firstStep=False):
+        # Refresh coupled density every step from the transport (TADR) model,
+        # mirroring how TADR refreshes velocity / aliases moisture content.
         if self.density_model is None or not hasattr(self, 'densityModel'):
-            return
+            return {}
         coeffs = getattr(self.densityModel, 'coefficients', None)
         if coeffs is None:
-            return
+            return {}
         q_rho = getattr(coeffs, 'q_rho', None)
         ebqe_rho = getattr(coeffs, 'ebqe_rho', None)
         if q_rho is not None and hasattr(self.model, 'q') and 'rho' in self.model.q:
-            self.model.q['rho'] = q_rho
+            self.model.q['rho'][:] = q_rho
         if ebqe_rho is not None and hasattr(self.model, 'ebqe') and 'rho' in self.model.ebqe:
-            self.model.ebqe['rho'] = ebqe_rho
-        
+            self.model.ebqe['rho'][:] = ebqe_rho
+
+        # ---- coupling diagnostic: MPI-reduced, print on rank 0 ----
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+
+        def _global_stats(local):
+            a = np.asarray(local)
+            lo = comm.allreduce(float(a.min()) if a.size else float('inf'), op=MPI.MIN)
+            hi = comm.allreduce(float(a.max()) if a.size else float('-inf'), op=MPI.MAX)
+            ssum = comm.allreduce(float(a.sum()), op=MPI.SUM)
+            n = comm.allreduce(int(a.size), op=MPI.SUM)
+            return lo, hi, (ssum / n if n > 0 else float('nan'))
+
+        if q_rho is not None and 'rho' in self.model.q:
+            src = np.asarray(q_rho)
+            dst = np.asarray(self.model.q['rho'])
+            local_diff = float(np.max(np.abs(src - dst))) if src.shape == dst.shape else float('nan')
+            diff = comm.allreduce(local_diff, op=MPI.MAX)
+            s_lo, s_hi, s_mn = _global_stats(src)
+            d_lo, d_hi, d_mn = _global_stats(dst)
+            if comm.Get_rank() == 0:
+                logEvent(
+                    "[Coupling rho q] Richards.preStep t={:.6e} firstStep={} "
+                    "TADR.q_rho (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
+                    "Richards.q['rho'] (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
+                    "max|src-dst|={:.3e}".format(
+                        float(t), firstStep, s_lo, s_hi, s_mn,
+                        d_lo, d_hi, d_mn, diff),
+                    level=2)
+        if ebqe_rho is not None and 'rho' in self.model.ebqe:
+            src_b = np.asarray(ebqe_rho)
+            dst_b = np.asarray(self.model.ebqe['rho'])
+            local_diff_b = float(np.max(np.abs(src_b - dst_b))) if src_b.shape == dst_b.shape else float('nan')
+            diff_b = comm.allreduce(local_diff_b, op=MPI.MAX)
+            s_lo, s_hi, s_mn = _global_stats(src_b)
+            d_lo, d_hi, d_mn = _global_stats(dst_b)
+            if comm.Get_rank() == 0:
+                logEvent(
+                    "[Coupling rho ebqe] Richards.preStep t={:.6e} "
+                    "TADR.ebqe_rho (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
+                    "Richards.ebqe['rho'] (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
+                    "max|src-dst|={:.3e}".format(
+                        float(t), s_lo, s_hi, s_mn, d_lo, d_hi, d_mn, diff_b),
+                    level=2)
+        return {}
+
 
     def initializeMesh(self,mesh):
         from proteus.SubsurfaceTransportCoefficients import BlockHeterogeneousCoefficients
@@ -1109,7 +1159,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         """
         Calculate the element residuals and add in to the global residual
         """
-        self.coefficients._sync_density_from_coupled_model()
         cfemIntegrals.zeroJacobian_CSR(self.nNonzerosInJacobian,
                                        self.jacobian)
         if self.u_dof_old is None:
@@ -1722,7 +1771,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.richards.invert(argsDict)
      
     def getJacobian(self,jacobian):
-        self.coefficients._sync_density_from_coupled_model()
         if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
             cfemIntegrals.zeroJacobian_CSR(self.nNonzerosInJacobian,
                                            jacobian)
