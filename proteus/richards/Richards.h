@@ -67,6 +67,10 @@ class Richards : public Richards_base {
 public:
   const int      nDOF_test_X_trial_element;
   CompKernelType ck;
+  // Per-DOF density projected from q_rho in calculateResidual_entropy_viscosity.
+  // Reused by invert() so the m -> u inversion uses the same variable density
+  // that built the forward mass.
+  std::vector<double> rho_dof_member;
   Richards() : nDOF_test_X_trial_element(nDOF_test_element * nDOF_trial_element), ck() { }
   inline void evaluateCoefficients(const int rowptr[nSpace], const int colind[nnz], const double rho0, const double rho_transport, const double beta, const double gravity[nSpace], const double alpha, const double n_vg, const double thetaR, const double thetaSR, const double KWs[nnz], const double &u, double &m, double &dm, double f[nSpace], double df[nSpace], double a[nnz], double da[nnz], double as[nnz], double &kr, double &dkr, double &thetaW_out)
   {
@@ -2129,6 +2133,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       if (ML_rho[i] > 0.0) rho_dof[i] /= ML_rho[i];
       else rho_dof[i] = rho;
     }
+    // Cache the projected, salinity-coupled density for use in invert() so
+    // the m -> u inversion is consistent with the forward residual.
+    rho_dof_member = rho_dof;
 
     ij = 0;
     for (int i = 0; i < numDOFs; i++) {
@@ -2254,7 +2261,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
   {
     xt::pyarray<int>    &a_rowptr             = args.array<int>("a_rowptr");
     xt::pyarray<int>    &a_colind             = args.array<int>("a_colind");
-    double               rho                  = args.scalar<double>("rho");
+    double               rho                  = args.scalar<double>("rho");        // freshwater reference (fallback)
     double               beta                 = args.scalar<double>("beta");
     xt::pyarray<double> &gravity              = args.array<double>("gravity");
     xt::pyarray<double> &alpha                = args.array<double>("alpha");
@@ -2265,29 +2272,33 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<int>    &elementMaterialTypes = args.array<int>("elementMaterialTypes");
     xt::pyarray<int>    &freeDOFMaterialTypes = args.array<int>("freeDOFMaterialTypes");
     int                  numDOFs              = args.scalar<int>("numDOFs");
-    xt::pyarray<double> &mIn = args.array<double>("limited_solution");
+    xt::pyarray<double> &mIn  = args.array<double>("limited_solution");
     xt::pyarray<double> &pOut = args.array<double>("u_dof");
+    // Per-DOF density projected from q_rho in
+    // calculateResidual_entropy_viscosity (cached as a class member there).
+    // If the cache is empty (e.g. invert called before the first residual
+    // evaluation, or coupling disabled) fall back to the scalar `rho`.
+    const bool have_rho_dof = (rho_dof_member.size() == static_cast<std::size_t>(numDOFs));
     int USE_NEWTON_INVERT = args.scalar<int>("USE_NEWTON_INVERT");
 
     for (int i = 0; i < numDOFs; i++) {
       const int material_i = freeDOFMaterialTypes.data()[i];
-      double mMin = rho * thetaR.data()[material_i];
-      double mMax = rho * (thetaR.data()[material_i] + thetaSR.data()[material_i]);
+      // Use the salinity-coupled density at this DOF so the m -> u inversion
+      // is consistent with the variable-density forward residual
+      //     m_forward = theta * rho_local * (...).
+      const double rho_i = have_rho_dof ? rho_dof_member[i] : rho;
       double dm, f[nSpace], df[nSpace], a[nnz], da[nnz];
-      // double mMin = rho * thetaR.data()[elementMaterialTypes.data()[0]];
-      // double mMax = rho * (thetaR.data()[elementMaterialTypes.data()[0]] + thetaSR.data()[elementMaterialTypes.data()[0]]);
-      // if (mIn.data()[i] < mMin - 0.001 || mIn.data()[i] > mMax + 0.001) { std::cout << "mass out of bounds " << mMin << '\t' << mIn.data()[i] << '\t' << mMax << std::endl; }
-      if (USE_NEWTON_INVERT){     
-        evaluateInverseCoefficients_Newton(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(), alpha.data()[material_i], n.data()[material_i], thetaR.data()[material_i],
+      if (USE_NEWTON_INVERT){
+        evaluateInverseCoefficients_Newton(a_rowptr.data(), a_colind.data(), rho_i, beta, gravity.data(), alpha.data()[material_i], n.data()[material_i], thetaR.data()[material_i],
                                           thetaSR.data()[material_i], &KWs.data()[material_i * nnz],
                                           pOut.data()[i], mIn.data()[i],
                                           dm, f, df, a, da);
       }
         else{
-        evaluateInverseCoefficients(a_rowptr.data(), a_colind.data(), rho, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[0]], n.data()[elementMaterialTypes.data()[0]], thetaR.data()[elementMaterialTypes.data()[0]],
+        evaluateInverseCoefficients(a_rowptr.data(), a_colind.data(), rho_i, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[0]], n.data()[elementMaterialTypes.data()[0]], thetaR.data()[elementMaterialTypes.data()[0]],
                                           thetaSR.data()[elementMaterialTypes.data()[0]], &KWs.data()[elementMaterialTypes.data()[0] * nnz],
                                           pOut.data()[i], mIn.data()[i],
-                                          dm, f, df, a, da);        
+                                          dm, f, df, a, da);
         }
       }
   }
