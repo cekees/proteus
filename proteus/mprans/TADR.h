@@ -59,6 +59,7 @@ namespace proteus
     std::valarray<double> FluxCorrectionMatrix;
     std::valarray<double> TransportMatrix, DiffusionMatrix, TransposeTransportMatrix;
     std::valarray<double> psi, eta, global_entropy_residual, boundary_integral;
+    std::valarray<double> m_dof, theta_dof_proj, rho_dof_proj, ML_mass_proj;
     std::valarray<double> maxVel,maxEntRes;
     virtual ~TADR_base(){}
     virtual void calculateResidual(arguments_dict& args)=0;
@@ -737,6 +738,9 @@ inline
       const double eb_adjoint_sigma = args.scalar<double>("eb_adjoint_sigma");
       
       double meanEntropy = 0., meanOmega = 0., maxEntropy = -1E10, minEntropy = 1E10;
+      const double eps_rho = (rho_s - rho_f)/rho_f;
+      const double zL_mass = uL + eps_rho*uL*uL;
+      const double zR_mass = uR + eps_rho*uR*uR;
       maxVel.resize(nElements_global, 0.0);
       maxEntRes.resize(nElements_global, 0.0);
       double Ct_sge = 4.0;
@@ -747,6 +751,63 @@ inline
           TransportMatrix.resize(NNZ,0.0);
           DiffusionMatrix.resize(NNZ,0.0);
           TransposeTransportMatrix.resize(NNZ,0.0);
+          m_dof.resize(numDOFs,0.0);
+          theta_dof_proj.resize(numDOFs,0.0);
+          rho_dof_proj.resize(numDOFs,0.0);
+          ML_mass_proj.resize(numDOFs,0.0);
+          // Pre-project the old conservative mass m^n = theta * rho(u^n) * u^n,
+          // along with theta and rho, so the EV entropy and edge sensor can use
+          // nodal conservative data before the main cell loop runs.
+          for (int eN=0; eN<nElements_global; eN++)
+            for (int k=0; k<nQuadraturePoints_element; k++)
+              {
+                int eN_k = eN*nQuadraturePoints_element + k,
+                  eN_nDOF_trial_element = eN*nDOF_trial_element;
+                double jac[nSpace*nSpace], jacDet, jacInv[nSpace*nSpace], x, y, z, un_proj=0.0;
+                ck.calculateMapping_element(eN,
+                                            k,
+                                            mesh_dof.data(),
+                                            mesh_l2g.data(),
+                                            mesh_trial_ref.data(),
+                                            mesh_grad_trial_ref.data(),
+                                            jac,
+                                            jacDet,
+                                            jacInv,
+                                            x,y,z);
+                const double dV = fabs(jacDet)*dV_ref.data()[k];
+                ck.valFromDOF(u_dof_old.data(),
+                              &u_l2g.data()[eN_nDOF_trial_element],
+                              &u_trial_ref.data()[k*nDOF_trial_element],
+                              un_proj);
+                const double theta_k = q_porosity.data()[eN_k];
+                const double rho_k = q_rho_old.data()[eN_k];
+                const double mn_proj = theta_k*rho_k*un_proj;
+                for (int i=0; i<nDOF_test_element; i++)
+                  {
+                    int eN_i = eN*nDOF_test_element+i;
+                    const int gi = u_l2g.data()[eN_i];
+                    const double w = u_test_ref.data()[k*nDOF_trial_element+i]*dV;
+                    m_dof[gi] += mn_proj*w;
+                    theta_dof_proj[gi] += theta_k*w;
+                    rho_dof_proj[gi] += rho_k*w;
+                    ML_mass_proj[gi] += w;
+                  }
+              }
+          for (int i=0; i<numDOFs; i++)
+            {
+              if (ML_mass_proj[i] > 1.0e-14)
+                {
+                  m_dof[i] /= ML_mass_proj[i];
+                  theta_dof_proj[i] /= ML_mass_proj[i];
+                  rho_dof_proj[i] /= ML_mass_proj[i];
+                }
+              else
+                {
+                  m_dof[i] = 0.0;
+                  theta_dof_proj[i] = 1.0;
+                  rho_dof_proj[i] = rho_f;
+                }
+            }
           // compute entropy and init global_entropy_residual and boundary_integral
           psi.resize(numDOFs,0.0);
           eta.resize(numDOFs,0.0);
@@ -757,7 +818,14 @@ inline
               // NODAL ENTROPY //
               if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) //EV stab
                 {
-                  eta[i] = ENTROPY_TYPE == ENTROPY::POWER ? EPOWER(u_dof_old.data()[i],uL,uR) : ELOG(u_dof_old.data()[i],uL,uR);
+                  if (ENTROPY_TYPE == ENTROPY::POWER)
+                    eta[i] = EPOWER(m_dof[i],uL,uR);
+                  else
+                    {
+                      const double mass_scale_i = fmax(theta_dof_proj[i]*rho_f, 1.0e-14);
+                      const double z_i = m_dof[i]/mass_scale_i;
+                      eta[i] = ELOG(z_i,zL_mass,zR_mass);
+                    }
                   global_entropy_residual[i]=0.;
                 }
               boundary_integral[i]=0.;
@@ -1050,9 +1118,20 @@ inline
                 }
               else if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity)
               {
+                // Conservative EV residual in mass-space:
+                //   R_eta = eta'(m^n) * (m_t + div f(u^n))
+                // with div f(u^n) approximated by dfn · grad(u^n).
+                aux_entropy_residual = m_t;
                 for (int I=0;I<nSpace;I++)
                   aux_entropy_residual += dfn[I]*grad_u_old[I];
-                DENTROPY_un = ENTROPY_TYPE==ENTROPY::POWER ? DEPOWER(un,uL,uR) : DELOG(un,uL,uR);
+                if (ENTROPY_TYPE==ENTROPY::POWER)
+                  DENTROPY_un = DEPOWER(mn,uL,uR);
+                else
+                  {
+                    const double mass_scale_k = fmax(q_porosity.data()[eN_k]*rho_f, 1.0e-14);
+                    const double z_n = mn/mass_scale_k;
+                    DENTROPY_un = DELOG(z_n,zL_mass,zR_mass)/mass_scale_k;
+                  }
                 calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn_pore,cfl.data()[eN_k]);
               }
               else
@@ -1106,9 +1185,7 @@ inline
                       int eN_i=eN*nDOF_test_element+i;
                       if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) // EV stab
                         {
-                          int gi = offset_u+stride_u*u_l2g.data()[eN_i]; //global i-th index
-                          DENTROPY_uni = ENTROPY_TYPE == ENTROPY::POWER ? DEPOWER(u_dof_old.data()[gi],uL,uR) : DELOG(u_dof_old.data()[gi],uL,uR);
-                          element_entropy_residual[i] += (DENTROPY_un - DENTROPY_uni)*aux_entropy_residual*u_test_dV[i];
+                          element_entropy_residual[i] += DENTROPY_un*aux_entropy_residual*u_test_dV[i];
                         }
                       elementResidual_u[i] += (u-un)*u_test_dV[i];
                       ///////////////
@@ -1638,8 +1715,13 @@ inline
                       etaMaxi = fmax(etaMaxi,fabs(eta[j]));
                       etaMini = fmin(etaMini,fabs(eta[j]));
                     }
-                  alpha_numerator += u_dof_old.data()[i]-u_dof_old.data()[j];
-                  alpha_denominator += fabs(u_dof_old.data()[i]-u_dof_old.data()[j]);
+                  // Sense smoothness on the projected nodal conservative variable
+                  // m = theta * rho(u) * u so the edge indicator is aligned with
+                  // the variable-density storage used by the PDE residual.
+                  const double mi = m_dof[i];
+                  const double mj = m_dof[j];
+                  alpha_numerator += mi - mj;
+                  alpha_denominator += fabs(mi - mj);
                   //update ij
                   ij+=1;
                 }
@@ -1665,27 +1747,40 @@ inline
           ij=0;
           for (int i=0; i<numDOFs; i++)
             {
-              double solni = u_dof_old.data()[i]; // solution at time tn for the ith DOF
-              double ith_dissipative_term = 0;
-              double ith_low_order_dissipative_term = 0;
-              double ith_flux_term = 0;
+              const double mi_mass = m_dof[i];
+              const double theta_i = fmax(theta_dof_proj[i], 1.0e-14);
+              const double ui_mass = inversevaluateCoefficients(mi_mass, theta_i, rho_f, rho_s);
+              const double rho_i = fmax(rho_dof_proj[i], rho_f);
+              const double drho_du = rho_s - rho_f;
+              const double dmdu_i = theta_i * (rho_i + ui_mass*drho_du);
+              double ith_dissipative_term_mass = 0;
+              double ith_low_order_dissipative_term_mass = 0;
+              double ith_flux_term_mass = 0;
               double dLii = 0.;
 
               // loop over the sparsity pattern of the i-th DOF
               for (int offset=csrRowIndeces_DofLoops.data()[i]; offset<csrRowIndeces_DofLoops.data()[i+1]; offset++)
                 {
                   int j = csrColumnOffsets_DofLoops.data()[offset];
-                  double solnj = u_dof_old.data()[j]; // solution at time tn for the jth DOF
+                  const double mj_mass = m_dof[j];
+                  const double theta_j = fmax(theta_dof_proj[j], 1.0e-14);
+                  const double uj_mass = inversevaluateCoefficients(mj_mass, theta_j, rho_f, rho_s);
                   double dLowij, dLij, dEVij, dHij;
+                  const double rho_j = fmax(rho_dof_proj[j], rho_f);
+                  const double dmdu_j = theta_j * (rho_j + uj_mass*drho_du);
+                  const double dmdu_ij = 0.5*(dmdu_i + dmdu_j);
+                  const double delta_u_mass = (mj_mass - mi_mass)/fmax(1.0e-14, dmdu_ij);
 
-                  ith_flux_term += (TransportMatrix[ij]+ DiffusionMatrix[ij])*solnj;
+                  // Advance the edge operator in conservative mass, using the
+                  // mass-consistent nodal state recovered from the projected m_dof.
+                  ith_flux_term_mass += dmdu_i*(TransportMatrix[ij]+ DiffusionMatrix[ij])*uj_mass;
                  
                   
                   if (i != j) //NOTE: there is really no need to check for i!=j (see formula for ith_dissipative_term)
                     {
                       // artificial compression
-                      double solij = 0.5*(solni+solnj);
-                      double Compij = cK*fmax(solij*(1.0-solij),0.0)/(fabs(solni-solnj)+1E-14);
+                      double solij = 0.5*(ui_mass+uj_mass);
+                      double Compij = cK*fmax(solij*(1.0-solij),0.0)/(fabs(ui_mass-uj_mass)+1E-14);
                       // first-order dissipative operator
                       dLowij = fmax(fabs(TransportMatrix[ij]),fabs(TransposeTransportMatrix[ij]));
                       //std::cout << dLowij;
@@ -1704,8 +1799,8 @@ inline
                           dHij = dLij * fmax(1.0-Compij,0.0); // artificial compression
                         }
                       //dissipative terms
-                      ith_dissipative_term += dHij*(solnj-solni);
-                      ith_low_order_dissipative_term += dLowij*(solnj-solni);
+                      ith_dissipative_term_mass += dHij*(mj_mass-mi_mass);
+                      ith_low_order_dissipative_term_mass += dLowij*(mj_mass-mi_mass);
                       //dHij - dLij. This matrix is needed during FCT step
                       dt_times_dH_minus_dL[ij] = dt*(dHij - dLowij);
                       //std::cout << dLij;
@@ -1725,22 +1820,27 @@ inline
                   ij+=1;
                 }
               double mi = ML.data()[i];
+              const double boundary_integral_mass = dmdu_i*boundary_integral[i];
               // compute edge_based_cfl
               edge_based_cfl.data()[i] = 2.*fabs(dLii)/mi;
               // Debugging output to check values
               //std::cout << "Element: " << i << ", dLii: " << fabs(dLii) << ", mi: " << mi << std::endl;
 
-              uLow[i] = u_dof_old.data()[i] - dt/mi*(ith_flux_term
-                                                     + boundary_integral[i]
-                                                     - ith_low_order_dissipative_term);
+              const double mLow_i = mi_mass - dt/mi*(ith_flux_term_mass
+                                                     + boundary_integral_mass
+                                                     - ith_low_order_dissipative_term_mass);
+              uLow[i] = inversevaluateCoefficients(mLow_i, theta_i, rho_f, rho_s);
 
               // update residual
               if (LUMPED_MASS_MATRIX==1)
-                globalResidual.data()[i] = u_dof_old.data()[i] - dt/mi*(ith_flux_term
-                                                                        + boundary_integral[i]
-                                                                        - ith_dissipative_term);
+                {
+                  const double mHigh_i = mi_mass - dt/mi*(ith_flux_term_mass
+                                                          + boundary_integral_mass
+                                                          - ith_dissipative_term_mass);
+                  globalResidual.data()[i] = inversevaluateCoefficients(mHigh_i, theta_i, rho_f, rho_s);
+                }
               else
-                globalResidual.data()[i] += dt*(ith_flux_term - ith_dissipative_term);//cek todo: shouldn't this have boundaryIntegral?
+                globalResidual.data()[i] += dt*(ith_flux_term_mass - ith_dissipative_term_mass);//cek todo: shouldn't this have boundaryIntegral?
             }//i
         }//edge-based
     }
@@ -2390,8 +2490,16 @@ inline
             // i-th row of flux correction matrix
             if (STABILIZATION_TYPE == STABILIZATION::Kuzmin)
               {
+                // Scale the dLow*(uLow_i-uLow_j) antidiffusive term by theta_ij*rho_ij
+                // so the Kuzmin flux correction is in m-space (theta*rho*u), matching
+                // the m-space MassMatrix*(uDotLow_i-uDotLow_j) term and the m-space
+                // Q_pos/Q_neg bounds below. Without this scaling FluxCorrectionMatrix
+                // mixes u-space and m-space and the limiter ratio Q/P is biased.
+                // See the matching theta_ij_avg*rho_ij_avg scaling in the else branch.
+                const double theta_ij_avg = 0.5*(theta_i + theta_j);
+                const double rho_ij_avg   = 0.5*(rho_dof[i] + rho_dof[j]);
                 FluxCorrectionMatrix[ij] = dt*(MassMatrix.data()[ij]*(uDotLowi-uDotLowj)
-                                               + dLow.data()[ij]*(uLowi-uLowj));
+                                               + theta_ij_avg * rho_ij_avg * dLow.data()[ij]*(uLowi-uLowj));
               }
             else
               {
