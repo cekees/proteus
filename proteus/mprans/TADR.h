@@ -424,6 +424,7 @@ inline
     inline
     void exteriorNumericalAdvectiveFlux(const int& isDOFBoundary_u,
                                         const int& isFluxBoundary_u,
+                                        const int& forceStrongConditions,
                                         const double n[nSpace],
                                         const double& bc_flux_u,
                                         const double f[nSpace],
@@ -443,7 +444,9 @@ inline
       if (isDOFBoundary_u == 1)
         {
           flux = 0.0;
-          if (flow >= 0.0)
+          if (forceStrongConditions == 1)
+            for (int I=0; I < nSpace; I++) flux += n[I]*bc_f[I];
+          else if (flow >= 0.0)
             for (int I=0; I < nSpace; I++) flux += n[I]*f[I];
           else
             for (int I=0; I < nSpace; I++) flux += n[I]*bc_f[I];
@@ -464,6 +467,7 @@ inline
     inline
     void exteriorNumericalAdvectiveFluxDerivative(const int& isDOFBoundary_u,
                                                   const int& isFluxBoundary_u,
+                                                  const int& forceStrongConditions,
                                                   const double n[nSpace],
                                                   const double velocity[nSpace],
                                                   double& dflux)
@@ -475,7 +479,11 @@ inline
       dflux=0.0;//default to no flux
       if (isDOFBoundary_u == 1)
         {
-          if (flow >= 0.0)
+          if (forceStrongConditions == 1)
+            {
+              dflux = 0.0;
+            }
+          else if (flow >= 0.0)
             {
               dflux = flow;
             }
@@ -536,6 +544,7 @@ inline
                                const int& isDOFBoundary_u,
                                const int& isFluxBoundary_u,
                                const int& isDiffusiveFluxBoundary_u,
+                               const int& forceStrongConditions,
                                const double n[nSpace],
                                double* bc_a,
                                const double& bc_u,
@@ -554,6 +563,7 @@ inline
     {
       exteriorNumericalAdvectiveFlux(isDOFBoundary_u,
                                      isFluxBoundary_u,
+                                     forceStrongConditions,
                                      n,
                                      bc_flux_u,
                                      f,
@@ -582,6 +592,7 @@ inline
                                        const int& isDOFBoundary_u,
                                        const int& isFluxBoundary_u,
                                        const int& isDiffusiveFluxBoundary_u,
+                                       const int& forceStrongConditions,
                                        const double n[nSpace],
                                        const double a[nnz],
                                        const double da[nnz],
@@ -595,6 +606,7 @@ inline
       double advJacobian = 0.0, diffJacobian = 0.0;
       exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u,
                                                isFluxBoundary_u,
+                                               forceStrongConditions,
                                                n,
                                                velocity,
                                                advJacobian);
@@ -668,6 +680,7 @@ inline
       // const double velocity_exponent = args.scalar<double>("velocity_exponent");
       const double rho_f = args.scalar<double>("rho_f");
       const double rho_s = args.scalar<double>("rho_s");
+      int forceStrongConditions = args.scalar<int>("forceStrongConditions");
       // DISPERSION DISPERSION_TYPE = static_cast<DISPERSION>(dispersion_type_int);
       xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
       xt::pyarray<double>& q_dV = args.array<double>("q_dV");
@@ -1508,6 +1521,7 @@ inline
                                     isDOFBoundary_u.data()[ebNE_kb],
                                     isFluxBoundary_u.data()[ebNE_kb],
                                     isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                    forceStrongConditions,
                                     normal,
                                     a_ext,
                                     bc_u_ext,
@@ -1543,10 +1557,15 @@ inline
                //std::cout<<"Advection EXT"<<flux_ext<<std::endl;
                //std::cout<<"Diffusion  Ext"<<flux_diff_ext<<std::endl;
               ebqe_flux.data()[ebNE_kb] = flux_ext;
-              if(flux_ext >= 0.0)
+              // Dirichlet boundaries should contribute the prescribed trace to
+              // the limiter bounds even on advective outflow. For non-Dirichlet
+              // faces, use the advective upwind state based on n·df/du.
+              if (isDOFBoundary_u.data()[ebNE_kb] == 1)
+                ebqe_u.data()[ebNE_kb] = bc_u_ext;
+              else if (boundary_flow >= 0.0)
                 ebqe_u.data()[ebNE_kb] = u_ext;
               else
-                ebqe_u.data()[ebNE_kb] = bc_u_ext;              
+                ebqe_u.data()[ebNE_kb] = bc_u_ext;
               if (STABILIZATION_TYPE==STABILIZATION::TaylorGalerkinEV)
                 {
                   if (stage == 1)
@@ -1600,6 +1619,7 @@ inline
                         boundaryAdvectiveContribution + boundaryDiffusiveContribution;
                       exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
                                                            isFluxBoundary_u.data()[ebNE_kb],
+                                                           forceStrongConditions,
                                                            normal,
                                                            df_ext,
                                                            dflux_u_u_ext);  
@@ -1615,6 +1635,7 @@ inline
                                                         isDOFBoundary_u.data()[ebNE_kb],
                                                         isFluxBoundary_u.data()[ebNE_kb],
                                                         isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                                        forceStrongConditions,
                                                         normal,
                                                         a_ext,
                                                         da_ext,
@@ -1919,6 +1940,7 @@ inline
       const double alpha_L = args.scalar<double>("alpha_L");
       const double alpha_T = args.scalar<double>("alpha_T");
       const double Dm = args.scalar<double>("Dm");
+      int forceStrongConditions = args.scalar<int>("forceStrongConditions");
       // const int dispersion_type_int = args.scalar<int>("dispersion_type");
       // const double theta_s = args.scalar<double>("theta_s");
       // const double theta_r = args.scalar<double>("theta_r");
@@ -2365,6 +2387,7 @@ inline
                                                       isDOFBoundary_u.data()[ebNE_kb],
                                                       isFluxBoundary_u.data()[ebNE_kb],
                                                       isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                                      forceStrongConditions,
                                                       normal,
                                                       a_ext,
                                                       da_ext,

@@ -1186,6 +1186,10 @@ class LevelModel(OneLevelTransport):
         # Explicit solvers call FCTStep() unconditionally.
         # If FCT is disabled, advance with low-order solution (uLow).
         if not self.coefficients.FCT:
+            if self.forceStrongConditions:
+                for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
+                    self.uLow[dofN] = g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN],
+                                        self.timeIntegration.t)
             fromFreeToGlobal = 0
             cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns(
                 fromFreeToGlobal,
@@ -1247,6 +1251,10 @@ class LevelModel(OneLevelTransport):
         argsDict["uOut"] = limited_solution
         argsDict["nodal_porosity"] = theta_dof_out_arr
         self.adr.invert(argsDict)
+        if self.forceStrongConditions:
+            for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
+                limited_solution[dofN] = g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN],
+                                           self.timeIntegration.t)
         #self.timeIntegration.u[:] = limited_solution
         fromFreeToGlobal=0 #direction copying
         cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns(fromFreeToGlobal,
@@ -1256,6 +1264,7 @@ class LevelModel(OneLevelTransport):
                                                                self.dirichletConditions[0].global2freeGlobal_free_dofs,
                                                                self.timeIntegration.u,
                                                                limited_solution)
+        self.u[0].dof[:] = limited_solution
 
     def updateVelocityFieldAsFunction(self):
         import pdb
@@ -1545,6 +1554,7 @@ class LevelModel(OneLevelTransport):
         argsDict["rho_s"] = self.coefficients.rho_s
         argsDict["theta_s"] = self.coefficients.theta_s
         argsDict["theta_r"] = self.coefficients.theta_r
+        argsDict["forceStrongConditions"] = int(self.forceStrongConditions)
         #argsDict["D"] = self.coefficients.DTypes
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag',0,0)]
         argsDict["isAdvectiveFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag',0)]
@@ -1687,6 +1697,7 @@ class LevelModel(OneLevelTransport):
         argsDict["rho_s"] = self.coefficients.rho_s
         argsDict["theta_s"] = self.coefficients.theta_s
         argsDict["theta_r"] = self.coefficients.theta_r
+        argsDict["forceStrongConditions"] = int(self.forceStrongConditions)
         argsDict["ebq_a"] = self.ebqe[('a',0,0)]
         #argsDict["D"] = self.coefficients.DTypes
 
