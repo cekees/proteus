@@ -666,6 +666,7 @@ inline
       xt::pyarray<double>& q_m = args.array<double>("q_m");
       xt::pyarray<double>& q_u = args.array<double>("q_u");
       xt::pyarray<double>& q_porosity = args.array<double>("q_porosity");
+      xt::pyarray<double>& q_porosity_old = args.array<double>("q_porosity_old");
       xt::pyarray<double>& q_rho = args.array<double>("q_rho");
       xt::pyarray<double>& q_rho_old = args.array<double>("q_rho_old");
 
@@ -792,7 +793,7 @@ inline
                               &u_l2g.data()[eN_nDOF_trial_element],
                               &u_trial_ref.data()[k*nDOF_trial_element],
                               un_proj);
-                const double theta_k = q_porosity.data()[eN_k];
+                const double theta_k = q_porosity_old.data()[eN_k];
                 const double rho_k = q_rho_old.data()[eN_k];
                 const double mn_proj = theta_k*rho_k*un_proj;
                 for (int i=0; i<nDOF_test_element; i++)
@@ -1006,7 +1007,7 @@ inline
                                    alpha_L,
                                    alpha_T,
                                    Dm,
-                                   q_porosity.data()[eN*nQuadraturePoints_element+k],
+                                   q_porosity_old.data()[eN*nQuadraturePoints_element+k],
                                    rho_f,
                                    rho_s,
                                    un,
@@ -1047,7 +1048,7 @@ inline
                      m_t,
                      dm_t);
 
-              const double thetaW_k = std::max(q_porosity.data()[eN_k], 1.0e-8);
+              const double thetaW_k = std::max(q_porosity_old.data()[eN_k], 1.0e-8);
               double dfn_pore[nSpace];
               for (int I=0; I<nSpace; I++) dfn_pore[I] = dfn[I] / thetaW_k;
 
@@ -1141,7 +1142,7 @@ inline
                   DENTROPY_un = DEPOWER(mn,uL,uR);
                 else
                   {
-                    const double mass_scale_k = fmax(q_porosity.data()[eN_k]*rho_f, 1.0e-14);
+                    const double mass_scale_k = fmax(q_porosity_old.data()[eN_k]*rho_f, 1.0e-14);
                     const double z_n = mn/mass_scale_k;
                     DENTROPY_un = DELOG(z_n,zL_mass,zR_mass)/mass_scale_k;
                   }
@@ -1777,6 +1778,13 @@ inline
               double ith_dissipative_term_mass = 0;
               double ith_low_order_dissipative_term_mass = 0;
               double ith_flux_term_mass = 0;
+              // Low-order flux assembled by Richards-style upwinding: the
+              // advective coefficient is evaluated at the upwind end of each
+              // edge, giving a strict m-space DMP for the low-order solution
+              // without any dLow lift. Only used to build mLow; the high-order
+              // path keeps the original Galerkin assembly so the FCT
+              // antidiffusion can still recover sharp features.
+              double ith_upwind_flux_term_mass = 0;
               double dLii = 0.;
 
               // loop over the sparsity pattern of the i-th DOF
@@ -1797,25 +1805,33 @@ inline
                   // D_ij*u_j are already m-space fluxes; multiplying by dmdu_i
                   // would double-count theta*rho.
                   ith_flux_term_mass += (TransportMatrix[ij] + DiffusionMatrix[ij])*uj_mass;
-                 
-                  
+
+                  if (i != j) {
+                    // Richards-style upwind for the low-order step (Richards.h
+                    // calculateResidual_entropy_viscosity, lines ~2206-2231).
+                    // Evaluate the advective+dispersive coefficient at the
+                    // upwind end. -T_ij*delta_u<=0 picks i as upwind, else j.
+                    const double T_ij_val = TransportMatrix[ij];
+                    const double D_ij_val = DiffusionMatrix[ij];
+                    const double delta_u  = uj_mass - ui_mass;
+                    const double T_neg    = fmax(0.0, -T_ij_val);
+                    const double D_neg    = fmax(0.0, -D_ij_val);
+                    const double rho_upwind =
+                      (-T_ij_val * delta_u <= 0.0) ? rho_i : rho_j;
+                    // Inflow into i (Richards convention) = T_neg*(rho_up/rho_f)*delta_u.
+                    // TADR ith_*_flux_term_mass is OUTFLOW from i, so negate.
+                    ith_upwind_flux_term_mass +=
+                      -T_neg * (rho_upwind / rho_f) * delta_u
+                      -D_neg * delta_u;
+                  }
+
                   if (i != j) //NOTE: there is really no need to check for i!=j (see formula for ith_dissipative_term)
                     {
                       // artificial compression
                       double solij = 0.5*(ui_mass+uj_mass);
                       double Compij = cK*fmax(solij*(1.0-solij),0.0)/(fabs(ui_mass-uj_mass)+1E-14);
-                      // first-order dissipative operator. TransportMatrix is in
-                      // u-space (df/du ~ rho*v), but the low-order dissipation
-                      // dLow*(m_j-m_i) is in m-space. For m-space DMP at the
-                      // low-order step we need dLow_ij >= |T|/dmdu, so we lift
-                      // by 1/min(dmdu_i,dmdu_j). The lift is capped at 5x: in
-                      // dry zones (theta -> theta_R) the unbounded reciprocal
-                      // collapses the edge-based CFL toward machine precision
-                      // and starves the coupled flow Newton solver. The cap
-                      // gives up strict m-DMP only in regions where the
-                      // physical transport coefficient k_r is already tiny.
-                      const double dmdu_floor = fmax(fmin(dmdu_i, dmdu_j), 0.2);
-                      dLowij = fmax(fabs(TransportMatrix[ij]),fabs(TransposeTransportMatrix[ij])) / dmdu_floor;
+                      // first-order dissipative operator
+                      dLowij = fmax(fabs(TransportMatrix[ij]),fabs(TransposeTransportMatrix[ij]));
                       //std::cout << dLowij;
                       //dLij = fmax(0.,fmax(psi[i]*TransportMatrix[ij], // Approach by S. Badia
                       //              psi[j]*TransposeTransportMatrix[ij]));
@@ -1861,9 +1877,15 @@ inline
               // Debugging output to check values
               //std::cout << "Element: " << i << ", dLii: " << fabs(dLii) << ", mi: " << mi << std::endl;
 
-              const double mLow_i = mi_mass - dt/mi*(ith_flux_term_mass
-                                                     + boundary_integral_mass
-                                                     - ith_low_order_dissipative_term_mass);
+              // mLow uses the upwind low-order flux. The graph-Laplacian
+              // dissipation term ith_low_order_dissipative_term_mass is no
+              // longer subtracted here: the upwinding already encodes the
+              // dissipation needed for m-space DMP, and adding the
+              // graph-Laplacian on top would double-dissipate. The dLow values
+              // are still computed and exported (dLow[ij], dt_times_dH_minus_dL)
+              // because the FCT antidiffusion construction below depends on them.
+              const double mLow_i = mi_mass - dt/mi*(ith_upwind_flux_term_mass
+                                                     + boundary_integral_mass);
               uLow[i] = inversevaluateCoefficients(mLow_i, theta_i, rho_f, rho_s);
 
               // update residual
@@ -2451,7 +2473,7 @@ inline
     xt::pyarray<double>& max_u_bc = args.array<double>("max_u_bc");
     int LUMPED_MASS_MATRIX = args.scalar<int>("LUMPED_MASS_MATRIX");
     // projection arrays replacing nodal_porosity
-    xt::pyarray<double>& q_porosity_fct   = args.array<double>("q_porosity_fct");
+    xt::pyarray<double>& q_porosity_old_fct = args.array<double>("q_porosity_old_fct");
     xt::pyarray<double>& q_rho_fct        = args.array<double>("q_rho_fct");
     xt::pyarray<double>& q_dV_fct         = args.array<double>("q_dV_fct");
     xt::pyarray<int>&    u_l2g_fct        = args.array<int>("u_l2g_fct");
@@ -2473,7 +2495,7 @@ inline
       for (int k = 0; k < nQuadraturePoints_element_fct; k++) {
         const int eN_k = eN * nQuadraturePoints_element_fct + k;
         const double dV_k    = q_dV_fct.data()[eN_k];
-        const double theta_k = q_porosity_fct.data()[eN_k];
+        const double theta_k = q_porosity_old_fct.data()[eN_k];
         const double rho_k   = q_rho_fct.data()[eN_k];
         for (int i = 0; i < nDOF_trial_element_fct; i++) {
           const int gi = u_l2g_fct.data()[eN * nDOF_trial_element_fct + i];
@@ -2513,12 +2535,19 @@ inline
             assert(offset == ij); // (CSR matrix consistency)
             int j = csrColumnOffsets_DofLoops.data()[offset];
             double solnj = soln.data()[j];
+            double uLowj = uLow.data()[j];
             ////////////////////////
             // COMPUTE THE BOUNDS //
             ////////////////////////
-            mini = fmin(mini,solnj);
-            maxi = fmax(maxi,solnj);
-            double uLowj = uLow.data()[j];
+            // Bounds patched over the LOW-ORDER solution (Richards.h Strategy 1).
+            // Because uLow[i] is in its own patch, mini <= uLow[i] <= maxi by
+            // construction, so Q_pos = M_i*(m(maxi) - m(uLow[i])) >= 0 and
+            // Q_neg = M_i*(m(mini) - m(uLow[i])) <= 0 unconditionally. The
+            // Zalesak limiter is well-posed without any clamping or [0,1]
+            // floor on R, mass is conserved exactly, and m^{n+1} respects
+            // local monotonicity relative to uLow.
+            mini = fmin(mini,uLowj);
+            maxi = fmax(maxi,uLowj);
             const double theta_j = theta_dof[j];
             double mLowj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowj)*uLowj;
             double solHmj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solH.data()[j])*solH.data()[j];

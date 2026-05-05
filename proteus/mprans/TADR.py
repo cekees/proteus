@@ -504,6 +504,7 @@ class Coefficients(TC_base):
             else:
                 self.q_porosity = np.full(self.model.q[('u', 0)].shape, self.porosity, 'd')
                 self.ebqe_porosity = np.full(self.model.ebqe[('u', 0)].shape, self.porosity, 'd')
+            self.q_porosity_old = self.q_porosity.copy()
             self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_f, 'd')
             self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_f, 'd')
             self.q_v_old = self.q_v.copy()
@@ -513,6 +514,7 @@ class Coefficients(TC_base):
             self.ebqe_v = np.ones(self.model.ebqe[('u',0)].shape+(self.model.nSpace_global,),'d')
             self.q_porosity = np.full(self.model.q[('u', 0)].shape, self.porosity, 'd')
             self.ebqe_porosity = np.full(self.model.ebqe[('u', 0)].shape, self.porosity, 'd')
+            self.q_porosity_old = self.q_porosity.copy()
             self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_f, 'd')
             self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_f, 'd')
             self.q_v_old = self.q_v.copy()
@@ -552,6 +554,9 @@ class Coefficients(TC_base):
         return copyInstructions
 
     def postStep(self, t, firstStep=False):
+        # q_porosity aliases the coupled Richards theta field, so cache the
+        # lagged copy here before Richards advances it on the next split step.
+        self.q_porosity_old[:] = self.q_porosity
         self.model.q['dV_last'][:] = self.model.q['dV']
         if self.checkMass:
             self.m_post = Norms.scalarDomainIntegral(self.model.q['dV'],
@@ -1211,7 +1216,7 @@ class LevelModel(OneLevelTransport):
         numDOFs = len(rowptr) - 1
         theta_dof_out_arr = np.zeros(numDOFs, 'd')
 
-        q_porosity_arr = np.ascontiguousarray(self.coefficients.q_porosity)
+        q_porosity_old_arr = np.ascontiguousarray(self.coefficients.q_porosity_old)
         q_rho_arr = np.ascontiguousarray(self.coefficients.q_rho)
         q_dV_arr = np.ascontiguousarray(self.q['dV_last'])
         u_l2g_arr = np.ascontiguousarray(self.u[0].femSpace.dofMap.l2g)
@@ -1235,7 +1240,7 @@ class LevelModel(OneLevelTransport):
         argsDict["max_u_bc"] = self.max_u_bc
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
-        argsDict["q_porosity_fct"] = q_porosity_arr
+        argsDict["q_porosity_old_fct"] = q_porosity_old_arr
         argsDict["q_rho_fct"] = q_rho_arr
         argsDict["q_dV_fct"] = q_dV_arr
         argsDict["u_l2g_fct"] = u_l2g_arr
@@ -1475,6 +1480,7 @@ class LevelModel(OneLevelTransport):
         argsDict["q_m"] = self.timeIntegration.m_tmp[0]
         argsDict["q_u"] = self.q[('u', 0)]
         argsDict["q_porosity"] = self.coefficients.q_porosity
+        argsDict["q_porosity_old"] = self.coefficients.q_porosity_old
         argsDict["q_rho"] = self.coefficients.q_rho
         argsDict["q_rho_old"] = self.coefficients.q_rho_old
         ###########################################
