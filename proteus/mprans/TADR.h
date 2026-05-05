@@ -1792,9 +1792,11 @@ inline
                   const double dmdu_ij = 0.5*(dmdu_i + dmdu_j);
                   const double delta_u_mass = (mj_mass - mi_mass)/fmax(1.0e-14, dmdu_ij);
 
-                  // Advance the edge operator in conservative mass, using the
-                  // mass-consistent nodal state recovered from the projected m_dof.
-                  ith_flux_term_mass += dmdu_i*(TransportMatrix[ij]+ DiffusionMatrix[ij])*uj_mass;
+                  // TransportMatrix integrates dfn = (rho + u*drho/du)*v and
+                  // DiffusionMatrix integrates a = theta*rho*Disp, so T_ij*u_j and
+                  // D_ij*u_j are already m-space fluxes; multiplying by dmdu_i
+                  // would double-count theta*rho.
+                  ith_flux_term_mass += (TransportMatrix[ij] + DiffusionMatrix[ij])*uj_mass;
                  
                   
                   if (i != j) //NOTE: there is really no need to check for i!=j (see formula for ith_dissipative_term)
@@ -1802,8 +1804,18 @@ inline
                       // artificial compression
                       double solij = 0.5*(ui_mass+uj_mass);
                       double Compij = cK*fmax(solij*(1.0-solij),0.0)/(fabs(ui_mass-uj_mass)+1E-14);
-                      // first-order dissipative operator
-                      dLowij = fmax(fabs(TransportMatrix[ij]),fabs(TransposeTransportMatrix[ij]));
+                      // first-order dissipative operator. TransportMatrix is in
+                      // u-space (df/du ~ rho*v), but the low-order dissipation
+                      // dLow*(m_j-m_i) is in m-space. For m-space DMP at the
+                      // low-order step we need dLow_ij >= |T|/dmdu, so we lift
+                      // by 1/min(dmdu_i,dmdu_j). The lift is capped at 5x: in
+                      // dry zones (theta -> theta_R) the unbounded reciprocal
+                      // collapses the edge-based CFL toward machine precision
+                      // and starves the coupled flow Newton solver. The cap
+                      // gives up strict m-DMP only in regions where the
+                      // physical transport coefficient k_r is already tiny.
+                      const double dmdu_floor = fmax(fmin(dmdu_i, dmdu_j), 0.2);
+                      dLowij = fmax(fabs(TransportMatrix[ij]),fabs(TransposeTransportMatrix[ij])) / dmdu_floor;
                       //std::cout << dLowij;
                       //dLij = fmax(0.,fmax(psi[i]*TransportMatrix[ij], // Approach by S. Badia
                       //              psi[j]*TransposeTransportMatrix[ij]));
@@ -1841,7 +1853,9 @@ inline
                   ij+=1;
                 }
               double mi = ML.data()[i];
-              const double boundary_integral_mass = dmdu_i*boundary_integral[i];
+              // boundary_integral was assembled from m-space fluxes (rho*v*u and
+              // a=theta*rho*Disp); no dmdu_i lifting is needed.
+              const double boundary_integral_mass = boundary_integral[i];
               // compute edge_based_cfl
               edge_based_cfl.data()[i] = 2.*fabs(dLii)/mi;
               // Debugging output to check values
@@ -2513,32 +2527,21 @@ inline
             // i-th row of flux correction matrix
             if (STABILIZATION_TYPE == STABILIZATION::Kuzmin)
               {
-                // Scale the dLow*(uLow_i-uLow_j) antidiffusive term by theta_ij*rho_ij
-                // so the Kuzmin flux correction is in m-space (theta*rho*u), matching
-                // the m-space MassMatrix*(uDotLow_i-uDotLow_j) term and the m-space
-                // Q_pos/Q_neg bounds below. Without this scaling FluxCorrectionMatrix
-                // mixes u-space and m-space and the limiter ratio Q/P is biased.
-                // See the matching theta_ij_avg*rho_ij_avg scaling in the else branch.
-                const double theta_ij_avg = 0.5*(theta_i + theta_j);
-                const double rho_ij_avg   = 0.5*(rho_dof[i] + rho_dof[j]);
+                // Use exact m-space difference (mLow_i - mLow_j) instead of
+                // theta_ij*rho_ij*(uLow_i-uLow_j) so the antidiffusion is in the
+                // same space as Q_pos/Q_neg and the Zalesak limiter is unbiased.
                 FluxCorrectionMatrix[ij] = dt*(MassMatrix.data()[ij]*(uDotLowi-uDotLowj)
-                                               + theta_ij_avg * rho_ij_avg * dLow.data()[ij]*(uLowi-uLowj));
+                                               + dLow.data()[ij]*(mLowi-mLowj));
               }
             else
               {
                 double ML_minus_MC =
                   (LUMPED_MASS_MATRIX == 1 ? 0. : (i==j ? 1. : 0.)*lumped_volume - MassMatrix.data()[ij]);
-                // Scale the dH-dL antidiffusive term by theta_ij*rho_ij so that
-                // the flux correction matrix is in m-space (theta*rho*u), consistent
-                // with the Zalesak Q bounds which are also in m-space.  Without this
-                // factor the ratio Q/P is biased: Q ~ theta*rho*(u_max-uLow) but
-                // P ~ (u_j-u_i), so the limiter over-clips in the unsaturated zone
-                // (small theta) and under-clips in the saturated zone.
-                // Using the edge-average theta preserves FCM anti-symmetry (FCM_ij=-FCM_ji).
-                const double theta_ij_avg = 0.5*(theta_i + theta_j);
-                const double rho_ij_avg = 0.5*(rho_dof[i] + rho_dof[j]);
+                // Use exact m-space difference (m^n_j - m^n_i) instead of
+                // theta_ij*rho_ij*(u^n_j-u^n_i) so both halves of FluxCorrectionMatrix
+                // are in m-space, consistent with the Q_pos/Q_neg bounds below.
                 FluxCorrectionMatrix[ij] = ML_minus_MC * (solHmj-solnmj - (solHmi-solnmi))
-                  + theta_ij_avg * rho_ij_avg * dt_times_dH_minus_dL.data()[ij]*(solnj-solni);
+                  + dt_times_dH_minus_dL.data()[ij]*(solnmj-solnmi);
               }
             Pposi += FluxCorrectionMatrix[ij]*((FluxCorrectionMatrix[ij] > 0) ? 1. : 0.);
             Pnegi += FluxCorrectionMatrix[ij]*((FluxCorrectionMatrix[ij] < 0) ? 1. : 0.);
@@ -2546,8 +2549,11 @@ inline
           }//j
         const double Qposi = lumped_volume*(theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*maxi)*maxi - mLowi);
         const double Qnegi = lumped_volume*(theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*mini)*mini - mLowi);
-        Rpos[i] = ((Pposi==0) ? 1. : fmin(1.0,Qposi/Pposi));
-        Rneg[i] = ((Pnegi==0) ? 1. : fmin(1.0,Qnegi/Pnegi));
+        // Clip R to [0,1]: if uLow already overshoots maxi (Qpos<0) or undershoots
+        // mini (Qneg>0), Q/P would be negative and the limiter would amplify the
+        // violation. Clipping to 0 disables the antidiffusive flux on that side.
+        Rpos[i] = ((Pposi==0) ? 1. : fmax(0.0, fmin(1.0,Qposi/Pposi)));
+        Rneg[i] = ((Pnegi==0) ? 1. : fmax(0.0, fmin(1.0,Qnegi/Pnegi)));
       }//i
     ij=0;
     for (int i=0; i<numDOFs; i++)
