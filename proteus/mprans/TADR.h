@@ -85,112 +85,7 @@ namespace proteus
       ck()
     {}
 
-    //inline
-    // void logInteriorState(const char* stage,
-    //                       const int eN,
-    //                       const int k,
-    //                       const double x,
-    //                       const double y,
-    //                       const double z,
-    //                       const double& u,
-    //                       const double& m,
-    //                       const double f[nSpace],
-    //                       const double a[nnz]) const
-    // {
-    //   const double boundary_strip_width = 5.0e-2;
-    //   if (!(x >= 2.0 - boundary_strip_width))
-    //     return;
-    //   double f_norm = 0.0, a_max = 0.0;
-    //   for (int I=0; I<nSpace; I++)
-    //     f_norm += f[I]*f[I];
-    //   f_norm = std::sqrt(f_norm);
-    //   for (int ii=0; ii<nnz; ii++)
-    //     a_max = fmax(a_max, fabs(a[ii]));
-    //   if (fabs(u) > 1.0e-12 || fabs(m) > 1.0e-12)
-    //     {
-    //       std::cout << std::scientific
-    //                 << "[TADR] " << stage
-    //                 << " eN=" << eN
-    //                 << " k=" << k
-    //                 << " x=" << x
-    //                 << " y=" << y;
-    //       if (nSpace > 2)
-    //         std::cout << " z=" << z;
-    //       std::cout << " u=" << u
-    //                 << " m=" << m
-    //                 << " |f|=" << f_norm
-    //                 << " max|a|=" << a_max
-    //                 << std::defaultfloat
-    //                 << std::endl;
-    //     }
-    // }
-
-    // inline
-    // void logBoundaryState(const char* stage,
-    //                       const int ebNE,
-    //                       const int kb,
-    //                       const double x,
-    //                       const double y,
-    //                       const double z,
-    //                       const int isDOFBoundary,
-    //                       const double& u_ext,
-    //                       const double& bc_u_ext) const
-    // {
-    //   if (isDOFBoundary == 1 && fabs(x-2.0) < 1.0e-8)
-    //     {
-    //       std::cout << std::scientific
-    //                 << "[TADR] " << stage
-    //                 << " ebNE=" << ebNE
-    //                 << " kb=" << kb
-    //                 << " x=" << x
-    //                 << " y=" << y;
-    //       if (nSpace > 2)
-    //         std::cout << " z=" << z;
-    //       std::cout << " isDOFBoundary=1"
-    //                 << " u_ext=" << u_ext
-    //                 << " bc_u_ext=" << bc_u_ext
-    //                 << " jump=" << (u_ext-bc_u_ext)
-    //                 << std::defaultfloat
-    //                 << std::endl;
-    //     }
-    // }
-
-    // inline
-    // void logBoundaryFluxState(const char* stage,
-    //                           const int ebNE,
-    //                           const int kb,
-    //                           const double x,
-    //                           const double y,
-    //                           const double z,
-    //                           const int isDOFBoundary,
-    //                           const double& u_ext,
-    //                           const double& bc_u_ext,
-    //                           const double& flow,
-    //                           const double& flux_total,
-    //                           const double& flux_adv,
-    //                           const double& flux_diff) const
-    // {
-    //   if (isDOFBoundary == 1 && (fabs(u_ext-bc_u_ext) > 1.0e-8 || fabs(x-2.0) < 1.0e-8))
-    //     {
-    //       std::cout << std::scientific
-    //                 << "[TADR] " << stage
-    //                 << " ebNE=" << ebNE
-    //                 << " kb=" << kb
-    //                 << " x=" << x
-    //                 << " y=" << y;
-    //       if (nSpace > 2)
-    //         std::cout << " z=" << z;
-    //       std::cout << " u_ext=" << u_ext
-    //                 << " bc_u_ext=" << bc_u_ext
-    //                 << " jump=" << (u_ext-bc_u_ext)
-    //                 << " flow=" << flow
-    //                 << " flux_total=" << flux_total
-    //                 << " flux_adv=" << flux_adv
-    //                 << " flux_diff=" << flux_diff
-    //                 << std::defaultfloat
-    //                 << std::endl;
-    //     }
-    // }
+      
 
     inline
     void calculateCFL(const double& elementDiameter,
@@ -432,11 +327,7 @@ inline
                                         const double velocity[nSpace],
                                         double& flux)
     {
-      // Use n·velocity (= n·df/du) to determine upwind direction.
-      // Since df/du = (rho + u*drho/du)*v and rho > 0, this has the same
-      // sign as n·v, so it is a valid upwind indicator.
-      // Use the actual flux vectors f and bc_f for the flux value so that
-      // the nonlinear flux n·(rho(u)*v*u) is evaluated correctly.
+      
       double flow=0.0;
       for (int I=0; I < nSpace; I++)
         flow += n[I]*velocity[I];
@@ -538,93 +429,7 @@ inline
     }
 }
 
-    inline
-    void exteriorNumericalFlux(int* rowptr,
-                               int* colind,
-                               const int& isDOFBoundary_u,
-                               const int& isFluxBoundary_u,
-                               const int& isDiffusiveFluxBoundary_u,
-                               const int& forceStrongConditions,
-                               const double n[nSpace],
-                               double* bc_a,
-                               const double& bc_u,
-                               const double& bc_flux_u,
-                               const double& bc_diffusive_flux_u,
-                               double* a,
-                               const double grad_u[nSpace],
-                               const double& u,
-                               const double f[nSpace],
-                               const double bc_f[nSpace],
-                               const double velocity[nSpace],
-                               const double& penalty,
-                               double& flux,
-                               double& flux_adv,
-                               double& flux_diff)
-    {
-      exteriorNumericalAdvectiveFlux(isDOFBoundary_u,
-                                     isFluxBoundary_u,
-                                     forceStrongConditions,
-                                     n,
-                                     bc_flux_u,
-                                     f,
-                                     bc_f,
-                                     velocity,
-                                     flux_adv);
-      exteriorNumericalDiffusiveFlux(rowptr,
-                                     colind,
-                                     isDOFBoundary_u,
-                                     isDiffusiveFluxBoundary_u,
-                                     n,
-                                     bc_a,
-                                     bc_u,
-                                     bc_diffusive_flux_u,
-                                     a,
-                                     grad_u,
-                                     u,
-                                     penalty,
-                                     flux_diff);
-      flux = flux_adv + flux_diff;
-    }
-
-    inline
-    void exteriorNumericalFluxJacobian(const int rowptr[nSpace],
-                                       const int colind[nnz],
-                                       const int& isDOFBoundary_u,
-                                       const int& isFluxBoundary_u,
-                                       const int& isDiffusiveFluxBoundary_u,
-                                       const int& forceStrongConditions,
-                                       const double n[nSpace],
-                                       const double a[nnz],
-                                       const double da[nnz],
-                                       const double grad_u[nSpace],
-                                       const double velocity[nSpace],
-                                       const double grad_v[nSpace],
-                                       const double& v,
-                                       const double& penalty,
-                                       double& fluxJacobian)
-    {
-      double advJacobian = 0.0, diffJacobian = 0.0;
-      exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u,
-                                               isFluxBoundary_u,
-                                               forceStrongConditions,
-                                               n,
-                                               velocity,
-                                               advJacobian);
-      exteriorNumericalDiffusiveFluxDerivative(isDOFBoundary_u,
-                                               isDiffusiveFluxBoundary_u,
-                                               rowptr,
-                                               colind,
-                                               n,
-                                               a,
-                                               da,
-                                               grad_u,
-                                               grad_v,
-                                               v,
-                                               penalty,
-                                               diffJacobian);
-      fluxJacobian = advJacobian*v + diffJacobian;
-    }
-
+    
  void calculateResidual(arguments_dict& args)
     {
       double dt = args.scalar<double>("dt");
@@ -769,9 +574,6 @@ inline
           theta_dof_proj.resize(numDOFs,0.0);
           rho_dof_proj.resize(numDOFs,0.0);
           ML_mass_proj.resize(numDOFs,0.0);
-          // Pre-project the old conservative mass m^n = theta * rho(u^n) * u^n,
-          // along with theta and rho, so the EV entropy and edge sensor can use
-          // nodal conservative data before the main cell loop runs.
           for (int eN=0; eN<nElements_global; eN++)
             for (int k=0; k<nQuadraturePoints_element; k++)
               {
@@ -997,10 +799,6 @@ inline
                                    da);
               q_rho.data()[eN_k] = rho_out;
 
-            //D.data()[eN * nQuadraturePoints_element * nnz + k * nnz] calculates 
-            //the correct starting index for D for the current element eN and 
-            //quadrature point k, considering nnz as the number of non-zero entries for the sparse matrix. This ensures that the values for D are accessed correctly based on the element and quadrature point.
-
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &velocity_old.data()[eN_k_nSpace],
@@ -1132,9 +930,6 @@ inline
                 }
               else if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity)
               {
-                // Conservative EV residual in mass-space:
-                //   R_eta = eta'(m^n) * (m_t + div f(u^n))
-                // with div f(u^n) approximated by dfn · grad(u^n).
                 aux_entropy_residual = m_t;
                 for (int I=0;I<nSpace;I++)
                   aux_entropy_residual += dfn[I]*grad_u_old[I];
@@ -1153,8 +948,6 @@ inline
 
               for(int i=0;i<nDOF_test_element;i++)
                 {
-                  //int eN_k_i=eN_k*nDOF_test_element+i,
-                  //eN_k_i_nSpace = eN_k_i*nSpace,
                   int i_nSpace=i*nSpace;
                   if (STABILIZATION_TYPE==STABILIZATION::TaylorGalerkinEV)
                     {
@@ -1195,23 +988,17 @@ inline
                           STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or 
                           STABILIZATION_TYPE==STABILIZATION::Kuzmin)
                     {
-                      // VECTOR OF ENTROPY RESIDUAL //
                       int eN_i=eN*nDOF_test_element+i;
                       if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) // EV stab
                         {
                           element_entropy_residual[i] += DENTROPY_un*aux_entropy_residual*u_test_dV[i];
                         }
                       elementResidual_u[i] += (u-un)*u_test_dV[i];
-                      ///////////////
-                      // j-th LOOP // To construct transport matrices
-                      ///////////////
+
                       for(int j=0;j<nDOF_trial_element;j++)
                         {
                           int j_nSpace = j*nSpace;
                           int i_nSpace = i*nSpace;
-                          //cek todo, see if we really need elementTransposeTransport
-                          // (can we just swap indices on local transport matrix?)
-                          //or event TransposeTransportMatrix (can we just use pointers?)
                           elementTransport[i][j] +=
                             ck.AdvectionJacobian_weak(dfn,
                                                       u_trial_ref.data()[k*nDOF_trial_element+j],
@@ -1449,15 +1236,7 @@ inline
               //
               bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+
                           (1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
-              // logBoundaryState("boundaryResidual",
-              //                  ebNE,
-              //                  kb,
-              //                  x_ext,
-              //                  y_ext,
-              //                  z_ext,
-              //                  isDOFBoundary_u.data()[ebNE_kb],
-              //                  u_ext,
-              //                  bc_u_ext);
+             
 
                       //
               //
@@ -1517,27 +1296,29 @@ inline
               //
               //calculate the numerical fluxes
               //
-              exteriorNumericalFlux(a_rowptr.data(),
-                                    a_colind.data(),
-                                    isDOFBoundary_u.data()[ebNE_kb],
-                                    isFluxBoundary_u.data()[ebNE_kb],
-                                    isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                    forceStrongConditions,
-                                    normal,
-                                    a_ext,
-                                    bc_u_ext,
-                                    ebqe_bc_flux_u_ext.data()[ebNE_kb],
-                                    ebqe_bc_diffusiveFlux_u_ext.data()[ebNE_kb],
-                                    a_ext,
-                                    grad_u_ext,
-                                    u_ext,
-                                    f_ext,
-                                    bc_f_ext,
-                                    df_ext,
-                                    ebqe_penalty_ext.data()[ebNE_kb],
-                                    flux_ext,
-                                    flux_adv_ext,
-                                    flux_diff_ext);
+              exteriorNumericalAdvectiveFlux(isDOFBoundary_u.data()[ebNE_kb],
+                                             isFluxBoundary_u.data()[ebNE_kb],
+                                             forceStrongConditions,
+                                             normal,
+                                             ebqe_bc_flux_u_ext.data()[ebNE_kb],
+                                             f_ext,
+                                             bc_f_ext,
+                                             df_ext,
+                                             flux_adv_ext);
+              exteriorNumericalDiffusiveFlux(a_rowptr.data(),
+                                             a_colind.data(),
+                                             isDOFBoundary_u.data()[ebNE_kb],
+                                             isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                             normal,
+                                             a_ext,
+                                             bc_u_ext,
+                                             ebqe_bc_diffusiveFlux_u_ext.data()[ebNE_kb],
+                                             a_ext,
+                                             grad_u_ext,
+                                             u_ext,
+                                             ebqe_penalty_ext.data()[ebNE_kb],
+                                             flux_diff_ext);
+              flux_ext = flux_adv_ext + flux_diff_ext;
               double boundary_flow = 0.0;
               for (int I=0; I<nSpace; I++)
                 boundary_flow += normal[I]*df_ext[I];
@@ -1631,21 +1412,27 @@ inline
                         for (int j=0;j<nDOF_trial_element;j++)
                         {
                           int ebN_local_kb_j=ebN_local_kb*nDOF_trial_element+j;
-                          exteriorNumericalFluxJacobian(a_rowptr.data(),
-                                                        a_colind.data(),
-                                                        isDOFBoundary_u.data()[ebNE_kb],
-                                                        isFluxBoundary_u.data()[ebNE_kb],
-                                                        isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                                        forceStrongConditions,
-                                                        normal,
-                                                        a_ext,
-                                                        da_ext,
-                                                        grad_u_ext,
-                                                        df_ext,
-                                                        &u_grad_trial_trace[j*nSpace],
-                                                        u_trial_trace_ref.data()[ebN_local_kb_j],
-                                                        ebqe_penalty_ext.data()[ebNE_kb],
-                                                        difffluxjacobian_ext);
+                          double advJacobian_ext = 0.0, diffJacobian_ext = 0.0;
+                          exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
+                                                                   isFluxBoundary_u.data()[ebNE_kb],
+                                                                   forceStrongConditions,
+                                                                   normal,
+                                                                   df_ext,
+                                                                   advJacobian_ext);
+                          exteriorNumericalDiffusiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
+                                                                   isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                                                   a_rowptr.data(),
+                                                                   a_colind.data(),
+                                                                   normal,
+                                                                   a_ext,
+                                                                   da_ext,
+                                                                   grad_u_ext,
+                                                                   &u_grad_trial_trace[j*nSpace],
+                                                                   u_trial_trace_ref.data()[ebN_local_kb_j],
+                                                                   ebqe_penalty_ext.data()[ebNE_kb],
+                                                                   diffJacobian_ext);
+                          difffluxjacobian_ext = advJacobian_ext*u_trial_trace_ref.data()[ebN_local_kb_j]
+                                                 + diffJacobian_ext;
                           const double localFluxTransportContribution =
                             difffluxjacobian_ext*u_test_dS[i];
                           fluxTransport[i][j] += localFluxTransportContribution;
@@ -1778,12 +1565,7 @@ inline
               double ith_dissipative_term_mass = 0;
               double ith_low_order_dissipative_term_mass = 0;
               double ith_flux_term_mass = 0;
-              // Low-order flux assembled by Richards-style upwinding: the
-              // advective coefficient is evaluated at the upwind end of each
-              // edge, giving a strict m-space DMP for the low-order solution
-              // without any dLow lift. Only used to build mLow; the high-order
-              // path keeps the original Galerkin assembly so the FCT
-              // antidiffusion can still recover sharp features.
+              
               double ith_upwind_flux_term_mass = 0;
               double dLii = 0.;
 
@@ -1800,17 +1582,10 @@ inline
                   const double dmdu_ij = 0.5*(dmdu_i + dmdu_j);
                   const double delta_u_mass = (mj_mass - mi_mass)/fmax(1.0e-14, dmdu_ij);
 
-                  // TransportMatrix integrates dfn = (rho + u*drho/du)*v and
-                  // DiffusionMatrix integrates a = theta*rho*Disp, so T_ij*u_j and
-                  // D_ij*u_j are already m-space fluxes; multiplying by dmdu_i
-                  // would double-count theta*rho.
-                  ith_flux_term_mass += (TransportMatrix[ij] + DiffusionMatrix[ij])*uj_mass;
+                                    ith_flux_term_mass += (TransportMatrix[ij] + DiffusionMatrix[ij])*uj_mass;
 
                   if (i != j) {
-                    // Richards-style upwind for the low-order step (Richards.h
-                    // calculateResidual_entropy_viscosity, lines ~2206-2231).
-                    // Evaluate the advective+dispersive coefficient at the
-                    // upwind end. -T_ij*delta_u<=0 picks i as upwind, else j.
+
                     const double T_ij_val = TransportMatrix[ij];
                     const double D_ij_val = DiffusionMatrix[ij];
                     const double delta_u  = uj_mass - ui_mass;
@@ -1818,23 +1593,17 @@ inline
                     const double D_neg    = fmax(0.0, -D_ij_val);
                     const double rho_upwind =
                       (-T_ij_val * delta_u <= 0.0) ? rho_i : rho_j;
-                    // Inflow into i (Richards convention) = T_neg*(rho_up/rho_f)*delta_u.
-                    // TADR ith_*_flux_term_mass is OUTFLOW from i, so negate.
                     ith_upwind_flux_term_mass +=
                       -T_neg * (rho_upwind / rho_f) * delta_u
                       -D_neg * delta_u;
                   }
 
-                  if (i != j) //NOTE: there is really no need to check for i!=j (see formula for ith_dissipative_term)
+                  if (i != j) 
                     {
-                      // artificial compression
                       double solij = 0.5*(ui_mass+uj_mass);
                       double Compij = cK*fmax(solij*(1.0-solij),0.0)/(fabs(ui_mass-uj_mass)+1E-14);
-                      // first-order dissipative operator
                       dLowij = fmax(fabs(TransportMatrix[ij]),fabs(TransposeTransportMatrix[ij]));
-                      //std::cout << dLowij;
-                      //dLij = fmax(0.,fmax(psi[i]*TransportMatrix[ij], // Approach by S. Badia
-                      //              psi[j]*TransposeTransportMatrix[ij]));
+
                       dLij = dLowij*fmax(psi[i],psi[j]); // Approach by JLG & BP
                       
                       if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) //EV Stab
@@ -1874,16 +1643,7 @@ inline
               const double boundary_integral_mass = boundary_integral[i];
               // compute edge_based_cfl
               edge_based_cfl.data()[i] = 2.*fabs(dLii)/mi;
-              // Debugging output to check values
-              //std::cout << "Element: " << i << ", dLii: " << fabs(dLii) << ", mi: " << mi << std::endl;
-
-              // mLow uses the upwind low-order flux. The graph-Laplacian
-              // dissipation term ith_low_order_dissipative_term_mass is no
-              // longer subtracted here: the upwinding already encodes the
-              // dissipation needed for m-space DMP, and adding the
-              // graph-Laplacian on top would double-dissipate. The dLow values
-              // are still computed and exported (dLow[ij], dt_times_dH_minus_dL)
-              // because the FCT antidiffusion construction below depends on them.
+              
               const double mLow_i = mi_mass - dt/mi*(ith_upwind_flux_term_mass
                                                      + boundary_integral_mass);
               uLow[i] = inversevaluateCoefficients(mLow_i, theta_i, rho_f, rho_s);
@@ -2342,15 +2102,7 @@ inline
                   //load the boundary values
                   //
                   bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+(1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
-                  // logBoundaryState("boundaryJacobian",
-                  //                  ebNE,
-                  //                  kb,
-                  //                  x_ext,
-                  //                  y_ext,
-                  //                  z_ext,
-                  //                  isDOFBoundary_u.data()[ebNE_kb],
-                  //                  u_ext,
-                  //                  bc_u_ext);
+          
                   //
                   //
                   //calculate the internal and external trace of the pde coefficients
@@ -2418,21 +2170,27 @@ inline
                       {
                         int ebN_local_kb_j=ebN_local_kb*nDOF_trial_element+j;
   
-                        exteriorNumericalFluxJacobian(a_rowptr.data(),
-                                                      a_colind.data(),
-                                                      isDOFBoundary_u.data()[ebNE_kb],
-                                                      isFluxBoundary_u.data()[ebNE_kb],
-                                                      isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                                      forceStrongConditions,
-                                                      normal,
-                                                      a_ext,
-                                                      da_ext,
-                                                      grad_u_ext,
-                                                      df_ext,
-                                                      &u_grad_trial_trace[j*nSpace],
-                                                      u_trial_trace_ref.data()[ebN_local_kb_j],
-                                                      ebqe_penalty_ext.data()[ebNE_kb],
-                                                      difffluxjacobian_ext);
+                        double advJacobian_ext = 0.0, diffJacobian_ext = 0.0;
+                        exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
+                                                                 isFluxBoundary_u.data()[ebNE_kb],
+                                                                 forceStrongConditions,
+                                                                 normal,
+                                                                 df_ext,
+                                                                 advJacobian_ext);
+                        exteriorNumericalDiffusiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
+                                                                 isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                                                 a_rowptr.data(),
+                                                                 a_colind.data(),
+                                                                 normal,
+                                                                 a_ext,
+                                                                 da_ext,
+                                                                 grad_u_ext,
+                                                                 &u_grad_trial_trace[j*nSpace],
+                                                                 u_trial_trace_ref.data()[ebN_local_kb_j],
+                                                                 ebqe_penalty_ext.data()[ebNE_kb],
+                                                                 diffJacobian_ext);
+                        difffluxjacobian_ext = advJacobian_ext*u_trial_trace_ref.data()[ebN_local_kb_j]
+                                               + diffJacobian_ext;
                         fluxJacobian_u_u[i][j] += difffluxjacobian_ext*u_test_dS[i];
                       }//j
 
@@ -2539,13 +2297,7 @@ inline
             ////////////////////////
             // COMPUTE THE BOUNDS //
             ////////////////////////
-            // Bounds patched over the LOW-ORDER solution (Richards.h Strategy 1).
-            // Because uLow[i] is in its own patch, mini <= uLow[i] <= maxi by
-            // construction, so Q_pos = M_i*(m(maxi) - m(uLow[i])) >= 0 and
-            // Q_neg = M_i*(m(mini) - m(uLow[i])) <= 0 unconditionally. The
-            // Zalesak limiter is well-posed without any clamping or [0,1]
-            // floor on R, mass is conserved exactly, and m^{n+1} respects
-            // local monotonicity relative to uLow.
+            
             mini = fmin(mini,uLowj);
             maxi = fmax(maxi,uLowj);
             const double theta_j = theta_dof[j];
@@ -2556,9 +2308,7 @@ inline
             // i-th row of flux correction matrix
             if (STABILIZATION_TYPE == STABILIZATION::Kuzmin)
               {
-                // Use exact m-space difference (mLow_i - mLow_j) instead of
-                // theta_ij*rho_ij*(uLow_i-uLow_j) so the antidiffusion is in the
-                // same space as Q_pos/Q_neg and the Zalesak limiter is unbiased.
+              
                 FluxCorrectionMatrix[ij] = dt*(MassMatrix.data()[ij]*(uDotLowi-uDotLowj)
                                                + dLow.data()[ij]*(mLowi-mLowj));
               }
@@ -2566,9 +2316,6 @@ inline
               {
                 double ML_minus_MC =
                   (LUMPED_MASS_MATRIX == 1 ? 0. : (i==j ? 1. : 0.)*lumped_volume - MassMatrix.data()[ij]);
-                // Use exact m-space difference (m^n_j - m^n_i) instead of
-                // theta_ij*rho_ij*(u^n_j-u^n_i) so both halves of FluxCorrectionMatrix
-                // are in m-space, consistent with the Q_pos/Q_neg bounds below.
                 FluxCorrectionMatrix[ij] = ML_minus_MC * (solHmj-solnmj - (solHmi-solnmi))
                   + dt_times_dH_minus_dL.data()[ij]*(solnmj-solnmi);
               }
@@ -2578,9 +2325,6 @@ inline
           }//j
         const double Qposi = lumped_volume*(theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*maxi)*maxi - mLowi);
         const double Qnegi = lumped_volume*(theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*mini)*mini - mLowi);
-        // Clip R to [0,1]: if uLow already overshoots maxi (Qpos<0) or undershoots
-        // mini (Qneg>0), Q/P would be negative and the limiter would amplify the
-        // violation. Clipping to 0 disables the antidiffusive flux on that side.
         Rpos[i] = ((Pposi==0) ? 1. : fmax(0.0, fmin(1.0,Qposi/Pposi)));
         Rneg[i] = ((Pnegi==0) ? 1. : fmax(0.0, fmin(1.0,Qnegi/Pnegi)));
       }//i
