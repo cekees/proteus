@@ -953,7 +953,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.mLow = np.zeros(self.u[0].dof.shape, 'd')
         self.mHigh = np.zeros(self.u[0].dof.shape, 'd')
         self.mDotLow = np.zeros(self.u[0].dof.shape, 'd')
-        self.mDotHigh = np.zeros(self.u[0].dof.shape, 'd')
         self.fluxCorrection = np.zeros(self.u[0].dof.shape, 'd')
         self.mn = np.zeros(self.u[0].dof.shape, 'd')
         self.anb_seepage_flux_n = np.zeros(self.u[0].dof.shape, 'd')
@@ -1065,7 +1064,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["mn"] = self.mn
         argsDict["mHigh"] = self.mHigh
         argsDict["mLow"] = self.mLow
-        argsDict["mDotHigh"] = self.mDotHigh
         argsDict["fluxCorrection"] = self.fluxCorrection
         argsDict["mDotLow"] = self.mDotLow
         argsDict["limited_solution"] = limited_solution
@@ -1520,7 +1518,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["dLow"] = self.dLow
         argsDict["fluxMatrix"] = self.fluxMatrix
         argsDict["mDotLow"] = self.mDotLow
-        argsDict["mDotHigh"] = self.mDotHigh
         argsDict["fluxCorrection"] = self.fluxCorrection
         limited_solution = np.zeros((len(rowptr) - 1),'d')
         argsDict["limited_solution"] = limited_solution

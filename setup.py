@@ -219,7 +219,7 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'mphase_co2.cmphase_co2',
         sources=['proteus/mphase_co2/cmphase_co2.cpp'],
-        depends=['proteus/mphase_co2/mphase_co2.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        depends=['proteus/mphase_co2/mphase_co2.h', 'proteus/mphase_co2/psk_models.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
         language='c++',
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],

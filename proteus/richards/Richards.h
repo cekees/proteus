@@ -1157,7 +1157,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
   xt::pyarray<double> &mn                        = args.array<double>("mn");    // DOFs at time tn
   xt::pyarray<double> &mHigh                     = args.array<double>("mHigh"); // high-order mass at t^{n+1}
   xt::pyarray<double> &mLow                      = args.array<double>("mLow");  // low-order mass at t^{n+1}
-  xt::pyarray<double> &mDotHigh                  = args.array<double>("mDotHigh");
   xt::pyarray<double> &mDotLow                   = args.array<double>("mDotLow");
   xt::pyarray<double> &limited_solution          = args.array<double>("limited_solution");
   xt::pyarray<int>    &csrRowIndeces_DofLoops    = args.array<int>("csrRowIndeces_DofLoops");
@@ -1546,7 +1545,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &dLow                 = args.array<double>("dLow");
     xt::pyarray<double> &fluxMatrix           = args.array<double>("fluxMatrix");
     xt::pyarray<double> &mDotLow              = args.array<double>("mDotLow");
-    xt::pyarray<double> &mDotHigh              = args.array<double>("mDotHigh");
     xt::pyarray<double> &mLow                 = args.array<double>("mLow");
     xt::pyarray<double> &dt_times_fH_minus_fL = args.array<double>("dt_times_fH_minus_fL");
     xt::pyarray<double> &min_m_bc             = args.array<double>("min_m_bc");
@@ -2264,16 +2262,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       mLow.data()[i] = m;
       globalResidual.data()[i] += bc_mask.data()[i] * (MLi * (m - mn.data()[i]) / dt - ith_flux_term);
       globalJacobian.data()[ii] += bc_mask.data()[i] * (MLi * dm / dt + J_ii) + (1.0 - bc_mask.data()[i]);
-    }
-    ij = 0;
-    for (int i = 0; i < numDOFs; i++) {
-      mDotHigh[i] = cflux[i];
-      for (int offset = csrRowIndeces_DofLoops.data()[i]; offset < csrRowIndeces_DofLoops.data()[i + 1]; offset++) {
-        int j = csrColumnOffsets_DofLoops.data()[offset];
-        mDotHigh[i] -= MC.data()[ij]*cflux[j]/ML.data()[j];
-        ij +=1;
-      }
-      mDotHigh[i] = (cflux[i] + mDotHigh[i])/ML.data()[i];
     }
     if (STABILIZATION_TYPE == STABILIZATION::Implicit_FCT) {
       FCTStep(args);
