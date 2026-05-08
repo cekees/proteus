@@ -236,10 +236,23 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  gravity,
                  density,
                  beta,
+                 # Phase B Step 2: gas-phase density (constant for now).
+                 # rho_n=1.0 keeps the (1,1) mass-matrix block at the same
+                 # magnitude as Step 1; Step 3 will turn on real ρ_n(p_n).
+                 rho_n=1.0,
                  diagonal_conductivity=True,
                  getSeepageFace=None,
                  density_model=None,
                  DENSITY_MODEL=None,
+                 # PSK constitutive model: 'VGM' (van Genuchten-Mualem) or 'BC' (Brooks-Corey-Burdine)
+                 PSK_TYPE='VGM',
+                 # Phase B Step 3e.1a: wetting-equation formulation.
+                 #   'A' (default) - Richards form: theta_w = theta_w(psi_C),
+                 #                   k_rw = k_rw(psi_C). Component 1 (S_w) decoupled.
+                 #   'B'           - formulation B: theta_w = phi*S_w (= phi*u_v),
+                 #                   k_rw = k_rw(u_v). Couples wetting eq to u_v
+                 #                   (introduces (0,1) Jacobian cross-block).
+                 FORMULATION='A',
                 # FOR EDGE BASED EV
                  STABILIZATION_TYPE='Implicit_FCT',
                  ENTROPY_TYPE=2,  # logarithmic
@@ -272,15 +285,23 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         # The C++ residual writes the (S_w - S_w_old)/dt mass contribution.
         variableNames=['pressure_head', 'S_w']
         nc=2
+        # Phase B Step 3c: gas equation gains a diffusion term -div(a_n grad u_w).
+        # Declaring diffusion[1][0][1]='nonlinear' and potential[1][0]='u'
+        # makes the framework allocate (1,0) Jacobian sparsity (gas-eq dependence
+        # on the wetting pressure gradient via a_n) and the cj=1 nonlinearity
+        # tag also adds the coefficient sensitivity contribution to (1,1).
         mass     ={0:{0:'nonlinear'}, 1:{1:'linear'}}
-        advection={0:{0:'nonlinear'}}
-        diffusion={0:{0:{0:'nonlinear'}}}
-        potential={0:{0:'u'}, 1:{1:'u'}}
+        advection={0:{0:'nonlinear'}, 1:{1:'nonlinear'}}
+        diffusion={0:{0:{0:'nonlinear'}},
+                   1:{0:{1:'nonlinear'}}}
+        potential={0:{0:'u'}, 1:{0:'u', 1:'u'}}
         reaction ={0:{0:'linear'}}
         hamiltonian={}
         self.getSeepageFace=getSeepageFace
         self.gravity=gravity
         self.rho = density
+        # Phase B Step 2: gas-phase density (constant; will become ρ_n(p_n) in Step 3+).
+        self.rho_n = rho_n
         self.beta=beta
         self.vgm_n_types = vgm_n_types
         self.vgm_alpha_types = vgm_alpha_types
@@ -298,8 +319,13 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.diagonal_conductivity = diagonal_conductivity
         self.Ksw_types_in = Ksw_types
         if self.diagonal_conductivity:
-            sparseDiffusionTensors = {(0,0):(np.arange(self.nd+1,dtype='i'),
-                                             np.arange(self.nd,dtype='i'))}
+            # Phase B Step 3c: add (1,0) cross-block sparsity for the gas-eq diffusion
+            # term -div(a_n grad u_w). Same diagonal-tensor layout as (0,0) since a_n
+            # reuses the wetting Ks structure (with rho_n / k_rn factors applied at QP).
+            _diag_rowptr = np.arange(self.nd+1, dtype='i')
+            _diag_colind = np.arange(self.nd, dtype='i')
+            sparseDiffusionTensors = {(0,0): (_diag_rowptr, _diag_colind),
+                                      (1,0): (_diag_rowptr, _diag_colind)}
 
             assert len(Ksw_types.shape) in [1,2], "if diagonal conductivity true then Ksw_types scalar or vector of diagonal entries"
             #allow scalar input Ks
@@ -321,18 +347,41 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                 assert Ksw_types.shape[1] == self.nd**2
                 self.Ksw_types = Ksw_types
 
-        stabilization_types = {"Galerkin":0, 
-                               "EV_Stab":1, 
-                               "EntropyViscosity":2, 
+        stabilization_types = {"Galerkin":0,
+                               "EV_Stab":1,
+                               "EntropyViscosity":2,
                                "Implicit_FCT":3}
         try:
             if isinstance(STABILIZATION_TYPE, int):
                 STABILIZATION_TYPE = [key for key, value in stabilization_types.items() if value == STABILIZATION_TYPE][0]
-            
+
             self.STABILIZATION_TYPE = stabilization_types[STABILIZATION_TYPE]
         except:
             raise ValueError("STABILIZATION_TYPE must be one of "+str(stabilization_types.keys())+" not "+STABILIZATION_TYPE)
-        
+
+        # PSK closure selector: 0 = VGM (van Genuchten-Mualem), 1 = BC (Brooks-Corey-Burdine).
+        # The closure functions for both live in psk_models.h. evaluateCoefficients in
+        # mphase_co2.h dispatches on PSK_TYPE; not yet wired for BC -> VGM is the only
+        # currently exercised path.
+        psk_types = {"VGM": 0, "BC": 1}
+        try:
+            if isinstance(PSK_TYPE, int):
+                PSK_TYPE = [key for key, value in psk_types.items() if value == PSK_TYPE][0]
+            self.PSK_TYPE = psk_types[PSK_TYPE]
+        except:
+            raise ValueError("PSK_TYPE must be one of " + str(list(psk_types.keys())) + " not " + str(PSK_TYPE))
+
+        # Phase B Step 3e.1a: formulation flag for the wetting equation.
+        # 0 = A (Richards form, current default; gas eq stays decoupled when u_v = 1).
+        # 1 = B (saturation-based wetting; couples to u_v, introduces (0,1) Jacobian).
+        formulation_types = {"A": 0, "B": 1}
+        try:
+            if isinstance(FORMULATION, int):
+                FORMULATION = [key for key, value in formulation_types.items() if value == FORMULATION][0]
+            self.FORMULATION = formulation_types[FORMULATION]
+        except:
+            raise ValueError("FORMULATION must be one of " + str(list(formulation_types.keys())) + " not " + str(FORMULATION))
+
         # EDGE BASED (AND ENTROPY) VISCOSITY
         self.LUMPED_MASS_MATRIX = LUMPED_MASS_MATRIX
         self.MONOLITHIC = MONOLITHIC
@@ -545,6 +594,18 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             c[('m', 1)][:] = c[('u', 1)]
         if ('dm', 1, 1) in c:
             c[('dm', 1, 1)][:] = 1.0
+        # Phase B Step 3c: zero out the (1,0) cross-block coefficient arrays.
+        # The C++ residual/Jacobian assembly fills these with the actual gas
+        # Darcy contributions; this evaluate() fill is just so the framework
+        # has well-defined values during sparsity setup / NaN checks.
+        if ('a', 1, 0) in c:
+            c[('a', 1, 0)][:] = 0.0
+        if ('da', 1, 0, 1) in c:
+            c[('da', 1, 0, 1)][:] = 0.0
+        if ('df', 1, 1) in c:
+            c[('df', 1, 1)][:] = 0.0
+        if ('f', 1) in c:
+            c[('f', 1)][:] = 0.0
     
     # def postStep(self, t, firstStep=False):
     #     if not self.outputQuantDOFs:
@@ -1196,6 +1257,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["stride_u"] = self.stride[0]
         argsDict["anb_seepage_flux_n"]= self.anb_seepage_flux_n
         argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
+        argsDict["PSK_TYPE"] = self.coefficients.PSK_TYPE
+        argsDict["FORMULATION"] = self.coefficients.FORMULATION
         self.mphase_co2.FCTStep(argsDict)
         old_dof = self.u[0].dof.copy()
         self.invert(u=limited_solution, ulow=old_dof)
@@ -1565,6 +1628,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
         argsDict["rho"] = self.coefficients.rho
+        argsDict["rho_n"] = self.coefficients.rho_n
         argsDict["beta"] = self.coefficients.beta
 
         argsDict["q_rho"]= self.q['rho']
@@ -1620,6 +1684,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # for turn 3 when calculateJacobian gains the (1,1) diagonal block).
         argsDict["csrRowIndeces_v_v"]      = self.csrRowIndeces[(1, 1)]
         argsDict["csrColumnOffsets_v_v"]   = self.csrColumnOffsets[(1, 1)]
+        # Phase B Step 3c: (1,0) cross-block CSR maps for gas-eq diffusion against grad u_w.
+        argsDict["csrRowIndeces_v_w"]      = self.csrRowIndeces[(1, 0)]
+        argsDict["csrColumnOffsets_v_w"]   = self.csrColumnOffsets[(1, 0)]
         argsDict["csrColumnOffsets_eb_v_v"] = self.csrColumnOffsets_eb[(1, 1)]
         argsDict["globalResidual"] = r
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
@@ -1682,6 +1749,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["STABILIZATTION_TYPE"] = self.coefficients.STABILIZATION_TYPE
         argsDict["ENTROPY_TYPE"] = self.coefficients.ENTROPY_TYPE
+        argsDict["PSK_TYPE"] = self.coefficients.PSK_TYPE
+        argsDict["FORMULATION"] = self.coefficients.FORMULATION
         # FLUX CORRECTED TRANSPORT
         argsDict["dLow"] = self.dLow
         argsDict["fluxMatrix"] = self.fluxMatrix
@@ -1857,6 +1926,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
         argsDict["rho"] = self.coefficients.rho
+        argsDict["rho_n"] = self.coefficients.rho_n
         argsDict["beta"] = self.coefficients.beta
         argsDict["gravity"] = self.coefficients.gravity
         argsDict["alpha"] = self.coefficients.vgm_alpha_types
@@ -1926,6 +1996,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["delta_x_ij"] = self.delta_x_ij
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["ENTROPY_TYPE"] = self.coefficients.ENTROPY_TYPE
+        argsDict["PSK_TYPE"] = self.coefficients.PSK_TYPE
+        argsDict["FORMULATION"] = self.coefficients.FORMULATION
         argsDict["dLow"] = self.dLow
         argsDict["fluxMatrix"] = self.fluxMatrix
         argsDict["mDotLow"] = self.mDotLow
@@ -1940,6 +2012,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
         argsDict["freeDOFToNode_u"] = self.freeDOFToNode_u
         argsDict["USE_NEWTON_INVERT"] = 1 if (self.coefficients.FCT==1 and self.coefficients.nd > 1) else 0
+        argsDict["PSK_TYPE"] = self.coefficients.PSK_TYPE
+        argsDict["FORMULATION"] = self.coefficients.FORMULATION
         self.mphase_co2.invert(argsDict)
      
     def getJacobian(self,jacobian):
@@ -1982,6 +2056,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
         argsDict["rho"] = self.coefficients.rho
+        argsDict["rho_n"] = self.coefficients.rho_n
         argsDict["beta"] = self.coefficients.beta
 
         argsDict["q_rho"]= self.q['rho']
@@ -2013,6 +2088,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["dt"] = self.timeIntegration.dt
         argsDict["csrRowIndeces_v_v"] = self.csrRowIndeces[(1, 1)]
         argsDict["csrColumnOffsets_v_v"] = self.csrColumnOffsets[(1, 1)]
+        # Phase B Step 3c: (1,0) cross-block CSR maps.
+        argsDict["csrRowIndeces_v_w"] = self.csrRowIndeces[(1, 0)]
+        argsDict["csrColumnOffsets_v_w"] = self.csrColumnOffsets[(1, 0)]
         argsDict["u_dof_v"] = self.u[1].dof
         argsDict["u_dof_v_old"] = self.u_dof_v_old if self.u_dof_v_old is not None else self.u[1].dof
         argsDict["offset_v"] = self.offset[1]
@@ -2031,6 +2109,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0,0)]
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["VMS"] = self.coefficients.VMS
+        argsDict["PSK_TYPE"] = self.coefficients.PSK_TYPE
+        argsDict["FORMULATION"] = self.coefficients.FORMULATION
         #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
 
         self.calculateJacobian(argsDict)
