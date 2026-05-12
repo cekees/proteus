@@ -29,12 +29,12 @@ class ThetaScheme(TimeIntegration.BackwardEuler):
         n0 = self.transport.u_dof_old.size
         self.transport.u_dof_old[:] = u_arr[offset0:offset0 + stride0 * n0:stride0]
         if getattr(self.transport, 'nc', 1) >= 2:
-            u_dof_v_old = getattr(self.transport, 'u_dof_v_old', None)
-            if u_dof_v_old is not None:
+            u_dof_n_old = getattr(self.transport, 'u_dof_n_old', None)
+            if u_dof_n_old is not None:
                 offset1 = self.transport.offset[1]
                 stride1 = self.transport.stride[1]
-                n1 = u_dof_v_old.size
-                u_dof_v_old[:] = u_arr[offset1:offset1 + stride1 * n1:stride1]
+                n1 = u_dof_n_old.size
+                u_dof_n_old[:] = u_arr[offset1:offset1 + stride1 * n1:stride1]
 class RKEV(TimeIntegration.SSP):
     from proteus import TimeIntegration
     """
@@ -272,21 +272,22 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.SC=SC
         self.anb_seepage_flux= 0.00
         #self.anb_seepage_flux_n =0.0
-        # nc=2, primary vars (pressure_head, S_w).
-        # Component 1 (S_w) is the trivial gas equation d(S_w)/dt = 0 in Step 1,
-        # so it has only a linear mass term and no flux/diffusion/reaction.
-        # The C++ residual writes the (S_w - S_w_old)/dt mass contribution.
-        variableNames=['pressure_head', 'S_w']
+        # nc=2, primary vars (p_w, S_n).
+        # u[0] = p_w  (wetting-phase pressure in Pa)
+        # u[1] = S_n  (non-wetting saturation in [0, 1 - S_wr])
+        # Compressibility beta is in 1/Pa and the user-supplied Ksw_types
+        # array is interpreted as K/mu_w in 1/(Pa*s).
+        variableNames=['p_w', 'S_n']
         nc=2
         # gas equation gains a diffusion term -div(a_n grad u_w).
         # Declaring diffusion[1][0][1]='nonlinear' and potential[1][0]='u'
         # makes the framework allocate (1,0) Jacobian sparsity (gas-eq dependence
         # on the wetting pressure gradient via a_n) and the cj=1 nonlinearity
         # tag also adds the coefficient sensitivity contribution to (1,1).
-        # (0,1) cross-block tags: wetting eq depends on u_v through
-        #   m_w via theta_w(u_v) -> mass[0][1]='nonlinear'
-        #   f_w via k_rw(u_v)    -> advection[0][1]='nonlinear'
-        #   a_w via k_rw(u_v)    -> diffusion[0][0][1]='nonlinear'
+        # (0,1) cross-block tags: wetting eq depends on u_n through
+        #   m_w via theta_w(u_n) -> mass[0][1]='nonlinear'
+        #   f_w via k_rw(u_n)    -> advection[0][1]='nonlinear'
+        #   a_w via k_rw(u_n)    -> diffusion[0][0][1]='nonlinear'
         mass     ={0:{0:'nonlinear', 1:'nonlinear'}, 1:{1:'linear'}}
         advection={0:{0:'nonlinear', 1:'nonlinear'}, 1:{1:'nonlinear'}}
         diffusion={0:{0:{0:'nonlinear', 1:'nonlinear'}},
@@ -319,7 +320,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             # add (1,0) cross-block sparsity for the gas-eq diffusion
             # term -div(a_n grad u_w). Same diagonal-tensor layout as (0,0) since a_n
             # reuses the wetting Ks structure (with rho_n / k_rn factors applied at QP).
-            # add (0,1) cross-block tensor (a_w depends on u_v via k_rw).
+            # add (0,1) cross-block tensor (a_w depends on u_n via k_rw).
             # Same diagonal layout.
             _diag_rowptr = np.arange(self.nd+1, dtype='i')
             _diag_colind = np.arange(self.nd, dtype='i')
@@ -371,18 +372,18 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         except:
             raise ValueError("PSK_TYPE must be one of " + str(list(psk_types.keys())) + " not " + str(PSK_TYPE))
 
-        # Gap 3 guard: Implicit_FCT (=3) is not supported. The FCT pipeline
-        # inverts m -> u via the retention curve, but m carries information
-        # about u_v (saturation), not u (pressure head), so the inverted u is
-        # meaningless. Use Galerkin (=0) or EntropyViscosity (=2) until the FCT
-        # pipeline is reworked to target u_v. See mphase_co2.h:invert().
+        # Implicit_FCT (=3) is not supported in the (p_w, S_n) formulation.
+        # The FCT pipeline would invert m_w to recover u_w, but m_w now
+        # depends on BOTH p_w and S_n (and is independent of p_w when beta=0),
+        # so the inversion is ill-posed. The C++ invert() throws if reached;
+        # this gate fails earlier with a clearer message.
         if self.STABILIZATION_TYPE == 3:
             raise ValueError(
-                "STABILIZATION_TYPE='Implicit_FCT' is not supported: the FCT "
-                "m->u inversion uses the retention curve, but m no longer "
-                "determines u in this two-phase formulation. Use "
-                "STABILIZATION_TYPE='Galerkin' or 'EntropyViscosity'. "
-                "See Gap 3 in mphase_co2.h:invert() for details."
+                "STABILIZATION_TYPE='Implicit_FCT' is not supported in the "
+                "(p_w, S_n) two-phase formulation: the wetting mass m_w = "
+                "rho_w(p_w)*phi*theta_w(1-u_n) does not uniquely determine "
+                "p_w, so the FCT m->u inversion is ill-posed. Use "
+                "STABILIZATION_TYPE='Galerkin' or 'EntropyViscosity'."
             )
 
         # EDGE BASED (AND ENTROPY) VISCOSITY
@@ -400,7 +401,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         # (comp-0 + comp-1 each sized N), u is 2N and u[0].dof is N, so the
         # broadcast crashes. We force self.FCT = False so the framework hook
         # never fires; the C++ FCT pipeline runs inside calculateResidual_
-        # entropy_viscosity via the FCT_v argsDict flag, gated by
+        # entropy_viscosity via the FCT_n argsDict flag, gated by
         # _fct_requested below.
         self._fct_requested = bool(FCT)
         self.FCT = False
@@ -603,13 +604,19 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             import pdb
             pdb.set_trace()
 
-        # ---- Component 1 (S_w) trivial gas equation: m_1 = S_w, dm_1/du_1 = 1 ----
-        # Step 1 baseline: no flux, no source, no coupling. The C++ residual
-        # mirrors this; this fill is for framework bookkeeping only.
+        # ---- Component 1 (S_n) framework bookkeeping fill -----------------
+        # The real gas residual is assembled in C++; this fill writes the
+        # correctly-scaled placeholder so any downstream framework code that
+        # consumes (m,1)/(dm,1,1) sees physically consistent values rather
+        # than a unit-mass shape.
+        # Material 0 is used as the representative; if multiple materials are
+        # in play, the C++ assembly recomputes per QP and overrides this.
+        phi_rho_n = float((self.thetaR_types[0] + self.thetaSR_types[0])
+                          * self.rho_n)
         if ('m', 1) in c and ('u', 1) in c:
-            c[('m', 1)][:] = c[('u', 1)]
+            c[('m', 1)][:] = phi_rho_n * c[('u', 1)]
         if ('dm', 1, 1) in c:
-            c[('dm', 1, 1)][:] = 1.0
+            c[('dm', 1, 1)][:] = phi_rho_n
         # zero out the (1,0) cross-block coefficient arrays.
         # The C++ residual/Jacobian assembly fills these with the actual gas
         # Darcy contributions; this evaluate() fill is just so the framework
@@ -637,7 +644,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
     #         return {}
     #     if (self.model is None or
     #             ('velocity_couple', 0) not in self.model.q or
-    #             ('grad(u_v)', 0) not in self.model.q):
+    #             ('grad(u_n)', 0) not in self.model.q):
     #         return {}
 
     #     mpicomm = self._get_mpi_comm()
@@ -649,7 +656,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
 
     #     qcoords_local = self._get_q_coordinates().reshape((-1, 3))
     #     qv_local = np.asarray(self.model.q[('velocity_couple', 0)][:n_owned]).reshape((-1, nSpace))
-    #     qgrad_local = np.asarray(self.model.q[('grad(u_v)', 0)][:n_owned]).reshape((-1, nSpace))
+    #     qgrad_local = np.asarray(self.model.q[('grad(u_n)', 0)][:n_owned]).reshape((-1, nSpace))
 
     #     if not hasattr(self, '_wrote_q_coords_once'):
     #         qcoords_all = mpicomm.gather(qcoords_local, root=0)
@@ -769,9 +776,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             for ci in range(1,coefficients.nc):
                 assert self.u[ci].femSpace.__class__.__name__ == self.u[0].femSpace.__class__.__name__, "to reuse_test_trial_quad all femSpaces must be the same!"
         self.u_dof_old = None
-        # previous-step DOFs for component 1 (S_w).
+        # previous-step DOFs for component 1 (S_n).
         # Filled lazily on first getResidual call from u[1].dof (the IC).
-        self.u_dof_v_old = None
+        self.u_dof_n_old = None
         ## Simplicial Mesh
         self.mesh = self.u[0].femSpace.mesh #assume the same mesh for  all components for now
         self.testSpace = testSpaceDict
@@ -938,7 +945,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.q[('grad(phi)',0)] = self.q[('u',0)]
         self.q[('dphi',0,0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,),'d')
         self.q[('da',0,0,0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,),'d')
-        self.q[('grad(u_v)',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')
+        # q_velocity scratch buffer: the C++ kernel writes grad(u_w) here
+        # (the wetting-phase pressure gradient at QPs) via the "q_velocity"
+        # argsDict key. Despite the historical key name including u_n, this
+        # is NOT the gradient of the non-wetting saturation -- it is a
+        # diagnostic for the wetting-pressure gradient.
+        self.q[('q_velocity_buf',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')
         self.q[('velocity',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')
         self.q[('velocity_couple',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.nSpace_global),'d')      
         self.q[('m',0)] = self.q[('u',0)].copy()
@@ -965,7 +977,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.q['rho'][:] = self.coefficients.rho
         self.ebqe['rho'][:] = self.coefficients.rho
 
-        # ---- Allocate component-1 (S_w) quadrature arrays ----
+        # ---- Allocate component-1 (S_n) quadrature arrays ----
         # The framework's TimeIntegration.BackwardEuler iterates over nc and
         # reads q[('m', ci)] for each ci, so component-1 arrays must exist.
         # All trivial-mass equation arrays are sized identically to component 0.
@@ -1099,9 +1111,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.mDotLow = np.zeros(self.u[0].dof.shape, 'd')
         self.fluxCorrection = np.zeros(self.u[0].dof.shape, 'd')
         self.mn = np.zeros(self.u[0].dof.shape, 'd')
-        # Component-1 (S_w) low-order EV buffers.
-        self.mn_v        = np.zeros(self.u[1].dof.shape, 'd')
-        self.quantDOFs_v = np.zeros(self.u[1].dof.shape, 'd')
+        # Component-1 (S_n) low-order EV buffers.
+        self.mn_n        = np.zeros(self.u[1].dof.shape, 'd')
+        self.quantDOFs_n = np.zeros(self.u[1].dof.shape, 'd')
         self.anb_seepage_flux_n = np.zeros(self.u[0].dof.shape, 'd')
         self.freeDOFMaterialTypes = np.zeros((self.nFreeDOF_global[0],), 'i')
         self.freeDOFToNode_u = -np.ones((self.nFreeDOF_global[0],), 'i')
@@ -1132,24 +1144,24 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.comp0_rowptr = None
         self.comp0_colind = None
         self.comp0_full_offsets = None
-        # Component-1 (S_w) compact CSR for the (1,1) DOF graph used by the
+        # Component-1 (S_n) compact CSR for the (1,1) DOF graph used by the
         # comp-1 EV pipeline (mirrors the comp-0 compact CSR pattern).
         self.comp1_rowptr       = None
         self.comp1_colind       = None
         self.comp1_full_offsets = None
         # Component-1 EV edge/DOF buffers (lazy-allocated on first use).
-        self.dLow_v                 = None
-        self.dEV_v                  = None
-        self.mLow_v                 = None
-        self.mHigh_v                = None
-        self.mDotLow_v              = None
-        self.fluxMatrix_v           = None
-        self.dt_times_fH_minus_fL_v = None
-        self.fluxCorrection_v       = None
-        self.limited_solution_v     = None
-        self.min_m_bc_v             = None
-        self.max_m_bc_v             = None
-        self.bc_mask_v              = None
+        self.dLow_n                 = None
+        self.dEV_n                  = None
+        self.mLow_n                 = None
+        self.mHigh_n                = None
+        self.mDotLow_n              = None
+        self.fluxMatrix_n           = None
+        self.dt_times_fH_minus_fL_n = None
+        self.fluxCorrection_n       = None
+        self.limited_solution_n     = None
+        self.min_m_bc_n             = None
+        self.max_m_bc_n             = None
+        self.bc_mask_n              = None
         #
         logEvent(memory("stride+offset","OneLevelTransport"),level=4)
         
@@ -1205,7 +1217,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.numericalFlux.isDOFBoundary = {0:np.zeros(self.ebqe[('u',0)].shape,'i')}
         if not hasattr(self.numericalFlux,'ebqe'):
             self.numericalFlux.ebqe = {('u',0):np.zeros(self.ebqe[('u',0)].shape,'d')}
-        # Ensure component-1 (S_w) Dirichlet boundary arrays exist on the
+        # Ensure component-1 (S_n) Dirichlet boundary arrays exist on the
         # numericalFlux. The framework only initialises (u,0) by default for
         # this single-component-style numerical-flux object; we need (u,1) too
         # so the C++ boundary closure can evaluate
@@ -1269,36 +1281,36 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self._build_component0_compact_csr(full_rowptr, full_colind)
 
     def _build_component1_compact_csr(self, full_rowptr, full_colind):
-        # Mirror of _build_component0_compact_csr but for the comp-1 (S_w)
+        # Mirror of _build_component0_compact_csr but for the comp-1 (S_n)
         # DOF graph. Comp-1 uses full DOF numbering (no Dirichlet elimination)
-        # so n_v = self.u[1].dof.shape[0].
+        # so n_n = self.u[1].dof.shape[0].
         #
-        # Also stores comp1_full_offsets: for each (i_v, j_v) entry in the
+        # Also stores comp1_full_offsets: for each (i_n, j_n) entry in the
         # compact comp-1 CSR, the offset into the FULL globalJacobian CSR.
-        # FCTStep_v consumes this so it can map per-edge antidiffusive flux
+        # FCTStep_n consumes this so it can map per-edge antidiffusive flux
         # entries (indexed by the comp-1 compact CSR) back to globalJacobian
         # offsets without an inline search at each access.
-        n_v = self.u[1].dof.shape[0]
-        offset_v = self.offset[1]
-        stride_v = self.stride[1]
-        rowptr_v = np.zeros((n_v + 1,), dtype='i')
-        colind_v = []
-        full_offsets_v = []
-        for i_v in range(n_v):
-            global_row = offset_v + stride_v * i_v
+        n_n = self.u[1].dof.shape[0]
+        offset_n = self.offset[1]
+        stride_n = self.stride[1]
+        rowptr_n = np.zeros((n_n + 1,), dtype='i')
+        colind_n = []
+        full_offsets_n = []
+        for i_n in range(n_n):
+            global_row = offset_n + stride_n * i_n
             for full_offset in range(full_rowptr[global_row], full_rowptr[global_row + 1]):
                 global_col = full_colind[full_offset]
-                shifted_col = global_col - offset_v
-                if shifted_col < 0 or shifted_col % stride_v != 0:
+                shifted_col = global_col - offset_n
+                if shifted_col < 0 or shifted_col % stride_n != 0:
                     continue
-                j_v = shifted_col // stride_v
-                if 0 <= j_v < n_v:
-                    colind_v.append(j_v)
-                    full_offsets_v.append(full_offset)
-            rowptr_v[i_v + 1] = len(colind_v)
-        self.comp1_rowptr       = rowptr_v
-        self.comp1_colind       = np.asarray(colind_v, dtype='i')
-        self.comp1_full_offsets = np.asarray(full_offsets_v, dtype='i')
+                j_n = shifted_col // stride_n
+                if 0 <= j_n < n_n:
+                    colind_n.append(j_n)
+                    full_offsets_n.append(full_offset)
+            rowptr_n[i_n + 1] = len(colind_n)
+        self.comp1_rowptr       = rowptr_n
+        self.comp1_colind       = np.asarray(colind_n, dtype='i')
+        self.comp1_full_offsets = np.asarray(full_offsets_n, dtype='i')
 
     def _ensure_component1_compact_csr(self, full_rowptr, full_colind):
         if (self.comp1_rowptr is None or
@@ -1439,43 +1451,43 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         if self.u_dof_old is None:
             # Pass initial condition to u_dof_old
             self.u_dof_old = np.copy(self.u[0].dof)
-        # lazy init component-1 (S_w) previous-step DOFs from IC.
-        if self.u_dof_v_old is None and self.nc >= 2:
-            self.u_dof_v_old = np.copy(self.u[1].dof)
+        # lazy init component-1 (S_n) previous-step DOFs from IC.
+        if self.u_dof_n_old is None and self.nc >= 2:
+            self.u_dof_n_old = np.copy(self.u[1].dof)
         rowptr, colind, nzval = self.jacobian.getCSRrepresentation()
         nnz = nzval.shape[-1]  # number of non-zero entries in sparse matrix
         self._ensure_component0_compact_csr(rowptr, colind)
         comp0_rowptr = self.comp0_rowptr
         comp0_colind = self.comp0_colind
-        # Component-1 (S_w) compact DOF CSR + lazy EV edge/DOF buffers.
+        # Component-1 (S_n) compact DOF CSR + lazy EV edge/DOF buffers.
         self._ensure_component1_compact_csr(rowptr, colind)
-        n_v_   = self.u[1].dof.shape[0]
-        nnz_v_ = int(self.comp1_colind.shape[0])
-        if self.dLow_v is None or self.dLow_v.shape[0] != nnz_v_:
-            self.dLow_v                  = np.zeros((nnz_v_,), 'd')
-            self.dEV_v                   = np.zeros((nnz_v_,), 'd')
-            self.fluxMatrix_v            = np.zeros((nnz_v_,), 'd')
+        n_n_   = self.u[1].dof.shape[0]
+        nnz_n_ = int(self.comp1_colind.shape[0])
+        if self.dLow_n is None or self.dLow_n.shape[0] != nnz_n_:
+            self.dLow_n                  = np.zeros((nnz_n_,), 'd')
+            self.dEV_n                   = np.zeros((nnz_n_,), 'd')
+            self.fluxMatrix_n            = np.zeros((nnz_n_,), 'd')
             # Per-edge antidiffusive flux storage (high-order minus low-order)
-            # consumed by FCTStep_v.
-            self.dt_times_fH_minus_fL_v  = np.zeros((nnz_v_,), 'd')
-        if self.mLow_v is None or self.mLow_v.shape[0] != n_v_:
-            self.mLow_v             = np.zeros((n_v_,), 'd')
-            self.mHigh_v            = np.zeros((n_v_,), 'd')
-            self.mDotLow_v          = np.zeros((n_v_,), 'd')
-            self.fluxCorrection_v   = np.zeros((n_v_,), 'd')
-            self.limited_solution_v = np.zeros((n_v_,), 'd')
+            # consumed by FCTStep_n.
+            self.dt_times_fH_minus_fL_n  = np.zeros((nnz_n_,), 'd')
+        if self.mLow_n is None or self.mLow_n.shape[0] != n_n_:
+            self.mLow_n             = np.zeros((n_n_,), 'd')
+            self.mHigh_n            = np.zeros((n_n_,), 'd')
+            self.mDotLow_n          = np.zeros((n_n_,), 'd')
+            self.fluxCorrection_n   = np.zeros((n_n_,), 'd')
+            self.limited_solution_n = np.zeros((n_n_,), 'd')
             # Boundary mass bounds for the Zalesak limiter.
             # Sentinels (+/-1e10) mirror the comp-0 / Richards / TADR pattern:
-            # the local-neighbor loop in FCTStep_v shrinks min_m_bc_v toward
-            # neighbor mLow_v[j] and grows max_m_bc_v outward; physical
-            # boundary values (from ebqe_bc_u_v_ext mapped to m_v) overwrite
+            # the local-neighbor loop in FCTStep_n shrinks min_m_bc_n toward
+            # neighbor mLow_n[j] and grows max_m_bc_n outward; physical
+            # boundary values (from ebqe_bc_u_n_ext mapped to m_n) overwrite
             # the sentinels at boundary DOFs in the C++ pre-FCT pass.
-            self.min_m_bc_v = np.ones((n_v_,), 'd') *  1.0e10
-            self.max_m_bc_v = np.ones((n_v_,), 'd') * -1.0e10
+            self.min_m_bc_n = np.ones((n_n_,), 'd') *  1.0e10
+            self.max_m_bc_n = np.ones((n_n_,), 'd') * -1.0e10
             # comp-1 Dirichlet mask -- 1.0 free, 0.0 BC. Initialised free;
-            # the comp-1 EV residual / FCTStep_v can flip BC nodes to 0.0
-            # using isDOFBoundary_v.
-            self.bc_mask_v  = np.ones((n_v_,), 'd')
+            # the comp-1 EV residual / FCTStep_n can flip BC nodes to 0.0
+            # using isDOFBoundary_n.
+            self.bc_mask_n  = np.ones((n_n_,), 'd')
         r.fill(0.0)
         ########################
         ### COMPUTE C MATRIX ###
@@ -1792,22 +1804,24 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["q_numDiff_u_last"] = self.numDiff_star
         argsDict["offset_u"] = self.offset[0]
         argsDict["stride_u"] = self.stride[0]
-        # ---- Component-1 (S_w) args ----
-        # Trivial gas equation d(S_w)/dt = 0. C++ residual reads u_dof_v &
-        # u_dof_v_old, integrates (u_v - u_v_old)/dt against test functions,
-        # and writes into globalResidual at offset_v + stride_v * dof_index.
-        argsDict["u_dof_v"]     = self.u[1].dof
-        argsDict["u_dof_v_old"] = self.u_dof_v_old
-        argsDict["offset_v"]    = self.offset[1]
-        argsDict["stride_v"]    = self.stride[1]
+        # ---- Component-1 (S_n) args ----
+        # Gas mass equation. C++ residual reads u_dof_n & u_dof_n_old, builds
+        # m_n = phi*rho_n*u_n, integrates (m_n - m_n_old)/dt against test
+        # functions, and writes into globalResidual at offset_n + stride_n * dof.
+        argsDict["u_dof_n"]     = self.u[1].dof
+        argsDict["u_dof_n_old"] = self.u_dof_n_old
+        argsDict["offset_n"]    = self.offset[1]
+        argsDict["stride_n"]    = self.stride[1]
         # csr maps for the (1,1) Jacobian block (not used by residual; staged
         # for turn 3 when calculateJacobian gains the (1,1) diagonal block).
-        argsDict["csrRowIndeces_v_v"]      = self.csrRowIndeces[(1, 1)]
-        argsDict["csrColumnOffsets_v_v"]   = self.csrColumnOffsets[(1, 1)]
+        argsDict["csrRowIndeces_n_n"]      = self.csrRowIndeces[(1, 1)]
+        argsDict["csrColumnOffsets_n_n"]   = self.csrColumnOffsets[(1, 1)]
         # (1,0) cross-block CSR maps for gas-eq diffusion against grad u_w.
-        argsDict["csrRowIndeces_v_w"]      = self.csrRowIndeces[(1, 0)]
-        argsDict["csrColumnOffsets_v_w"]   = self.csrColumnOffsets[(1, 0)]
-        argsDict["csrColumnOffsets_eb_v_v"] = self.csrColumnOffsets_eb[(1, 1)]
+        argsDict["csrRowIndeces_n_w"]      = self.csrRowIndeces[(1, 0)]
+        argsDict["csrColumnOffsets_n_w"]   = self.csrColumnOffsets[(1, 0)]
+        argsDict["csrColumnOffsets_eb_n_n"] = self.csrColumnOffsets_eb[(1, 1)]
+        # (1,0) boundary cross-block: gas-eq Darcy diffusion through ext faces.
+        argsDict["csrColumnOffsets_eb_n_w"] = self.csrColumnOffsets_eb[(1, 0)]
         argsDict["globalResidual"] = r
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
@@ -1817,10 +1831,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["ebqe_velocity_ext_couple"] = self.ebqe[('velocity_couple',0)]      
         argsDict["isDOFBoundary_u"] = self.numericalFlux.isDOFBoundary[0]
         argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u',0)]
-        # component-1 (S_w) boundary arrays. Initialised in
+        # component-1 (S_n) boundary arrays. Initialised in
         # init() when missing so this works regardless of numericalFlux class.
-        argsDict["isDOFBoundary_v"] = self.numericalFlux.isDOFBoundary[1]
-        argsDict["ebqe_bc_u_v_ext"] = self.numericalFlux.ebqe[('u',1)]
+        argsDict["isDOFBoundary_n"] = self.numericalFlux.isDOFBoundary[1]
+        argsDict["ebqe_bc_u_n_ext"] = self.numericalFlux.ebqe[('u',1)]
         argsDict["isFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag',0)]
         argsDict["ebqe_bc_flux_ext"] = self.ebqe[('advectiveFlux_bc',0)]
         argsDict["ebqe_phi"] = self.ebqe[('u',0)]
@@ -1853,39 +1867,40 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["csrColumnOffsets_DofLoops"] = comp0_colind
         argsDict["csrRowIndeces_Full"] = rowptr
         argsDict["csrColumnOffsets_Full"] = colind
-        # Component-1 (S_w) DOF graph + EV buffers.
-        argsDict["numDOFs_v"]                   = self.u[1].dof.shape[0]
-        argsDict["NNZ_v"]                       = int(self.comp1_colind.shape[0])
-        argsDict["csrRowIndeces_v_DofLoops"]    = self.comp1_rowptr
-        argsDict["csrColumnOffsets_v_DofLoops"] = self.comp1_colind
+        # Component-1 (S_n) DOF graph + EV buffers.
+        argsDict["numDOFs_n"]                   = self.u[1].dof.shape[0]
+        argsDict["NNZ_n"]                       = int(self.comp1_colind.shape[0])
+        argsDict["csrRowIndeces_n_DofLoops"]    = self.comp1_rowptr
+        argsDict["csrColumnOffsets_n_DofLoops"] = self.comp1_colind
         argsDict["comp1_full_offsets"]          = self.comp1_full_offsets
-        argsDict["dLow_v"]                      = self.dLow_v
-        argsDict["dEV_v"]                       = self.dEV_v
-        argsDict["fluxMatrix_v"]                = self.fluxMatrix_v
-        argsDict["mLow_v"]                      = self.mLow_v
-        argsDict["mDotLow_v"]                   = self.mDotLow_v
+        argsDict["dLow_n"]                      = self.dLow_n
+        argsDict["dEV_n"]                       = self.dEV_n
+        argsDict["fluxMatrix_n"]                = self.fluxMatrix_n
+        argsDict["mLow_n"]                      = self.mLow_n
+        argsDict["mDotLow_n"]                   = self.mDotLow_n
         # Comp-1 FCT bundle (Zalesak limiter inputs / outputs).
-        argsDict["dt_times_fH_minus_fL_v"]      = self.dt_times_fH_minus_fL_v
-        argsDict["min_m_bc_v"]                  = self.min_m_bc_v
-        argsDict["max_m_bc_v"]                  = self.max_m_bc_v
-        argsDict["fluxCorrection_v"]            = self.fluxCorrection_v
-        argsDict["limited_solution_v"]          = self.limited_solution_v
-        argsDict["bc_mask_v"]                   = self.bc_mask_v
-        # ML_v / MC_v alias the comp-0 mass matrices (purely geometric, BCs
+        argsDict["dt_times_fH_minus_fL_n"]      = self.dt_times_fH_minus_fL_n
+        argsDict["min_m_bc_n"]                  = self.min_m_bc_n
+        argsDict["max_m_bc_n"]                  = self.max_m_bc_n
+        argsDict["fluxCorrection_n"]            = self.fluxCorrection_n
+        argsDict["limited_solution_n"]          = self.limited_solution_n
+        argsDict["bc_mask_n"]                   = self.bc_mask_n
+        # ML_n / MC_n alias the comp-0 mass matrices (purely geometric, BCs
         # don't affect them; both components share the FE space).
-        argsDict["ML_v"]                        = self.ML
-        argsDict["MC_v"]                        = self.MC_a
+        argsDict["ML_n"]                        = self.ML
+        argsDict["MC_n"]                        = self.MC_a
         # FCT activation: maps the user's original Coefficients(FCT=True)
         # request to the C++ gate. coefficients.FCT itself is forced False
         # to bypass the framework's single-component post-Newton hook (see
         # Coefficients.__init__ comment near self._fct_requested).
-        argsDict["FCT_v"]                       = int(bool(self.coefficients._fct_requested))
-        # S_w bounds for the comp-1 entropy / smoothness sensor.
+        argsDict["FCT_n"]                       = int(bool(self.coefficients._fct_requested))
+        # S_n bounds for the comp-1 entropy / smoothness sensor.
         # Material 0 used as the fallback when materials are heterogeneous.
+        # S_n in [0, 1 - S_wr] with S_wr = thetaR/(thetaR+thetaSR).
         _S_wr0 = float(self.coefficients.thetaR_types[0] /
                        (self.coefficients.thetaR_types[0] + self.coefficients.thetaSR_types[0]))
-        argsDict["u_v_L"] = _S_wr0
-        argsDict["u_v_R"] = 1.0
+        argsDict["u_n_L"] = 0.0
+        argsDict["u_n_R"] = 1.0 - _S_wr0
         argsDict["csrRowIndeces_CellLoops"] = self.csrRowIndeces[(0, 0)]  # row indices (convenient for element loops)
         argsDict["csrColumnOffsets_CellLoops"] = self.csrColumnOffsets[(0, 0)]  # column indices (convenient for element loops)
         argsDict["csrColumnOffsets_eb_CellLoops"] = self.csrColumnOffsets_eb[(0, 0)]  # indices for boundary terms
@@ -1921,9 +1936,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["max_m_bc"] = self.max_m_bc
         argsDict["quantDOFs"] = self.quantDOFs
         argsDict["mn"] = self.mn
-        # Component-1 (S_w) low-order EV buffers.
-        argsDict["mn_v"]        = self.mn_v
-        argsDict["quantDOFs_v"] = self.quantDOFs_v
+        # Component-1 (S_n) low-order EV buffers.
+        argsDict["mn_n"]        = self.mn_n
+        argsDict["quantDOFs_n"] = self.quantDOFs_n
         argsDict["anb_seepage_flux_n"]= self.anb_seepage_flux_n
         argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
         argsDict["freeDOFToNode_u"] = self.freeDOFToNode_u
@@ -1937,7 +1952,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
 ######################################################################################        
         #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
         argsDict["anb_seepage_flux"] = self.anb_seepage_flux
-        argsDict["q_velocity"] = self.q[('grad(u_v)', 0)]
+        argsDict["q_velocity"] = self.q[('q_velocity_buf', 0)]
         argsDict["csrRowIndeces_u_u"] = self.csrRowIndeces[(0,0)]
         argsDict["csrColumnOffsets_u_u"] = self.csrColumnOffsets[(0,0)]
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0,0)]
@@ -2124,10 +2139,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["ebqe_velocity_ext"] = self.ebqe['velocity',0]
         argsDict["isDOFBoundary_u"] = self.numericalFlux.isDOFBoundary[0]
         argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u',0)]
-        # component-1 (S_w) boundary arrays. Initialised in
+        # component-1 (S_n) boundary arrays. Initialised in
         # init() when missing so this works regardless of numericalFlux class.
-        argsDict["isDOFBoundary_v"] = self.numericalFlux.isDOFBoundary[1]
-        argsDict["ebqe_bc_u_v_ext"] = self.numericalFlux.ebqe[('u',1)]
+        argsDict["isDOFBoundary_n"] = self.numericalFlux.isDOFBoundary[1]
+        argsDict["ebqe_bc_u_n_ext"] = self.numericalFlux.ebqe[('u',1)]
         argsDict["isFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag',0)]
         argsDict["ebqe_bc_flux_ext"] = self.ebqe[('advectiveFlux_bc',0)]
         argsDict["ebqe_phi"] = self.ebqe[('u',0)]
@@ -2246,20 +2261,20 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["q_numDiff_u_last"] = self.q[('numDiff',0,0)]
         argsDict["csrRowIndeces_u_u"] = self.csrRowIndeces[(0,0)]
         argsDict["csrColumnOffsets_u_u"] = self.csrColumnOffsets[(0,0)]
-        # component-1 (S_w) Jacobian (1,1) block args.
+        # component-1 (S_n) Jacobian (1,1) block args.
         argsDict["dt"] = self.timeIntegration.dt
-        argsDict["csrRowIndeces_v_v"] = self.csrRowIndeces[(1, 1)]
-        argsDict["csrColumnOffsets_v_v"] = self.csrColumnOffsets[(1, 1)]
+        argsDict["csrRowIndeces_n_n"] = self.csrRowIndeces[(1, 1)]
+        argsDict["csrColumnOffsets_n_n"] = self.csrColumnOffsets[(1, 1)]
         # (1,0) cross-block CSR maps.
-        argsDict["csrRowIndeces_v_w"] = self.csrRowIndeces[(1, 0)]
-        argsDict["csrColumnOffsets_v_w"] = self.csrColumnOffsets[(1, 0)]
+        argsDict["csrRowIndeces_n_w"] = self.csrRowIndeces[(1, 0)]
+        argsDict["csrColumnOffsets_n_w"] = self.csrColumnOffsets[(1, 0)]
         # (0,1) cross-block CSR maps for the wetting eq.
-        argsDict["csrRowIndeces_w_v"] = self.csrRowIndeces[(0, 1)]
-        argsDict["csrColumnOffsets_w_v"] = self.csrColumnOffsets[(0, 1)]
-        argsDict["u_dof_v"] = self.u[1].dof
-        argsDict["u_dof_v_old"] = self.u_dof_v_old if self.u_dof_v_old is not None else self.u[1].dof
-        argsDict["offset_v"] = self.offset[1]
-        argsDict["stride_v"] = self.stride[1]
+        argsDict["csrRowIndeces_w_n"] = self.csrRowIndeces[(0, 1)]
+        argsDict["csrColumnOffsets_w_n"] = self.csrColumnOffsets[(0, 1)]
+        argsDict["u_dof_n"] = self.u[1].dof
+        argsDict["u_dof_n_old"] = self.u_dof_n_old if self.u_dof_n_old is not None else self.u[1].dof
+        argsDict["offset_n"] = self.offset[1]
+        argsDict["stride_n"] = self.stride[1]
         argsDict["globalJacobian"] = jacobian.getCSRrepresentation()[2]
         argsDict["delta_x_ij"] = self.delta_x_ij
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
@@ -2269,16 +2284,16 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["ebqe_velocity_ext"] = self.ebqe['velocity',0 ]
         argsDict["isDOFBoundary_u"] = self.numericalFlux.isDOFBoundary[0]
         argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u',0)]
-        # component-1 (S_w) boundary arrays. Initialised in
+        # component-1 (S_n) boundary arrays. Initialised in
         # init() when missing so this works regardless of numericalFlux class.
-        argsDict["isDOFBoundary_v"] = self.numericalFlux.isDOFBoundary[1]
-        argsDict["ebqe_bc_u_v_ext"] = self.numericalFlux.ebqe[('u',1)]
+        argsDict["isDOFBoundary_n"] = self.numericalFlux.isDOFBoundary[1]
+        argsDict["ebqe_bc_u_n_ext"] = self.numericalFlux.ebqe[('u',1)]
         argsDict["isFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag',0)]
         argsDict["ebqe_bc_flux_ext"] = self.ebqe[('advectiveFlux_bc',0)]
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0,0)]
         # (0,1) cross-block boundary CSR for the wetting eq
-        # exterior-flux Jacobian. csrRowIndeces_w_v is already passed above.
-        argsDict["csrColumnOffsets_eb_w_v"] = self.csrColumnOffsets_eb[(0,1)]
+        # exterior-flux Jacobian. csrRowIndeces_w_n is already passed above.
+        argsDict["csrColumnOffsets_eb_w_n"] = self.csrColumnOffsets_eb[(0,1)]
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["VMS"] = self.coefficients.VMS
         argsDict["PSK_TYPE"] = self.coefficients.PSK_TYPE
