@@ -15,8 +15,8 @@ name = "ls_CCS_so"
 needEBQ_GLOBAL = False
 needEBQ = False
 
-T = 580.0*2  # days (Liu et al. simulation time; fingers appear by ~50 d)
-nDTout = 201
+T = 600.0  # days (Liu et al. simulation time; fingers appear by ~50 d)
+nDTout = 801
 DT = T / nDTout
 # Time list is specified directly in days.
 tnList = [0.0, 1.0e-8, 2.0e-8] + [i * DT for i in range(1, nDTout + 2)]

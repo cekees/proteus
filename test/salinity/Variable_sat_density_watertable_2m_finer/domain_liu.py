@@ -5,7 +5,7 @@ nd = 2
 
 # BASE case geometry from the reference setup:
 # 40 m buffer + 20 m inlet strip + 40 m buffer, with 10 m total depth.
-L = (100.0, 100.0)
+L = (100.0, 50.0)
 
 boundaryTags = {"bottom": 1, "right": 2, "top": 3, "left": 4}
 
@@ -46,7 +46,7 @@ domain = Domain.PlanarStraightLineGraphDomain(
 )
 polyfile = "watertable_4m_domain_2d"
 domain.writePoly(polyfile)
-triangleOptions = "q30Dena0.005"
+triangleOptions = "q30Dena0.05"
 
 femSpaces = {0: C0_AffineLinearOnSimplexWithNodalBasis}
 elementQuadrature = SimplexLobattoQuadrature(nd, 1)

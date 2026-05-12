@@ -49,6 +49,7 @@ coefficients = MyCoefficients(
     checkMass=checkMass,
     FCT=True,
     LUMPED_MASS_MATRIX=True,
+    forceStrongConditions=True,
     STABILIZATION_TYPE=2,
     diagonal_conductivity=True,
     ENTROPY_TYPE='POWER',
@@ -65,7 +66,6 @@ coefficients.variableNames = ["u"]
 cin = 1.0
 infiltration_x0 = 40.0
 infiltration_x1 = 60.0
-cin_perturbation_amplitude = 0.02
 
 
 def on_top_infiltration_strip(x, tag, tol=1.0e-8):

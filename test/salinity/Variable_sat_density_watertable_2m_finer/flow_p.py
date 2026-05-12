@@ -23,7 +23,7 @@ timeScale = 1.0  # days
 
 # Homogeneous soil properties for the BASE case.
 intrinsic_permeability = 1.15e-11
-Kx = 2.0  # m/day
+Kx = 3.0  # m/day
 Kz = Kx
 thetaS1 = 0.285
 thetaR1 = 0.076
@@ -68,7 +68,7 @@ coefficients = Richards.Coefficients(
     STABILIZATION_TYPE=2,
     ENTROPY_TYPE=1,
     LUMPED_MASS_MATRIX=False,
-    FCT=True,
+    FCT=False,
     num_fct_iter=0,
     cE=1.0,
     uL=0.0,
@@ -85,7 +85,7 @@ epsilon = (rho_sw - rho_fw) / rho_fw
 drho_dmf = epsilon * rho_fw
 
 # BASE case: 2 m unsaturated thickness in a 10 m deep domain.
-water_table_depth = 30.0
+water_table_depth = 5.0
 water_table_elevation = L[1] - water_table_depth
 side_total_head = water_table_elevation  # H = 8 m
 
@@ -96,7 +96,7 @@ infiltration_x1 = 60.0
 # Express day-based rates directly in the input deck.
 # Richards uses outward
 # normal flux, so infiltration into the domain is negative.
-top_flux = -1.e-5  # m/day
+top_flux = -1.e-2  # m/day  -> q/Ks = 0.0167; front advances ~35 m in 200 d, stops ~15 m above bottom
 
 
 def hydrostatic_pressure_head(x):

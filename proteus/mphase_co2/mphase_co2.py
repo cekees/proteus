@@ -390,7 +390,20 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.MONOLITHIC = MONOLITHIC
         #self.STABILIZATION_TYPE = STABILIZATION_TYPE
         self.ENTROPY_TYPE = ENTROPY_TYPE
-        self.FCT = FCT
+        # Capture the user's FCT request. The Proteus framework's
+        # NonlinearSolvers.Newton.solve() has a post-Newton FCT hook
+        #     if self.F.coefficients.FCT == True:
+        #         self.F.FCTStep()
+        #         u[:] = self.F.u[0].dof
+        # that assumes single-component dof storage (u[0].dof IS the full
+        # unknown), which is the Richards-era convention. For our nc=2 model
+        # (comp-0 + comp-1 each sized N), u is 2N and u[0].dof is N, so the
+        # broadcast crashes. We force self.FCT = False so the framework hook
+        # never fires; the C++ FCT pipeline runs inside calculateResidual_
+        # entropy_viscosity via the FCT_v argsDict flag, gated by
+        # _fct_requested below.
+        self._fct_requested = bool(FCT)
+        self.FCT = False
         self.num_fct_iter=num_fct_iter
         self.uL = uL
         self.uR = uR
@@ -1058,11 +1071,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #if self.coefficients.FCT == True:
         #    cond = self.coefficients.STABILIZATION_TYPE = 3, "Use FCT just with STABILIZATION_TYPE=3; i.e., edge based stabilization"
         
-        if self.coefficients.FCT:
+        if self.coefficients._fct_requested:
             valid_stabilization_types = {1, 2}  # Only allow FCT for STABILIZATION_TYPE 1 (EV_Stab) and 2 (EntropyViscosity)
             if self.coefficients.STABILIZATION_TYPE not in valid_stabilization_types:
-                raise ValueError("Use FCT only with STABILIZATION_TYPE 1 (EV_Stab) or 2 (EntropyViscosity).")        
-        if self.coefficients.FCT == True:
+                raise ValueError("Use FCT only with STABILIZATION_TYPE 1 (EV_Stab) or 2 (EntropyViscosity).")
             cond = self.coefficients.STABILIZATION_TYPE > 0, "Use FCT just with STABILIZATION_TYPE>0; i.e., edge based stabilization"
         # # END OF ASSERTS
 
@@ -1122,14 +1134,22 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.comp0_full_offsets = None
         # Component-1 (S_w) compact CSR for the (1,1) DOF graph used by the
         # comp-1 EV pipeline (mirrors the comp-0 compact CSR pattern).
-        self.comp1_rowptr = None
-        self.comp1_colind = None
+        self.comp1_rowptr       = None
+        self.comp1_colind       = None
+        self.comp1_full_offsets = None
         # Component-1 EV edge/DOF buffers (lazy-allocated on first use).
-        self.dLow_v       = None
-        self.dEV_v        = None
-        self.mLow_v       = None
-        self.mDotLow_v    = None
-        self.fluxMatrix_v = None
+        self.dLow_v                 = None
+        self.dEV_v                  = None
+        self.mLow_v                 = None
+        self.mHigh_v                = None
+        self.mDotLow_v              = None
+        self.fluxMatrix_v           = None
+        self.dt_times_fH_minus_fL_v = None
+        self.fluxCorrection_v       = None
+        self.limited_solution_v     = None
+        self.min_m_bc_v             = None
+        self.max_m_bc_v             = None
+        self.bc_mask_v              = None
         #
         logEvent(memory("stride+offset","OneLevelTransport"),level=4)
         
@@ -1252,11 +1272,18 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # Mirror of _build_component0_compact_csr but for the comp-1 (S_w)
         # DOF graph. Comp-1 uses full DOF numbering (no Dirichlet elimination)
         # so n_v = self.u[1].dof.shape[0].
+        #
+        # Also stores comp1_full_offsets: for each (i_v, j_v) entry in the
+        # compact comp-1 CSR, the offset into the FULL globalJacobian CSR.
+        # FCTStep_v consumes this so it can map per-edge antidiffusive flux
+        # entries (indexed by the comp-1 compact CSR) back to globalJacobian
+        # offsets without an inline search at each access.
         n_v = self.u[1].dof.shape[0]
         offset_v = self.offset[1]
         stride_v = self.stride[1]
         rowptr_v = np.zeros((n_v + 1,), dtype='i')
         colind_v = []
+        full_offsets_v = []
         for i_v in range(n_v):
             global_row = offset_v + stride_v * i_v
             for full_offset in range(full_rowptr[global_row], full_rowptr[global_row + 1]):
@@ -1267,13 +1294,16 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 j_v = shifted_col // stride_v
                 if 0 <= j_v < n_v:
                     colind_v.append(j_v)
+                    full_offsets_v.append(full_offset)
             rowptr_v[i_v + 1] = len(colind_v)
-        self.comp1_rowptr = rowptr_v
-        self.comp1_colind = np.asarray(colind_v, dtype='i')
+        self.comp1_rowptr       = rowptr_v
+        self.comp1_colind       = np.asarray(colind_v, dtype='i')
+        self.comp1_full_offsets = np.asarray(full_offsets_v, dtype='i')
 
     def _ensure_component1_compact_csr(self, full_rowptr, full_colind):
         if (self.comp1_rowptr is None or
-                self.comp1_colind is None):
+                self.comp1_colind is None or
+                getattr(self, 'comp1_full_offsets', None) is None):
             self._build_component1_compact_csr(full_rowptr, full_colind)
 
     def _scatter_component_to_timeintegration(self, ci):
@@ -1422,12 +1452,30 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         n_v_   = self.u[1].dof.shape[0]
         nnz_v_ = int(self.comp1_colind.shape[0])
         if self.dLow_v is None or self.dLow_v.shape[0] != nnz_v_:
-            self.dLow_v       = np.zeros((nnz_v_,), 'd')
-            self.dEV_v        = np.zeros((nnz_v_,), 'd')
-            self.fluxMatrix_v = np.zeros((nnz_v_,), 'd')
+            self.dLow_v                  = np.zeros((nnz_v_,), 'd')
+            self.dEV_v                   = np.zeros((nnz_v_,), 'd')
+            self.fluxMatrix_v            = np.zeros((nnz_v_,), 'd')
+            # Per-edge antidiffusive flux storage (high-order minus low-order)
+            # consumed by FCTStep_v.
+            self.dt_times_fH_minus_fL_v  = np.zeros((nnz_v_,), 'd')
         if self.mLow_v is None or self.mLow_v.shape[0] != n_v_:
-            self.mLow_v    = np.zeros((n_v_,), 'd')
-            self.mDotLow_v = np.zeros((n_v_,), 'd')
+            self.mLow_v             = np.zeros((n_v_,), 'd')
+            self.mHigh_v            = np.zeros((n_v_,), 'd')
+            self.mDotLow_v          = np.zeros((n_v_,), 'd')
+            self.fluxCorrection_v   = np.zeros((n_v_,), 'd')
+            self.limited_solution_v = np.zeros((n_v_,), 'd')
+            # Boundary mass bounds for the Zalesak limiter.
+            # Sentinels (+/-1e10) mirror the comp-0 / Richards / TADR pattern:
+            # the local-neighbor loop in FCTStep_v shrinks min_m_bc_v toward
+            # neighbor mLow_v[j] and grows max_m_bc_v outward; physical
+            # boundary values (from ebqe_bc_u_v_ext mapped to m_v) overwrite
+            # the sentinels at boundary DOFs in the C++ pre-FCT pass.
+            self.min_m_bc_v = np.ones((n_v_,), 'd') *  1.0e10
+            self.max_m_bc_v = np.ones((n_v_,), 'd') * -1.0e10
+            # comp-1 Dirichlet mask -- 1.0 free, 0.0 BC. Initialised free;
+            # the comp-1 EV residual / FCTStep_v can flip BC nodes to 0.0
+            # using isDOFBoundary_v.
+            self.bc_mask_v  = np.ones((n_v_,), 'd')
         r.fill(0.0)
         ########################
         ### COMPUTE C MATRIX ###
@@ -1806,15 +1854,32 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["csrRowIndeces_Full"] = rowptr
         argsDict["csrColumnOffsets_Full"] = colind
         # Component-1 (S_w) DOF graph + EV buffers.
-        argsDict["numDOFs_v"]                  = self.u[1].dof.shape[0]
-        argsDict["NNZ_v"]                      = int(self.comp1_colind.shape[0])
-        argsDict["csrRowIndeces_v_DofLoops"]   = self.comp1_rowptr
+        argsDict["numDOFs_v"]                   = self.u[1].dof.shape[0]
+        argsDict["NNZ_v"]                       = int(self.comp1_colind.shape[0])
+        argsDict["csrRowIndeces_v_DofLoops"]    = self.comp1_rowptr
         argsDict["csrColumnOffsets_v_DofLoops"] = self.comp1_colind
-        argsDict["dLow_v"]       = self.dLow_v
-        argsDict["dEV_v"]        = self.dEV_v
-        argsDict["fluxMatrix_v"] = self.fluxMatrix_v
-        argsDict["mLow_v"]       = self.mLow_v
-        argsDict["mDotLow_v"]    = self.mDotLow_v
+        argsDict["comp1_full_offsets"]          = self.comp1_full_offsets
+        argsDict["dLow_v"]                      = self.dLow_v
+        argsDict["dEV_v"]                       = self.dEV_v
+        argsDict["fluxMatrix_v"]                = self.fluxMatrix_v
+        argsDict["mLow_v"]                      = self.mLow_v
+        argsDict["mDotLow_v"]                   = self.mDotLow_v
+        # Comp-1 FCT bundle (Zalesak limiter inputs / outputs).
+        argsDict["dt_times_fH_minus_fL_v"]      = self.dt_times_fH_minus_fL_v
+        argsDict["min_m_bc_v"]                  = self.min_m_bc_v
+        argsDict["max_m_bc_v"]                  = self.max_m_bc_v
+        argsDict["fluxCorrection_v"]            = self.fluxCorrection_v
+        argsDict["limited_solution_v"]          = self.limited_solution_v
+        argsDict["bc_mask_v"]                   = self.bc_mask_v
+        # ML_v / MC_v alias the comp-0 mass matrices (purely geometric, BCs
+        # don't affect them; both components share the FE space).
+        argsDict["ML_v"]                        = self.ML
+        argsDict["MC_v"]                        = self.MC_a
+        # FCT activation: maps the user's original Coefficients(FCT=True)
+        # request to the C++ gate. coefficients.FCT itself is forced False
+        # to bypass the framework's single-component post-Newton hook (see
+        # Coefficients.__init__ comment near self._fct_requested).
+        argsDict["FCT_v"]                       = int(bool(self.coefficients._fct_requested))
         # S_w bounds for the comp-1 entropy / smoothness sensor.
         # Material 0 used as the fallback when materials are heterogeneous.
         _S_wr0 = float(self.coefficients.thetaR_types[0] /
@@ -2108,7 +2173,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["mLow"] = self.u[0].dof
         argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
         argsDict["freeDOFToNode_u"] = self.freeDOFToNode_u
-        argsDict["USE_NEWTON_INVERT"] = 1 if (self.coefficients.FCT==1 and self.coefficients.nd > 1) else 0
+        argsDict["USE_NEWTON_INVERT"] = 1 if (self.coefficients._fct_requested and self.coefficients.nd > 1) else 0
         argsDict["PSK_TYPE"] = self.coefficients.PSK_TYPE
         argsDict["COMPONENT"] = 0  # m -> u_w via retention curve (legacy path)
         self.mphase_co2.invert(argsDict)

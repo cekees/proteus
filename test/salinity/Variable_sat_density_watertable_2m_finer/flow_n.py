@@ -37,7 +37,7 @@ fullNewtonFlag = True
 tolFac = 0.0
 nl_atol_res = 1.0e-7
 maxNonlinearIts = 30
-maxLineSearches = 0
+maxLineSearches = 10
 
 matrix = SparseMatrix
 multilevelLinearSolver = KSP_petsc4py

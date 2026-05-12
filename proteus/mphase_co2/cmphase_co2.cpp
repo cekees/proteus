@@ -28,6 +28,7 @@ PYBIND11_MODULE(cmphase_co2, m)
     .def("calculateJacobian", &Mphase_co2_base::calculateJacobian)
     .def("invert", &Mphase_co2_base::invert)
     .def("FCTStep", &Mphase_co2_base::FCTStep)
+    .def("FCTStep_v", &Mphase_co2_base::FCTStep_v)
     //.def("kth_FCT_step", &Mphase_co2_base::kth_FCT_step)
     .def("calculateResidual_entropy_viscosity", &Mphase_co2_base::calculateResidual_entropy_viscosity)
     .def("calculateMassMatrix", &Mphase_co2_base::calculateMassMatrix);

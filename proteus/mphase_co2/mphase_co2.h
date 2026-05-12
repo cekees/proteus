@@ -58,6 +58,7 @@ public:
   virtual void calculateJacobian(arguments_dict &args)                   = 0;
   virtual void invert(arguments_dict &args)                              = 0;
   virtual void FCTStep(arguments_dict &args)                             = 0;
+  virtual void FCTStep_v(arguments_dict &args)                           = 0;
   virtual void kth_FCT_step(arguments_dict &args)                        = 0;
   virtual void calculateResidual_entropy_viscosity(arguments_dict &args) = 0;
   virtual void calculateMassMatrix(arguments_dict &args)                 = 0;
@@ -1574,6 +1575,108 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
 }
 }
 
+  // ============================================================================
+  // FCTStep_v(): Zalesak FCT limiter for the non-wetting equation (comp-1).
+  //
+  // Mirrors FCTStep() but operates on the comp-1 predictor state populated by
+  // calculateResidual_entropy_viscosity:
+  //   mLow_v[i]     -- low-order m_v at t^{n+1} (current Newton iterate)
+  //   mn_v[i]       -- m_v at t^n
+  //   mDotLow_v[i]  -- (mLow_v[i] - mn_v[i]) / dt
+  //   dt_times_fH_minus_fL_v[ij]  -- per-edge antidiffusive flux
+  //
+  // Bounds: min_m_bc_v / max_m_bc_v carry boundary-aware values (Dirichlet
+  // DOFs hold the imposed m_v from S_w_bc; interior DOFs start at the
+  // +-1e10 sentinel set by Python and get shrunk by neighbor mLow_v values
+  // in the standard Zalesak local-neighborhood loop -- mass-conservative).
+  //
+  // Outputs:
+  //   fluxCorrection_v[i]   -- to be added to globalResidual at comp-1 rows
+  //   limited_solution_v[i] -- mLow_v[i] + (limited correction) / ML_v[i],
+  //                            the bound-preserving, mass-conservative m_v
+  // ============================================================================
+  void FCTStep_v(arguments_dict &args)
+  {
+    int                  numDOFs_v                   = args.scalar<int>("numDOFs_v");
+    int                  NNZ_v                       = args.scalar<int>("NNZ_v");
+    double               dt                          = args.scalar<double>("dt");
+    xt::pyarray<double> &ML_v                        = args.array<double>("ML_v");
+    xt::pyarray<double> &MC_v                        = args.array<double>("MC_v");
+    xt::pyarray<double> &mn_v                        = args.array<double>("mn_v");
+    xt::pyarray<double> &mLow_v                      = args.array<double>("mLow_v");
+    xt::pyarray<double> &mDotLow_v                   = args.array<double>("mDotLow_v");
+    xt::pyarray<double> &dt_times_fH_minus_fL_v      = args.array<double>("dt_times_fH_minus_fL_v");
+    xt::pyarray<double> &min_m_bc_v                  = args.array<double>("min_m_bc_v");
+    xt::pyarray<double> &max_m_bc_v                  = args.array<double>("max_m_bc_v");
+    xt::pyarray<double> &fluxCorrection_v            = args.array<double>("fluxCorrection_v");
+    xt::pyarray<double> &limited_solution_v          = args.array<double>("limited_solution_v");
+    xt::pyarray<double> &bc_mask_v                   = args.array<double>("bc_mask_v");
+    xt::pyarray<int>    &csrRowIndeces_v_DofLoops    = args.array<int>("csrRowIndeces_v_DofLoops");
+    xt::pyarray<int>    &csrColumnOffsets_v_DofLoops = args.array<int>("csrColumnOffsets_v_DofLoops");
+    // comp1_full_offsets[k] = offset into globalJacobian's full CSR for the
+    // k-th entry of the compact comp-1 CSR; used by FCTStep_v to look up the
+    // consistent-mass matrix MC at the right edge.
+    xt::pyarray<int>    &comp1_full_offsets          = args.array<int>("comp1_full_offsets");
+    int                  LUMPED_MASS_MATRIX          = args.scalar<int>("LUMPED_MASS_MATRIX");
+
+    std::vector<double> Rpos(numDOFs_v, 0.0);
+    std::vector<double> Rneg(numDOFs_v, 0.0);
+    std::vector<double> FluxCorrectionMatrix(csrRowIndeces_v_DofLoops.at(numDOFs_v), 0.0);
+
+    // --------- Pass 1: per-DOF bounds + Pposi / Pnegi accumulation. ---------
+    int ij = 0;
+    for (int i = 0; i < numDOFs_v; i++) {
+      double mini = min_m_bc_v.at(i);
+      double maxi = max_m_bc_v.at(i);
+      double Pposi = 0.0, Pnegi = 0.0;
+      for (int offset = csrRowIndeces_v_DofLoops.at(i);
+           offset < csrRowIndeces_v_DofLoops.at(i + 1); offset++) {
+        const int j = csrColumnOffsets_v_DofLoops.at(offset);
+        if (GLOBAL_FCT == 0) {
+          mini = std::fmin(mini, mLow_v.at(j));
+          maxi = std::fmax(maxi, mLow_v.at(j));
+        }
+        const int full_off = comp1_full_offsets.at(ij);
+        // FluxCorrectionMatrix[ij] = dt * MC * (mDotLow_i - mDotLow_j)
+        //                          + dt_times_fH_minus_fL_v[ij]
+        // (matches comp-0 FCTStep; consistency term skipped under lumped mass)
+        FluxCorrectionMatrix.at(ij) =
+            (LUMPED_MASS_MATRIX == 1 ? 0.0 : 1.0)
+              * dt * MC_v.at(full_off) * (mDotLow_v.at(i) - mDotLow_v.at(j))
+            + dt_times_fH_minus_fL_v.at(offset);
+        Pposi += (FluxCorrectionMatrix.at(ij) > 0.0) ? FluxCorrectionMatrix.at(ij) : 0.0;
+        Pnegi += (FluxCorrectionMatrix.at(ij) < 0.0) ? FluxCorrectionMatrix.at(ij) : 0.0;
+        ij += 1;
+      }
+      const double Qposi = ML_v.at(i) * (maxi - mLow_v.at(i));
+      const double Qnegi = ML_v.at(i) * (mini - mLow_v.at(i));
+      Rpos.at(i) = (Pposi == 0.0) ? 1.0 : std::fmin(1.0, Qposi / Pposi);
+      Rneg.at(i) = (Pnegi == 0.0) ? 1.0 : std::fmin(1.0, Qnegi / Pnegi);
+    }
+
+    // --------- Pass 2: per-DOF limited antidiffusive correction. ---------
+    ij = 0;
+    for (int i = 0; i < numDOFs_v; i++) {
+      double ith_Limited_FCM = 0.0;
+      for (int offset = csrRowIndeces_v_DofLoops.at(i);
+           offset < csrRowIndeces_v_DofLoops.at(i + 1); offset++) {
+        const int j = csrColumnOffsets_v_DofLoops.at(offset);
+        // alpha_ij = min(R+_i, R-_j) if f_ij > 0, else min(R-_i, R+_j).
+        // Symmetric in (i,j) -> mass-conservative.
+        const double alpha_fA =
+            ((FluxCorrectionMatrix.at(ij) > 0.0)
+                 ? std::fmin(Rpos.at(i), Rneg.at(j))
+                 : std::fmin(Rneg.at(i), Rpos.at(j)))
+            * FluxCorrectionMatrix.at(ij);
+        ith_Limited_FCM += alpha_fA;
+        ij += 1;
+      }
+      fluxCorrection_v.at(i)   = -ith_Limited_FCM * bc_mask_v.at(i) / dt;
+      limited_solution_v.at(i) = mLow_v.at(i)
+                              + (1.0 / ML_v.at(i)) * ith_Limited_FCM * bc_mask_v.at(i);
+    }
+  }
+
 
   void kth_FCT_step(arguments_dict &args)
   {
@@ -1901,6 +2004,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     double               u_v_R                       = args.scalar<double>("u_v_R");
     xt::pyarray<double> &mn_v        = args.array<double>("mn_v");           // m_v at t^n (numDOFs_u)
     xt::pyarray<double> &quantDOFs_v = args.array<double>("quantDOFs_v");     // sensor scratch (numDOFs_u)
+    // Comp-1 FCT plumbing read here so the gate at the end of this routine
+    // can call FCTStep_v with all args present.
+    xt::pyarray<double> &dt_times_fH_minus_fL_v = args.array<double>("dt_times_fH_minus_fL_v");
+    xt::pyarray<double> &fluxCorrection_v       = args.array<double>("fluxCorrection_v");
+    int                  FCT_v                  = args.scalar<int>("FCT_v");
     // double Rpos[numDOFs], Rneg[numDOFs];
      std::vector<double> Rpos(numDOFs, 0.0), Rneg(numDOFs, 0.0);
      std::vector<double> TransportMatrix(NNZ, 0.0),
@@ -2746,10 +2854,35 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
       }
     }
-    if (STABILIZATION_TYPE == STABILIZATION::Implicit_FCT) {
+    // FCT limiter execution.
+    //
+    // Two operating modes:
+    //   * STABILIZATION_TYPE == Implicit_FCT  (Richards-style, in-Newton FCT):
+    //         comp-0's fluxCorrection is injected into globalResidual so
+    //         Newton sees the limited residual. This is the legacy path; it
+    //         relies on small enough alpha-derivative deviations to converge.
+    //   * FCT_v == 1 with STABILIZATION_TYPE == EntropyViscosity (TADR-style
+    //         defect-correction):
+    //         Newton solves the LOW-ORDER R_low cleanly (no Zalesak
+    //         contribution to globalResidual). The limiter is computed here
+    //         so limited_solution_v and fluxCorrection_v are available, but
+    //         the actual scatter to self.u[1].dof happens in Python after
+    //         Newton convergence (Coefficients.postStep). This matches TADR /
+    //         Richards Newton.solve flow where FCT is a post-step.
+    //
+    // Both branches still populate the comp-0 and comp-1 FCT outputs so
+    // Python can use them.
+    if (FCT_v == 1 || STABILIZATION_TYPE == STABILIZATION::Implicit_FCT) {
       FCTStep(args);
+      FCTStep_v(args);
+    }
+    if (STABILIZATION_TYPE == STABILIZATION::Implicit_FCT) {
+      // Legacy in-Newton injection (kept for STAB=Implicit_FCT only).
       for (int i = 0; i < numDOFs; i++) {
         globalResidual.data()[offset_u + stride_u * i] += fluxCorrection.data()[i];
+      }
+      for (int i_v = 0; i_v < numDOFs_v; i_v++) {
+        globalResidual.data()[offset_v + stride_v * i_v] += fluxCorrection_v.data()[i_v];
       }
     }
 
@@ -2951,8 +3084,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           for (int j = 0; j < nDOF_trial_element; j++) {
             const double trial_j = u_trial_ref.data()[k * nDOF_trial_element + j];
             // K_vv -- consistent flux + capillary sensitivity (no mass).
-            elementJacobian_v_v[i][j] += (adv_coef_sens_i + diff_coef_sens_i + cap_coef_sens_i)
-                                       * trial_j * dV;
+            const double sens_ij = (adv_coef_sens_i + diff_coef_sens_i + cap_coef_sens_i)
+                                 * trial_j * dV;
+            elementJacobian_v_v[i][j] += sens_ij;
             double cap_trial_ij = 0.0;
             for (int I = 0; I < nSpace; I++) {
               const double grad_Ni_I = u_grad_trial_qp[i * nSpace + I];
@@ -2962,11 +3096,18 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
               }
             }
             elementJacobian_v_v[i][j] += cap_trial_ij * dV;
-            // EV transport operator: the symmetric linear capillary diffusion
-            // on u_v -- feed only this clean piece into TransportMatrix_v so
-            // dLow_v is built from a sign-correct operator (no nonlinear
-            // sensitivities polluting the upwind selection).
-            elementTransport_v[i][j] += cap_trial_ij * dV;
+            // EV transport operator. Feed the FULL linearized (1,1) coupling
+            // into TransportMatrix_v so dLow_v stabilizes against every
+            // transport-like channel: the symmetric linear capillary
+            // diffusion AND the gravity / cross-coupling / dp_c-curvature
+            // sensitivities (adv_coef_sens_i = (df_n/du_v).grad N_i,
+            // diff_coef_sens_i = (da_n/du_v).grad u_w.grad N_i,
+            // cap_coef_sens_i = (da_n_p_c/du_v).grad u_v.grad N_i). With this
+            // expansion T_v sees the same operator as the Jacobian, so
+            // dLow_v = max(-T[ij], -T[ji], 0) builds a Kuzmin low-order
+            // monotone update that preserves the discrete maximum principle
+            // on m_v (S_w stays in [S_wr, 1] up to boundary fluxes).
+            elementTransport_v[i][j] += cap_trial_ij * dV + sens_ij;
             // (1,0) cross-block: diffusion trial-fn variation against grad u_w.
             double diff_trial_ij = 0.0;
             for (int I = 0; I < nSpace; I++) {
@@ -3135,10 +3276,20 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       for (int offset = csrRowIndeces_v_DofLoops.data()[i_v];
            offset < csrRowIndeces_v_DofLoops.data()[i_v + 1]; offset++) {
         const int j_v = csrColumnOffsets_v_DofLoops.data()[offset];
-        if (i_v == j_v) continue;
-        const double dH_ij = std::min(dLow_v.data()[offset], dEV_v.data()[offset]);
-        // Residual: dH_ij * (m_v[i] - m_v[j])
+        if (i_v == j_v) {
+          dt_times_fH_minus_fL_v.data()[offset] = 0.0;
+          continue;
+        }
+        // Low-order monotone dissipation in the residual (Kuzmin first-order).
+        // The (dLow - dEV) gap is stored as an antidiffusive flux that
+        // FCTStep_v will subsequently limit with Zalesak's algorithm.
+        const double dH_ij = dLow_v.data()[offset];
         ith_flux_term_v += dH_ij * (m_v_DOF[i_v] - m_v_DOF[j_v]);
+        // Antidiffusive-flux storage for FCT (matches comp-0's fH - fL
+        // convention: positive value pushes m_v[i] toward higher mass).
+        dt_times_fH_minus_fL_v.data()[offset] =
+            dt * (dLow_v.data()[offset] - dEV_v.data()[offset])
+               * (m_v_DOF[j_v] - m_v_DOF[i_v]);
         // Jacobian off-diagonal (1,1): d/du_v[j] of dH*(m_v[i]-m_v[j]) =
         //                              dH * (-dm_v/du_v[j]) = dH * rho_n_phi_dof[j_v].
         const int full_col_j = offset_v + stride_v * j_v;
@@ -3155,6 +3306,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         J_v_ii += -dH_ij * rho_n_phi_dof[i_v];
       }
       globalResidual.data()[offset_v + stride_v * i_v] += ith_flux_term_v;
+      // FCT predictor state: the current iterate is the low-order m_v at
+      // t^{n+1} (residual is built with pure dLow stabilization). mDotLow_v
+      // is the corresponding lumped-mass time derivative consumed by
+      // FCTStep_v's consistency term.
+      mLow_v.data()[i_v]    = m_v_DOF[i_v];
+      mDotLow_v.data()[i_v] = (m_v_DOF[i_v] - mn_v.data()[i_v]) / dt;
       // Diagonal (1,1) full Jacobian offset.
       int full_offset_ii = -1;
       for (int o = csrRowIndeces_Full.data()[full_row_i];

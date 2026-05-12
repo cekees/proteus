@@ -1,6 +1,7 @@
 from proteus import *
 from proteus.default_p import *
 from proteus.richards import Richards
+import math
 
 nd = 2
 
@@ -26,11 +27,18 @@ vertices=[[0.0,0.0], #0
           [2.5, 3.0], #7
           [2.0, 1.0],#8
           [1.0, 1.0],#9
-          [1.2, 1.9],#10
-          [1.7, 1.9],#11
-          [1.7, 1.4], #12
-          [1.2, 1.4],#13
          ]
+
+# Proteus PSLG domains do not accept a true circle primitive, so the
+# drain is represented by a polygonal approximation of a circle.
+drain_center = (1.45, 1.65)
+drain_radius = 0.25
+drain_n_vertices = 24
+
+for i in range(drain_n_vertices):
+    theta = 2.0*math.pi*float(i)/float(drain_n_vertices)
+    vertices.append([drain_center[0] + drain_radius*math.cos(theta),
+                     drain_center[1] + drain_radius*math.sin(theta)])
 
 vertexFlags=[boundaryTags['bottom'], #0
              boundaryTags['left'], #1
@@ -42,11 +50,7 @@ vertexFlags=[boundaryTags['bottom'], #0
              boundaryTags['swale'], #7
              boundaryTags['swale'], #8
              boundaryTags['swale'], #9
-             boundaryTags['drain'], #10
-             boundaryTags['drain'], #11
-             boundaryTags['drain'], #12
-             boundaryTags['drain'], #13
-             ]
+             ] + [boundaryTags['drain']]*drain_n_vertices
 
 
 segments =[[0,1], #0
@@ -59,11 +63,12 @@ segments =[[0,1], #0
            [6,7], #7
            [7,8], #8
            [8,9], #9
-           [9,6], #10
-           [10,11], #11
-           [11,12], #12
-           [12,13], #13
-           [13,10]] #14
+           [9,6]] #10
+
+drain_start = 10
+for i in range(drain_n_vertices):
+    segments.append([drain_start + i,
+                     drain_start + ((i + 1) % drain_n_vertices)])
 
 
 segmentFlags=[boundaryTags['left'], #0
@@ -78,15 +83,9 @@ segmentFlags=[boundaryTags['left'], #0
              boundaryTags['swale'], #8
              boundaryTags['swale'], #9
              boundaryTags['swale'], #10
+             ] + [boundaryTags['drain']]*drain_n_vertices
 
-
-             boundaryTags['drain'], #11
-             boundaryTags['drain'], #12
-             boundaryTags['drain'], #13
-             boundaryTags['drain'], #14
-             ]
-
-holes= [[1.5,1.5]]
+holes= [[drain_center[0],drain_center[1]]]
 regions=[[0.1,0.1], [1.5, 2.5], [1.5, 4.5]]#, [1.5,0.5]]
 regionFlags=[1,2,3]
 
