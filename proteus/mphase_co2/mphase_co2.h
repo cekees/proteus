@@ -3293,6 +3293,18 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     }
 
     // -------- Edge loop: dLow_n_ij and dEV_n_ij from TransportMatrix_n. --------
+    // Kuzmin algebraic flux correction on the (1,1) Jacobian T_n = dR/du_n.
+    // Off-diagonal Jac contribution from the dH*(m[i]-m[j]) dissipation is
+    //   -dH_ij * rho_n_phi_dof[j_n]  (line 3382),
+    // so for an M-matrix linearization we need
+    //   T_ij - dH_ij * rho_n_phi_dof[j_n] <= 0  AND  T_ji - dH_ij * rho_n_phi_dof[i_n] <= 0.
+    // Symmetric dH (dH_ij = dH_ji) is needed for mass conservation, so take:
+    //   dH_ij = max( T_ij / rho_phi[j_n],  T_ji / rho_phi[i_n],  0 ).
+    // Note the +T sign (NOT -T): when both T_ij and T_ji are positive (precisely
+    // where the consistent Galerkin operator violates the maximum principle on
+    // u_n, e.g. non-acute meshes or convection-dominated edges) this gives the
+    // correct positive dissipation. The previous max(-T_ij, -T_ji, 0) silently
+    // returned zero exactly in those regions.
     for (int i_n = 0; i_n < numDOFs_n; i_n++) {
       const int full_row_i = offset_n + stride_n * i_n;
       for (int offset = csrRowIndeces_n_DofLoops.data()[i_n];
@@ -3314,7 +3326,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
         const double T_ij = (full_offset_ij >= 0) ? TransportMatrix_n[full_offset_ij] : 0.0;
         const double T_ji = (full_offset_ji >= 0) ? TransportMatrix_n[full_offset_ji] : 0.0;
-        dLow_n.data()[offset] = std::max({-T_ij, -T_ji, 0.0});
+        const double inv_rho_phi_j = 1.0 / std::max(rho_n_phi_dof[j_n], 1.0e-14);
+        const double inv_rho_phi_i = 1.0 / std::max(rho_n_phi_dof[i_n], 1.0e-14);
+        dLow_n.data()[offset] = std::max({T_ij * inv_rho_phi_j, T_ji * inv_rho_phi_i, 0.0});
         dEV_n.data()[offset]  = cE * std::max(psi_n[i_n], psi_n[j_n]) * dLow_n.data()[offset];
       }
     }
