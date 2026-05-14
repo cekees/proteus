@@ -59,8 +59,6 @@ public:
   virtual void calculateJacobian(arguments_dict &args)                   = 0;
   virtual void invert(arguments_dict &args)                              = 0;
   virtual void FCTStep(arguments_dict &args)                             = 0;
-  virtual void FCTStep_n_pass1(arguments_dict &args)                     = 0;
-  virtual void FCTStep_n_pass2(arguments_dict &args)                     = 0;
   virtual void kth_FCT_step(arguments_dict &args)                        = 0;
   virtual void calculateResidual_entropy_viscosity(arguments_dict &args) = 0;
   virtual void calculateMassMatrix(arguments_dict &args)                 = 0;
@@ -1720,285 +1718,233 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
 
  
 
+  // ============================================================================
+  // FCTStep -- Zalesak FCT limiter, component- and pass-dispatched (ONE function).
+  //
+  //   if component == 0 (wetting, p_w) / else component == 1 (non-wetting, S_n);
+  //   within each, if pass == 1 / else pass == 2.
+  //
+  // Split into two passes for MPI parallel-correctness: the limiter is
+  // mass-conservative only if both ranks sharing an edge compute the SAME
+  // L_ij, which needs Rpos/Rneg consistent for BOTH endpoints. With 1-layer
+  // overlap a ghost DOF's stencil is incomplete, so pass 1 computes Rpos/Rneg
+  // locally, Python ghost-scatters them, then pass 2 applies the limiter.
+  // In serial the scatter is a no-op.
+  //
+  //   pass 1: inputs -> FluxCorrectionMatrix, Rpos, Rneg
+  //   [Python: scatter_forward Rpos, Rneg]
+  //   pass 2: Rpos, Rneg, FluxCorrectionMatrix -> limited_solution, fluxCorrection
+  //
+  // comp-0 indexes MC / dt_times_fH_minus_fL by the FULL CSR offset (via
+  // full_offset_from_compact); comp-1 indexes MC_n / dt_times_fH_minus_fL_n by
+  // the COMPACT comp-1 CSR position directly.
+  // ============================================================================
   void FCTStep(arguments_dict &args)
-{
-  xt::pyarray<double> &bc_mask                   = args.array<double>("bc_mask");
-  int                  NNZ                       = args.scalar<int>("NNZ");     // number of non-zero entries
-  int                  numDOFs                   = args.scalar<int>("numDOFs"); // number of DOFs
-  double               dt                        = args.scalar<double>("dt");
-  xt::pyarray<double> &ML                        = args.array<double>("ML");    // lumped mass matrix (as vector)
-  xt::pyarray<double> &mn                        = args.array<double>("mn");    // DOFs at time tn
-  xt::pyarray<double> &mHigh                     = args.array<double>("mHigh"); // high-order mass at t^{n+1}
-  xt::pyarray<double> &mLow                      = args.array<double>("mLow");  // low-order mass at t^{n+1}
-  xt::pyarray<double> &mDotLow                   = args.array<double>("mDotLow");
-  xt::pyarray<double> &limited_solution          = args.array<double>("limited_solution");
-  xt::pyarray<int>    &csrRowIndeces_DofLoops    = args.array<int>("csrRowIndeces_DofLoops");
-  xt::pyarray<int>    &csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops");
-  xt::pyarray<int>    &csrRowIndeces_Full        = args.array<int>("csrRowIndeces_Full");
-  xt::pyarray<int>    &csrColumnOffsets_Full     = args.array<int>("csrColumnOffsets_Full");
-  xt::pyarray<double> &MC                        = args.array<double>("MC");              // consistent mass matrix
-  xt::pyarray<double> &dt_times_fH_minus_fL      = args.array<double>("dt_times_fH_minus_fL");
-  xt::pyarray<double> &min_m_bc                  = args.array<double>("min_m_bc");
-  xt::pyarray<double> &max_m_bc                  = args.array<double>("max_m_bc");
-  xt::pyarray<double> &fluxCorrection            = args.array<double>("fluxCorrection");
-  // flags
-  int                  LUMPED_MASS_MATRIX        = args.scalar<int>("LUMPED_MASS_MATRIX");
-  int                  MONOLITHIC                = args.scalar<int>("MONOLITHIC");
-  const int            offset_u                  = args.scalar<int>("offset_u");
-  const int            stride_u                  = args.scalar<int>("stride_u");
-
-  // heap arrays instead of VLAs
-  std::vector<double> Rpos(numDOFs, 0.0);
-  std::vector<double> Rneg(numDOFs, 0.0);
-  std::vector<double> FluxCorrectionMatrix(csrRowIndeces_DofLoops.at(numDOFs), 0.0);
-  std::vector<double> mDot(numDOFs, 0.0);
-  auto full_offset_from_compact = [&](int i_compact, int j_compact) -> int
   {
-    const int full_i = offset_u + stride_u * i_compact;
-    const int full_j = offset_u + stride_u * j_compact;
-    for (int offset = csrRowIndeces_Full.at(full_i); offset < csrRowIndeces_Full.at(full_i + 1); ++offset)
-      if (csrColumnOffsets_Full.at(offset) == full_j) return offset;
-    return -1;
-  };
+    const int component = args.scalar<int>("component");
+    const int pass      = args.scalar<int>("pass");
 
-  // for debugging bounds
-  std::vector<double> localMin(numDOFs, 0.0);
-  std::vector<double> localMax(numDOFs, 0.0);
-
-  //////////////////
-  // LOOP in DOFs //
-  //////////////////
-  int ij = 0;
-
-
-  for (int i = 0; i < numDOFs; i++) {
-
-    // local time derivative from low-order mass
-    mDot.at(i) = (mLow.at(i) - mn.at(i)) / dt;
-
-    // initialize local min/max from BC
-    double mini = min_m_bc.at(i);
-    double maxi = max_m_bc.at(i);
-
-    double Pposi = 0.0, Pnegi = 0.0;
-
-    // LOOP OVER THE SPARSITY PATTERN (j-LOOP)
-    for (int offset = csrRowIndeces_DofLoops.at(i); offset < csrRowIndeces_DofLoops.at(i + 1);offset++)
-    {
-      int j = csrColumnOffsets_DofLoops.at(offset);
-      const int full_offset = full_offset_from_compact(i, j);
-      assert(full_offset >= 0);
-
-      ////////////////////////
-      // COMPUTE THE BOUNDS //
-      ////////////////////////
-      if (GLOBAL_FCT == 0) {
-        if (MONOLITHIC == 0) {
-          mini = fmin(mini, mLow.at(j));
-          maxi = fmax(maxi, mLow.at(j));
-        } else {
-          mini = fmin(mini, mn.at(j));
-          maxi = fmax(maxi, mn.at(j));
+    if (component == 0) {
+      // ======================= wetting (p_w) =======================
+      if (pass == 1) {
+        int                  numDOFs                   = args.scalar<int>("numDOFs");
+        double               dt                        = args.scalar<double>("dt");
+        xt::pyarray<double> &ML                        = args.array<double>("ML");
+        xt::pyarray<double> &mn                        = args.array<double>("mn");
+        xt::pyarray<double> &mLow                      = args.array<double>("mLow");
+        xt::pyarray<double> &mDotLow                   = args.array<double>("mDotLow");
+        xt::pyarray<int>    &csrRowIndeces_DofLoops    = args.array<int>("csrRowIndeces_DofLoops");
+        xt::pyarray<int>    &csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops");
+        xt::pyarray<int>    &csrRowIndeces_Full        = args.array<int>("csrRowIndeces_Full");
+        xt::pyarray<int>    &csrColumnOffsets_Full     = args.array<int>("csrColumnOffsets_Full");
+        xt::pyarray<double> &MC                        = args.array<double>("MC");
+        xt::pyarray<double> &dt_times_fH_minus_fL      = args.array<double>("dt_times_fH_minus_fL");
+        xt::pyarray<double> &min_m_bc                  = args.array<double>("min_m_bc");
+        xt::pyarray<double> &max_m_bc                  = args.array<double>("max_m_bc");
+        xt::pyarray<double> &FluxCorrectionMatrix      = args.array<double>("FluxCorrectionMatrix");
+        xt::pyarray<double> &Rpos                      = args.array<double>("Rpos");
+        xt::pyarray<double> &Rneg                      = args.array<double>("Rneg");
+        int                  LUMPED_MASS_MATRIX        = args.scalar<int>("LUMPED_MASS_MATRIX");
+        int                  MONOLITHIC                = args.scalar<int>("MONOLITHIC");
+        const int            offset_u                  = args.scalar<int>("offset_u");
+        const int            stride_u                  = args.scalar<int>("stride_u");
+        auto full_offset_from_compact = [&](int i_compact, int j_compact) -> int {
+          const int full_i = offset_u + stride_u * i_compact;
+          const int full_j = offset_u + stride_u * j_compact;
+          for (int offset = csrRowIndeces_Full.at(full_i); offset < csrRowIndeces_Full.at(full_i + 1); ++offset)
+            if (csrColumnOffsets_Full.at(offset) == full_j) return offset;
+          return -1;
+        };
+        int ij = 0;
+        for (int i = 0; i < numDOFs; i++) {
+          double mini = min_m_bc.at(i);
+          double maxi = max_m_bc.at(i);
+          double Pposi = 0.0, Pnegi = 0.0;
+          for (int offset = csrRowIndeces_DofLoops.at(i); offset < csrRowIndeces_DofLoops.at(i + 1); offset++) {
+            int j = csrColumnOffsets_DofLoops.at(offset);
+            const int full_offset = full_offset_from_compact(i, j);
+            assert(full_offset >= 0);
+            if (GLOBAL_FCT == 0) {
+              if (MONOLITHIC == 0) { mini = fmin(mini, mLow.at(j)); maxi = fmax(maxi, mLow.at(j)); }
+              else                 { mini = fmin(mini, mn.at(j));   maxi = fmax(maxi, mn.at(j));   }
+            }
+            if (MONOLITHIC == 0) {
+              FluxCorrectionMatrix.at(ij) = (LUMPED_MASS_MATRIX == 1 ? 0. : 1.) * dt
+                  * MC.at(full_offset) * (mDotLow.at(i) - mDotLow.at(j))
+                  + dt_times_fH_minus_fL.at(full_offset);
+            } else {
+              FluxCorrectionMatrix.at(ij) = dt_times_fH_minus_fL.at(full_offset);
+            }
+            Pposi += FluxCorrectionMatrix.at(ij) * ((FluxCorrectionMatrix.at(ij) > 0) ? 1. : 0.);
+            Pnegi += FluxCorrectionMatrix.at(ij) * ((FluxCorrectionMatrix.at(ij) < 0) ? 1. : 0.);
+            ij += 1;
+          }
+          double Qposi, Qnegi;
+          if (MONOLITHIC == 0) {
+            Qposi = ML.at(i) * (maxi - mLow.at(i));
+            Qnegi = ML.at(i) * (mini - mLow.at(i));
+          } else {
+            const double gamma = 10.0 * ML.at(i);
+            Qposi = fmin(0.5 * ML.at(i) * (1.0 - mn.at(i)), gamma * (maxi - mn.at(i)));
+            Qnegi = fmax(0.5 * ML.at(i) * (0.0 - mn.at(i)), gamma * (mini - mn.at(i)));
+          }
+          Rpos.at(i) = ((Pposi == 0.0) ? 1.0 : fmin(1.0, Qposi / Pposi));
+          Rneg.at(i) = ((Pnegi == 0.0) ? 1.0 : fmin(1.0, Qnegi / Pnegi));
+        }
+      } else {
+        // comp-0 pass 2
+        xt::pyarray<double> &bc_mask                   = args.array<double>("bc_mask");
+        int                  numDOFs                   = args.scalar<int>("numDOFs");
+        double               dt                        = args.scalar<double>("dt");
+        xt::pyarray<double> &ML                        = args.array<double>("ML");
+        xt::pyarray<double> &mn                        = args.array<double>("mn");
+        xt::pyarray<double> &mLow                      = args.array<double>("mLow");
+        xt::pyarray<int>    &csrRowIndeces_DofLoops    = args.array<int>("csrRowIndeces_DofLoops");
+        xt::pyarray<int>    &csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops");
+        xt::pyarray<int>    &csrRowIndeces_Full        = args.array<int>("csrRowIndeces_Full");
+        xt::pyarray<int>    &csrColumnOffsets_Full     = args.array<int>("csrColumnOffsets_Full");
+        xt::pyarray<double> &MC                        = args.array<double>("MC");
+        xt::pyarray<double> &FluxCorrectionMatrix      = args.array<double>("FluxCorrectionMatrix");
+        xt::pyarray<double> &Rpos                      = args.array<double>("Rpos");
+        xt::pyarray<double> &Rneg                      = args.array<double>("Rneg");
+        xt::pyarray<double> &fluxCorrection            = args.array<double>("fluxCorrection");
+        xt::pyarray<double> &limited_solution          = args.array<double>("limited_solution");
+        int                  LUMPED_MASS_MATRIX        = args.scalar<int>("LUMPED_MASS_MATRIX");
+        int                  MONOLITHIC                = args.scalar<int>("MONOLITHIC");
+        const int            offset_u                  = args.scalar<int>("offset_u");
+        const int            stride_u                  = args.scalar<int>("stride_u");
+        auto full_offset_from_compact = [&](int i_compact, int j_compact) -> int {
+          const int full_i = offset_u + stride_u * i_compact;
+          const int full_j = offset_u + stride_u * j_compact;
+          for (int offset = csrRowIndeces_Full.at(full_i); offset < csrRowIndeces_Full.at(full_i + 1); ++offset)
+            if (csrColumnOffsets_Full.at(offset) == full_j) return offset;
+          return -1;
+        };
+        int ij = 0;
+        for (int i = 0; i < numDOFs; i++) {
+          double ith_Limiter_times_FluxCorrectionMatrix = 0.0;
+          const double beta_ij = 1.0;
+          const double mDot_i = (mLow.at(i) - mn.at(i)) / dt;
+          for (int offset = csrRowIndeces_DofLoops.at(i); offset < csrRowIndeces_DofLoops.at(i + 1); offset++) {
+            int j = csrColumnOffsets_DofLoops.at(offset);
+            const int full_offset = full_offset_from_compact(i, j);
+            assert(full_offset >= 0);
+            const double alpha_fA = ((FluxCorrectionMatrix.at(ij) > 0.0)
+                  ? fmin(Rpos.at(i), Rneg.at(j)) : fmin(Rneg.at(i), Rpos.at(j)))
+                * FluxCorrectionMatrix.at(ij);
+            if (MONOLITHIC == 0) {
+              ith_Limiter_times_FluxCorrectionMatrix += alpha_fA;
+            } else {
+              const double mDot_j = (mLow.at(j) - mn.at(j)) / dt;
+              const double alpha_dot = fmin(1.0, beta_ij * fabs(alpha_fA) / MC.at(full_offset)
+                                                / fmax(1.0e-8, fabs(mDot_i - mDot_j)));
+              ith_Limiter_times_FluxCorrectionMatrix += alpha_fA
+                  + (LUMPED_MASS_MATRIX == 1 ? 0. : 1.) * dt * alpha_dot
+                    * MC.at(full_offset) * (mDot_i - mDot_j);
+            }
+            ij += 1;
+          }
+          fluxCorrection.at(i)   = -ith_Limiter_times_FluxCorrectionMatrix * bc_mask.at(i) / dt;
+          limited_solution.at(i) = mLow.at(i)
+              + 1.0 / ML.at(i) * ith_Limiter_times_FluxCorrectionMatrix * bc_mask.at(i);
         }
       }
-
-      mDot.at(j) = (mLow.at(j) - mn.at(j)) / dt;
-
-      if (MONOLITHIC == 0) {
-        FluxCorrectionMatrix.at(ij) = (LUMPED_MASS_MATRIX == 1 ? 0. : 1.) * dt * MC.at(full_offset) * (mDotLow.at(i) - mDotLow.at(j)) + dt_times_fH_minus_fL.at(full_offset);
-      } else {
-        FluxCorrectionMatrix.at(ij) = dt_times_fH_minus_fL.at(full_offset);
-      }
-
-      ///////////////////////
-      // COMPUTE P VECTORS //
-      ///////////////////////
-      Pposi += FluxCorrectionMatrix.at(ij) * ((FluxCorrectionMatrix.at(ij) > 0) ? 1. : 0.);
-      Pnegi += FluxCorrectionMatrix.at(ij) * ((FluxCorrectionMatrix.at(ij) < 0) ? 1. : 0.);
-
-      // update ij
-      ij += 1;
-    } // j-loop
-
-    ///////////////////////
-    // COMPUTE Q VECTORS //
-    ///////////////////////
-    double gamma;
-    double Qposi;
-    double Qnegi;
-
-    if (MONOLITHIC == 0) {
-      Qposi = ML.at(i) * (maxi - mLow.at(i));
-      Qnegi = ML.at(i) * (mini - mLow.at(i));
     } else {
-      // cek todo: don't think this is right for Richards
-      gamma = 10.0 * ML.at(i);
-      Qposi = fmin(0.5 * ML.at(i) * (1.0 - mn.at(i)), gamma * (maxi - mn.at(i)));
-      Qnegi = fmax(0.5 * ML.at(i) * (0.0 - mn.at(i)), gamma * (mini - mn.at(i)));
-    }
-
-    ///////////////////////
-    // COMPUTE R VECTORS //
-    ///////////////////////
-    Rpos.at(i) = ((Pposi == 0.0) ? 1.0 : fmin(1.0, Qposi / Pposi));
-    Rneg.at(i) = ((Pnegi == 0.0) ? 1.0 : fmin(1.0, Qnegi / Pnegi));
-
-    // store local bounds for later bound check
-    localMin.at(i) = mini;
-    localMax.at(i) = maxi;
-  } // i DOFs
-
-  //////////////////////
-  // COMPUTE LIMITERS //
-  //////////////////////
-  ij = 0;
- // std::cout << "FCT: entering second DOF loop (applying limiters)...\n";
-
-  for (int i = 0; i < numDOFs; i++) {
-    double ith_Limiter_times_FluxCorrectionMatrix = 0.0;
-    double alpha_fA, alpha_dot, beta_ij = 1.0;
-    // LOOP OVER THE SPARSITY PATTERN (j-LOOP)
-    for (int offset = csrRowIndeces_DofLoops.at(i);  offset < csrRowIndeces_DofLoops.at(i + 1); offset++)
-    {
-      int j = csrColumnOffsets_DofLoops.at(offset);
-      const int full_offset = full_offset_from_compact(i, j);
-      assert(full_offset >= 0);
-      alpha_fA = ((FluxCorrectionMatrix.at(ij) > 0.0) ? fmin(Rpos.at(i), Rneg.at(j)) : fmin(Rneg.at(i), Rpos.at(j))) * FluxCorrectionMatrix.at(ij);
-      alpha_dot = fmin(1.0, beta_ij * fabs(alpha_fA) / MC.at(full_offset) / fmax(1.0e-8, fabs(mDot.at(i) - mDot.at(j))));
-
-      if (MONOLITHIC == 0) {
-        ith_Limiter_times_FluxCorrectionMatrix += alpha_fA;
-      } else {
-        ith_Limiter_times_FluxCorrectionMatrix += alpha_fA + (LUMPED_MASS_MATRIX == 1 ? 0. : 1.) * dt * alpha_dot * MC.at(full_offset) * (mDot.at(i) - mDot.at(j));
-      }
-      ij += 1;
-    } // j-loop
-    fluxCorrection.at(i) = -ith_Limiter_times_FluxCorrectionMatrix * bc_mask.at(i) / dt;
-    limited_solution.at(i) = mLow.at(i) + 1.0 / ML.at(i) * ith_Limiter_times_FluxCorrectionMatrix * bc_mask.at(i);
-}
-}
-
-  // ============================================================================
-  // FCTStep_n(): Zalesak FCT limiter for the non-wetting equation (comp-1).
-  //
-  // Mirrors FCTStep() but operates on the comp-1 predictor state populated by
-  // calculateResidual_entropy_viscosity:
-  //   mLow_n[i]     -- low-order m_n at t^{n+1} (current Newton iterate)
-  //   mn_n[i]       -- m_n at t^n
-  //   mDotLow_n[i]  -- (mLow_n[i] - mn_n[i]) / dt
-  //   dt_times_fH_minus_fL_n[ij]  -- per-edge antidiffusive flux
-  //
-  // Bounds: min_m_bc_n / max_m_bc_n carry boundary-aware values (Dirichlet
-  // DOFs hold the imposed m_n from S_w_bc; interior DOFs start at the
-  // +-1e10 sentinel set by Python and get shrunk by neighbor mLow_n values
-  // in the standard Zalesak local-neighborhood loop -- mass-conservative).
-  //
-  // Outputs:
-  //   fluxCorrection_n[i]   -- to be added to globalResidual at comp-1 rows
-  //   limited_solution_n[i] -- mLow_n[i] + (limited correction) / ML_n[i],
-  //                            the bound-preserving, mass-conservative m_n
-  // ============================================================================
-  // ============================================================================
-  // FCTStep_n SPLIT INTO TWO PASSES for MPI parallel-correctness.
-  //
-  // The Zalesak limiter is mass-conservative only if both ranks sharing an edge
-  // (i,j) compute the SAME limiter L_ij -- which needs Rpos/Rneg consistent for
-  // BOTH endpoints. With 1-layer overlap a rank's ghost DOFs have incomplete
-  // stencils, so their Rpos/Rneg are wrong. The cure: compute Rpos/Rneg locally
-  // (Pass 1), ghost-scatter them in Python, then apply the limiter (Pass 2).
-  //
-  //   FCTStep_n_pass1: inputs -> FluxCorrectionMatrix_n, Rpos_n, Rneg_n
-  //   [Python: scatter_forward Rpos_n, Rneg_n  (and mLow_n/mDotLow_n before p1)]
-  //   FCTStep_n_pass2: Rpos_n, Rneg_n, FluxCorrectionMatrix_n -> limited_solution_n
-  //
-  // In serial the scatter is a no-op and this is identical to the old single
-  // FCTStep_n.
-  // ============================================================================
-  void FCTStep_n_pass1(arguments_dict &args)
-  {
-    int                  numDOFs_n                   = args.scalar<int>("numDOFs_n");
-    double               dt                          = args.scalar<double>("dt");
-    xt::pyarray<double> &ML_n                        = args.array<double>("ML_n");
-    xt::pyarray<double> &MC_n                        = args.array<double>("MC_n");
-    xt::pyarray<double> &mLow_n                      = args.array<double>("mLow_n");
-    xt::pyarray<double> &mDotLow_n                   = args.array<double>("mDotLow_n");
-    xt::pyarray<double> &dt_times_fH_minus_fL_n      = args.array<double>("dt_times_fH_minus_fL_n");
-    xt::pyarray<double> &min_m_bc_n                  = args.array<double>("min_m_bc_n");
-    xt::pyarray<double> &max_m_bc_n                  = args.array<double>("max_m_bc_n");
-    xt::pyarray<double> &FluxCorrectionMatrix_n      = args.array<double>("FluxCorrectionMatrix_n");
-    xt::pyarray<double> &Rpos_n                      = args.array<double>("Rpos_n");
-    xt::pyarray<double> &Rneg_n                      = args.array<double>("Rneg_n");
-    xt::pyarray<int>    &csrRowIndeces_n_DofLoops    = args.array<int>("csrRowIndeces_n_DofLoops");
-    xt::pyarray<int>    &csrColumnOffsets_n_DofLoops = args.array<int>("csrColumnOffsets_n_DofLoops");
-    int                  LUMPED_MASS_MATRIX          = args.scalar<int>("LUMPED_MASS_MATRIX");
-
-    int ij = 0;
-    for (int i = 0; i < numDOFs_n; i++) {
-      double mini = min_m_bc_n.at(i);
-      double maxi = max_m_bc_n.at(i);
-      double Pposi = 0.0, Pnegi = 0.0;
-      for (int offset = csrRowIndeces_n_DofLoops.at(i);
-           offset < csrRowIndeces_n_DofLoops.at(i + 1); offset++) {
-        const int j = csrColumnOffsets_n_DofLoops.at(offset);
-        if (GLOBAL_FCT == 0) {
-          mini = std::fmin(mini, mLow_n.at(j));
-          maxi = std::fmax(maxi, mLow_n.at(j));
+      // ===================== non-wetting (S_n) =====================
+      if (pass == 1) {
+        int                  numDOFs_n                   = args.scalar<int>("numDOFs_n");
+        double               dt                          = args.scalar<double>("dt");
+        xt::pyarray<double> &ML_n                        = args.array<double>("ML_n");
+        xt::pyarray<double> &MC_n                        = args.array<double>("MC_n");
+        xt::pyarray<double> &mLow_n                      = args.array<double>("mLow_n");
+        xt::pyarray<double> &mDotLow_n                   = args.array<double>("mDotLow_n");
+        xt::pyarray<double> &dt_times_fH_minus_fL_n      = args.array<double>("dt_times_fH_minus_fL_n");
+        xt::pyarray<double> &min_m_bc_n                  = args.array<double>("min_m_bc_n");
+        xt::pyarray<double> &max_m_bc_n                  = args.array<double>("max_m_bc_n");
+        xt::pyarray<double> &FluxCorrectionMatrix_n      = args.array<double>("FluxCorrectionMatrix_n");
+        xt::pyarray<double> &Rpos_n                      = args.array<double>("Rpos_n");
+        xt::pyarray<double> &Rneg_n                      = args.array<double>("Rneg_n");
+        xt::pyarray<int>    &csrRowIndeces_n_DofLoops    = args.array<int>("csrRowIndeces_n_DofLoops");
+        xt::pyarray<int>    &csrColumnOffsets_n_DofLoops = args.array<int>("csrColumnOffsets_n_DofLoops");
+        int                  LUMPED_MASS_MATRIX          = args.scalar<int>("LUMPED_MASS_MATRIX");
+        int ij = 0;
+        for (int i = 0; i < numDOFs_n; i++) {
+          double mini = min_m_bc_n.at(i);
+          double maxi = max_m_bc_n.at(i);
+          double Pposi = 0.0, Pnegi = 0.0;
+          for (int offset = csrRowIndeces_n_DofLoops.at(i);
+               offset < csrRowIndeces_n_DofLoops.at(i + 1); offset++) {
+            const int j = csrColumnOffsets_n_DofLoops.at(offset);
+            if (GLOBAL_FCT == 0) {
+              mini = std::fmin(mini, mLow_n.at(j));
+              maxi = std::fmax(maxi, mLow_n.at(j));
+            }
+            FluxCorrectionMatrix_n.at(ij) =
+                (LUMPED_MASS_MATRIX == 1 ? 0.0 : 1.0)
+                  * dt * MC_n.at(offset) * (mDotLow_n.at(i) - mDotLow_n.at(j))
+                + dt_times_fH_minus_fL_n.at(offset);
+            Pposi += (FluxCorrectionMatrix_n.at(ij) > 0.0) ? FluxCorrectionMatrix_n.at(ij) : 0.0;
+            Pnegi += (FluxCorrectionMatrix_n.at(ij) < 0.0) ? FluxCorrectionMatrix_n.at(ij) : 0.0;
+            ij += 1;
+          }
+          const double Qposi = ML_n.at(i) * (maxi - mLow_n.at(i));
+          const double Qnegi = ML_n.at(i) * (mini - mLow_n.at(i));
+          Rpos_n.at(i) = (Pposi == 0.0) ? 1.0 : std::fmin(1.0, Qposi / Pposi);
+          Rneg_n.at(i) = (Pnegi == 0.0) ? 1.0 : std::fmin(1.0, Qnegi / Pnegi);
         }
-        // FluxCorrectionMatrix[ij] = dt * MC_n * (mDotLow_i - mDotLow_j)
-        //                          + dt_times_fH_minus_fL_n[ij]
-        // MC_n is the comp-1 consistent mass matrix indexed by the same compact
-        // comp-1 CSR position as dt_times_fH_minus_fL_n; symmetric, so the
-        // consistency term is antisymmetric -> mass-conservative.
-        FluxCorrectionMatrix_n.at(ij) =
-            (LUMPED_MASS_MATRIX == 1 ? 0.0 : 1.0)
-              * dt * MC_n.at(offset) * (mDotLow_n.at(i) - mDotLow_n.at(j))
-            + dt_times_fH_minus_fL_n.at(offset);
-        Pposi += (FluxCorrectionMatrix_n.at(ij) > 0.0) ? FluxCorrectionMatrix_n.at(ij) : 0.0;
-        Pnegi += (FluxCorrectionMatrix_n.at(ij) < 0.0) ? FluxCorrectionMatrix_n.at(ij) : 0.0;
-        ij += 1;
+      } else {
+        // comp-1 pass 2
+        int                  numDOFs_n                   = args.scalar<int>("numDOFs_n");
+        double               dt                          = args.scalar<double>("dt");
+        xt::pyarray<double> &ML_n                        = args.array<double>("ML_n");
+        xt::pyarray<double> &mLow_n                      = args.array<double>("mLow_n");
+        xt::pyarray<double> &FluxCorrectionMatrix_n      = args.array<double>("FluxCorrectionMatrix_n");
+        xt::pyarray<double> &Rpos_n                      = args.array<double>("Rpos_n");
+        xt::pyarray<double> &Rneg_n                      = args.array<double>("Rneg_n");
+        xt::pyarray<double> &fluxCorrection_n            = args.array<double>("fluxCorrection_n");
+        xt::pyarray<double> &limited_solution_n          = args.array<double>("limited_solution_n");
+        xt::pyarray<double> &bc_mask_n                   = args.array<double>("bc_mask_n");
+        xt::pyarray<int>    &csrRowIndeces_n_DofLoops    = args.array<int>("csrRowIndeces_n_DofLoops");
+        xt::pyarray<int>    &csrColumnOffsets_n_DofLoops = args.array<int>("csrColumnOffsets_n_DofLoops");
+        int ij = 0;
+        for (int i = 0; i < numDOFs_n; i++) {
+          double ith_Limited_FCM = 0.0;
+          for (int offset = csrRowIndeces_n_DofLoops.at(i);
+               offset < csrRowIndeces_n_DofLoops.at(i + 1); offset++) {
+            const int j = csrColumnOffsets_n_DofLoops.at(offset);
+            const double alpha_fA =
+                ((FluxCorrectionMatrix_n.at(ij) > 0.0)
+                     ? std::fmin(Rpos_n.at(i), Rneg_n.at(j))
+                     : std::fmin(Rneg_n.at(i), Rpos_n.at(j)))
+                * FluxCorrectionMatrix_n.at(ij);
+            ith_Limited_FCM += alpha_fA;
+            ij += 1;
+          }
+          fluxCorrection_n.at(i)   = -ith_Limited_FCM * bc_mask_n.at(i) / dt;
+          limited_solution_n.at(i) = mLow_n.at(i)
+                                  + (1.0 / ML_n.at(i)) * ith_Limited_FCM * bc_mask_n.at(i);
+        }
       }
-      const double Qposi = ML_n.at(i) * (maxi - mLow_n.at(i));
-      const double Qnegi = ML_n.at(i) * (mini - mLow_n.at(i));
-      Rpos_n.at(i) = (Pposi == 0.0) ? 1.0 : std::fmin(1.0, Qposi / Pposi);
-      Rneg_n.at(i) = (Pnegi == 0.0) ? 1.0 : std::fmin(1.0, Qnegi / Pnegi);
-    }
-  }
-
-  void FCTStep_n_pass2(arguments_dict &args)
-  {
-    int                  numDOFs_n                   = args.scalar<int>("numDOFs_n");
-    double               dt                          = args.scalar<double>("dt");
-    xt::pyarray<double> &ML_n                        = args.array<double>("ML_n");
-    xt::pyarray<double> &mLow_n                      = args.array<double>("mLow_n");
-    xt::pyarray<double> &FluxCorrectionMatrix_n      = args.array<double>("FluxCorrectionMatrix_n");
-    xt::pyarray<double> &Rpos_n                      = args.array<double>("Rpos_n");
-    xt::pyarray<double> &Rneg_n                      = args.array<double>("Rneg_n");
-    xt::pyarray<double> &fluxCorrection_n            = args.array<double>("fluxCorrection_n");
-    xt::pyarray<double> &limited_solution_n          = args.array<double>("limited_solution_n");
-    xt::pyarray<double> &bc_mask_n                   = args.array<double>("bc_mask_n");
-    xt::pyarray<int>    &csrRowIndeces_n_DofLoops    = args.array<int>("csrRowIndeces_n_DofLoops");
-    xt::pyarray<int>    &csrColumnOffsets_n_DofLoops = args.array<int>("csrColumnOffsets_n_DofLoops");
-
-    int ij = 0;
-    for (int i = 0; i < numDOFs_n; i++) {
-      double ith_Limited_FCM = 0.0;
-      for (int offset = csrRowIndeces_n_DofLoops.at(i);
-           offset < csrRowIndeces_n_DofLoops.at(i + 1); offset++) {
-        const int j = csrColumnOffsets_n_DofLoops.at(offset);
-        // alpha_ij = min(R+_i, R-_j) if f_ij > 0, else min(R-_i, R+_j).
-        // Symmetric in (i,j) -> mass-conservative, PROVIDED Rpos_n/Rneg_n have
-        // been ghost-scattered so both endpoints carry their true global value.
-        const double alpha_fA =
-            ((FluxCorrectionMatrix_n.at(ij) > 0.0)
-                 ? std::fmin(Rpos_n.at(i), Rneg_n.at(j))
-                 : std::fmin(Rneg_n.at(i), Rpos_n.at(j)))
-            * FluxCorrectionMatrix_n.at(ij);
-        ith_Limited_FCM += alpha_fA;
-        ij += 1;
-      }
-      fluxCorrection_n.at(i)   = -ith_Limited_FCM * bc_mask_n.at(i) / dt;
-      limited_solution_n.at(i) = mLow_n.at(i)
-                              + (1.0 / ML_n.at(i)) * ith_Limited_FCM * bc_mask_n.at(i);
     }
   }
 
@@ -3248,16 +3194,13 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     //         Newton convergence (Coefficients.postStep). This matches TADR /
     //         Richards Newton.solve flow where FCT is a post-step.
     //
-    // Both branches still populate the comp-0 and comp-1 FCT outputs so
-    // Python can use them.
-    if (FCT_n == 1 || STABILIZATION_TYPE == STABILIZATION::Implicit_FCT) {
-      FCTStep(args);
-      // FCTStep_n (comp-1) is NOT called here -- comp-1 FCT runs as a
-      // Python-orchestrated post-step (applyFCT_n), split into
-      // FCTStep_n_pass1/_pass2 with a ghost-scatter of Rpos_n/Rneg_n between
-      // the passes (MPI-parallel correctness). It must also see the FRESH
-      // converged-iterate comp-1 predictor state assembled below.
-    }
+    // FCTStep is NOT called here. Both components' FCT run as a Python-
+    // orchestrated post-step (Coefficients.postStep -> LevelModel.FCTStep):
+    // FCTStep(component, pass=1) -> ghost-scatter Rpos/Rneg -> FCTStep(pass=2),
+    // which is the requirement for MPI-parallel mass conservation. This
+    // routine just leaves the comp-0 and comp-1 FCT predictor arrays
+    // (mLow, mDotLow, dt_times_fH_minus_fL, dLow, min/max_m_bc, ...) populated
+    // from the converged iterate.
     if (STABILIZATION_TYPE == STABILIZATION::Implicit_FCT) {
       // Legacy in-Newton injection (kept for STAB=Implicit_FCT only; the
       // Python Coefficients class rejects Implicit_FCT, so this is dead).
@@ -4039,13 +3982,13 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       }
     } // ebNE
 
-    // The comp-1 Zalesak FCT limiter (FCTStep_n_pass1 / _pass2) is NOT called
-    // here anymore. It runs as a Python-orchestrated post-step
-    // (LevelModel.applyFCT_n) after Newton convergence, so that mLow_n /
-    // Rpos_n / Rneg_n can be ghost-scattered between the two passes -- the
-    // requirement for MPI-parallel mass conservation. This routine just
-    // leaves mLow_n / mDotLow_n / dt_times_fH_minus_fL_n / dLow_n / dEV_n /
-    // min_m_bc_n / max_m_bc_n populated from the converged iterate.
+    // The Zalesak FCT limiter is NOT called here. It runs as a Python-
+    // orchestrated post-step (Coefficients.postStep -> LevelModel.FCTStep):
+    // FCTStep(component, pass=1) -> ghost-scatter Rpos/Rneg -> FCTStep(pass=2),
+    // the requirement for MPI-parallel mass conservation. This routine just
+    // leaves the comp-0 and comp-1 FCT predictor arrays (mLow, mDotLow,
+    // dt_times_fH_minus_fL, dLow, dEV, min/max_m_bc, ...) populated from the
+    // converged iterate.
   }
 
   // ============================================================================

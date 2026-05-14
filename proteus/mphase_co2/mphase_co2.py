@@ -640,25 +640,28 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             c[('da', 0, 0, 1)][:] = 0.0
     
     def postStep(self, t, firstStep=False):
-        # FCT defect-correction for the gas component (STAB != 0 with FCT).
+        # FCT defect-correction post-step (STAB != 0 with FCT).
         #
-        # Newton solves the LOW-ORDER (dLow) gas residual cleanly. The C++
-        # FCTStep_n has, by the end of the converged Newton step, filled
-        # self.model.limited_solution_n with the Zalesak-limited conserved
-        # mass m_n. Here -- after Newton convergence, the standard place for
-        # a defect-correction post-step -- we invert m_n -> S_n and scatter
-        # the bound-preserving solution into every comp-1 state array.
+        # Newton solves the LOW-ORDER residual cleanly; calculateResidual_
+        # entropy_viscosity leaves the comp-0 and comp-1 FCT predictor arrays
+        # populated from the converged iterate. Here -- after Newton
+        # convergence -- we run the split Zalesak limiter for both components:
+        #   FCTStep(component=1): m_n -> bound-preserving S_n  (gas/transport)
+        #   FCTStep(component=0): m_w -> p_w                   (wetting)
+        # comp-1 MUST run first: FCTStep(component=0)'s m_w -> p_w inversion
+        # uses the just-limited S_n in u[1].dof.
         #
         # Without this, FCT=True only *computes* the limiter and throws it
         # away: the archived/advanced solution stays the diffusive low-order
-        # dLow field. See applyFCT_n() on the LevelModel.
+        # field. See LevelModel.FCTStep.
         m = self.model
         if (m is None
                 or self.STABILIZATION_TYPE == 0
                 or not self._fct_requested
                 or getattr(m, 'limited_solution_n', None) is None):
             return {}
-        m.applyFCT_n()
+        m.FCTStep(component=1)
+        #m.FCTStep(component=0)
         return {}
 
     # def postStep(self, t, firstStep=False):
@@ -1192,13 +1195,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.min_m_bc_n             = None
         self.max_m_bc_n             = None
         self.bc_mask_n              = None
-        # ParVec_petsc4py wrappers for the comp-1 FCT arrays, built lazily in
-        # applyFCT_n. scatter_forward_insert() on these is what makes the
-        # split Zalesak limiter MPI-parallel mass-conservative.
-        self._par_mLow_n            = None
-        self._par_mDotLow_n         = None
-        self._par_Rpos_n            = None
-        self._par_Rneg_n            = None
         #
         logEvent(memory("stride+offset","OneLevelTransport"),level=4)
         
@@ -1364,61 +1360,261 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         stride = self.stride[ci]
         dest[offset:offset + stride * comp_dof.size:stride] = comp_dof
    
-    def FCTStep(self):
-        full_rowptr, full_colind, MassMatrix = self.MC_global.getCSRrepresentation()
-        self._ensure_component0_compact_csr(full_rowptr, full_colind)
-        rowptr = self.comp0_rowptr
-        colind = self.comp0_colind
-        limited_solution = np.zeros((self.nFreeDOF_global[0],),'d')
-        bc_mask_u = np.ones((self.nFreeDOF_global[0],), 'd')
-        bc_mask_u[:] = self.bc_mask[self.freeDOFToNode_u]
-        argsDict = cArgumentsDict.ArgumentsDict()
-        argsDict["bc_mask"] = bc_mask_u
-        argsDict["NNZ"] = self.nnz
-        argsDict["numDOFs"] = self.nFreeDOF_global[0]
-        argsDict["dt"] = self.timeIntegration.dt
-        argsDict["ML"] = self.ML
-        argsDict["mn"] = self.mn
-        argsDict["mHigh"] = self.mHigh
-        argsDict["mLow"] = self.mLow
-        argsDict["fluxCorrection"] = self.fluxCorrection
-        argsDict["mDotLow"] = self.mDotLow
-        argsDict["limited_solution"] = limited_solution
-        argsDict["csrRowIndeces_DofLoops"] = rowptr
-        argsDict["csrColumnOffsets_DofLoops"] = colind
-        argsDict["csrRowIndeces_Full"] = full_rowptr
-        argsDict["csrColumnOffsets_Full"] = full_colind
-        argsDict["MC"] = MassMatrix
-        argsDict["dt_times_fH_minus_fL"] = self.dt_times_dC_minus_dL
-        argsDict["min_m_bc"] = self.min_m_bc
-        argsDict["max_m_bc"] = self.max_m_bc
-        argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
-        argsDict["MONOLITHIC"] =0#cek hack self.coefficients.MONOLITHIC
-        argsDict["offset_u"] = self.offset[0]
-        argsDict["stride_u"] = self.stride[0]
-        argsDict["anb_seepage_flux_n"]= self.anb_seepage_flux_n
-        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
-        argsDict["PSK_TYPE"] = self.coefficients.PSK_TYPE
-        self.mphase_co2.FCTStep(argsDict)
-        old_dof = self.u[0].dof.copy()
-        self.invert(u=limited_solution, ulow=old_dof)
-        #self.invert(u=limited_solution, ulow=self.u[0].dof) ##Original::
-        #print("FCT - low",np.linalg.norm(self.u[0].dof- old_dof))
-        uHigh = old_dof.copy()
-        mLim  = limited_solution.copy()
-        uLim  = self.u[0].dof.copy()
-        du_inf = np.linalg.norm(uLim - uHigh, np.inf)
-        DU_INF_MAX = 1.0  # Conservative value to avoid instability due to large corrections
-        if (not np.isfinite(du_inf)) or (du_inf > DU_INF_MAX):
-            self.u[0].dof[:] = uHigh
+    def FCTStep(self, component):
+        """Component-dispatched FCT post-step -- MPI-safe split Zalesak limiter.
+
+        Both branches run the same shape: ghost-scatter pass-1 inputs ->
+        C++ FCTStep(pass=1) -> ghost-scatter Rpos/Rneg -> C++ FCTStep(pass=2)
+        -> invert -> ghost-scatter the result -> write the component's dof /
+        previous-step / timeIntegration.u arrays. Splitting the Zalesak
+        passes and ghost-scattering Rpos/Rneg between them is the requirement
+        for parallel mass conservation; in serial every scatter is a no-op.
+        NO du_inf guard -- a rank-local guard on a collective scatter would
+        deadlock; the limiter is bound-preserving by construction anyway.
+
+        component == 1 : non-wetting (S_n). invert(COMPONENT=1): m_n -> S_n.
+        component == 0 : wetting (p_w).      invert(COMPONENT=0): m_w -> p_w,
+                         which needs the already-limited S_n -- so postStep
+                         calls component=1 BEFORE component=0.
+        """
+        coef = self.coefficients
+        dt   = self.timeIntegration.dt
+
+        if component == 0:
+            if self.mLow is None or self.u_dof_old is None:
+                return
+            n_w = self.nFreeDOF_global[0]
+            full_rowptr, full_colind, MassMatrix = self.MC_global.getCSRrepresentation()
+            self._ensure_component0_compact_csr(full_rowptr, full_colind)
+            nnz0 = self.comp0_colind.shape[0]
+            if getattr(self, 'Rpos', None) is None or self.Rpos.shape[0] != n_w:
+                self.Rpos = np.zeros((n_w,), 'd')
+                self.Rneg = np.zeros((n_w,), 'd')
+            if (getattr(self, 'FluxCorrectionMatrix', None) is None
+                    or self.FluxCorrectionMatrix.shape[0] != nnz0):
+                self.FluxCorrectionMatrix = np.zeros((nnz0,), 'd')
+            bc_mask_u = np.ascontiguousarray(self.bc_mask[self.freeDOFToNode_u])
+
+            # 1. ghost-sync pass-1 inputs (owner -> ghost), in place: copy each
+            #    array through u[0].dof and use its ParVec. In serial
+            #    (par_dof is None) this whole block is skipped.
+            _par = getattr(self.u[0], 'par_dof', None)
+            if _par is not None:
+                _saved = self.u[0].dof.copy()
+                for _arr in (self.mLow, self.mDotLow, self.min_m_bc, self.max_m_bc):
+                    self.u[0].dof[:] = _arr
+                    _par.scatter_forward_insert()
+                    _arr[:] = self.u[0].dof
+                self.u[0].dof[:] = _saved
+
+            # 2. Pass 1: Zalesak ratios.
+            argsDict = cArgumentsDict.ArgumentsDict()
+            argsDict["component"]                 = 0
+            argsDict["pass"]                      = 1
+            argsDict["numDOFs"]                   = n_w
+            argsDict["dt"]                        = dt
+            argsDict["ML"]                        = self.ML
+            argsDict["mn"]                        = self.mn
+            argsDict["mLow"]                      = self.mLow
+            argsDict["mDotLow"]                   = self.mDotLow
+            argsDict["csrRowIndeces_DofLoops"]    = self.comp0_rowptr
+            argsDict["csrColumnOffsets_DofLoops"] = self.comp0_colind
+            argsDict["csrRowIndeces_Full"]        = full_rowptr
+            argsDict["csrColumnOffsets_Full"]     = full_colind
+            argsDict["MC"]                        = MassMatrix
+            argsDict["dt_times_fH_minus_fL"]      = self.dt_times_dC_minus_dL
+            argsDict["min_m_bc"]                  = self.min_m_bc
+            argsDict["max_m_bc"]                  = self.max_m_bc
+            argsDict["FluxCorrectionMatrix"]      = self.FluxCorrectionMatrix
+            argsDict["Rpos"]                      = self.Rpos
+            argsDict["Rneg"]                      = self.Rneg
+            argsDict["LUMPED_MASS_MATRIX"]        = coef.LUMPED_MASS_MATRIX
+            argsDict["MONOLITHIC"]                = 0
+            argsDict["offset_u"]                  = self.offset[0]
+            argsDict["stride_u"]                  = self.stride[0]
+            self.mphase_co2.FCTStep(argsDict)
+
+            # 3. ghost-sync the limiter ratios.
+            _par = getattr(self.u[0], 'par_dof', None)
+            if _par is not None:
+                _saved = self.u[0].dof.copy()
+                for _arr in (self.Rpos, self.Rneg):
+                    self.u[0].dof[:] = _arr
+                    _par.scatter_forward_insert()
+                    _arr[:] = self.u[0].dof
+                self.u[0].dof[:] = _saved
+
+            # 4. Pass 2: apply the limiter -> limited_solution (limited m_w).
+            limited_solution = np.zeros((n_w,), 'd')
+            argsDict = cArgumentsDict.ArgumentsDict()
+            argsDict["component"]                 = 0
+            argsDict["pass"]                      = 2
+            argsDict["bc_mask"]                   = bc_mask_u
+            argsDict["numDOFs"]                   = n_w
+            argsDict["dt"]                        = dt
+            argsDict["ML"]                        = self.ML
+            argsDict["mn"]                        = self.mn
+            argsDict["mLow"]                      = self.mLow
+            argsDict["csrRowIndeces_DofLoops"]    = self.comp0_rowptr
+            argsDict["csrColumnOffsets_DofLoops"] = self.comp0_colind
+            argsDict["csrRowIndeces_Full"]        = full_rowptr
+            argsDict["csrColumnOffsets_Full"]     = full_colind
+            argsDict["MC"]                        = MassMatrix
+            argsDict["FluxCorrectionMatrix"]      = self.FluxCorrectionMatrix
+            argsDict["Rpos"]                      = self.Rpos
+            argsDict["Rneg"]                      = self.Rneg
+            argsDict["fluxCorrection"]            = self.fluxCorrection
+            argsDict["limited_solution"]          = limited_solution
+            argsDict["LUMPED_MASS_MATRIX"]        = coef.LUMPED_MASS_MATRIX
+            argsDict["MONOLITHIC"]                = 0
+            argsDict["offset_u"]                  = self.offset[0]
+            argsDict["stride_u"]                  = self.stride[0]
+            self.mphase_co2.FCTStep(argsDict)
+
+            # 5. invert m_w -> p_w. Uses the already-limited S_n in u[1].dof
+            #    (postStep calls FCTStep(component=1) before FCTStep(component=0)).
+            p_w_lim = np.zeros((n_w,), 'd')
+            argsDict = cArgumentsDict.ArgumentsDict()
+            argsDict["a_rowptr"]             = coef.sdInfo[(0, 0)][0]
+            argsDict["a_colind"]             = coef.sdInfo[(0, 0)][1]
+            argsDict["rho"]                  = coef.rho
+            argsDict["rho_n"]                = coef.rho_n
+            argsDict["beta"]                 = coef.beta
+            argsDict["gravity"]              = coef.gravity
+            argsDict["alpha"]                = coef.vgm_alpha_types
+            argsDict["n"]                    = coef.vgm_n_types
+            argsDict["thetaR"]               = coef.thetaR_types
+            argsDict["thetaSR"]              = coef.thetaSR_types
+            argsDict["KWs"]                  = coef.Ksw_types
+            argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
+            argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
+            argsDict["numDOFs"]              = n_w
+            argsDict["limited_solution"]     = limited_solution
+            argsDict["u_dof"]                = p_w_lim
+            argsDict["u_dof_n"]              = self.u[1].dof
+            argsDict["USE_NEWTON_INVERT"]    = 0
+            argsDict["PSK_TYPE"]             = coef.PSK_TYPE
+            argsDict["COMPONENT"]            = 0
+            self.mphase_co2.invert(argsDict)
+
+            # 6. ghost-sync the result, then write into every comp-0 state array.
+            _par = getattr(self.u[0], 'par_dof', None)
+            if _par is not None:
+                self.u[0].dof[:] = p_w_lim
+                _par.scatter_forward_insert()
+                p_w_lim[:] = self.u[0].dof
+            self.u[0].dof[:]  = p_w_lim
+            self.u_dof_old[:] = p_w_lim
             self._scatter_component_to_timeintegration(0)
-            #print("[FCT] SKIPPED: du_inf =", du_inf, "dt =", self.timeIntegration.dt)
-        else:
-            self._scatter_component_to_timeintegration(0)
-            #print("[FCT] ACCEPTED: du_inf =", du_inf, "dt =", self.timeIntegration.dt)
-        # print("dt =", self.timeIntegration.dt)
-        # print("||mLim - mLow||inf =", np.linalg.norm(mLim - self.mLow, np.inf))
-        # print("||uLim - uHigh||inf =", np.linalg.norm(uLim - uHigh, np.inf))
+
+        elif component == 1:
+            if self.limited_solution_n is None or self.u_dof_n_old is None:
+                return
+            n_dof = self.u[1].dof.shape[0]
+
+            # 1. ghost-sync pass-1 inputs (owner -> ghost), in place: copy each
+            #    array through u[1].dof and use its ParVec. mLow_n / mDotLow_n
+            #    are node quantities whose ghost slots are only partially
+            #    assembled with 1-layer overlap; min/max_m_bc_n carry physical
+            #    boundary mass bounds that must agree on owner + ghost copies.
+            #    In serial (par_dof is None) this whole block is skipped.
+            _par = getattr(self.u[1], 'par_dof', None)
+            if _par is not None:
+                _saved = self.u[1].dof.copy()
+                for _arr in (self.mLow_n, self.mDotLow_n, self.min_m_bc_n, self.max_m_bc_n):
+                    self.u[1].dof[:] = _arr
+                    _par.scatter_forward_insert()
+                    _arr[:] = self.u[1].dof
+                self.u[1].dof[:] = _saved
+
+            # 2. Pass 1: Zalesak ratios.
+            argsDict = cArgumentsDict.ArgumentsDict()
+            argsDict["component"]                 = 1
+            argsDict["pass"]                      = 1
+            argsDict["numDOFs_n"]                 = n_dof
+            argsDict["dt"]                        = dt
+            argsDict["ML_n"]                      = self.ML
+            argsDict["MC_n"]                      = self.MC_n
+            argsDict["mLow_n"]                    = self.mLow_n
+            argsDict["mDotLow_n"]                 = self.mDotLow_n
+            argsDict["dt_times_fH_minus_fL_n"]    = self.dt_times_fH_minus_fL_n
+            argsDict["min_m_bc_n"]                = self.min_m_bc_n
+            argsDict["max_m_bc_n"]                = self.max_m_bc_n
+            argsDict["FluxCorrectionMatrix_n"]    = self.FluxCorrectionMatrix_n
+            argsDict["Rpos_n"]                    = self.Rpos_n
+            argsDict["Rneg_n"]                    = self.Rneg_n
+            argsDict["csrRowIndeces_n_DofLoops"]  = self.comp1_rowptr
+            argsDict["csrColumnOffsets_n_DofLoops"] = self.comp1_colind
+            argsDict["LUMPED_MASS_MATRIX"]        = coef.LUMPED_MASS_MATRIX
+            self.mphase_co2.FCTStep(argsDict)
+
+            # 3. ghost-sync the limiter ratios (same inline scatter as step 1)
+            #    so both endpoints of every partition-boundary edge limit with
+            #    the SAME R+/R- -> the limited flux stays antisymmetric across
+            #    ranks.
+            _par = getattr(self.u[1], 'par_dof', None)
+            if _par is not None:
+                _saved = self.u[1].dof.copy()
+                for _arr in (self.Rpos_n, self.Rneg_n):
+                    self.u[1].dof[:] = _arr
+                    _par.scatter_forward_insert()
+                    _arr[:] = self.u[1].dof
+                self.u[1].dof[:] = _saved
+
+            # 4. Pass 2: apply the limiter.
+            argsDict = cArgumentsDict.ArgumentsDict()
+            argsDict["component"]                 = 1
+            argsDict["pass"]                      = 2
+            argsDict["numDOFs_n"]                 = n_dof
+            argsDict["dt"]                        = dt
+            argsDict["ML_n"]                      = self.ML
+            argsDict["mLow_n"]                    = self.mLow_n
+            argsDict["FluxCorrectionMatrix_n"]    = self.FluxCorrectionMatrix_n
+            argsDict["Rpos_n"]                    = self.Rpos_n
+            argsDict["Rneg_n"]                    = self.Rneg_n
+            argsDict["fluxCorrection_n"]          = self.fluxCorrection_n
+            argsDict["limited_solution_n"]        = self.limited_solution_n
+            argsDict["bc_mask_n"]                 = self.bc_mask_n
+            argsDict["csrRowIndeces_n_DofLoops"]  = self.comp1_rowptr
+            argsDict["csrColumnOffsets_n_DofLoops"] = self.comp1_colind
+            self.mphase_co2.FCTStep(argsDict)
+
+            # 5. invert m_n -> S_n.
+            S_n_lim = np.zeros_like(self.u[1].dof)
+            argsDict = cArgumentsDict.ArgumentsDict()
+            argsDict["a_rowptr"]             = coef.sdInfo[(0, 0)][0]
+            argsDict["a_colind"]             = coef.sdInfo[(0, 0)][1]
+            argsDict["rho"]                  = coef.rho
+            argsDict["rho_n"]                = coef.rho_n
+            argsDict["beta"]                 = coef.beta
+            argsDict["gravity"]              = coef.gravity
+            argsDict["alpha"]                = coef.vgm_alpha_types
+            argsDict["n"]                    = coef.vgm_n_types
+            argsDict["thetaR"]               = coef.thetaR_types
+            argsDict["thetaSR"]              = coef.thetaSR_types
+            argsDict["KWs"]                  = coef.Ksw_types
+            argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
+            argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
+            argsDict["numDOFs"]              = n_dof
+            argsDict["limited_solution"]     = self.limited_solution_n
+            argsDict["u_dof"]                = S_n_lim
+            argsDict["USE_NEWTON_INVERT"]    = 0
+            argsDict["PSK_TYPE"]             = coef.PSK_TYPE
+            argsDict["COMPONENT"]            = 1
+            self.mphase_co2.invert(argsDict)
+
+            # 6. ghost-sync the result, then write into every comp-1 state
+            #    array. S_n_lim is what u[1].dof should become anyway, so
+            #    scatter through it directly (no save/restore) and pick up the
+            #    ghost values.
+            _par = getattr(self.u[1], 'par_dof', None)
+            if _par is not None:
+                self.u[1].dof[:] = S_n_lim
+                _par.scatter_forward_insert()
+                S_n_lim[:] = self.u[1].dof
+            self.u[1].dof[:]    = S_n_lim
+            self.u_dof_n_old[:] = S_n_lim
+            self._scatter_component_to_timeintegration(1)
 
 
     def kth_FCT_step(self):
@@ -2274,128 +2470,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["PSK_TYPE"] = self.coefficients.PSK_TYPE
         argsDict["COMPONENT"] = 0  # m -> u_w via retention curve (legacy path)
         self.mphase_co2.invert(argsDict)
-
-    def _ghost_scatter_comp1(self, arr):
-        """Ghost-scatter (owner -> ghost) a comp-1 DOF array, in place.
-
-        Reuses the model's existing, correctly-configured u[1].par_dof
-        (a ParVec_petsc4py over the comp-1 DOFs) rather than constructing a
-        new ParVec -- the array is copied through u[1].dof, scattered, and
-        copied back. In serial (par_dof is None) this is a no-op.
-        """
-        par = getattr(self.u[1], 'par_dof', None)
-        if par is None:
-            return
-        saved = self.u[1].dof.copy()
-        self.u[1].dof[:] = arr
-        par.scatter_forward_insert()        # owner values -> ghost slots
-        arr[:] = self.u[1].dof
-        self.u[1].dof[:] = saved
-
-    def applyFCT_n(self):
-        """STAB != 0 + FCT: gas-component defect-correction post-step.
-
-        Runs the split Zalesak limiter with MPI ghost-exchange between the
-        two passes -- the requirement for parallel mass conservation:
-
-          1. ghost-scatter the pass-1 inputs (mLow_n, mDotLow_n)
-          2. FCTStep_n_pass1 -> FluxCorrectionMatrix_n, Rpos_n, Rneg_n
-          3. ghost-scatter Rpos_n, Rneg_n  (so both endpoints of every
-             partition-boundary edge limit with the SAME R+/R- -> the
-             limited flux stays antisymmetric across ranks)
-          4. FCTStep_n_pass2 -> limited_solution_n  (bound-preserving m_n)
-          5. invert(COMPONENT=1): m_n -> S_n, reusing the exact
-             rho_n_phi_dof projection that built m_n
-          6. ghost-scatter the result and write it into u[1].dof,
-             u_dof_n_old, and timeIntegration.u (all three -> robust to
-             postStep vs. timeIntegration.updateTimeHistory ordering).
-
-        In serial every scatter is a no-op and this reduces to the original
-        single-call limiter.
-        """
-        if self.limited_solution_n is None or self.u_dof_n_old is None:
-            return
-        coef  = self.coefficients
-        n_dof = self.u[1].dof.shape[0]
-        dt    = self.timeIntegration.dt
-
-        # 1. ghost-sync pass-1 inputs. mLow_n / mDotLow_n are node quantities
-        #    whose ghost slots are only partially assembled with 1-layer
-        #    overlap; min/max_m_bc_n carry physical boundary mass bounds at
-        #    Dirichlet DOFs and must agree on owner + ghost copies.
-        self._ghost_scatter_comp1(self.mLow_n)
-        self._ghost_scatter_comp1(self.mDotLow_n)
-        self._ghost_scatter_comp1(self.min_m_bc_n)
-        self._ghost_scatter_comp1(self.max_m_bc_n)
-
-        # 2. Pass 1: Zalesak ratios.
-        a1 = cArgumentsDict.ArgumentsDict()
-        a1["numDOFs_n"]                   = n_dof
-        a1["dt"]                          = dt
-        a1["ML_n"]                        = self.ML
-        a1["MC_n"]                        = self.MC_n
-        a1["mLow_n"]                      = self.mLow_n
-        a1["mDotLow_n"]                   = self.mDotLow_n
-        a1["dt_times_fH_minus_fL_n"]      = self.dt_times_fH_minus_fL_n
-        a1["min_m_bc_n"]                  = self.min_m_bc_n
-        a1["max_m_bc_n"]                  = self.max_m_bc_n
-        a1["FluxCorrectionMatrix_n"]      = self.FluxCorrectionMatrix_n
-        a1["Rpos_n"]                      = self.Rpos_n
-        a1["Rneg_n"]                      = self.Rneg_n
-        a1["csrRowIndeces_n_DofLoops"]    = self.comp1_rowptr
-        a1["csrColumnOffsets_n_DofLoops"] = self.comp1_colind
-        a1["LUMPED_MASS_MATRIX"]          = self.coefficients.LUMPED_MASS_MATRIX
-        self.mphase_co2.FCTStep_n_pass1(a1)
-
-        # 3. ghost-sync the limiter ratios.
-        self._ghost_scatter_comp1(self.Rpos_n)
-        self._ghost_scatter_comp1(self.Rneg_n)
-
-        # 4. Pass 2: apply the limiter.
-        a2 = cArgumentsDict.ArgumentsDict()
-        a2["numDOFs_n"]                   = n_dof
-        a2["dt"]                          = dt
-        a2["ML_n"]                        = self.ML
-        a2["mLow_n"]                      = self.mLow_n
-        a2["FluxCorrectionMatrix_n"]      = self.FluxCorrectionMatrix_n
-        a2["Rpos_n"]                      = self.Rpos_n
-        a2["Rneg_n"]                      = self.Rneg_n
-        a2["fluxCorrection_n"]            = self.fluxCorrection_n
-        a2["limited_solution_n"]          = self.limited_solution_n
-        a2["bc_mask_n"]                   = self.bc_mask_n
-        a2["csrRowIndeces_n_DofLoops"]    = self.comp1_rowptr
-        a2["csrColumnOffsets_n_DofLoops"] = self.comp1_colind
-        self.mphase_co2.FCTStep_n_pass2(a2)
-
-        # 5. invert m_n -> S_n.
-        S_n_lim = np.zeros_like(self.u[1].dof)
-        argsDict = cArgumentsDict.ArgumentsDict()
-        argsDict["a_rowptr"]             = coef.sdInfo[(0, 0)][0]
-        argsDict["a_colind"]             = coef.sdInfo[(0, 0)][1]
-        argsDict["rho"]                  = coef.rho
-        argsDict["rho_n"]                = coef.rho_n
-        argsDict["beta"]                 = coef.beta
-        argsDict["gravity"]              = coef.gravity
-        argsDict["alpha"]                = coef.vgm_alpha_types
-        argsDict["n"]                    = coef.vgm_n_types
-        argsDict["thetaR"]               = coef.thetaR_types
-        argsDict["thetaSR"]              = coef.thetaSR_types
-        argsDict["KWs"]                  = coef.Ksw_types
-        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
-        argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
-        argsDict["numDOFs"]              = n_dof
-        argsDict["limited_solution"]     = self.limited_solution_n
-        argsDict["u_dof"]                = S_n_lim
-        argsDict["USE_NEWTON_INVERT"]    = 0
-        argsDict["PSK_TYPE"]             = coef.PSK_TYPE
-        argsDict["COMPONENT"]            = 1
-        self.mphase_co2.invert(argsDict)
-
-        # 6. ghost-sync the result, then write into every comp-1 state array.
-        self._ghost_scatter_comp1(S_n_lim)
-        self.u[1].dof[:]    = S_n_lim
-        self.u_dof_n_old[:] = S_n_lim
-        self._scatter_component_to_timeintegration(1)
 
     def getJacobian(self,jacobian):
         if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
