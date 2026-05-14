@@ -639,6 +639,28 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         if ('da', 0, 0, 1) in c:
             c[('da', 0, 0, 1)][:] = 0.0
     
+    def postStep(self, t, firstStep=False):
+        # FCT defect-correction for the gas component (STAB != 0 with FCT).
+        #
+        # Newton solves the LOW-ORDER (dLow) gas residual cleanly. The C++
+        # FCTStep_n has, by the end of the converged Newton step, filled
+        # self.model.limited_solution_n with the Zalesak-limited conserved
+        # mass m_n. Here -- after Newton convergence, the standard place for
+        # a defect-correction post-step -- we invert m_n -> S_n and scatter
+        # the bound-preserving solution into every comp-1 state array.
+        #
+        # Without this, FCT=True only *computes* the limiter and throws it
+        # away: the archived/advanced solution stays the diffusive low-order
+        # dLow field. See applyFCT_n() on the LevelModel.
+        m = self.model
+        if (m is None
+                or self.STABILIZATION_TYPE == 0
+                or not self._fct_requested
+                or getattr(m, 'limited_solution_n', None) is None):
+            return {}
+        m.applyFCT_n()
+        return {}
+
     # def postStep(self, t, firstStep=False):
     #     if not self.outputQuantDOFs:
     #         return {}
@@ -1093,6 +1115,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # cek adding empty data member for low order numerical viscosity structures here for now
         self.ML = None  # lumped mass matrix
         self.MC_global = None  # consistent mass matrix
+        # Consistent mass matrix on the comp-1 (S_n) DOF graph, indexed by the
+        # comp-1 compact CSR (same layout as dLow_n / dt_times_fH_minus_fL_n).
+        # MC_a only ever has its (0,0) block assembled, so FCTStep_n's
+        # consistency term needs this dedicated comp-1 mass matrix instead.
+        self.MC_n = None
         self.cterm_global = None
         self.cterm_transpose_global = None
         # dL_global and dC_global are not the full matrices but just the CSR arrays containing the non zero entries
@@ -1157,11 +1184,21 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.mDotLow_n              = None
         self.fluxMatrix_n           = None
         self.dt_times_fH_minus_fL_n = None
+        self.FluxCorrectionMatrix_n = None
         self.fluxCorrection_n       = None
         self.limited_solution_n     = None
+        self.Rpos_n                 = None
+        self.Rneg_n                 = None
         self.min_m_bc_n             = None
         self.max_m_bc_n             = None
         self.bc_mask_n              = None
+        # ParVec_petsc4py wrappers for the comp-1 FCT arrays, built lazily in
+        # applyFCT_n. scatter_forward_insert() on these is what makes the
+        # split Zalesak limiter MPI-parallel mass-conservative.
+        self._par_mLow_n            = None
+        self._par_mDotLow_n         = None
+        self._par_Rpos_n            = None
+        self._par_Rneg_n            = None
         #
         logEvent(memory("stride+offset","OneLevelTransport"),level=4)
         
@@ -1337,7 +1374,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         bc_mask_u[:] = self.bc_mask[self.freeDOFToNode_u]
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["bc_mask"] = bc_mask_u
-        argsDict["NNZ"] = self.nnz 
+        argsDict["NNZ"] = self.nnz
         argsDict["numDOFs"] = self.nFreeDOF_global[0]
         argsDict["dt"] = self.timeIntegration.dt
         argsDict["ML"] = self.ML
@@ -1383,7 +1420,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # print("||mLim - mLow||inf =", np.linalg.norm(mLim - self.mLow, np.inf))
         # print("||uLim - uHigh||inf =", np.linalg.norm(uLim - uHigh, np.inf))
 
-    
+
     def kth_FCT_step(self):
         #import pdb
         #pdb.set_trace()
@@ -1468,14 +1505,24 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.dEV_n                   = np.zeros((nnz_n_,), 'd')
             self.fluxMatrix_n            = np.zeros((nnz_n_,), 'd')
             # Per-edge antidiffusive flux storage (high-order minus low-order)
-            # consumed by FCTStep_n.
+            # consumed by FCTStep_n_pass1.
             self.dt_times_fH_minus_fL_n  = np.zeros((nnz_n_,), 'd')
+            # Per-edge FluxCorrectionMatrix: FCTStep_n_pass1 writes it,
+            # FCTStep_n_pass2 reads it (so it must persist between the two
+            # passes while Python ghost-scatters Rpos_n/Rneg_n).
+            self.FluxCorrectionMatrix_n  = np.zeros((nnz_n_,), 'd')
         if self.mLow_n is None or self.mLow_n.shape[0] != n_n_:
             self.mLow_n             = np.zeros((n_n_,), 'd')
             self.mHigh_n            = np.zeros((n_n_,), 'd')
             self.mDotLow_n          = np.zeros((n_n_,), 'd')
             self.fluxCorrection_n   = np.zeros((n_n_,), 'd')
             self.limited_solution_n = np.zeros((n_n_,), 'd')
+            # Zalesak limiter ratios: FCTStep_n_pass1 outputs them, then they
+            # are ghost-scattered (par_Rpos_n / par_Rneg_n) before _pass2 so
+            # both endpoints of every partition-boundary edge see the same
+            # R+/R- -> mass-conservative FCT in parallel.
+            self.Rpos_n             = np.zeros((n_n_,), 'd')
+            self.Rneg_n             = np.zeros((n_n_,), 'd')
             # Boundary mass bounds for the Zalesak limiter.
             # Sentinels (+/-1e10) mirror the comp-0 / Richards / TADR pattern:
             # the local-neighbor loop in FCTStep_n shrinks min_m_bc_n toward
@@ -1484,10 +1531,19 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             # the sentinels at boundary DOFs in the C++ pre-FCT pass.
             self.min_m_bc_n = np.ones((n_n_,), 'd') *  1.0e10
             self.max_m_bc_n = np.ones((n_n_,), 'd') * -1.0e10
-            # comp-1 Dirichlet mask -- 1.0 free, 0.0 BC. Initialised free;
-            # the comp-1 EV residual / FCTStep_n can flip BC nodes to 0.0
-            # using isDOFBoundary_n.
+            # comp-1 Dirichlet mask -- 1.0 free, 0.0 at Dirichlet S_n DOFs.
+            # FCTStep_n_pass2 multiplies the antidiffusive correction by
+            # bc_mask_n, so 0.0 means "FCT leaves this DOF at the low-order
+            # (weakly-enforced) Dirichlet value, no correction." The C++ was
+            # supposed to flip these but never did -- set them here from the
+            # comp-1 DOFBoundaryConditions (the Dirichlet DOF -> value dict).
             self.bc_mask_n  = np.ones((n_n_,), 'd')
+            if self.nc >= 2 and 1 in self.dirichletConditions:
+                _dbc_n = getattr(self.dirichletConditions[1],
+                                 'DOFBoundaryConditionsDict', {})
+                for _dofN in _dbc_n:
+                    if 0 <= _dofN < n_n_:
+                        self.bc_mask_n[_dofN] = 0.0
         r.fill(0.0)
         ########################
         ### COMPUTE C MATRIX ###
@@ -1588,6 +1644,30 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             for i in range(self.nFreeDOF_global[0]):
                 full_offsets_i = self.comp0_full_offsets[self.comp0_rowptr[i]:self.comp0_rowptr[i + 1]]
                 self.ML[i] = self.MC_a[full_offsets_i].sum()
+            # Consistent mass matrix on the comp-1 (S_n) DOF graph.
+            # MC_a above only has its (0,0) block assembled (l2g[0] /
+            # csrColumnOffsets[(0,0)]); its comp-1 block is stale, so
+            # FCTStep_n's consistency term dt*MC*(mDotLow_i - mDotLow_j)
+            # was reading garbage -> non-antisymmetric -> mass leak.
+            # Both components share the C0-P1 space, so elementMassMatrix
+            # (computed above) IS the comp-1 element mass matrix; scatter it
+            # onto the comp-1 compact CSR (same indexing as dLow_n /
+            # dt_times_fH_minus_fL_n). Symmetric by construction ->
+            # antisymmetric consistency term -> mass-conservative FCT.
+            self.MC_n = np.zeros((self.comp1_colind.shape[0],), 'd')
+            _u1_l2g = self.u[1].femSpace.dofMap.l2g
+            _nDOF = self.nDOF_test_element[0]
+            for eN in range(self.mesh.nElements_global):
+                for i in range(_nDOF):
+                    i_n = _u1_l2g[eN, i]
+                    _rstart = self.comp1_rowptr[i_n]
+                    _rend   = self.comp1_rowptr[i_n + 1]
+                    for j in range(_nDOF):
+                        j_n = _u1_l2g[eN, j]
+                        for off in range(_rstart, _rend):
+                            if self.comp1_colind[off] == j_n:
+                                self.MC_n[off] += elementMassMatrix[eN, i, j]
+                                break
             # the trace-equals-volume assertion was nc=1 +
             # serial-only; with nc=2 the rowptr spans both blocks and the
             # row-sum no longer matches the per-rank mesh.volume directly.
@@ -1885,10 +1965,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["fluxCorrection_n"]            = self.fluxCorrection_n
         argsDict["limited_solution_n"]          = self.limited_solution_n
         argsDict["bc_mask_n"]                   = self.bc_mask_n
-        # ML_n / MC_n alias the comp-0 mass matrices (purely geometric, BCs
-        # don't affect them; both components share the FE space).
+        # ML_n aliases the comp-0 lumped mass (purely geometric; both
+        # components share the FE space). MC_n is the DEDICATED comp-1
+        # consistent mass matrix, indexed by the comp-1 compact CSR -- MC_a
+        # only has its (0,0) block assembled, so it cannot be used here.
         argsDict["ML_n"]                        = self.ML
-        argsDict["MC_n"]                        = self.MC_a
+        argsDict["MC_n"]                        = self.MC_n
         # FCT activation: maps the user's original Coefficients(FCT=True)
         # request to the C++ gate. coefficients.FCT itself is forced False
         # to bypass the framework's single-component post-Newton hook (see
@@ -2192,7 +2274,129 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["PSK_TYPE"] = self.coefficients.PSK_TYPE
         argsDict["COMPONENT"] = 0  # m -> u_w via retention curve (legacy path)
         self.mphase_co2.invert(argsDict)
-     
+
+    def _ghost_scatter_comp1(self, arr):
+        """Ghost-scatter (owner -> ghost) a comp-1 DOF array, in place.
+
+        Reuses the model's existing, correctly-configured u[1].par_dof
+        (a ParVec_petsc4py over the comp-1 DOFs) rather than constructing a
+        new ParVec -- the array is copied through u[1].dof, scattered, and
+        copied back. In serial (par_dof is None) this is a no-op.
+        """
+        par = getattr(self.u[1], 'par_dof', None)
+        if par is None:
+            return
+        saved = self.u[1].dof.copy()
+        self.u[1].dof[:] = arr
+        par.scatter_forward_insert()        # owner values -> ghost slots
+        arr[:] = self.u[1].dof
+        self.u[1].dof[:] = saved
+
+    def applyFCT_n(self):
+        """STAB != 0 + FCT: gas-component defect-correction post-step.
+
+        Runs the split Zalesak limiter with MPI ghost-exchange between the
+        two passes -- the requirement for parallel mass conservation:
+
+          1. ghost-scatter the pass-1 inputs (mLow_n, mDotLow_n)
+          2. FCTStep_n_pass1 -> FluxCorrectionMatrix_n, Rpos_n, Rneg_n
+          3. ghost-scatter Rpos_n, Rneg_n  (so both endpoints of every
+             partition-boundary edge limit with the SAME R+/R- -> the
+             limited flux stays antisymmetric across ranks)
+          4. FCTStep_n_pass2 -> limited_solution_n  (bound-preserving m_n)
+          5. invert(COMPONENT=1): m_n -> S_n, reusing the exact
+             rho_n_phi_dof projection that built m_n
+          6. ghost-scatter the result and write it into u[1].dof,
+             u_dof_n_old, and timeIntegration.u (all three -> robust to
+             postStep vs. timeIntegration.updateTimeHistory ordering).
+
+        In serial every scatter is a no-op and this reduces to the original
+        single-call limiter.
+        """
+        if self.limited_solution_n is None or self.u_dof_n_old is None:
+            return
+        coef  = self.coefficients
+        n_dof = self.u[1].dof.shape[0]
+        dt    = self.timeIntegration.dt
+
+        # 1. ghost-sync pass-1 inputs. mLow_n / mDotLow_n are node quantities
+        #    whose ghost slots are only partially assembled with 1-layer
+        #    overlap; min/max_m_bc_n carry physical boundary mass bounds at
+        #    Dirichlet DOFs and must agree on owner + ghost copies.
+        self._ghost_scatter_comp1(self.mLow_n)
+        self._ghost_scatter_comp1(self.mDotLow_n)
+        self._ghost_scatter_comp1(self.min_m_bc_n)
+        self._ghost_scatter_comp1(self.max_m_bc_n)
+
+        # 2. Pass 1: Zalesak ratios.
+        a1 = cArgumentsDict.ArgumentsDict()
+        a1["numDOFs_n"]                   = n_dof
+        a1["dt"]                          = dt
+        a1["ML_n"]                        = self.ML
+        a1["MC_n"]                        = self.MC_n
+        a1["mLow_n"]                      = self.mLow_n
+        a1["mDotLow_n"]                   = self.mDotLow_n
+        a1["dt_times_fH_minus_fL_n"]      = self.dt_times_fH_minus_fL_n
+        a1["min_m_bc_n"]                  = self.min_m_bc_n
+        a1["max_m_bc_n"]                  = self.max_m_bc_n
+        a1["FluxCorrectionMatrix_n"]      = self.FluxCorrectionMatrix_n
+        a1["Rpos_n"]                      = self.Rpos_n
+        a1["Rneg_n"]                      = self.Rneg_n
+        a1["csrRowIndeces_n_DofLoops"]    = self.comp1_rowptr
+        a1["csrColumnOffsets_n_DofLoops"] = self.comp1_colind
+        a1["LUMPED_MASS_MATRIX"]          = self.coefficients.LUMPED_MASS_MATRIX
+        self.mphase_co2.FCTStep_n_pass1(a1)
+
+        # 3. ghost-sync the limiter ratios.
+        self._ghost_scatter_comp1(self.Rpos_n)
+        self._ghost_scatter_comp1(self.Rneg_n)
+
+        # 4. Pass 2: apply the limiter.
+        a2 = cArgumentsDict.ArgumentsDict()
+        a2["numDOFs_n"]                   = n_dof
+        a2["dt"]                          = dt
+        a2["ML_n"]                        = self.ML
+        a2["mLow_n"]                      = self.mLow_n
+        a2["FluxCorrectionMatrix_n"]      = self.FluxCorrectionMatrix_n
+        a2["Rpos_n"]                      = self.Rpos_n
+        a2["Rneg_n"]                      = self.Rneg_n
+        a2["fluxCorrection_n"]            = self.fluxCorrection_n
+        a2["limited_solution_n"]          = self.limited_solution_n
+        a2["bc_mask_n"]                   = self.bc_mask_n
+        a2["csrRowIndeces_n_DofLoops"]    = self.comp1_rowptr
+        a2["csrColumnOffsets_n_DofLoops"] = self.comp1_colind
+        self.mphase_co2.FCTStep_n_pass2(a2)
+
+        # 5. invert m_n -> S_n.
+        S_n_lim = np.zeros_like(self.u[1].dof)
+        argsDict = cArgumentsDict.ArgumentsDict()
+        argsDict["a_rowptr"]             = coef.sdInfo[(0, 0)][0]
+        argsDict["a_colind"]             = coef.sdInfo[(0, 0)][1]
+        argsDict["rho"]                  = coef.rho
+        argsDict["rho_n"]                = coef.rho_n
+        argsDict["beta"]                 = coef.beta
+        argsDict["gravity"]              = coef.gravity
+        argsDict["alpha"]                = coef.vgm_alpha_types
+        argsDict["n"]                    = coef.vgm_n_types
+        argsDict["thetaR"]               = coef.thetaR_types
+        argsDict["thetaSR"]              = coef.thetaSR_types
+        argsDict["KWs"]                  = coef.Ksw_types
+        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
+        argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
+        argsDict["numDOFs"]              = n_dof
+        argsDict["limited_solution"]     = self.limited_solution_n
+        argsDict["u_dof"]                = S_n_lim
+        argsDict["USE_NEWTON_INVERT"]    = 0
+        argsDict["PSK_TYPE"]             = coef.PSK_TYPE
+        argsDict["COMPONENT"]            = 1
+        self.mphase_co2.invert(argsDict)
+
+        # 6. ghost-sync the result, then write into every comp-1 state array.
+        self._ghost_scatter_comp1(S_n_lim)
+        self.u[1].dof[:]    = S_n_lim
+        self.u_dof_n_old[:] = S_n_lim
+        self._scatter_component_to_timeintegration(1)
+
     def getJacobian(self,jacobian):
         if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
             cfemIntegrals.zeroJacobian_CSR(self.nNonzerosInJacobian,
@@ -2268,6 +2472,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # (1,0) cross-block CSR maps.
         argsDict["csrRowIndeces_n_w"] = self.csrRowIndeces[(1, 0)]
         argsDict["csrColumnOffsets_n_w"] = self.csrColumnOffsets[(1, 0)]
+        # Exterior-boundary column offsets for the comp-1 boundary Jacobian
+        # loop in calculateJacobian (STAB=0 comp-1 Dirichlet enforcement).
+        argsDict["csrColumnOffsets_eb_n_n"] = self.csrColumnOffsets_eb[(1, 1)]
+        argsDict["csrColumnOffsets_eb_n_w"] = self.csrColumnOffsets_eb[(1, 0)]
         # (0,1) cross-block CSR maps for the wetting eq.
         argsDict["csrRowIndeces_w_n"] = self.csrRowIndeces[(0, 1)]
         argsDict["csrColumnOffsets_w_n"] = self.csrColumnOffsets[(0, 1)]
