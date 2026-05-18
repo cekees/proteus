@@ -236,10 +236,14 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  gravity,
                  density,
                  beta,
-                 # gas-phase density (constant for now).
-                 # rho_n=1.0 keeps the (1,1) mass-matrix block at the same
-                 # magnitude as Step 1; Step 3 will turn on real ρ_n(p_n).
+                 # gas-phase density.
+                 # rho_n acts as the reference density. When p_ref_n > 0, the
+                 # gas density is linear in p_n: rho_n(p_n) = rho_n * p_n/p_ref_n
+                 # so rho_n is recovered at p_n = p_ref_n. With p_ref_n = 0
+                 # (default) the gas density stays constant = rho_n (Step 1
+                 # behavior).
                  rho_n=1.0,
+                 p_ref_n=0.0,
                  diagonal_conductivity=True,
                  getSeepageFace=None,
                  density_model=None,
@@ -298,8 +302,10 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.getSeepageFace=getSeepageFace
         self.gravity=gravity
         self.rho = density
-        # gas-phase density (constant; will become ρ_n(p_n) in Step 3+).
+        # gas-phase density. Linear EOS: rho_n(p_n) = rho_n * p_n / p_ref_n
+        # when p_ref_n > 0; constant rho_n when p_ref_n == 0.
         self.rho_n = rho_n
+        self.p_ref_n = p_ref_n
         self.beta=beta
         self.vgm_n_types = vgm_n_types
         self.vgm_alpha_types = vgm_alpha_types
@@ -361,9 +367,12 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             raise ValueError("STABILIZATION_TYPE must be one of "+str(stabilization_types.keys())+" not "+STABILIZATION_TYPE)
 
         # PSK closure selector: 0 = VGM (van Genuchten-Mualem), 1 = BC (Brooks-Corey-Burdine).
-        # The closure functions for both live in psk_models.h. evaluateCoefficients in
-        # mphase_co2.h dispatches on PSK_TYPE; not yet wired for BC -> VGM is the only
-        # currently exercised path.
+        # The closure functions for both live in psk_models.h. Every call site
+        # in mphase_co2.h dispatches on PSK_TYPE_member: if (PSK_TYPE_member == 1)
+        # invokes bc_*_from_Se, else vgm_*_from_Se. Both paths are exercised.
+        # NOTE: for the BC path the user-supplied vgm_n_types array is reinterpreted
+        # as the BC pore-size index lambda (the closures take a single shape
+        # parameter; we reuse the slot to avoid a separate types array).
         psk_types = {"VGM": 0, "BC": 1}
         try:
             if isinstance(PSK_TYPE, int):
@@ -1479,6 +1488,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["a_colind"]             = coef.sdInfo[(0, 0)][1]
             argsDict["rho"]                  = coef.rho
             argsDict["rho_n"]                = coef.rho_n
+            argsDict["p_ref_n"]              = coef.p_ref_n
             argsDict["beta"]                 = coef.beta
             argsDict["gravity"]              = coef.gravity
             argsDict["alpha"]                = coef.vgm_alpha_types
@@ -1586,6 +1596,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["a_colind"]             = coef.sdInfo[(0, 0)][1]
             argsDict["rho"]                  = coef.rho
             argsDict["rho_n"]                = coef.rho_n
+            argsDict["p_ref_n"]              = coef.p_ref_n
             argsDict["beta"]                 = coef.beta
             argsDict["gravity"]              = coef.gravity
             argsDict["alpha"]                = coef.vgm_alpha_types
@@ -2037,6 +2048,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
         argsDict["rho"] = self.coefficients.rho
         argsDict["rho_n"] = self.coefficients.rho_n
+        argsDict["p_ref_n"] = self.coefficients.p_ref_n
         argsDict["beta"] = self.coefficients.beta
 
         argsDict["q_rho"]= self.q['rho']
@@ -2379,6 +2391,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
         argsDict["rho"] = self.coefficients.rho
         argsDict["rho_n"] = self.coefficients.rho_n
+        argsDict["p_ref_n"] = self.coefficients.p_ref_n
         argsDict["beta"] = self.coefficients.beta
         argsDict["gravity"] = self.coefficients.gravity
         argsDict["alpha"] = self.coefficients.vgm_alpha_types
@@ -2512,6 +2525,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
         argsDict["rho"] = self.coefficients.rho
         argsDict["rho_n"] = self.coefficients.rho_n
+        argsDict["p_ref_n"] = self.coefficients.p_ref_n
         argsDict["beta"] = self.coefficients.beta
 
         argsDict["q_rho"]= self.q['rho']
