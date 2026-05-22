@@ -267,11 +267,23 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  cK=1.0,
                  # OUTPUT quantDOFs
                  outputQuantDOFs=False,
+                 # Stage 3b (gas-side kinetic dissolution sink).  When coupled
+                 # to a TADR transport model, mphase_co2 deducts R_diss = k_d *
+                 # S_n * S_w * (c_sat - c) from the gas-equation residual per
+                 # DOF so every kg of CO2 that TADR adds to the brine is
+                 # removed from the gas phase (mass conservation across the
+                 # phases).  Defaults k_d=0 disable the sink; the gas equation
+                 # then sees no dissolution (legacy behavior preserved).
+                 k_d=0.0,
+                 c_sat=1.0,
                   ):
         self.VMS=VMS
         if density_model is None:
             density_model = DENSITY_MODEL
         self.density_model = density_model
+        # Stage 3b: gas-side kinetic dissolution sink parameters.
+        self.k_d = k_d
+        self.c_sat = c_sat
         self.modelIndex=1
         self.SC=SC
         self.anb_seepage_flux= 0.00
@@ -442,9 +454,23 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         # Do NOT overwrite it from self.modelIndex — that hardcoded index (=1)
         # points to TADR in the standard pnList, which corrupts Richards'
         # self.model and silently breaks density coupling.
+        # Always allocate self.c_dof so the C++ kernel never sees a missing
+        # argsDict entry (Stage 3b reads it unconditionally).
         if self.density_model is None:
+            self.c_dof = np.zeros_like(self.model.u[1].dof)
             return
         self.densityModel = modelList[self.density_model]
+        # Stage 3b: alias TADR's c DOFs so the gas-equation residual can
+        # compute R_diss = k_d * S_n * S_w * (c_sat - c) and deduct it from
+        # the gas mass.  C0-P1 DOFs are shared on the same mesh, so this is
+        # direct DOF-to-DOF aliasing (no projection).  If the density_model
+        # doesn't expose u[0].dof (unusual), fall back to a zero array so
+        # the sink is harmlessly inactive.
+        if hasattr(self.densityModel, 'u') and len(self.densityModel.u) >= 1 \
+                and hasattr(self.densityModel.u[0], 'dof'):
+            self.c_dof = self.densityModel.u[0].dof
+        else:
+            self.c_dof = np.zeros_like(self.model.u[1].dof)
 
     def preStep(self, t, firstStep=False):
         # Refresh coupled density every step from the transport (TADR) model,
@@ -649,20 +675,6 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             c[('da', 0, 0, 1)][:] = 0.0
     
     def postStep(self, t, firstStep=False):
-        # FCT defect-correction post-step (STAB != 0 with FCT).
-        #
-        # Newton solves the LOW-ORDER residual cleanly; calculateResidual_
-        # entropy_viscosity leaves the comp-0 and comp-1 FCT predictor arrays
-        # populated from the converged iterate. Here -- after Newton
-        # convergence -- we run the split Zalesak limiter for both components:
-        #   FCTStep(component=1): m_n -> bound-preserving S_n  (gas/transport)
-        #   FCTStep(component=0): m_w -> p_w                   (wetting)
-        # comp-1 MUST run first: FCTStep(component=0)'s m_w -> p_w inversion
-        # uses the just-limited S_n in u[1].dof.
-        #
-        # Without this, FCT=True only *computes* the limiter and throws it
-        # away: the archived/advanced solution stays the diffusive low-order
-        # field. See LevelModel.FCTStep.
         m = self.model
         if (m is None
                 or self.STABILIZATION_TYPE == 0
@@ -1010,11 +1022,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.ebqe['rho'] = np.zeros((self.mesh.nExteriorElementBoundaries_global,self.nElementBoundaryQuadraturePoints_elementBoundary),'d')
         self.q['rho'][:] = self.coefficients.rho
         self.ebqe['rho'][:] = self.coefficients.rho
-
-        # ---- Allocate component-1 (S_n) quadrature arrays ----
-        # The framework's TimeIntegration.BackwardEuler iterates over nc and
-        # reads q[('m', ci)] for each ci, so component-1 arrays must exist.
-        # All trivial-mass equation arrays are sized identically to component 0.
         if self.nc >= 2:
             qshape   = (self.mesh.nElements_global, self.nQuadraturePoints_element)
             qvshape  = (self.mesh.nElements_global, self.nQuadraturePoints_element, self.nSpace_global)
@@ -1370,22 +1377,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         dest[offset:offset + stride * comp_dof.size:stride] = comp_dof
    
     def FCTStep(self, component):
-        """Component-dispatched FCT post-step -- MPI-safe split Zalesak limiter.
-
-        Both branches run the same shape: ghost-scatter pass-1 inputs ->
-        C++ FCTStep(pass=1) -> ghost-scatter Rpos/Rneg -> C++ FCTStep(pass=2)
-        -> invert -> ghost-scatter the result -> write the component's dof /
-        previous-step / timeIntegration.u arrays. Splitting the Zalesak
-        passes and ghost-scattering Rpos/Rneg between them is the requirement
-        for parallel mass conservation; in serial every scatter is a no-op.
-        NO du_inf guard -- a rank-local guard on a collective scatter would
-        deadlock; the limiter is bound-preserving by construction anyway.
-
-        component == 1 : non-wetting (S_n). invert(COMPONENT=1): m_n -> S_n.
-        component == 0 : wetting (p_w).      invert(COMPONENT=0): m_w -> p_w,
-                         which needs the already-limited S_n -- so postStep
-                         calls component=1 BEFORE component=0.
-        """
+        
         coef = self.coefficients
         dt   = self.timeIntegration.dt
 
@@ -1403,10 +1395,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                     or self.FluxCorrectionMatrix.shape[0] != nnz0):
                 self.FluxCorrectionMatrix = np.zeros((nnz0,), 'd')
             bc_mask_u = np.ascontiguousarray(self.bc_mask[self.freeDOFToNode_u])
-
-            # 1. ghost-sync pass-1 inputs (owner -> ghost), in place: copy each
-            #    array through u[0].dof and use its ParVec. In serial
-            #    (par_dof is None) this whole block is skipped.
             _par = getattr(self.u[0], 'par_dof', None)
             if _par is not None:
                 _saved = self.u[0].dof.copy()
@@ -1442,8 +1430,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["offset_u"]                  = self.offset[0]
             argsDict["stride_u"]                  = self.stride[0]
             self.mphase_co2.FCTStep(argsDict)
-
-            # 3. ghost-sync the limiter ratios.
             _par = getattr(self.u[0], 'par_dof', None)
             if _par is not None:
                 _saved = self.u[0].dof.copy()
@@ -1506,8 +1492,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["PSK_TYPE"]             = coef.PSK_TYPE
             argsDict["COMPONENT"]            = 0
             self.mphase_co2.invert(argsDict)
-
-            # 6. ghost-sync the result, then write into every comp-0 state array.
             _par = getattr(self.u[0], 'par_dof', None)
             if _par is not None:
                 self.u[0].dof[:] = p_w_lim
@@ -1521,13 +1505,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             if self.limited_solution_n is None or self.u_dof_n_old is None:
                 return
             n_dof = self.u[1].dof.shape[0]
-
-            # 1. ghost-sync pass-1 inputs (owner -> ghost), in place: copy each
-            #    array through u[1].dof and use its ParVec. mLow_n / mDotLow_n
-            #    are node quantities whose ghost slots are only partially
-            #    assembled with 1-layer overlap; min/max_m_bc_n carry physical
-            #    boundary mass bounds that must agree on owner + ghost copies.
-            #    In serial (par_dof is None) this whole block is skipped.
             _par = getattr(self.u[1], 'par_dof', None)
             if _par is not None:
                 _saved = self.u[1].dof.copy()
@@ -1558,10 +1535,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["LUMPED_MASS_MATRIX"]        = coef.LUMPED_MASS_MATRIX
             self.mphase_co2.FCTStep(argsDict)
 
-            # 3. ghost-sync the limiter ratios (same inline scatter as step 1)
-            #    so both endpoints of every partition-boundary edge limit with
-            #    the SAME R+/R- -> the limited flux stays antisymmetric across
-            #    ranks.
             _par = getattr(self.u[1], 'par_dof', None)
             if _par is not None:
                 _saved = self.u[1].dof.copy()
@@ -1570,8 +1543,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                     _par.scatter_forward_insert()
                     _arr[:] = self.u[1].dof
                 self.u[1].dof[:] = _saved
-
-            # 4. Pass 2: apply the limiter.
             argsDict = cArgumentsDict.ArgumentsDict()
             argsDict["component"]                 = 1
             argsDict["pass"]                      = 2
@@ -1614,10 +1585,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["COMPONENT"]            = 1
             self.mphase_co2.invert(argsDict)
 
-            # 6. ghost-sync the result, then write into every comp-1 state
-            #    array. S_n_lim is what u[1].dof should become anyway, so
-            #    scatter through it directly (no save/restore) and pick up the
-            #    ghost values.
             _par = getattr(self.u[1], 'par_dof', None)
             if _par is not None:
                 self.u[1].dof[:] = S_n_lim
@@ -1714,9 +1681,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             # Per-edge antidiffusive flux storage (high-order minus low-order)
             # consumed by FCTStep_n_pass1.
             self.dt_times_fH_minus_fL_n  = np.zeros((nnz_n_,), 'd')
-            # Per-edge FluxCorrectionMatrix: FCTStep_n_pass1 writes it,
-            # FCTStep_n_pass2 reads it (so it must persist between the two
-            # passes while Python ghost-scatters Rpos_n/Rneg_n).
             self.FluxCorrectionMatrix_n  = np.zeros((nnz_n_,), 'd')
         if self.mLow_n is None or self.mLow_n.shape[0] != n_n_:
             self.mLow_n             = np.zeros((n_n_,), 'd')
@@ -1724,26 +1688,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.mDotLow_n          = np.zeros((n_n_,), 'd')
             self.fluxCorrection_n   = np.zeros((n_n_,), 'd')
             self.limited_solution_n = np.zeros((n_n_,), 'd')
-            # Zalesak limiter ratios: FCTStep_n_pass1 outputs them, then they
-            # are ghost-scattered (par_Rpos_n / par_Rneg_n) before _pass2 so
-            # both endpoints of every partition-boundary edge see the same
-            # R+/R- -> mass-conservative FCT in parallel.
             self.Rpos_n             = np.zeros((n_n_,), 'd')
             self.Rneg_n             = np.zeros((n_n_,), 'd')
-            # Boundary mass bounds for the Zalesak limiter.
-            # Sentinels (+/-1e10) mirror the comp-0 / Richards / TADR pattern:
-            # the local-neighbor loop in FCTStep_n shrinks min_m_bc_n toward
-            # neighbor mLow_n[j] and grows max_m_bc_n outward; physical
-            # boundary values (from ebqe_bc_u_n_ext mapped to m_n) overwrite
-            # the sentinels at boundary DOFs in the C++ pre-FCT pass.
             self.min_m_bc_n = np.ones((n_n_,), 'd') *  1.0e10
             self.max_m_bc_n = np.ones((n_n_,), 'd') * -1.0e10
-            # comp-1 Dirichlet mask -- 1.0 free, 0.0 at Dirichlet S_n DOFs.
-            # FCTStep_n_pass2 multiplies the antidiffusive correction by
-            # bc_mask_n, so 0.0 means "FCT leaves this DOF at the low-order
-            # (weakly-enforced) Dirichlet value, no correction." The C++ was
-            # supposed to flip these but never did -- set them here from the
-            # comp-1 DOFBoundaryConditions (the Dirichlet DOF -> value dict).
             self.bc_mask_n  = np.ones((n_n_,), 'd')
             if self.nc >= 2 and 1 in self.dirichletConditions:
                 _dbc_n = getattr(self.dirichletConditions[1],
@@ -2100,6 +2048,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["u_dof_n_old"] = self.u_dof_n_old
         argsDict["offset_n"]    = self.offset[1]
         argsDict["stride_n"]    = self.stride[1]
+        argsDict["c_dof"] = getattr(self.coefficients, "c_dof",
+                                    np.zeros_like(self.u[1].dof))
+        argsDict["k_d"]   = float(self.coefficients.k_d)
+        argsDict["c_sat"] = float(self.coefficients.c_sat)
         # csr maps for the (1,1) Jacobian block (not used by residual; staged
         # for turn 3 when calculateJacobian gains the (1,1) diagonal block).
         argsDict["csrRowIndeces_n_n"]      = self.csrRowIndeces[(1, 1)]
@@ -2139,15 +2091,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["uL"] = self.coefficients.uL
         argsDict["uR"] = self.coefficients.uR
         # PARAMETERS FOR EDGE VISCOSITY
-        # numDOFs sizes the EV path's per-DOF arrays (u_free_dof, Rpos, Rneg,
-        # ...). With nc=2 the CSR column indices span the full 2N pattern, so
-        # these arrays must be 2N-sized; undersizing causes out-of-bounds
-        # reads and NaN propagation in the EV inner loop.
+        
         argsDict["numDOFs"] = self.nFreeDOF_global[0]
-        # numDOFs_u bounds the EV DOF loop to component-0 only, so the
-        # Richards math doesn't get applied to component-1 DOFs. Component 1
-        # (trivial gas eq) is assembled by the dedicated element loop at the
-        # end of calculateResidual_entropy_viscosity.
+       
         argsDict["numDOFs_u"] = self.nFreeDOF_global[0]
         argsDict["NNZ"] = self.nnz
         argsDict["Cx"] = len(Cx)  # num of non-zero entries in the sparsity pattern
@@ -2571,6 +2517,16 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["u_dof_n_old"] = self.u_dof_n_old if self.u_dof_n_old is not None else self.u[1].dof
         argsDict["offset_n"] = self.offset[1]
         argsDict["stride_n"] = self.stride[1]
+        # Stage 3b: kinetic dissolution sink contributes -k_d * S_n * (1-S_n) *
+        # (c_sat - c) * theta_w * rho_w to the gas-equation residual.  Its
+        # derivative wrt S_n is needed in the (1,1) Jacobian block (signs of
+        # the two factors are opposite so the linearization is well-behaved
+        # near c < c_sat).  c_dof and parameters supplied here for the kernel
+        # to evaluate; defaulting to k_d=0 keeps legacy Jacobian unchanged.
+        argsDict["c_dof"] = getattr(self.coefficients, "c_dof",
+                                    np.zeros_like(self.u[1].dof))
+        argsDict["k_d"]   = float(self.coefficients.k_d)
+        argsDict["c_sat"] = float(self.coefficients.c_sat)
         argsDict["globalJacobian"] = jacobian.getCSRrepresentation()[2]
         argsDict["delta_x_ij"] = self.delta_x_ij
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global

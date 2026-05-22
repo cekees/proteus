@@ -390,6 +390,14 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     const double         c_n                                        = rho_n_compressible ? (rho_n / p_ref_n) : 0.0;
     const int            offset_n                                   = args.scalar<int>("offset_n");
     const int            stride_n                                   = args.scalar<int>("stride_n");
+    // Stage 3b: gas-side kinetic dissolution sink.  R_diss = k_d * S_n *
+    // (1 - S_n) * theta_w * rho_w(c) * (c_sat - c) is subtracted from the
+    // gas-equation residual at each quadrature point.  c is read from TADR's
+    // u[0].dof aliased Python-side and passed in as c_dof.  k_d=0 disables
+    // the sink (legacy behavior).
+    xt::pyarray<double> &c_dof                                      = args.array<double>("c_dof");
+    const double         k_d                                        = args.scalar<double>("k_d");
+    const double         c_sat                                      = args.scalar<double>("c_sat");
     xt::pyarray<double> &globalResidual                             = args.array<double>("globalResidual");
     int                  nExteriorElementBoundaries_global          = args.scalar<int>("nExteriorElementBoundaries_global");
     xt::pyarray<int>    &exteriorElementBoundariesArray             = args.array<int>("exteriorElementBoundariesArray");
@@ -880,11 +888,42 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             f_n[I] += rho_n_loc * rho_n_loc * KNr * KWs_eN[ii] * gravity.data()[J];
           }
         }
-        // Residual integration: mass + advection (gravity) - diffusion(grad u_w) - p_c diffusion(grad u_n).
+        // Stage 3b: kinetic dissolution sink at this quadrature point.
+        //   R_diss = k_d * S_n * theta_w * rho_w(c) * (c_sat - c)
+        // The S_w (interfacial-area) factor was dropped: with R_diss ~ S_n*S_w
+        // dissolution vanishes once the gas consolidates into a pool (S_n->1),
+        // so a finite blob only dissolves while rising.  theta_w is kept (the
+        // CO2 must go into brine that exists; theta_w > 0 down to residual S_wr).
+        // We use the same EOS rho_w(c) = rho * (1 + ((rho_s-rho_f)/rho_f) * c)
+        // that TADR uses on the brine side -- but since this kernel doesn't
+        // see rho_s, we approximate rho_w_loc = rho (the brine reference
+        // density passed in via the "rho" scalar arg).  For our small
+        // (rho_s - rho_f)/rho_f the difference is negligible; the dominant
+        // factor is theta_w * (c_sat - c), and exact mass-balance between
+        // TADR's source and this sink will require also passing rho_s here
+        // in a later refinement.
+        double c_qp = 0.0;
+        ck.valFromDOF(c_dof.data(),
+                      &u_l2g.data()[eN_nDOF_trial_element],
+                      &u_trial_ref.data()[k * nDOF_trial_element], c_qp);
+        const double S_n_qp     = u_n;
+        const double S_w_qp     = 1.0 - S_n_qp;
+        const double theta_w_qp = phi_eN * S_w_qp;
+        const double R_diss_qp  = theta_w_qp * rho * k_d * S_n_qp
+                                * (c_sat - c_qp);
+        // Residual integration: mass + advection (gravity) - diffusion(grad u_w) - p_c diffusion(grad u_n) - sink.
         for (int i = 0; i < nDOF_test_element; i++) {
           const double test_i = u_test_ref.data()[k * nDOF_test_element + i];
           // Mass contribution.
           elementResidual_n[i] += m_n_t * test_i * dV;
+          // Stage 3b: add R_diss * phi_i * dV to the gas-equation residual.
+          // The gas-mass PDE is  d(m_n)/dt + div(F_n) + R_diss = 0  with R_diss
+          // POSITIVE in the dissolution direction (gas LOSES mass when c <
+          // c_sat).  Adding to the residual drives Newton to decrease m_n, as
+          // required.  Sign mirror of the corresponding source on TADR's c
+          // residual (mLow_c += dt * R_diss_i): every kg added to the brine
+          // is removed from the gas, preserving total CO2 mass.
+          elementResidual_n[i] += R_diss_qp * test_i * dV;
           // Advection contribution: -f_n . grad N_i dV (Proteus Advection_weak sign).
           for (int I = 0; I < nSpace; I++) {
             elementResidual_n[i] -= f_n[I] * u_grad_trial_qp[i * nSpace + I] * dV;
@@ -1090,6 +1129,16 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &q_rho                    = args.array<double>("q_rho");
     xt::pyarray<double> &ebqe_rho                 = args.array<double>("ebqe_rho");
     //////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Stage 3b: gas-side kinetic dissolution sink reads (residual-only at
+    // this stage; the Jacobian contribution -d(R_diss)/du_n is small
+    // (proportional to k_d * dt) and we approximate it as zero in the
+    // initial port -- Newton recovers it through outer iteration since the
+    // sink is also bounded.  Promote to a proper Jacobian contribution if
+    // Newton stalls in the FluidFlower setup.
+    xt::pyarray<double> &c_dof_jac                = args.array<double>("c_dof");
+    const double         k_d_jac                  = args.scalar<double>("k_d");
+    const double         c_sat_jac                = args.scalar<double>("c_sat");
+    (void)c_dof_jac; (void)k_d_jac; (void)c_sat_jac;  // unused in this turn
 
     xt::pyarray<double> &gravity                   = args.array<double>("gravity");
     xt::pyarray<double> &alpha                     = args.array<double>("alpha");
@@ -2276,6 +2325,14 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     const double         c_n                                        = rho_n_compressible ? (rho_n / p_ref_n) : 0.0;
     const int            offset_n                                   = args.scalar<int>("offset_n");
     const int            stride_n                                   = args.scalar<int>("stride_n");
+    // Stage 3b: gas-side kinetic dissolution sink.  R_diss = k_d * S_n *
+    // (1 - S_n) * theta_w * rho_w(c) * (c_sat - c) is subtracted from the
+    // gas-equation residual at each quadrature point.  c is read from TADR's
+    // u[0].dof aliased Python-side and passed in as c_dof.  k_d=0 disables
+    // the sink (legacy behavior).
+    xt::pyarray<double> &c_dof                                      = args.array<double>("c_dof");
+    const double         k_d                                        = args.scalar<double>("k_d");
+    const double         c_sat                                      = args.scalar<double>("c_sat");
     xt::pyarray<double> &globalResidual                             = args.array<double>("globalResidual");
     int                  nExteriorElementBoundaries_global          = args.scalar<int>("nExteriorElementBoundaries_global");
     xt::pyarray<int>    &exteriorElementBoundariesArray             = args.array<int>("exteriorElementBoundariesArray");
@@ -3714,6 +3771,22 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           // ∂m_n/∂u_w lumped diagonal: phi * c_n * S_n. Adds to (1,0) cross-block.
           elementJacobian_n_w[i][i] += elementMass_n[i] * (phi_eN * c_n * u_n_local[i]) / dt;
         }
+        // Stage 3b: gas-side kinetic dissolution sink in the lumped form.
+        //   R_diss = theta_w * rho * k_d * S_n * (c_sat - c),  theta_w = phi*(1-S_n)
+        // The S_w (interfacial-area) factor was dropped: with R_diss ~ S_n*S_w
+        // dissolution vanishes once the gas pools (S_n->1) so a finite blob
+        // only dissolves while rising.  theta_w is kept (dissolution needs
+        // brine to receive the CO2; theta_w > 0 down to residual S_wr).
+        // Added to the residual (POSITIVE sign) so Newton drives gas mass
+        // down at the same rate TADR adds mass to the brine.  Per-DOF
+        // (lumped) form using elementMass_n[i] as the local volume weight.
+        const double S_n_node   = u_n_local[i];
+        const double S_w_node   = 1.0 - S_n_node;
+        const double theta_w_n  = phi_eN * S_w_node;
+        const double c_node     = c_dof.data()[gi];
+        const double R_diss_n   = theta_w_n * rho * k_d * S_n_node
+                                * (c_sat - c_node);
+        elementResidual_n[i]   += elementMass_n[i] * R_diss_n;
       }
 
       // -------- Distribute element arrays to global storage. --------

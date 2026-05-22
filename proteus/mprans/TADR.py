@@ -311,7 +311,15 @@ class Coefficients(TC_base):
                  velocity_exponent=1.0,
                  rho_f=1.0,
                  rho_s=1.0,
-                 specified_velocity=True):
+                 specified_velocity=True,
+                 # Kinetic dissolution source: R_diss = k_d * S_n * S_w * (c_sat - c)
+                 # k_d : volumetric mass-transfer rate coefficient [1/s].  Default 0
+                 #       disables dissolution (Richards <-> TADR coupling is unchanged).
+                 # c_sat: saturation concentration (Henry's law equilibrium).
+                 # S_n : taken from vModel.u[1].dof if the flow model exposes a
+                 #       gas saturation (mphase_co2); else treated as zero.
+                 k_d=0.0,
+                 c_sat=1.0):
         self.variableNames = ['u']
         self.LS_modelIndex = LS_model
         self.V_model = V_model
@@ -380,10 +388,12 @@ class Coefficients(TC_base):
         self.rho_f = rho_f
         self.rho_s = rho_s
         self.specified_velocity = specified_velocity
+        self.k_d = k_d
+        self.c_sat = c_sat
         self.sparseDiffusionTensors = sdInfo
         if initialize:
             self.initialize()
-        
+
 
         #must keep synchronized with TADR.h enums
         stabilization_types = {"Galerkin":-1, 
@@ -509,6 +519,17 @@ class Coefficients(TC_base):
             self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_f, 'd')
             self.q_v_old = self.q_v.copy()
             self.q_rho_old = self.q_rho.copy()
+            # Sn_dof: gas saturation DOFs from a two-phase flow model.  When
+            # vModel has a second primary variable (mphase_co2: u[1] = S_n),
+            # alias it -- C0 P1 nodal DOFs are shared with TADR on the same
+            # mesh, so this is direct DOF-to-DOF transfer (no projection).
+            # When vModel has only one primary variable (Richards), Sn stays
+            # zero and the dissolution source R_diss = k_d * S_n * S_w *
+            # (c_sat - c) vanishes -- Richards <-> TADR coupling is unchanged.
+            if len(self.vModel.u) >= 2 and hasattr(self.vModel.u[1], 'dof'):
+                self.Sn_dof = self.vModel.u[1].dof
+            else:
+                self.Sn_dof = np.zeros_like(self.model.u[0].dof)
         else:
             self.q_v = np.ones(self.model.q[('u',0)].shape+(self.model.nSpace_global,),'d')
             self.ebqe_v = np.ones(self.model.ebqe[('u',0)].shape+(self.model.nSpace_global,),'d')
@@ -519,6 +540,7 @@ class Coefficients(TC_base):
             self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_f, 'd')
             self.q_v_old = self.q_v.copy()
             self.q_rho_old = self.q_rho.copy()
+            self.Sn_dof = np.zeros_like(self.model.u[0].dof)
         # VRANS
         if self.V_model is not None:
             self.flowCoefficients = modelList[self.V_model].coefficients
@@ -1174,6 +1196,19 @@ class LevelModel(OneLevelTransport):
         self.max_u_bc = None
         self.quantDOFs = np.zeros(self.u[0].dof.shape, 'd')
 
+        # bc_mask: 1.0 at free DOFs, 0.0 at Dirichlet DOFs.  Mirrors mphase_co2's
+        # pattern.  The FCT step uses this to zero antidiffusive corrections at
+        # Dirichlet DOFs so they stay at the low-order solution, which already
+        # carries the Nitsche-weak BC contribution from the boundary kernel.
+        # Together with the existing consistent-flux + penalty boundary integral
+        # this gives bounded + mass-conservative Dirichlet BCs (matches the
+        # mphase_co2 architecture; no forceStrongConditions row-replacement
+        # needed for boundedness).
+        self.bc_mask = np.ones_like(self.u[0].dof)
+        if 0 in self.dirichletConditions and self.dirichletConditions[0] is not None:
+            for dofN in self.dirichletConditions[0].DOFBoundaryConditionsDict.keys():
+                self.bc_mask[dofN] = 0.0
+
         # For Taylor Galerkin methods
         self.stage = 1
         self.auxTaylorGalerkinFlag = 1        
@@ -1238,6 +1273,7 @@ class LevelModel(OneLevelTransport):
         argsDict["dt_times_dH_minus_dL"] = self.dt_times_dC_minus_dL
         argsDict["min_u_bc"] = self.min_u_bc
         argsDict["max_u_bc"] = self.max_u_bc
+        argsDict["bc_mask"] = self.bc_mask
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
         argsDict["q_porosity_old_fct"] = q_porosity_old_arr
@@ -1560,6 +1596,12 @@ class LevelModel(OneLevelTransport):
         argsDict["rho_s"] = self.coefficients.rho_s
         argsDict["theta_s"] = self.coefficients.theta_s
         argsDict["theta_r"] = self.coefficients.theta_r
+        # Stage 3 (kinetic dissolution): R_diss = k_d * S_n * S_w * (c_sat - c)
+        # added to the per-DOF mass update in the C++ residual.  Sn_dof comes
+        # from the flow model's u[1].dof when it's two-phase, else zeros.
+        argsDict["Sn_dof"] = self.coefficients.Sn_dof
+        argsDict["k_d"] = float(self.coefficients.k_d)
+        argsDict["c_sat"] = float(self.coefficients.c_sat)
         argsDict["forceStrongConditions"] = int(self.forceStrongConditions)
         #argsDict["D"] = self.coefficients.DTypes
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag',0,0)]
@@ -1703,6 +1745,12 @@ class LevelModel(OneLevelTransport):
         argsDict["rho_s"] = self.coefficients.rho_s
         argsDict["theta_s"] = self.coefficients.theta_s
         argsDict["theta_r"] = self.coefficients.theta_r
+        # Stage 3 (kinetic dissolution): R_diss = k_d * S_n * S_w * (c_sat - c)
+        # added to the per-DOF mass update in the C++ residual.  Sn_dof comes
+        # from the flow model's u[1].dof when it's two-phase, else zeros.
+        argsDict["Sn_dof"] = self.coefficients.Sn_dof
+        argsDict["k_d"] = float(self.coefficients.k_d)
+        argsDict["c_sat"] = float(self.coefficients.c_sat)
         argsDict["forceStrongConditions"] = int(self.forceStrongConditions)
         argsDict["ebq_a"] = self.ebqe[('a',0,0)]
         #argsDict["D"] = self.coefficients.DTypes

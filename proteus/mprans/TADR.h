@@ -542,6 +542,13 @@ inline
       xt::pyarray<double>& min_u_bc = args.array<double>("min_u_bc");
       xt::pyarray<double>& max_u_bc = args.array<double>("max_u_bc");
       xt::pyarray<double>& quantDOFs = args.array<double>("quantDOFs");
+      // Stage 3 (kinetic dissolution).  Adds R_diss = k_d * S_n * S_w *
+      // (c_sat - c) per DOF to the mass update, scaled by theta_w * rho_w
+      // (so it has mass-rate units).  When the flow model is single-phase
+      // (Richards), Sn_dof is zeros and R_diss vanishes.
+      xt::pyarray<double>& Sn_dof = args.array<double>("Sn_dof");
+      const double k_d   = args.scalar<double>("k_d");
+      const double c_sat = args.scalar<double>("c_sat");
       /////////////////////////////////////////////////////////////////////////
       xt::pyarray<int>& a_rowptr = args.array<int>("a_rowptr");
       xt::pyarray<int>& a_colind = args.array<int>("a_colind");
@@ -1442,12 +1449,47 @@ inline
                         elementResidual_u[i] += boundaryResidualContribution - boundaryTransportContribution;
                       }
                       else
+                      {
                         elementResidual_u[i] += boundaryResidualContribution;
-                    }                   
+                        // Upwind Nitsche penalty for advection-dominated Dirichlet
+                        // inflow.  At inflow (boundary_flow = v.n < 0) the upwind
+                        // advective flux uses bc_u_ext and has zero derivative wrt
+                        // the interior u_ext -- so the existing IIPG penalty is the
+                        // only thing pulling u_ext toward bc_u_ext, and it scales as
+                        // max_a*penalty/h which becomes vanishingly small when D_m
+                        // is small.  Add a Nitsche term that scales with |v.n| so
+                        // BC enforcement is independent of the diffusion coefficient.
+                        // Sign: at inflow with u_ext > bc_u_ext (overshoot), this
+                        // contributes positively to elementResidual_u[i] (= positive
+                        // boundary flux out of node i), which reduces mLow at the BC
+                        // DOF and pulls c back to bc_u_ext.  Mass-conservative: the
+                        // term is integrated weakly with u_test_dS like the rest of
+                        // the boundary residual; sum over all faces telescopes the
+                        // weak Dirichlet to a consistent transport balance.
+                        if (isDOFBoundary_u.data()[ebNE_kb] == 1 && boundary_flow < 0.0)
+                        {
+                          const double upwind_penalty_rate = -boundary_flow; // |v.n|
+                          elementResidual_u[i] += upwind_penalty_rate
+                                                * (u_ext - bc_u_ext)
+                                                * u_test_dS[i];
+                        }
+                      }
+                    }
                 }//i
-              // local min/max at boundary
-              min_u_bc_local = fmin(ebqe_u.data()[ebNE_kb], min_u_bc_local);
-              max_u_bc_local = fmax(ebqe_u.data()[ebNE_kb], max_u_bc_local);
+              // local min/max at boundary.
+              // At Dirichlet faces use the BC value (ebqe_bc_u_ext), not the
+              // current solution trace (ebqe_u): the trace can drift off c_sat
+              // under weak Nitsche enforcement, and feeding that drifted value
+              // into min/max_u_bc pollutes the FCT bound at every interior
+              // neighbor.  Using the BC value keeps the bound tight at c_sat
+              // (combined with bc_mask in the FCT step, this gives the bounded
+              // + mass-conservative recipe that mphase_co2 uses).
+              const double u_for_bound =
+                  isDOFBoundary_u.data()[ebNE_kb]
+                      ? ebqe_bc_u_ext.data()[ebNE_kb]
+                      : ebqe_u.data()[ebNE_kb];
+              min_u_bc_local = fmin(u_for_bound, min_u_bc_local);
+              max_u_bc_local = fmax(u_for_bound, max_u_bc_local);
             }//kb
           //
           //update the element and global residual storage
@@ -1610,7 +1652,16 @@ inline
                         {
                           // high-order (entropy viscosity) dissipative operator
                           dEVij = fmax(fabs(global_entropy_residual[i]),fabs(global_entropy_residual[j]));
-                          dHij = fmin(dLowij,dEVij) * fmax(1.0-Compij,0.0); // artificial compression
+                          // Original EV high-order dissipation (kept for reference):
+                          //   dHij = fmin(dLowij,dEVij) * fmax(1.0-Compij,0.0); // artificial compression
+                          // Option : pure low-order graph dissipation -- gives a
+                          // discrete maximum principle by construction.  Mass-
+                          // conservative (graph dissipation has zero row sums),
+                          // strictly bounded, no clipping needed.  Cost: front more
+                          // diffuse than EV would give.  Compij factor retained so
+                          // resolution at fronts is partially recovered when the
+                          // solution is locally smooth.
+                          dHij = dLowij * fmax(1.0-Compij,0.0);
                         }
                       else // smoothness based indicator
                         {
@@ -1644,8 +1695,25 @@ inline
               // compute edge_based_cfl
               edge_based_cfl.data()[i] = 2.*fabs(dLii)/mi;
               
+              // Stage 3 kinetic dissolution source at node i (mass-rate form):
+              //   R_diss_i = theta_w_i * rho_w(u_i) * k_d * S_n_i * (c_sat - u_i)
+              // Added directly to mLow_i / mHigh_i since the lumped-mass time
+              // discretization gives dm/dt = R_diss with no further scaling.
+              // Sign of (c_sat - u_i) ensures R_diss > 0 when undersaturated
+              // (dissolution) and < 0 when supersaturated (exsolution).
+              // The S_w (interfacial-area) factor a_gw ~ S_n*S_w was dropped:
+              // it makes R_diss vanish at S_n = 1, so a gas pool stops
+              // dissolving once it consolidates.  theta_w is kept so the CO2
+              // still goes into the brine that exists (theta_w > 0 down to
+              // residual S_wr).  MUST stay consistent with mphase_co2.h.
+              const double S_n_i  = Sn_dof.data()[i];
+              const double rho_w_i = rho_f * (1.0 + ((rho_s - rho_f)/rho_f) * ui_mass);
+              const double R_diss_i = theta_i * rho_w_i * k_d * S_n_i
+                                    * (c_sat - ui_mass);
+
               const double mLow_i = mi_mass - dt/mi*(ith_upwind_flux_term_mass
-                                                     + boundary_integral_mass);
+                                                     + boundary_integral_mass)
+                                            + dt * R_diss_i;
               uLow[i] = inversevaluateCoefficients(mLow_i, theta_i, rho_f, rho_s);
 
               // update residual
@@ -1653,11 +1721,12 @@ inline
                 {
                   const double mHigh_i = mi_mass - dt/mi*(ith_flux_term_mass
                                                           + boundary_integral_mass
-                                                          - ith_dissipative_term_mass);
+                                                          - ith_dissipative_term_mass)
+                                                 + dt * R_diss_i;
                   globalResidual.data()[i] = inversevaluateCoefficients(mHigh_i, theta_i, rho_f, rho_s);
                 }
               else
-                globalResidual.data()[i] += dt*(ith_flux_term_mass - ith_dissipative_term_mass);//cek todo: shouldn't this have boundaryIntegral?
+                globalResidual.data()[i] += dt*(ith_flux_term_mass - ith_dissipative_term_mass - R_diss_i);//cek todo: shouldn't this have boundaryIntegral?
             }//i
         }//edge-based
     }
@@ -2223,6 +2292,12 @@ inline
     xt::pyarray<double>& uLow = args.array<double>("uLow");
     xt::pyarray<double>& dLow = args.array<double>("dLow");
     xt::pyarray<double>& limited_solution = args.array<double>("limited_solution");
+    // bc_mask: 0.0 at Dirichlet DOFs, 1.0 elsewhere.  Mirrors mphase_co2's
+    // pattern.  Multiplied into the antidiffusive flux correction below so
+    // Dirichlet DOFs stay at their low-order value (which already carries the
+    // Nitsche BC contribution from the boundary residual) instead of being
+    // antidiffused past the BC value.
+    xt::pyarray<double>& bc_mask = args.array<double>("bc_mask");
     xt::pyarray<int>& csrRowIndeces_DofLoops = args.array<int>("csrRowIndeces_DofLoops");
     xt::pyarray<int>& csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops");
     xt::pyarray<double>& MassMatrix = args.array<double>("MassMatrix");
@@ -2346,7 +2421,8 @@ inline
         const double uLowi = uLow.data()[i];
         const double theta_i = theta_dof[i];
         const double mLowi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowi)*uLowi;
-        limited_solution.data()[i] = mLowi + 1./lumped_volume*ith_Limiter_times_FluxCorrectionMatrix;
+        // bc_mask.data()[i] is 0 at Dirichlet DOFs (freeze at mLow) and 1 elsewhere.
+        limited_solution.data()[i] = mLowi + bc_mask.data()[i] * (1./lumped_volume * ith_Limiter_times_FluxCorrectionMatrix);
         theta_dof_out.data()[i] = theta_dof[i];
       }
     }//FCTStep
