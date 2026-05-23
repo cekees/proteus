@@ -1609,7 +1609,10 @@ inline
               double ith_flux_term_mass = 0;
               
               double ith_upwind_flux_term_mass = 0;
-              double dLii = 0.;
+              // Exact row-sum of the low-order upwind operator: the coefficient
+              // of (u_i - u_j) summed over j.  Feeds edge_based_cfl so the time
+              // step bounds precisely the operator that advances uLow.
+              double gamma_sum_i = 0.;
 
               // loop over the sparsity pattern of the i-th DOF
               for (int offset=csrRowIndeces_DofLoops.data()[i]; offset<csrRowIndeces_DofLoops.data()[i+1]; offset++)
@@ -1638,6 +1641,11 @@ inline
                     ith_upwind_flux_term_mass +=
                       -T_neg * (rho_upwind / rho_f) * delta_u
                       -D_neg * delta_u;
+                    // gamma_ij is exactly the coefficient of (u_i - u_j) in
+                    // the flux line above -- accumulate it (incl. the
+                    // rho_upwind/rho_f density factor and the diffusion part)
+                    // so edge_based_cfl bounds this operator with no proxy gap.
+                    gamma_sum_i += T_neg * (rho_upwind / rho_f) + D_neg;
                   }
 
                   if (i != j) 
@@ -1674,7 +1682,6 @@ inline
                       dt_times_dH_minus_dL[ij] = dt*(dHij - dLowij);
                       //std::cout << dLij;
 
-                      dLii -= dLij;
                       dLow[ij] = dLowij;
                       
                     }
@@ -1693,7 +1700,17 @@ inline
               // a=theta*rho*Disp); no dmdu_i lifting is needed.
               const double boundary_integral_mass = boundary_integral[i];
               // compute edge_based_cfl
-              edge_based_cfl.data()[i] = 2.*fabs(dLii)/mi;
+              // The low-order step advances the conservative variable
+              // m = theta*rho(c)*c; recovering c divides the mass change by
+              // the storage Jacobian dm/dc = dmdu_i.  gamma_sum_i/mi is only a
+              // mass-rate CFL -- without the 1/dmdu_i factor it badly
+              // under-predicts the stable dt in low-water-content (high gas
+              // saturation) zones where dmdu_i -> 0, so uLow overshoots and c
+              // leaves [0, c_sat].  Dividing by dmdu_i turns this into the
+              // pore-velocity CFL that c actually obeys.  gamma_sum_i is the
+              // exact row-sum of the upwind operator, so this bounds it with
+              // no proxy gap (no density/diffusion under-estimate).
+              edge_based_cfl.data()[i] = 2.*gamma_sum_i/(mi * fmax(dmdu_i, 1.0e-14));
               
               // Stage 3 kinetic dissolution source at node i (mass-rate form):
               //   R_diss_i = theta_w_i * rho_w(u_i) * k_d * S_n_i * (c_sat - u_i)
