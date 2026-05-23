@@ -398,6 +398,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &c_dof                                      = args.array<double>("c_dof");
     const double         k_d                                        = args.scalar<double>("k_d");
     const double         c_sat                                      = args.scalar<double>("c_sat");
+    // CO2 injection: per-node source field (built Python-side, schedule-gated).
+    // Applied like R_diss but with opposite sign -- a source, not a sink.
+    // All-zero array when no injection is configured.
+    xt::pyarray<double> &injection_dof                              = args.array<double>("injection_dof");
     xt::pyarray<double> &globalResidual                             = args.array<double>("globalResidual");
     int                  nExteriorElementBoundaries_global          = args.scalar<int>("nExteriorElementBoundaries_global");
     xt::pyarray<int>    &exteriorElementBoundariesArray             = args.array<int>("exteriorElementBoundariesArray");
@@ -906,6 +910,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         ck.valFromDOF(c_dof.data(),
                       &u_l2g.data()[eN_nDOF_trial_element],
                       &u_trial_ref.data()[k * nDOF_trial_element], c_qp);
+        // CO2 injection source interpolated at this quadrature point.
+        double Q_inj_qp = 0.0;
+        ck.valFromDOF(injection_dof.data(),
+                      &u_l2g.data()[eN_nDOF_trial_element],
+                      &u_trial_ref.data()[k * nDOF_trial_element], Q_inj_qp);
         const double S_n_qp     = u_n;
         const double S_w_qp     = 1.0 - S_n_qp;
         const double theta_w_qp = phi_eN * S_w_qp;
@@ -924,6 +933,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           // residual (mLow_c += dt * R_diss_i): every kg added to the brine
           // is removed from the gas, preserving total CO2 mass.
           elementResidual_n[i] += R_diss_qp * test_i * dV;
+          // CO2 injection source: opposite sign to the R_diss sink.
+          elementResidual_n[i] -= Q_inj_qp * test_i * dV;
           // Advection contribution: -f_n . grad N_i dV (Proteus Advection_weak sign).
           for (int I = 0; I < nSpace; I++) {
             elementResidual_n[i] -= f_n[I] * u_grad_trial_qp[i * nSpace + I] * dV;
@@ -2333,6 +2344,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &c_dof                                      = args.array<double>("c_dof");
     const double         k_d                                        = args.scalar<double>("k_d");
     const double         c_sat                                      = args.scalar<double>("c_sat");
+    // CO2 injection: per-node source field (built Python-side, schedule-gated).
+    // Applied like R_diss but with opposite sign -- a source, not a sink.
+    // All-zero array when no injection is configured.
+    xt::pyarray<double> &injection_dof                              = args.array<double>("injection_dof");
     xt::pyarray<double> &globalResidual                             = args.array<double>("globalResidual");
     int                  nExteriorElementBoundaries_global          = args.scalar<int>("nExteriorElementBoundaries_global");
     xt::pyarray<int>    &exteriorElementBoundariesArray             = args.array<int>("exteriorElementBoundariesArray");
@@ -3787,6 +3802,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double R_diss_n   = theta_w_n * rho * k_d * S_n_node
                                 * (c_sat - c_node);
         elementResidual_n[i]   += elementMass_n[i] * R_diss_n;
+        // CO2 injection source (lumped): opposite sign to the R_diss sink.
+        // injection_dof carries the per-node source rate; elementMass_n[i] is
+        // the local volume weight, so summed over the mesh the total injected
+        // equals rate * (nodal volume) -- mass-conservative, parallel-safe.
+        const double Q_inj_n    = injection_dof.data()[gi];
+        elementResidual_n[i]   -= elementMass_n[i] * Q_inj_n;
       }
 
       // -------- Distribute element arrays to global storage. --------

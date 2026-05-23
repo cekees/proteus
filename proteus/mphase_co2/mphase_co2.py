@@ -276,6 +276,11 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  # then sees no dissolution (legacy behavior preserved).
                  k_d=0.0,
                  c_sat=1.0,
+                 # CO2 injection point sources: list of
+                 # (x, y, rate, t_start, t_stop) tuples.  Each is an interior
+                 # mass source on the gas (S_n) equation, active while
+                 # t_start <= t < t_stop.  None/empty -> no injection (legacy).
+                 injection_ports=None,
                   ):
         self.VMS=VMS
         if density_model is None:
@@ -284,6 +289,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         # Stage 3b: gas-side kinetic dissolution sink parameters.
         self.k_d = k_d
         self.c_sat = c_sat
+        # CO2 injection point sources (see __init__ argument).
+        self.injection_ports = list(injection_ports) if injection_ports else []
         self.modelIndex=1
         self.SC=SC
         self.anb_seepage_flux= 0.00
@@ -2052,6 +2059,33 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                                     np.zeros_like(self.u[1].dof))
         argsDict["k_d"]   = float(self.coefficients.k_d)
         argsDict["c_sat"] = float(self.coefficients.c_sat)
+        # CO2 injection: build the per-node source field consumed by the C++
+        # gas-equation source term (applied like R_diss, opposite sign).
+        # Each port is a small disk: injection_dof = rate (a volumetric source
+        # density) on every node within radius of the port, gated by the
+        # schedule.  Total injected per port = rate * (pi radius^2) * duration
+        # -- mesh-independent and parallel-safe (every rank sets the same
+        # density on its disk nodes; each element is integrated once).
+        # Rebuilt each call (time gate depends on t).  Always passed -- the
+        # kernel reads it unconditionally, so an empty list -> all-zero field.
+        if getattr(self, "injection_dof", None) is None \
+                or self.injection_dof.shape[0] != self.u[1].dof.shape[0]:
+            self.injection_dof = np.zeros_like(self.u[1].dof)
+        self.injection_dof[:] = 0.0
+        injection_ports = self.coefficients.injection_ports
+        if injection_ports:
+            if getattr(self, "_injection_masks", None) is None:
+                nodes = self.mesh.nodeArray
+                self._injection_masks = []
+                for (px, py, rate, radius, t0, t1) in injection_ports:
+                    d2 = ((nodes[:, 0] - px) ** 2 + (nodes[:, 1] - py) ** 2)
+                    self._injection_masks.append(d2 <= radius * radius)
+            t_now = float(self.timeIntegration.t)
+            for (px, py, rate, radius, t0, t1), mask in zip(
+                    injection_ports, self._injection_masks):
+                if t0 <= t_now < t1:
+                    self.injection_dof[mask] = rate
+        argsDict["injection_dof"] = self.injection_dof
         # csr maps for the (1,1) Jacobian block (not used by residual; staged
         # for turn 3 when calculateJacobian gains the (1,1) diagonal block).
         argsDict["csrRowIndeces_n_n"]      = self.csrRowIndeces[(1, 1)]
