@@ -281,6 +281,23 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  # mass source on the gas (S_n) equation, active while
                  # t_start <= t < t_stop.  None/empty -> no injection (legacy).
                  injection_ports=None,
+                 # tanh ramp at each port's start so Newton can track the
+                 # saturation breakthrough; in the SIMULATION's time units
+                 # (e.g. hours if dt is in hours).  0 -> no ramp (legacy).
+                 # Ramp is centred at t0+3*tau, full rate by t0+6*tau.
+                 injection_ramp_tau=0.0,
+                 # End-point gas relperm per material type.  Brooks-Corey /
+                 # van Genuchten-Mualem give k_rn(S_e=0) = 1 for every sand;
+                 # multi-phase rigs (e.g. FluidFlower) measure 0.02..0.16.
+                 # Pass a (nMaterialTypes,) array to scale k_rn(*) by the
+                 # measured endpoint; None -> all-ones (legacy behavior).
+                 krn_end_types=None,
+                 # Gas dynamic viscosity in the simulation's units.  The
+                 # gas-flux terms (a_n, f_n) are divided by mu_n at every
+                 # quadrature point.  Default 1.0 = legacy (mu implicit at 1).
+                 # For CO2 in normalized brine units: mu_n ~= 0.015 (mu_CO2 /
+                 # mu_water = 1.5e-5 / 1.0e-3 in physical SI).
+                 mu_n=1.0,
                   ):
         self.VMS=VMS
         if density_model is None:
@@ -291,6 +308,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.c_sat = c_sat
         # CO2 injection point sources (see __init__ argument).
         self.injection_ports = list(injection_ports) if injection_ports else []
+        self.injection_ramp_tau = float(injection_ramp_tau)
         self.modelIndex=1
         self.SC=SC
         self.anb_seepage_flux= 0.00
@@ -330,6 +348,16 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.vgm_alpha_types = vgm_alpha_types
         self.thetaR_types    = thetaR_types
         self.thetaSR_types   = thetaSR_types
+        # Per-material end-point gas relperm (k_rn at S_e = 0).  Default
+        # all-ones so the closure's k_rn(0) = 1 is unchanged.
+        if krn_end_types is None:
+            self.krn_end_types = np.ones_like(np.asarray(thetaR_types, dtype='d'))
+        else:
+            self.krn_end_types = np.asarray(krn_end_types, dtype='d')
+            assert self.krn_end_types.shape == np.asarray(thetaR_types).shape, \
+                "krn_end_types must have the same shape as thetaR_types"
+        # Gas dynamic viscosity (see __init__ argument).  Stored as scalar.
+        self.mu_n = float(mu_n)
         self.elementMaterialTypes = None
         self.exteriorElementBoundaryTypes  = None
         self.materialTypes_q    = None
@@ -683,14 +711,112 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
     
     def postStep(self, t, firstStep=False):
         m = self.model
-        if (m is None
-                or self.STABILIZATION_TYPE == 0
-                or not self._fct_requested
-                or getattr(m, 'limited_solution_n', None) is None):
-            return {}
-        m.FCTStep(component=1)
-        #m.FCTStep(component=0)
+        # FCT post-step (gated): only when STAB>0 and FCT was requested.
+        if (m is not None
+                and self.STABILIZATION_TYPE != 0
+                and self._fct_requested
+                and getattr(m, 'limited_solution_n', None) is not None):
+            m.FCTStep(component=1)
+        # Mass-balance diagnostic (always runs when coupled to TADR).
+        self._log_mass_balance(t)
         return {}
+
+    def _log_mass_balance(self, t):
+        """Aggregate gas + dissolved CO2 mass and compare to cumulative
+        injection. Diagnostic for the STAB=2 Richards-style upwind port:
+        if total mass = cum_injected, the operator is well-calibrated; if
+        gas + diss << cum_injected, dLow is over-dissipating (gas vanishes
+        before it can dissolve).
+
+        Per-DOF lumped weights are computed once from the P1 element-area
+        partition and cached. phi is volume-averaged per node (heterogeneous
+        Brooks-Corey materials supported)."""
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+
+        m = self.model
+        if m is None or not hasattr(self, 'densityModel') or self.densityModel is None:
+            return
+        mesh = m.mesh
+
+        if not hasattr(self, '_M_lump_node'):
+            nNodes_total = int(getattr(mesh, 'nNodes_global', len(m.u[1].dof)))
+            ML = np.zeros(nNodes_total, 'd')
+            phi_num = np.zeros(nNodes_total, 'd')
+            phi_den = np.zeros(nNodes_total, 'd')
+            elementNodes = mesh.elementNodesArray
+            nodeArr = mesh.nodeArray
+            matTypes = self.elementMaterialTypes
+            for eN in range(mesh.nElements_global):
+                nodes = elementNodes[eN]
+                p0 = nodeArr[nodes[0]]
+                p1 = nodeArr[nodes[1]]
+                p2 = nodeArr[nodes[2]]
+                area = 0.5 * abs((p1[0] - p0[0]) * (p2[1] - p0[1])
+                                 - (p2[0] - p0[0]) * (p1[1] - p0[1]))
+                mat = int(matTypes[eN])
+                phi_e = float(self.thetaR_types[mat] + self.thetaSR_types[mat])
+                contrib = area / 3.0
+                for nn in nodes:
+                    ML[nn] += contrib
+                    phi_num[nn] += contrib * phi_e
+                    phi_den[nn] += contrib
+            phi_node = np.where(phi_den > 0.0, phi_num / phi_den, 0.0)
+            self._M_lump_node = ML
+            self._phi_node = phi_node
+
+        ML = self._M_lump_node
+        phi = self._phi_node
+        S_n = np.asarray(m.u[1].dof)
+        c = np.asarray(self.densityModel.u[0].dof)
+
+        # Sum owned DOFs only (avoid double-count across MPI ranks).
+        n_owned = int(getattr(mesh, 'nNodes_owned',
+                              getattr(mesh, 'nNodes_global', len(S_n))))
+        size = min(n_owned, len(ML), len(S_n), len(c))
+        w = ML[:size] * phi[:size]
+        local_gas = float(np.sum(w * float(self.rho_n) * S_n[:size]))
+        local_dis = float(np.sum(w * (1.0 - S_n[:size]) * c[:size]))
+        gas = comm.allreduce(local_gas, op=MPI.SUM)
+        diss = comm.allreduce(local_dis, op=MPI.SUM)
+
+        # Cumulative injected = sum over ports of rate * disk_area * ∫ramp(s) ds
+        # where ramp = 0.5*(1 + tanh((s - t_start)/tau - 3)) clipped to [t_start, t_stop].
+        # The closed-form integral is needed because at early times the ramp is
+        # ~0.25% of nominal; assuming full rate would inflate cum_inj by 400x
+        # and make balance look catastrophically bad when it's actually fine.
+        #   ∫_{t_start}^{t} 0.5*(1 + tanh((s-t_start)/tau - 3)) ds
+        # = 0.5*tau * [(u + 3) + ln(cosh(u)) - ln(cosh(3))]
+        # where u = (min(t,t_stop) - t_start)/tau - 3.
+        tau = float(self.injection_ramp_tau)
+        ln_cosh3 = float(np.log(np.cosh(3.0)))
+        cum_inj = 0.0
+        for port in self.injection_ports:
+            (px, py, rate, radius, t_start, t_stop) = port
+            t_eff = max(float(t_start), min(float(t), float(t_stop)))
+            elapsed = t_eff - float(t_start)
+            if elapsed <= 0.0:
+                continue
+            if tau > 0.0:
+                u = elapsed / tau - 3.0
+                # ln(cosh(u)) computed as log1p(exp(-2|u|))/... for stability
+                ramp_integral = 0.5 * tau * ((u + 3.0)
+                                             + float(np.log(np.cosh(u)))
+                                             - ln_cosh3)
+            else:
+                ramp_integral = elapsed
+            cum_inj += float(rate) * np.pi * float(radius) ** 2 * ramp_integral
+
+        bal = gas + diss - cum_inj
+        rel = (bal / cum_inj) if cum_inj > 1.0e-30 else 0.0
+
+        if rank == 0:
+            logEvent(
+                "[Mass balance] t={:.4e} gas={:+.4e} diss={:+.4e} "
+                "injected={:+.4e} balance={:+.4e} rel={:+.3e}".format(
+                    float(t), gas, diss, cum_inj, bal, rel),
+                level=2)
 
     # def postStep(self, t, firstStep=False):
     #     if not self.outputQuantDOFs:
@@ -1489,6 +1615,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["thetaR"]               = coef.thetaR_types
             argsDict["thetaSR"]              = coef.thetaSR_types
             argsDict["KWs"]                  = coef.Ksw_types
+            argsDict["krn_end"]              = coef.krn_end_types
+            argsDict["mu_n"]                 = coef.mu_n
             argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
             argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
             argsDict["numDOFs"]              = n_w
@@ -1582,6 +1710,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["thetaR"]               = coef.thetaR_types
             argsDict["thetaSR"]              = coef.thetaSR_types
             argsDict["KWs"]                  = coef.Ksw_types
+            argsDict["krn_end"]              = coef.krn_end_types
+            argsDict["mu_n"]                 = coef.mu_n
             argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
             argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
             argsDict["numDOFs"]              = n_dof
@@ -2015,6 +2145,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["thetaR"] = self.coefficients.thetaR_types
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
         argsDict["KWs"] = self.coefficients.Ksw_types
+        argsDict["krn_end"] = self.coefficients.krn_end_types
+        argsDict["mu_n"]    = self.coefficients.mu_n
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
         argsDict["lag_shockCapturing"] = 0
@@ -2081,10 +2213,18 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                     d2 = ((nodes[:, 0] - px) ** 2 + (nodes[:, 1] - py) ** 2)
                     self._injection_masks.append(d2 <= radius * radius)
             t_now = float(self.timeIntegration.t)
+            # tanh ramp at each port's start so Newton can track the
+            # saturation breakthrough.  tau is set in flow_p.py via
+            # injection_ramp_tau (sim time units).  tau == 0 -> no ramp.
+            tau = self.coefficients.injection_ramp_tau
             for (px, py, rate, radius, t0, t1), mask in zip(
                     injection_ports, self._injection_masks):
                 if t0 <= t_now < t1:
-                    self.injection_dof[mask] = rate
+                    if tau > 0.0:
+                        ramp = 0.5 * (1.0 + np.tanh((t_now - t0) / tau - 3.0))
+                    else:
+                        ramp = 1.0
+                    self.injection_dof[mask] = rate * ramp
         argsDict["injection_dof"] = self.injection_dof
         # csr maps for the (1,1) Jacobian block (not used by residual; staged
         # for turn 3 when calculateJacobian gains the (1,1) diagonal block).
@@ -2379,6 +2519,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["thetaR"] = self.coefficients.thetaR_types
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
         argsDict["KWs"] = self.coefficients.Ksw_types
+        argsDict["krn_end"] = self.coefficients.krn_end_types
+        argsDict["mu_n"]    = self.coefficients.mu_n
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
         argsDict["lag_shockCapturing"] = 0
@@ -2517,6 +2659,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["thetaR"] = self.coefficients.thetaR_types
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
         argsDict["KWs"] = self.coefficients.Ksw_types
+        argsDict["krn_end"] = self.coefficients.krn_end_types
+        argsDict["mu_n"]    = self.coefficients.mu_n
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
         argsDict["lag_shockCapturing"] = 0

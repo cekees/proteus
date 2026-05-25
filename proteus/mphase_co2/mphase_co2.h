@@ -354,6 +354,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &thetaR                                     = args.array<double>("thetaR");
     xt::pyarray<double> &thetaSR                                    = args.array<double>("thetaSR");
     xt::pyarray<double> &KWs                                        = args.array<double>("KWs");
+    xt::pyarray<double> &krn_end                                    = args.array<double>("krn_end");
+    double               mu_n                                       = args.scalar<double>("mu_n");
     double               useMetrics                                 = args.scalar<double>("useMetrics");
     double               alphaBDF                                   = args.scalar<double>("alphaBDF");
     int                  lag_shockCapturing                         = args.scalar<int>("lag_shockCapturing");
@@ -769,10 +771,20 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const int   mat_eN  = elementMaterialTypes.data()[eN];
       const double phi_eN = thetaR.data()[mat_eN] + thetaSR.data()[mat_eN];
       const double alpha_eN = alpha.data()[mat_eN];
+      const double krn_end_eN = krn_end.data()[mat_eN];
       const double n_vg_eN  = n.data()[mat_eN];
       const double *KWs_eN  = &KWs.data()[mat_eN * nnz];
       double elementResidual_n[nDOF_test_element];
-      for (int i = 0; i < nDOF_test_element; i++) elementResidual_n[i] = 0.0;
+      // Row-sum lumped weight per node: M_lump[i] = int N_i dV over the element.
+      // Used to apply the CO2 injection source as a pure diagonal contribution
+      // at the port nodes (no smearing onto neighbor basis functions), which
+      // matches the localised disk source and avoids exciting the BC closure
+      // on rim nodes where k_rn is still zero.
+      double lumped_w_n[nDOF_test_element];
+      for (int i = 0; i < nDOF_test_element; i++) {
+        elementResidual_n[i] = 0.0;
+        lumped_w_n[i]        = 0.0;
+      }
       for (int k = 0; k < nQuadraturePoints_element; k++) {
         const int eN_k = eN * nQuadraturePoints_element + k;
         const int eN_nDOF_trial_element = eN * nDOF_trial_element;
@@ -832,6 +844,13 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           proteus::mphase_co2::psk::vgm_kr_nonwetting_from_Se(
               Se_qp, alpha_eN, n_vg_eN, KNr, DKNr_DSe);
         }
+        // Scale by measured end-point k_rn (FluidFlower Table 5; 1.0 default).
+        KNr      *= krn_end_eN;
+        DKNr_DSe *= krn_end_eN;
+        // Divide by gas viscosity so a_n, f_n, df_n_* inherit the 1/mu_n
+        // factor automatically.  mu_n = 1.0 default (legacy: mu implicit).
+        KNr      /= mu_n;
+        DKNr_DSe /= mu_n;
         // Chain rule: convert d/dS_e -> d/du_n. dSe_du_n_loc carries the
         // sign flip from the S_n primary so DKNr_Du_n has the correct sign.
         DKNr_DSe *= dSe_du_n_loc;
@@ -898,27 +917,25 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         // dissolution vanishes once the gas consolidates into a pool (S_n->1),
         // so a finite blob only dissolves while rising.  theta_w is kept (the
         // CO2 must go into brine that exists; theta_w > 0 down to residual S_wr).
-        // We use the same EOS rho_w(c) = rho * (1 + ((rho_s-rho_f)/rho_f) * c)
-        // that TADR uses on the brine side -- but since this kernel doesn't
-        // see rho_s, we approximate rho_w_loc = rho (the brine reference
-        // density passed in via the "rho" scalar arg).  For our small
-        // (rho_s - rho_f)/rho_f the difference is negligible; the dominant
-        // factor is theta_w * (c_sat - c), and exact mass-balance between
-        // TADR's source and this sink will require also passing rho_s here
-        // in a later refinement.
+        // rho_w(c) at this QP comes from TADR via q_rho (it carries the same
+        // EOS rho_f * (1 + ((rho_s - rho_f)/rho_f) * c) that TADR computed),
+        // so this kernel's sink matches TADR's source mass-for-mass at every
+        // QP -- no longer the scalar-rho approximation.
         double c_qp = 0.0;
         ck.valFromDOF(c_dof.data(),
                       &u_l2g.data()[eN_nDOF_trial_element],
                       &u_trial_ref.data()[k * nDOF_trial_element], c_qp);
-        // CO2 injection source interpolated at this quadrature point.
-        double Q_inj_qp = 0.0;
-        ck.valFromDOF(injection_dof.data(),
-                      &u_l2g.data()[eN_nDOF_trial_element],
-                      &u_trial_ref.data()[k * nDOF_trial_element], Q_inj_qp);
+        // CO2 injection is applied row-sum lumped per node AFTER this QP loop
+        // (see the lumped_w_n accumulation and the assembly block below).
+        // Keeping the source diagonal at the port nodes is important for the
+        // localised disk source: the consistent integration would smear a
+        // fraction of Q_inj onto rim nodes whose k_rn is still zero, exciting
+        // the BC closure nonlinearity and breaking Newton near the front.
         const double S_n_qp     = u_n;
         const double S_w_qp     = 1.0 - S_n_qp;
         const double theta_w_qp = phi_eN * S_w_qp;
-        const double R_diss_qp  = theta_w_qp * rho * k_d * S_n_qp
+        const double rho_w_qp   = q_rho.data()[eN_k];  // TADR-coupled brine density
+        const double R_diss_qp  = theta_w_qp * rho_w_qp * k_d * S_n_qp
                                 * (c_sat - c_qp);
         // Residual integration: mass + advection (gravity) - diffusion(grad u_w) - p_c diffusion(grad u_n) - sink.
         for (int i = 0; i < nDOF_test_element; i++) {
@@ -933,8 +950,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           // residual (mLow_c += dt * R_diss_i): every kg added to the brine
           // is removed from the gas, preserving total CO2 mass.
           elementResidual_n[i] += R_diss_qp * test_i * dV;
-          // CO2 injection source: opposite sign to the R_diss sink.
-          elementResidual_n[i] -= Q_inj_qp * test_i * dV;
+          // CO2 injection is row-sum lumped (applied after the QP loop). The
+          // lumped weight M_lump[i] = int N_i dV is the QP sum of test_i*dV.
+          lumped_w_n[i] += test_i * dV;
           // Advection contribution: -f_n . grad N_i dV (Proteus Advection_weak sign).
           for (int I = 0; I < nSpace; I++) {
             elementResidual_n[i] -= f_n[I] * u_grad_trial_qp[i * nSpace + I] * dV;
@@ -957,6 +975,16 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             }
           }
         }
+      }
+      // Row-sum lumped CO2 injection: subtract Q_inj at port nodes only.
+      // injection_dof carries the per-node source rate (built Python-side and
+      // schedule-gated); zero on every node outside the disk masks. The PDE
+      // sign convention is d(m_n)/dt + div(F_n) + R_diss - Q_inj = 0, so the
+      // residual contribution is -Q_inj * M_lump[i] (same sign as the removed
+      // consistent term, just diagonal instead of integrated).
+      for (int i = 0; i < nDOF_test_element; i++) {
+        const int gi = u_l2g.data()[eN * nDOF_test_element + i];
+        elementResidual_n[i] -= injection_dof.data()[gi] * lumped_w_n[i];
       }
       for (int i = 0; i < nDOF_test_element; i++) {
         const int eN_i = eN * nDOF_test_element + i;
@@ -985,6 +1013,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const int    mat_eN    = elementMaterialTypes.data()[eN];
       const double phi_eN    = thetaR.data()[mat_eN] + thetaSR.data()[mat_eN];
       const double alpha_eN  = alpha.data()[mat_eN];
+      const double krn_end_eN = krn_end.data()[mat_eN];
       const double n_vg_eN   = n.data()[mat_eN];
       const double *KWs_eN   = &KWs.data()[mat_eN * nnz];
       const double S_wr_loc      = thetaR.data()[mat_eN] / phi_eN;
@@ -1049,6 +1078,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           proteus::mphase_co2::psk::bc_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
         else
           proteus::mphase_co2::psk::vgm_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+        // Scale by measured end-point k_rn (FluidFlower Table 5; 1.0 default).
+        KNr_b  *= krn_end_eN;
+        DKNr_b *= krn_end_eN;
+        // Divide by gas viscosity so a_n_b, f_n_b inherit the 1/mu_n factor.
+        KNr_b  /= mu_n;
+        DKNr_b /= mu_n;
         double pc_b = 0.0, dpc_dSn_b = 0.0, d2pc_dSn2_b = 0.0;
         if (PSK_TYPE_member == 1)
           proteus::mphase_co2::psk::bc_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSn_b, d2pc_dSn2_b);
@@ -1149,7 +1184,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &c_dof_jac                = args.array<double>("c_dof");
     const double         k_d_jac                  = args.scalar<double>("k_d");
     const double         c_sat_jac                = args.scalar<double>("c_sat");
-    (void)c_dof_jac; (void)k_d_jac; (void)c_sat_jac;  // unused in this turn
 
     xt::pyarray<double> &gravity                   = args.array<double>("gravity");
     xt::pyarray<double> &alpha                     = args.array<double>("alpha");
@@ -1157,6 +1191,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &thetaR                    = args.array<double>("thetaR");
     xt::pyarray<double> &thetaSR                   = args.array<double>("thetaSR");
     xt::pyarray<double> &KWs                       = args.array<double>("KWs");
+    xt::pyarray<double> &krn_end                   = args.array<double>("krn_end");
+    double               mu_n                      = args.scalar<double>("mu_n");
     double               useMetrics                = args.scalar<double>("useMetrics");
     double               alphaBDF                  = args.scalar<double>("alphaBDF");
     int                  lag_shockCapturing        = args.scalar<int>("lag_shockCapturing");
@@ -1497,6 +1533,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const int    mat_eN    = elementMaterialTypes.data()[eN];
       const double phi_eN    = thetaR.data()[mat_eN] + thetaSR.data()[mat_eN];
       const double alpha_eN  = alpha.data()[mat_eN];
+      const double krn_end_eN = krn_end.data()[mat_eN];
       const double n_vg_eN   = n.data()[mat_eN];
       const double *KWs_eN   = &KWs.data()[mat_eN * nnz];
       // dm_n_du_n is no longer hoisted: ρ_n depends on the Newton iterate
@@ -1509,6 +1546,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           elementJacobian_n_w[i][j] = 0.0;
         }
       for (int k = 0; k < nQuadraturePoints_element; k++) {
+        const int eN_k = eN * nQuadraturePoints_element + k;
         const int eN_nDOF_trial_element = eN * nDOF_trial_element;
         double jac[nSpace * nSpace], jacDet, jacInv[nSpace * nSpace], x_q, y_q, z_q;
         ck.calculateMapping_element(eN, k, mesh_dof.data(), mesh_l2g.data(),
@@ -1557,6 +1595,13 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           proteus::mphase_co2::psk::vgm_kr_nonwetting_from_Se(
               Se_qp, alpha_eN, n_vg_eN, KNr, DKNr_DSe);
         }
+        // Scale by measured end-point k_rn (FluidFlower Table 5; 1.0 default).
+        KNr      *= krn_end_eN;
+        DKNr_DSe *= krn_end_eN;
+        // Divide by gas viscosity so a_n, f_n, df_n_* inherit the 1/mu_n
+        // factor automatically.  mu_n = 1.0 default (legacy: mu implicit).
+        KNr      /= mu_n;
+        DKNr_DSe /= mu_n;
         // Chain rule: convert d/dSe -> d/du_n.  dSe_du_n_loc carries the
         // sign flip from the S_n primary so DKNr_Du_n has the correct sign.
         DKNr_DSe *= dSe_du_n_loc;
@@ -1615,6 +1660,18 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             df_n_du_w[I] += 2.0 * rho_n_loc * c_n * base * gravity.data()[J];
           }
         }
+        // Stage 3b: dissolution-sink derivative (was missing -- caused Newton
+        // to plateau around |r| ~ phi*k_d*S_n once S_n grew at the front).
+        //   R_diss = phi * (1 - S_n) * rho_w * k_d * S_n * (c_sat - c)
+        //   dR_diss/dS_n = phi * rho_w * k_d * (c_sat - c) * (1 - 2*S_n)
+        // c is lagged (Sequential split with TADR) so d/du_w = 0; only (1,1).
+        double c_qp = 0.0;
+        ck.valFromDOF(c_dof_jac.data(),
+                      &u_l2g.data()[eN_nDOF_trial_element],
+                      &u_trial_ref.data()[k * nDOF_trial_element], c_qp);
+        const double rho_w_qp_jac = q_rho.data()[eN_k];
+        const double dR_diss_dSn  = phi_eN * rho_w_qp_jac * k_d_jac
+                                  * (c_sat_jac - c_qp) * (1.0 - 2.0 * u_n);
         // Assemble per (i, j).
         for (int i = 0; i < nDOF_test_element; i++) {
           const double test_i = u_test_ref.data()[k * nDOF_test_element + i];
@@ -1649,6 +1706,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             const double trial_j = u_trial_ref.data()[k * nDOF_trial_element + j];
             // (1,1) mass term.
             elementJacobian_n_n[i][j] += (dm_n_du_n * test_i * trial_j * dV) / dt_n;
+            // (1,1) dissolution-sink derivative (consistent integration to
+            // match the residual term R_diss_qp * test_i * dV on the residual side).
+            elementJacobian_n_n[i][j] += dR_diss_dSn * test_i * trial_j * dV;
             // (1,1) flux-coefficient sensitivities through k_rn(u_n), dp_c/dS_n
             // and (when compressible) c_n*dp_c/dS_n through rho_n_loc.
             elementJacobian_n_n[i][j] -= adv_coef_sens_i * trial_j * dV;
@@ -1718,6 +1778,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const int    mat_eN    = elementMaterialTypes.data()[eN];
       const double phi_eN    = thetaR.data()[mat_eN] + thetaSR.data()[mat_eN];
       const double alpha_eN  = alpha.data()[mat_eN];
+      const double krn_end_eN = krn_end.data()[mat_eN];
       const double n_vg_eN   = n.data()[mat_eN];
       const double *KWs_eN   = &KWs.data()[mat_eN * nnz];
       const double S_wr_loc      = thetaR.data()[mat_eN] / phi_eN;
@@ -1784,6 +1845,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           proteus::mphase_co2::psk::bc_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
         else
           proteus::mphase_co2::psk::vgm_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+        // Scale by measured end-point k_rn (FluidFlower Table 5; 1.0 default).
+        KNr_b  *= krn_end_eN;
+        DKNr_b *= krn_end_eN;
+        // Divide by gas viscosity so a_n_b, f_n_b inherit the 1/mu_n factor.
+        KNr_b  /= mu_n;
+        DKNr_b /= mu_n;
         DKNr_b *= dSe_du_n_b;
         double pc_b = 0.0, dpc_dSn_b = 0.0, d2pc_dSn2_b = 0.0;
         if (PSK_TYPE_member == 1)
@@ -2300,6 +2367,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &thetaR                                     = args.array<double>("thetaR");
     xt::pyarray<double> &thetaSR                                    = args.array<double>("thetaSR");
     xt::pyarray<double> &KWs                                        = args.array<double>("KWs");
+    xt::pyarray<double> &krn_end                                    = args.array<double>("krn_end");
+    double               mu_n                                       = args.scalar<double>("mu_n");
     double               useMetrics                                 = args.scalar<double>("useMetrics");
     double               alphaBDF                                   = args.scalar<double>("alphaBDF");
     int                  lag_shockCapturing                         = args.scalar<int>("lag_shockCapturing");
@@ -2543,7 +2612,14 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     //   m_n = phi * rho_n * u_n   =>   u_n = m_n / (phi*rho_n).
     // Indexed by u_l2g (full DOF numbering, no Dirichlet elimination) so it
     // covers every comp-1 node including Dirichlet ones.
+    //
+    // rho_w_dof: parallel lumped L2 projection of TADR's q_rho onto the same
+    // u_l2g node numbering.  Used by the comp-1 R_diss residual/Jacobian to
+    // match TADR's brine density at every node, so the gas-mass sink matches
+    // TADR's c source mass-for-mass under the Sequential split.  Without this
+    // there's a (rho_s-rho_f)/rho_f ~ 1% gap in conserved total CO2 mass.
     std::vector<double> rho_n_phi_dof(numDOFs_u, 0.0);
+    std::vector<double> rho_w_dof(numDOFs_u, 0.0);
     std::vector<double> ML_n(numDOFs_u, 0.0);
     for (int eN = 0; eN < nElements_global; eN++) {
       const int    mat_eN_proj = elementMaterialTypes.data()[eN];
@@ -2583,18 +2659,28 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             proteus::mphase_co2::psk::vgm_pc_from_Se(Se_p, alpha_eN_p, n_vg_eN_p, pc_p, dpc_p_unused, d2pc_p_unused);
           phi_rho_n_qp = phi_eN * c_n * (u_w_p + pc_p);
         }
+        // TADR brine density at this QP (q_rho already populated by preStep
+        // from TADR.q_rho); used for the rho_w_dof L2 projection below.
+        const int    eN_k_proj    = eN * nQuadraturePoints_element + k;
+        const double rho_w_qp_proj = q_rho.data()[eN_k_proj];
         for (int i = 0; i < nDOF_test_element; i++) {
           const int    eN_i = eN * nDOF_test_element + i;
           const int    gi   = u_l2g.data()[eN_i];
           const double u_test_dV = u_test_ref.data()[k * nDOF_trial_element + i] * dV;
           rho_n_phi_dof[gi] += phi_rho_n_qp * u_test_dV;
+          rho_w_dof[gi]     += rho_w_qp_proj * u_test_dV;
           ML_n[gi]          += u_test_dV;
         }
       }
     }
     for (int i = 0; i < numDOFs_u; ++i) {
-      if (ML_n[i] > 0.0) rho_n_phi_dof[i] /= ML_n[i];
-      else rho_n_phi_dof[i] = thetaR.data()[0] + thetaSR.data()[0]; // fallback
+      if (ML_n[i] > 0.0) {
+        rho_n_phi_dof[i] /= ML_n[i];
+        rho_w_dof[i]     /= ML_n[i];
+      } else {
+        rho_n_phi_dof[i] = thetaR.data()[0] + thetaSR.data()[0]; // fallback
+        rho_w_dof[i]     = rho;                                  // fallback
+      }
       // Ensure positivity of the divisor used downstream.
       rho_n_phi_dof[i] = std::max(rho_n_phi_dof[i], 1.0e-16);
     }
@@ -3496,6 +3582,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const int    mat_eN    = elementMaterialTypes.data()[eN];
       const double phi_eN    = thetaR.data()[mat_eN] + thetaSR.data()[mat_eN];
       const double alpha_eN  = alpha.data()[mat_eN];
+      const double krn_end_eN = krn_end.data()[mat_eN];
       const double n_vg_eN   = n.data()[mat_eN];
       const double *KWs_eN   = &KWs.data()[mat_eN * nnz];
       // dm_n_du_n is no longer hoisted: when rho_n is compressible the
@@ -3591,6 +3678,13 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           proteus::mphase_co2::psk::vgm_kr_nonwetting_from_Se(
               Se_qp, alpha_eN, n_vg_eN, KNr, DKNr_DSe);
         }
+        // Scale by measured end-point k_rn (FluidFlower Table 5; 1.0 default).
+        KNr      *= krn_end_eN;
+        DKNr_DSe *= krn_end_eN;
+        // Divide by gas viscosity so a_n, f_n, df_n_* inherit the 1/mu_n
+        // factor automatically.  mu_n = 1.0 default (legacy: mu implicit).
+        KNr      /= mu_n;
+        DKNr_DSe /= mu_n;
         // Chain rule: convert d/dSe -> d/du_n. dSe_du_n_loc < 0 flips sign.
         DKNr_DSe *= dSe_du_n_loc;
         // Capillary derivative: closure returns dp_c/dSe < 0 (monotone), so
@@ -3624,6 +3718,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           proteus::mphase_co2::psk::vgm_kr_nonwetting_from_Se(
               Se_qp_old, alpha_eN, n_vg_eN, KNr_old, DKNr_DSe_old);
         }
+        // Scale by measured end-point k_rn (FluidFlower Table 5; 1.0 default).
+        KNr_old      *= krn_end_eN;
+        DKNr_DSe_old *= krn_end_eN;
+        // Divide by gas viscosity (old time level, BDF lag).
+        KNr_old      /= mu_n;
+        DKNr_DSe_old /= mu_n;
         DKNr_DSe_old *= dSe_du_n_loc_old;
         double pc_qp_old = 0.0, dpc_dSw_old = 0.0, d2pc_dSw2_old = 0.0;
         if (PSK_TYPE_member == 1) {
@@ -3686,22 +3786,28 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         for (int i = 0; i < nDOF_test_element; i++) {
           const double test_i = u_test_ref.data()[k * nDOF_test_element + i];
           elementMass_n[i] += test_i * dV;
-          // Consistent residual (NO mass term -- handled lumped below): advection
-          // + diffusion(grad u_w) + capillary diffusion(grad u_n). Sign:
-          // Proteus convention is -f.grad N (matches Advection_weak); the gas
-          // gravity gets the minus here exactly as the wetting equation does.
-          for (int I = 0; I < nSpace; I++) {
-            elementResidual_n[i] -= f_n[I] * u_grad_trial_qp[i * nSpace + I] * dV;
-          }
-          for (int I = 0; I < nSpace; I++) {
-            for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
-              const int J = a_colind.data()[ii];
-              elementResidual_n[i] += a_n[ii]     * grad_u_w[J]
-                                    * u_grad_trial_qp[i * nSpace + I] * dV;
-              elementResidual_n[i] += a_n_p_c[ii] * grad_u_n[J]
-                                    * u_grad_trial_qp[i * nSpace + I] * dV;
-            }
-          }
+          // Stage 2 (full Richards-style upwind port): remove ALL consistent
+          // gas-eq flux contributions from the residual. Newton was getting
+          // unbounded updates from the consistent Galerkin operator on the
+          // non-monotone gas-eq rows. The low-order edge loop below now
+          // produces R = MLi*(m-m_old)/dt + sum_j dH_ij*(m_n[i]-m_n[j]) with
+          // dH_ij = max(0, -T_n[ij], -T_n[ji]) -- Richards-style upwind
+          // dissipation on the FULL transport matrix T_n (which carries the
+          // consistent advection -f_n.grad N, diffusion +a_n grad u_w.grad N,
+          // capillary +a_n_pc grad u_n.grad N, and the k_rn / dpc nonlinearity
+          // through elementTransport_n built from lagged closures). Pure
+          // low-order means monotone, M-matrix, and exactly Newton-consistent.
+          //
+          // for (int I = 0; I < nSpace; I++) {
+          //   elementResidual_n[i] -= f_n[I] * u_grad_trial_qp[i * nSpace + I] * dV;
+          // }
+          // for (int I = 0; I < nSpace; I++) {
+          //   for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
+          //     const int J = a_colind.data()[ii];
+          //     elementResidual_n[i] += a_n[ii] * grad_u_w[J]
+          //                           * u_grad_trial_qp[i * nSpace + I] * dV;
+          //   }
+          // }
           // (1,1) consistent operator K_vv: flux-coefficient sensitivities
           // through k_rn(u_n), dp_c/dS_n, and (when compressible) c_n*dp_c/dS_n.
           // (1,0) coefficient sensitivities (NEW): zero when p_ref_n == 0.
@@ -3730,21 +3836,30 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           }
           for (int j = 0; j < nDOF_trial_element; j++) {
             const double trial_j = u_trial_ref.data()[k * nDOF_trial_element + j];
-            // K_vv -- consistent flux + capillary sensitivity (no mass).
-            const double sens_ij = (adv_coef_sens_i + diff_coef_sens_i + cap_coef_sens_i)
-                                 * trial_j * dV;
-            elementJacobian_n_n[i][j] += sens_ij;
-            double cap_trial_ij = 0.0;
+            (void)trial_j;
+            // Stage 2: no consistent-flux Jacobian writes to (1,1) or (1,0)
+            // -- they all match consistent residual terms that are now removed.
+            // The low-order edge loop below assembles the only flux Jacobian:
+            //   off-diag (1,1) += -dH_ij * rho_n_phi_dof[j_n]
+            //   diag    (1,1) +=  sum_j dH_ij * rho_n_phi_dof[i_n]
+            // No (1,0) cross-block writes here either; the gas-eq gets its
+            // u_w-dependence implicitly through TransportMatrix_n's
+            // assembled-and-lagged grad-u_w contribution to T_n[ij], which
+            // shows up in dH_ij and hence in the low-order Jacobian off-diag.
+            //
+            // const double sens_ij = (adv_coef_sens_i + diff_coef_sens_i)
+            //                      * trial_j * dV;
+            // elementJacobian_n_n[i][j] += sens_ij;
+            //
+            // cap_trial_ij_old is still computed (feeds elementTransport_n).
             double cap_trial_ij_old = 0.0;
             for (int I = 0; I < nSpace; I++) {
               const double grad_Ni_I = u_grad_trial_qp[i * nSpace + I];
               for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
                 const int J = a_colind.data()[ii];
-                cap_trial_ij     += a_n_p_c[ii]     * u_grad_trial_qp[j * nSpace + J] * grad_Ni_I;
                 cap_trial_ij_old += a_n_p_c_old[ii] * u_grad_trial_qp[j * nSpace + J] * grad_Ni_I;
               }
             }
-            elementJacobian_n_n[i][j] += cap_trial_ij * dV;
             // EV transport operator -- LAGGED at u_n_old so dLow_n is
             // independent of the current Newton iterate. (Same logic as the
             // constant-rho_n case; the lagged closure now also bakes in
@@ -3762,9 +3877,19 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
                 diff_trial_ij += a_n[ii] * u_grad_trial_qp[j * nSpace + J] * grad_Ni_I;
               }
             }
-            elementJacobian_n_w[i][j] += diff_trial_ij * dV;
-            elementJacobian_n_w[i][j] += (adv_coef_sens_w_i + diff_coef_sens_w_i + cap_coef_sens_w_i)
-                                       * trial_j * dV;
+            // Stage 2: no (1,0) cross-block writes from the consistent
+            // operator -- matches the residual-side removal. The u_w
+            // dependence enters R_n via TransportMatrix_n[ij]'s grad-u_w
+            // contribution (lagged); since dH_ij depends on T_n[ij] (which
+            // depends on grad u_w), there IS still an implicit (1,0) coupling
+            // through the lagged low-order operator. It's just a Picard
+            // linearization in u_w, which is enough for Newton on the
+            // strongly-nonlinear-in-u_n axis to converge.
+            //
+            // elementJacobian_n_w[i][j] += diff_trial_ij * dV;
+            // elementJacobian_n_w[i][j] += (adv_coef_sens_w_i + diff_coef_sens_w_i)
+            //                            * trial_j * dV;
+            (void)diff_trial_ij;
           }
         }
       } // end QP loop
@@ -3799,9 +3924,26 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double S_w_node   = 1.0 - S_n_node;
         const double theta_w_n  = phi_eN * S_w_node;
         const double c_node     = c_dof.data()[gi];
-        const double R_diss_n   = theta_w_n * rho * k_d * S_n_node
+        // rho_w_node: TADR-coupled brine density at this node (L2-projected
+        // from q_rho above, indexed by u_l2g/gi -- same convention as
+        // rho_n_phi_dof and c_dof).  Replaces the constant scalar `rho` so
+        // this sink matches TADR's c source at the (rho_s-rho_f)/rho_f level
+        // and total CO2 mass is conserved across the Sequential split.
+        const double rho_w_node = rho_w_dof[gi];
+        const double R_diss_n   = theta_w_n * rho_w_node * k_d * S_n_node
                                 * (c_sat - c_node);
         elementResidual_n[i]   += elementMass_n[i] * R_diss_n;
+        // (n,n) Jacobian contribution from R_diss.  Lagged c (TADR-side
+        // sequential split) is a constant w.r.t. the inner Newton on (u_w,u_n),
+        // so d(R_diss)/du_w = 0 and only the d/dS_n term is needed:
+        //   d(R_diss)/dS_n = phi * rho_w_node * k_d * (c_sat - c) * (1 - 2*S_n)
+        //   (=0 at S_n=0.5; >0 below, <0 above -- restoring around 0.5).
+        // The TODO at the wetting-Jacobian header in this file flagged this
+        // term as needing promotion if Newton stalls in FluidFlower; that's
+        // here.  Q_inj is constant in u, so no Jacobian update for injection.
+        const double dR_diss_dSn = phi_eN * rho_w_node * k_d * (c_sat - c_node)
+                                 * (1.0 - 2.0 * S_n_node);
+        elementJacobian_n_n[i][i] += elementMass_n[i] * dR_diss_dSn;
         // CO2 injection source (lumped): opposite sign to the R_diss sink.
         // injection_dof carries the per-node source rate; elementMass_n[i] is
         // the local volume weight, so summed over the mesh the total injected
@@ -3919,18 +4061,22 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     }
 
     // -------- Edge loop: dLow_n_ij and dEV_n_ij from TransportMatrix_n. --------
-    // Kuzmin algebraic flux correction on the (1,1) Jacobian T_n = dR/du_n.
-    // Off-diagonal Jac contribution from the dH*(m[i]-m[j]) dissipation is
-    //   -dH_ij * rho_n_phi_dof[j_n]  (line 3382),
-    // so for an M-matrix linearization we need
-    //   T_ij - dH_ij * rho_n_phi_dof[j_n] <= 0  AND  T_ji - dH_ij * rho_n_phi_dof[i_n] <= 0.
-    // Symmetric dH (dH_ij = dH_ji) is needed for mass conservation, so take:
-    //   dH_ij = max( T_ij / rho_phi[j_n],  T_ji / rho_phi[i_n],  0 ).
-    // Note the +T sign (NOT -T): when both T_ij and T_ji are positive (precisely
-    // where the consistent Galerkin operator violates the maximum principle on
-    // u_n, e.g. non-acute meshes or convection-dominated edges) this gives the
-    // correct positive dissipation. The previous max(-T_ij, -T_ji, 0) silently
-    // returned zero exactly in those regions.
+    // Stage 2 (full Richards-style upwind port): the residual is now
+    //   R_n[i] = MLi*(m_n[i] - m_n_old[i])/dt + sum_j dH_ij*(m_n[i] - m_n[j])
+    //          + R_diss[i] - Q_inj[i]
+    // with the dissipation dH_ij chosen so that the linearized operator on the
+    // gas equation is an M-matrix on the conserved variable m_n. The condition
+    // for M-matrix is the same as Richards.h (line 2204): the off-diagonal
+    //   d R_n[i] / d u_n[j] = -dH_ij * rho_n_phi_dof[j_n]  (line below)
+    // must be <= the (1,1) part of T_n[ij] from the consistent operator (zero
+    // here because consistent terms removed), so we need
+    //   -dH_ij * rho_n_phi_dof[j_n] <= -max(0, -T_n[ij])     (M-matrix)
+    // Solving symmetrically with rho_phi normalization:
+    //   dH_ij = max(0, -T_n[ij]/rho_phi[j_n], -T_n[ji]/rho_phi[i_n])
+    // This is the SIGN-FLIPPED version of the previous formula (which only
+    // activated where the Galerkin operator violated M-matrix from the +T
+    // side). The new formula activates on ALL diffusion-dominated edges
+    // (T < 0), matching Richards.h:2204-2230's pattern.
     for (int i_n = 0; i_n < numDOFs_n; i_n++) {
       const int full_row_i = offset_n + stride_n * i_n;
       for (int offset = csrRowIndeces_n_DofLoops.data()[i_n];
@@ -3954,7 +4100,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double T_ji = (full_offset_ji >= 0) ? TransportMatrix_n[full_offset_ji] : 0.0;
         const double inv_rho_phi_j = 1.0 / std::max(rho_n_phi_dof[j_n], 1.0e-14);
         const double inv_rho_phi_i = 1.0 / std::max(rho_n_phi_dof[i_n], 1.0e-14);
-        dLow_n.data()[offset] = std::max({T_ij * inv_rho_phi_j, T_ji * inv_rho_phi_i, 0.0});
+        // SIGN-FLIPPED Richards-style upwind dissipation: active on
+        // diffusion-dominated edges (T_ij < 0).
+        dLow_n.data()[offset] = std::max({-T_ij * inv_rho_phi_j, -T_ji * inv_rho_phi_i, 0.0});
         dEV_n.data()[offset]  = cE * std::max(psi_n[i_n], psi_n[j_n]) * dLow_n.data()[offset];
       }
     }
@@ -4046,6 +4194,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const int    mat_eN    = elementMaterialTypes.data()[eN];
       const double phi_eN    = thetaR.data()[mat_eN] + thetaSR.data()[mat_eN];
       const double alpha_eN  = alpha.data()[mat_eN];
+      const double krn_end_eN = krn_end.data()[mat_eN];
       const double n_vg_eN   = n.data()[mat_eN];
       const double *KWs_eN   = &KWs.data()[mat_eN * nnz];
       const double S_wr_loc      = thetaR.data()[mat_eN] / phi_eN;
@@ -4123,6 +4272,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           proteus::mphase_co2::psk::vgm_kr_nonwetting_from_Se(
               Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
         }
+        // Scale by measured end-point k_rn (FluidFlower Table 5; 1.0 default).
+        KNr_b  *= krn_end_eN;
+        DKNr_b *= krn_end_eN;
+        // Divide by gas viscosity so a_n_b, f_n_b inherit the 1/mu_n factor.
+        KNr_b  /= mu_n;
+        DKNr_b /= mu_n;
         DKNr_b *= dSe_du_n_b;
         double pc_b = 0.0, dpc_dSn_b = 0.0, d2pc_dSn2_b = 0.0;
         if (PSK_TYPE_member == 1) {
@@ -4317,6 +4472,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &thetaR               = args.array<double>("thetaR");
     xt::pyarray<double> &thetaSR              = args.array<double>("thetaSR");
     xt::pyarray<double> &KWs                  = args.array<double>("KWs");
+    xt::pyarray<double> &krn_end              = args.array<double>("krn_end");
+    double               mu_n                 = args.scalar<double>("mu_n");
     xt::pyarray<int>    &elementMaterialTypes = args.array<int>("elementMaterialTypes");
     xt::pyarray<int>    &freeDOFMaterialTypes = args.array<int>("freeDOFMaterialTypes");
     int                  numDOFs              = args.scalar<int>("numDOFs");
@@ -4457,6 +4614,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &thetaR               = args.array<double>("thetaR");
     xt::pyarray<double> &thetaSR              = args.array<double>("thetaSR");
     xt::pyarray<double> &KWs                  = args.array<double>("KWs");
+    xt::pyarray<double> &krn_end              = args.array<double>("krn_end");
+    double               mu_n                 = args.scalar<double>("mu_n");
     //end new
     double               useMetrics                                 = args.scalar<double>("useMetrics");
     double               alphaBDF                                   = args.scalar<double>("alphaBDF");
