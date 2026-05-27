@@ -781,6 +781,154 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         gas = comm.allreduce(local_gas, op=MPI.SUM)
         diss = comm.allreduce(local_dis, op=MPI.SUM)
 
+        # ---- KERNEL-INJECTED MASS AUDIT ----
+        # The kernel adds  M_lump_i * Q_inj_i * dt  to gas mass per node per
+        # time step. Total kernel injection = integral over time of
+        # sum(M_lump * injection_dof). We accumulate this with a trapezoidal
+        # rule across mass-balance calls. If kernel_inj_cum != cum_inj
+        # (analytical), the analytical disk-area formula is mesh-discrepant
+        # with the lumped-quadrature sum over the masked nodes.
+        inj_dof = getattr(m, 'injection_dof', None)
+        if inj_dof is not None:
+            inj_dof_local = np.asarray(inj_dof)[:size]
+            local_inj_rate = float(np.sum(ML[:size] * inj_dof_local))
+        else:
+            local_inj_rate = 0.0
+        inj_rate_global = comm.allreduce(local_inj_rate, op=MPI.SUM)
+        if not hasattr(self, '_kernel_inj_cum'):
+            self._kernel_inj_cum = 0.0
+            self._last_balance_t = float(t)
+            self._last_inj_rate  = inj_rate_global
+        dt_balance = float(t) - self._last_balance_t
+        if dt_balance > 0.0:
+            # End-of-step accumulation: the kernel scatters
+            #   ML_n[i] * injection_dof[i] * dt
+            # per step using injection_dof set in getResidual at the START
+            # of the step.  That rate is held constant across all Newton
+            # iterations for the step.  Using end-of-step `inj_rate_global`
+            # here matches the kernel's actual scatter exactly; trapezoidal
+            # averaging biased low during a ramping schedule and inflated
+            # the apparent "leak" in `bal_vs_kernel`.
+            self._kernel_inj_cum += dt_balance * inj_rate_global
+        self._last_balance_t = float(t)
+        self._last_inj_rate  = inj_rate_global
+        kernel_inj = self._kernel_inj_cum
+
+        # ---- R_DISS BUDGET AUDIT (flow side vs TADR side) ----
+        # Per-node analytical R_diss = phi*(1-S_n)*rho_w*k_d*S_n*(c_sat - c).
+        # Both mphase_co2 (gas-eq sink) and TADR (c-eq source) compute this
+        # independently. With matched k_d / c_sat they should agree to the
+        # split-lag error in c. The flow side reads c_dof (== TADR's u[0].dof)
+        # so they SHOULD use the same c; any difference is Sequential split
+        # timing.
+        rho_w_dof = None
+        coeffs = getattr(self.densityModel, 'coefficients', None)
+        if coeffs is not None:
+            # densityModel q_rho only available at QPs; for diagnostic use 1.0.
+            pass
+        rho_w_eff = 1.0  # head form
+        k_d_flow = float(self.k_d)
+        c_sat    = float(self.c_sat)
+        k_d_tadr = float(getattr(coeffs, 'k_d', k_d_flow)) if coeffs is not None else k_d_flow
+        c_sat_tadr = float(getattr(coeffs, 'c_sat', c_sat)) if coeffs is not None else c_sat
+        S_w_loc = 1.0 - S_n[:size]
+        active = (S_n[:size] > 0.0) & (c[:size] < c_sat)
+        R_per_node_flow = (w * S_w_loc * rho_w_eff * k_d_flow * S_n[:size]
+                          * (c_sat - c[:size]))
+        R_per_node_tadr = (w * S_w_loc * rho_w_eff * k_d_tadr * S_n[:size]
+                          * (c_sat_tadr - c[:size]))
+        local_R_flow = float(np.sum(R_per_node_flow))
+        local_R_tadr = float(np.sum(R_per_node_tadr))
+        R_flow_total = comm.allreduce(local_R_flow, op=MPI.SUM)
+        R_tadr_total = comm.allreduce(local_R_tadr, op=MPI.SUM)
+
+        # ---- dLow SYMMETRY AUDIT ----
+        # The Stage-2 Richards-style upwind dissipation contributes
+        #   sum_{i,j} dH_ij * (m_n[i] - m_n[j])
+        # to the total gas residual. For conservation we need dH symmetric
+        # (dH_ij == dH_ji) so the double sum cancels. Float-roundoff
+        # asymmetry would create a small per-step mass leak.
+        # Reports: max |dH_ij - dH_ji|, total un-cancelled flux contribution.
+        dLow_arr = getattr(m, 'dLow_n', None)
+        rowptr   = getattr(m, 'comp1_rowptr', None)
+        colind   = getattr(m, 'comp1_colind', None)
+        m_n_arr  = float(self.rho_n) * phi * S_n  # m_n at every node
+        max_asym_abs = 0.0
+        max_asym_rel = 0.0
+        sum_dLow_flux = 0.0
+        if (dLow_arr is not None and rowptr is not None and colind is not None
+                and len(dLow_arr) == len(colind)):
+            # Build edge-offset map (i,j)->offset once and cache.
+            if not hasattr(self, '_edge_offset_map'):
+                self._edge_offset_map = {}
+                for i_n_ in range(len(rowptr) - 1):
+                    for off in range(int(rowptr[i_n_]), int(rowptr[i_n_ + 1])):
+                        self._edge_offset_map[(i_n_, int(colind[off]))] = off
+            edge_map = self._edge_offset_map
+            dL = np.asarray(dLow_arr)
+            nrows = min(len(rowptr) - 1, size, len(m_n_arr))
+            for i_n_ in range(nrows):
+                row_start = int(rowptr[i_n_])
+                row_end   = int(rowptr[i_n_ + 1])
+                for off_ij in range(row_start, row_end):
+                    j_n_ = int(colind[off_ij])
+                    if j_n_ == i_n_ or j_n_ >= nrows:
+                        continue
+                    d_ij = float(dL[off_ij])
+                    off_ji = edge_map.get((j_n_, i_n_), -1)
+                    if off_ji < 0:
+                        continue
+                    d_ji = float(dL[off_ji])
+                    asym = abs(d_ij - d_ji)
+                    denom = max(abs(d_ij), abs(d_ji), 1.0e-30)
+                    if asym > max_asym_abs:
+                        max_asym_abs = asym
+                    if asym / denom > max_asym_rel:
+                        max_asym_rel = asym / denom
+                    # Per-edge contribution to total dLow gas residual:
+                    # at row i: +d_ij * (m[i] - m[j])
+                    sum_dLow_flux += d_ij * (m_n_arr[i_n_] - m_n_arr[j_n_])
+        max_asym_abs = comm.allreduce(max_asym_abs, op=MPI.MAX)
+        max_asym_rel = comm.allreduce(max_asym_rel, op=MPI.MAX)
+        sum_dLow_flux = comm.allreduce(sum_dLow_flux, op=MPI.SUM)
+
+        # ---- PER-EQUATION CONSERVATION CHECK ----
+        # Compare finite-difference d(gas)/dt to (inj_rate - R_flow_rate)
+        # and  d(diss)/dt to R_tadr_rate.
+        # In the discrete continuum:
+        #   gas-eq:  d(gas)/dt = inj_rate - R_flow_rate           (no boundary if sealed)
+        #   c-eq:    d(diss)/dt = R_tadr_rate
+        # If either residual is non-zero, that equation is creating/destroying
+        # mass at the printed rate. Isolates the leak source (gas-eq vs TADR).
+        if not hasattr(self, '_last_gas'):
+            self._last_gas = gas
+            self._last_diss = diss
+            self._last_audit_t = float(t)
+            gas_leak_rate = 0.0
+            diss_leak_rate = 0.0
+        else:
+            dt_audit = float(t) - self._last_audit_t
+            if dt_audit > 1.0e-15:
+                d_gas_dt  = (gas  - self._last_gas)  / dt_audit
+                d_diss_dt = (diss - self._last_diss) / dt_audit
+                # Use averaged rates (this call + previous) since we did
+                # trapezoidal accumulation of kernel_inj. R_diss is point-in-time.
+                avg_inj_rate    = 0.5 * (self._last_inj_rate2  + inj_rate_global)
+                avg_R_flow_rate = 0.5 * (self._last_R_flow_rate + R_flow_total)
+                avg_R_tadr_rate = 0.5 * (self._last_R_tadr_rate + R_tadr_total)
+                gas_leak_rate  = d_gas_dt  - (avg_inj_rate - avg_R_flow_rate)
+                diss_leak_rate = d_diss_dt - avg_R_tadr_rate
+            else:
+                gas_leak_rate = 0.0
+                diss_leak_rate = 0.0
+        # Update audit state for next call.
+        self._last_gas = gas
+        self._last_diss = diss
+        self._last_audit_t = float(t)
+        self._last_inj_rate2    = inj_rate_global
+        self._last_R_flow_rate  = R_flow_total
+        self._last_R_tadr_rate  = R_tadr_total
+
         # Cumulative injected = sum over ports of rate * disk_area * ∫ramp(s) ds
         # where ramp = 0.5*(1 + tanh((s - t_start)/tau - 3)) clipped to [t_start, t_stop].
         # The closed-form integral is needed because at early times the ramp is
@@ -811,11 +959,92 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         bal = gas + diss - cum_inj
         rel = (bal / cum_inj) if cum_inj > 1.0e-30 else 0.0
 
+        # S_n / c min,max for overshoot detection (cheap, no extra reductions
+        # beyond what numpy does locally; for parallel correctness we use the
+        # owned slice and MPI-reduce across ranks).
+        local_Sn_min = float(np.min(S_n[:size])) if size > 0 else 0.0
+        local_Sn_max = float(np.max(S_n[:size])) if size > 0 else 0.0
+        local_c_min  = float(np.min(c[:size]))  if size > 0 else 0.0
+        local_c_max  = float(np.max(c[:size]))  if size > 0 else 0.0
+        Sn_min = comm.allreduce(local_Sn_min, op=MPI.MIN)
+        Sn_max = comm.allreduce(local_Sn_max, op=MPI.MAX)
+        c_min  = comm.allreduce(local_c_min,  op=MPI.MIN)
+        c_max  = comm.allreduce(local_c_max,  op=MPI.MAX)
+
         if rank == 0:
+            # Reference balance line (kept for backward-compat / quick scan).
             logEvent(
                 "[Mass balance] t={:.4e} gas={:+.4e} diss={:+.4e} "
                 "injected={:+.4e} balance={:+.4e} rel={:+.3e}".format(
                     float(t), gas, diss, cum_inj, bal, rel),
+                level=2)
+            # Field min/max: Sn_max > 1 or Sn_min < 0 indicates overshoot from
+            # STAB=2 high-order EV term not being added to the residual (only
+            # dLow is, which is monotonicity-preserving). c_max > c_sat means
+            # dissolution overshoot from R_diss linearization.
+            logEvent(
+                "[field range] t={:.4e} Sn=[{:+.4e},{:+.4e}] "
+                "c=[{:+.4e},{:+.4e}] (c_sat={:.4e})".format(
+                    float(t), Sn_min, Sn_max, c_min, c_max, float(self.c_sat)),
+                level=2)
+            # ---- Audit lines ----
+            # (1) Kernel-injected vs analytical: if these disagree, the disk
+            #     lumped-quadrature is the dominant source of "rel" bias.
+            # (2) R_diss flow vs TADR: if these disagree per-DOF, the
+            #     dissolution coupling is leaking mass.
+            kernel_ratio = (kernel_inj / cum_inj) if cum_inj > 1e-30 else 0.0
+            R_ratio = (R_flow_total / R_tadr_total) if R_tadr_total > 1e-30 else 0.0
+            bal_kernel = gas + diss - kernel_inj
+            rel_kernel = (bal_kernel / kernel_inj) if kernel_inj > 1e-30 else 0.0
+            logEvent(
+                "[Mass audit ] t={:.4e} kernel_inj={:+.4e} cum_inj={:+.4e} "
+                "kernel/analytical={:.3f}  bal_vs_kernel={:+.4e} rel_vs_kernel={:+.3e}".format(
+                    float(t), kernel_inj, cum_inj, kernel_ratio,
+                    bal_kernel, rel_kernel),
+                level=2)
+            logEvent(
+                "[R_diss     ] t={:.4e} R_flow_rate={:+.4e} R_tadr_rate={:+.4e} "
+                "ratio_flow/tadr={:.3f}  (k_d_flow={:.3e} k_d_tadr={:.3e})".format(
+                    float(t), R_flow_total, R_tadr_total, R_ratio,
+                    k_d_flow, k_d_tadr),
+                level=2)
+            # Per-equation conservation: if either leak_rate is non-trivial
+            # relative to the active source/sink rate, that equation is the
+            # leak source. Use max(inj, R_flow, R_tadr) so post-injection
+            # (inj_rate=0) the rel value normalises against dissolution
+            # instead of blowing up to 1e+26.
+            rate_scale = max(abs(inj_rate_global), abs(R_flow_total),
+                             abs(R_tadr_total), 1.0e-30)
+            # leak_per_step is the actual mass added per Newton solve. With
+            # the STAB=2 Richards port, the gas residual has NO consistent
+            # CG, NO unconserved boundary (gated by isDir_n), and dLow is
+            # verified symmetric (sum_dH*(m_i-m_j) ~ 1e-19 below). So
+            # leak_per_step should equal sum of converged Newton residuals
+            # (~ nl_atol_res, configured in flow_n.py). If leak_per_step
+            # tracks nl_atol_res, the only fix is to tighten nl_atol_res /
+            # tolFac.  If leak_per_step >> nl_atol_res, something else is
+            # creating mass and we need to keep looking.
+            try:
+                dt_show = float(dt_audit) if dt_audit > 0.0 else 0.0
+            except NameError:
+                dt_show = 0.0
+            leak_per_step = gas_leak_rate * dt_show
+            logEvent(
+                "[mass leak  ] t={:.4e} gas_leak_rate={:+.4e} (rel={:+.2e})  "
+                "diss_leak_rate={:+.4e} (rel={:+.2e})  "
+                "dt={:.3e}  leak/step={:+.3e}".format(
+                    float(t), gas_leak_rate, gas_leak_rate / rate_scale,
+                    diss_leak_rate, diss_leak_rate / rate_scale,
+                    dt_show, leak_per_step),
+                level=2)
+            # dLow symmetry: if |asym|/|max| > ~1e-12, dLow is not symmetric.
+            # sum_dLow_flux is the actual un-cancelled contribution per step;
+            # if it's ~ gas_leak_rate, dLow asymmetry IS the leak source.
+            logEvent(
+                "[dLow symm  ] t={:.4e} max_asym_abs={:.3e} max_asym_rel={:.3e}  "
+                "sum_dH*(m_i-m_j)={:+.4e} (rel_to_rate={:+.2e})".format(
+                    float(t), max_asym_abs, max_asym_rel,
+                    sum_dLow_flux, sum_dLow_flux / rate_scale),
                 level=2)
 
     # def postStep(self, t, firstStep=False):
