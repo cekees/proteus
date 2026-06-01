@@ -21,20 +21,15 @@ class ThetaScheme(TimeIntegration.BackwardEuler):
         TimeIntegration.BackwardEuler.__init__(self,transport, integrateInterpolationPoints)
     def updateTimeHistory(self,resetFromDOF=False):
         TimeIntegration.BackwardEuler.updateTimeHistory(self,resetFromDOF)
-        # Copy per-component free-DOF history back out of the assembled solver
-        # vector using the transport's offset/stride layout.
-        u_arr = np.asarray(self.u)
-        offset0 = self.transport.offset[0]
-        stride0 = self.transport.stride[0]
-        n0 = self.transport.u_dof_old.size
-        self.transport.u_dof_old[:] = u_arr[offset0:offset0 + stride0 * n0:stride0]
+        # Legacy style (cf. mphase_co2_old.py): push the converged per-component
+        # solution into the old-time DOFs the C++ EV residual reads.  The old
+        # model wrote `self.u[ci]`; here timeIntegration.u is the flat assembled
+        # vector (calculateU), so the component solution is transport.u[ci].dof.
+        self.transport.u_dof_old[:] = self.transport.u[0].dof   # water (p_w)
         if getattr(self.transport, 'nc', 1) >= 2:
             u_dof_n_old = getattr(self.transport, 'u_dof_n_old', None)
             if u_dof_n_old is not None:
-                offset1 = self.transport.offset[1]
-                stride1 = self.transport.stride[1]
-                n1 = u_dof_n_old.size
-                u_dof_n_old[:] = u_arr[offset1:offset1 + stride1 * n1:stride1]
+                u_dof_n_old[:] = self.transport.u[1].dof          # gas (S_n)
 class RKEV(TimeIntegration.SSP):
     from proteus import TimeIntegration
     """
@@ -236,12 +231,14 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  gravity,
                  density,
                  beta,
-                 # gas-phase density.
-                 # rho_n acts as the reference density. When p_ref_n > 0, the
-                 # gas density is linear in p_n: rho_n(p_n) = rho_n * p_n/p_ref_n
-                 # so rho_n is recovered at p_n = p_ref_n. With p_ref_n = 0
-                 # (default) the gas density stays constant = rho_n (Step 1
-                 # behavior).
+                 # gas-phase density (EXPONENTIAL EOS, mirrors comp-0 water
+                 # rho_w = rho*exp(beta*p)).  rho_n is the reference density at
+                 # p_n = 0 (gauge = atmospheric); p_ref_n is the e-folding
+                 # pressure scale: rho_n(p_n) = rho_n * exp(p_n / p_ref_n), with
+                 # beta_n = 1/p_ref_n the constant gas compressibility.  CO2 near
+                 # atmospheric in a lab rig is ideal-gas-like (rho ~ P_abs), so
+                 # p_ref_n ~ atmospheric in head ~ 10.3 m (beta_n ~ 0.1 /m).
+                 # p_ref_n = 0 (default) -> incompressible, constant rho_n.
                  rho_n=1.0,
                  p_ref_n=0.0,
                  diagonal_conductivity=True,
@@ -298,6 +295,19 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  # For CO2 in normalized brine units: mu_n ~= 0.015 (mu_CO2 /
                  # mu_water = 1.5e-5 / 1.0e-3 in physical SI).
                  mu_n=1.0,
+                 # Project the coupling Darcy velocity onto a flux-continuous
+                 # lowest-order Raviart-Thomas (RT0) field before it is handed
+                 # to the transport (TADR) model.  The raw pointwise CG-P1
+                 # velocity (velocity_couple) is NOT H(div)-conforming: across a
+                 # material interface it has spurious element-to-element normal
+                 # jumps (K jumps up to ~147x at F/ESF), so |v| spikes over one
+                 # element width and collapses the TADR advective CFL dt.  RT0
+                 # projection enforces a single normal flux per edge (continuous
+                 # normal component), killing the spurious jump while leaving
+                 # genuine tangential shear.  Only affects the EXPORTED coupling
+                 # velocity; the flow Newton uses its own upwind potential flux.
+                 # Default False -> legacy pointwise velocity_couple unchanged.
+                 reconstruct_velocity_rt0=False,
                   ):
         self.VMS=VMS
         if density_model is None:
@@ -358,6 +368,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                 "krn_end_types must have the same shape as thetaR_types"
         # Gas dynamic viscosity (see __init__ argument).  Stored as scalar.
         self.mu_n = float(mu_n)
+        # Flux-continuous RT0 projection of the exported coupling velocity.
+        self.reconstruct_velocity_rt0 = bool(reconstruct_velocity_rt0)
         self.elementMaterialTypes = None
         self.exteriorElementBoundaryTypes  = None
         self.materialTypes_q    = None
@@ -717,9 +729,247 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                 and self._fct_requested
                 and getattr(m, 'limited_solution_n', None) is not None):
             m.FCTStep(component=1)
+        # Flux-continuous RT0 projection of the exported coupling velocity.
+        # Runs after the flow solve and BEFORE TADR.preStep reads
+        # velocity_couple (Sequential_MinModelStep advances flow first), so
+        # TADR advects with -- and sets its CFL dt from -- the H(div)-conforming
+        # field instead of the spiky pointwise CG velocity.
+        if m is not None and self.reconstruct_velocity_rt0:
+            self._project_velocity_couple_to_rt0(t)
         # Mass-balance diagnostic (always runs when coupled to TADR).
         self._log_mass_balance(t)
+        # Velocity-spike source classifier (debug for the TADR dt collapse).
+        self._diagnose_velocity_spike(t)
         return {}
+
+    def _diagnose_velocity_spike(self, t):
+        r"""Classify the SOURCE of the velocity_couple spike that collapses the
+        TADR advective-CFL dt.  velocity_couple = -(k_rw K)(grad p_w - rho g)
+        depends only on grad p_w, K, k_rw(S_n), gravity -- NOT on p_c -- so the
+        spike is one of three mechanisms with DIFFERENT cures.  At the owned
+        element carrying max|v| this logs the decomposition that tells them
+        apart, on the RAW (un-reconstructed) field:
+
+          - K_mat        : the element's material permeability (head units).
+          - K_eff(mob)   : |v| / |grad Phi| = k_rw*K, the effective mobility,
+                           recovered WITHOUT re-evaluating the Brooks-Corey
+                           closure (grad Phi = grad p_w - rho g).
+          - kr_w~        : K_eff / K_mat, the implied water relperm.
+          - |grad p_w|   : hydrostatic ~ 1 (head form); >> 1 = a genuine sharp
+                           water-pressure response.
+          - |grad S_n|   : front sharpness; large => the spike tracks the
+                           breakthrough saturation front.
+          - nbr|v| / v   : ratio of the spike to its across-interface neighbour
+                           peak.  >> 1 with flux_jump_rel ~ 0 = a POINTWISE
+                           velocity-at-permeability-jump artifact (the discrete
+                           CG velocity is not H(div); RT0/mixed would fix it).
+          - flux_jump_rel: max over the 3 edges of |v.m - v_nbr.m|/|v.m|, the
+                           discrete normal-flux discontinuity.  ~0 = flux IS
+                           continuous (any |v| excess is a pointwise artifact);
+                           large = genuine flux divergence (a source or a sharp
+                           front sits on the element) OR a deeper bug.
+
+        Synthetic Galerkin experiments (debug session 2026-05-30) showed:
+          * an ALIGNED K-jump produces NO velocity spike (flux stays continuous,
+            v_ratio~1) -- so a spike is NOT explained by permeability contrast;
+          * a SOURCE/front produces a GENUINE large-|grad p_w| spike with
+            v_ratio~1 (continuous velocity) -- RT0 does NOT reduce this.
+
+        Reading:
+          flux_jump_rel~0, v_ratio>>1, K_jump>>1 -> pointwise velocity-at-K-jump
+              artifact (the rare case RT0/harmonic-K interface velocity fixes).
+          |grad S_n| large + v_ratio~1 -> physical breakthrough front; the spike
+              is a real pressure response (cure: decouple/sub-cycle TADR --
+              velocity surgery, RT0 included, only masks it).
+          |grad p_w| >> 1, kr_w~ ~ 1, v_ratio~1 -> genuine pressure-gradient
+              spike (look upstream: is the S_n front over-sharpened by the
+              gas-side nodal-pc artifact?).
+        """
+        from mpi4py import MPI
+        m = self.model
+        if m is None or self.nd != 2 or not hasattr(self, '_elem_area_p'):
+            return
+        vc = m.q.get(('velocity_couple', 0), None)
+        if vc is None:
+            return
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+        mesh = m.mesh
+        nE = int(mesh.nElements_global)
+        nE_own = int(getattr(mesh, 'nElements_owned', nE))
+
+        # one-time element-side connectivity (neighbour + scaled outward normal)
+        if not hasattr(self, '_spike_nbr'):
+            area = self._elem_area_p[:nE]
+            self._spike_m = -2.0 * area[:, None, None] * self._elem_gradphi_p[:nE]
+            EB = np.asarray(mesh.elementBoundariesArray)[:nE]
+            ebe = np.asarray(mesh.elementBoundaryElementsArray)
+            left = ebe[EB, 0]; right = ebe[EB, 1]
+            eidx = np.broadcast_to(np.arange(nE)[:, None], (nE, 3))
+            nbr = np.where(left == eidx, right, left)
+            self._spike_interior = (nbr >= 0)
+            self._spike_nbr = np.where(nbr < 0, eidx, nbr).astype('i')
+
+        v_e = np.asarray(vc)[:, :, :2].mean(axis=1)            # (nE,2) incl ghosts
+        vmag_own = np.sqrt((v_e[:nE_own] * v_e[:nE_own]).sum(1))
+        if vmag_own.size == 0:
+            local = (-1.0,) + (0.0,) * 9
+        else:
+            eN = int(np.argmax(vmag_own))
+            nodes = self._elem_nodes_p[eN]
+            gphi = self._elem_gradphi_p[eN]                    # (3,2)
+            pw = np.asarray(m.u[0].dof); Sn = np.asarray(m.u[1].dof)
+            gpw = (pw[nodes][:, None] * gphi).sum(0)           # P1 grad p_w
+            gsn = (Sn[nodes][:, None] * gphi).sum(0)           # P1 grad S_n
+            rho = float(self.rho)
+            gPhi = gpw - rho * np.asarray(self.gravity[:2], 'd')
+            gPhi_mag = float(np.hypot(gPhi[0], gPhi[1]))
+            vmax = float(vmag_own[eN])
+            Keff = vmax / max(gPhi_mag, 1.0e-30)
+            mat = int(self.elementMaterialTypes[eN])
+            Kmat = float(self.Ksw_types[mat, 0]) if mat < len(self.Ksw_types) else 0.0
+            krw = Keff / max(Kmat, 1.0e-30)
+            mvec = self._spike_m[eN]; nbrs = self._spike_nbr[eN]
+            interior = self._spike_interior[eN]
+            max_rel_jump = 0.0; nbr_vmax = 0.0; Kjump = 1.0
+            for i in range(3):
+                if not interior[i]:
+                    continue
+                fs = float(v_e[eN] @ mvec[i]); fn = float(v_e[nbrs[i]] @ mvec[i])
+                max_rel_jump = max(max_rel_jump, abs(fs - fn) / (abs(fs) + 1.0e-30))
+                nbr_vmax = max(nbr_vmax, float(np.hypot(v_e[nbrs[i], 0], v_e[nbrs[i], 1])))
+                nmat = int(self.elementMaterialTypes[nbrs[i]])
+                Kn = float(self.Ksw_types[nmat, 0]) if nmat < len(self.Ksw_types) else Kmat
+                Kjump = max(Kjump, Kmat / max(Kn, 1.0e-30), Kn / max(Kmat, 1.0e-30))
+            local = (vmax, float(np.hypot(gpw[0], gpw[1])),
+                     float(np.hypot(gsn[0], gsn[1])), Keff, Kmat, krw,
+                     nbr_vmax, max_rel_jump, Kjump, float(mat))
+
+        allinfo = comm.gather(local, root=0)
+        if rank == 0:
+            (vmax, gpwm, gsnm, Keff, Kmat, krw, nbrv, reljmp, Kj, mat) = max(
+                allinfo, key=lambda r: r[0])
+            logEvent(
+                "[spike decomp] t={:.4e} max|v|={:.4e} mat={:.0f} |grad_pw|={:.4e} "
+                "|grad_Sn|={:.4e} K_mat={:.4e} kr_w~={:.4e} K_eff(mob)={:.4e}  "
+                "nbr|v|max={:.4e} (v_ratio={:.2f}) flux_jump_rel={:.3e} "
+                "K_jump={:.1f}".format(
+                    float(t), vmax, mat, gpwm, gsnm, Kmat, krw, Keff,
+                    nbrv, vmax / max(nbrv, 1.0e-30), reljmp, Kj),
+                level=2)
+
+    def _project_velocity_couple_to_rt0(self, t):
+        r"""Project the pointwise CG-P1 coupling velocity onto a flux-continuous
+        lowest-order Raviart-Thomas (RT0) field, in place, overwriting
+        ``q[('velocity_couple',0)]`` and ``ebqe[('velocity_couple',0)]``.
+
+        On a triangle E with vertices p_0,p_1,p_2 (local edge i opposite p_i),
+        the RT0 flux representation is
+
+            v(x) = sum_i V_i (x - p_i) / (2 |E|),
+
+        where V_i is the OUTWARD normal flux through edge i.  The outward scaled
+        edge normal (|m_i| = edge length) is m_i = -2|E| grad(lambda_i), and
+        grad(lambda_i) is the cached P1 shape gradient ``_elem_gradphi_p``, so no
+        explicit normal geometry is needed.  Flux continuity is imposed by giving
+        each interior edge a single value -- the average of the two one-sided
+        normal fluxes:  V_i = 1/2 (v_E + v_E') . m_i.  The neighbour computes
+        -V_i for the same edge (m flips sign), so the reconstructed normal
+        component is single-valued across every edge -> no spurious inter-element
+        normal jump -> no |v| spike over one element width.  RT0 reproduces a
+        globally constant velocity exactly, so smooth regions are untouched.
+
+        2D triangular simplex meshes only (asserted via the cached geometry)."""
+        from mpi4py import MPI
+        m = self.model
+        if m is None or self.nd != 2:
+            return
+        vc = m.q.get(('velocity_couple', 0), None)
+        if vc is None:
+            return
+
+        # --- one-time geometry / connectivity cache -------------------------
+        # Reuses the element-area / shape-gradient cache built by
+        # _log_mass_balance; build it here too if RT0 runs first.
+        if not hasattr(self, '_elem_area_p'):
+            mesh0 = m.mesh
+            EN0 = np.asarray(mesh0.elementNodesArray)[:mesh0.nElements_global]
+            X0 = np.asarray(mesh0.nodeArray)
+            x0 = X0[EN0[:, 0]]; x1 = X0[EN0[:, 1]]; x2 = X0[EN0[:, 2]]
+            detA0 = ((x1[:, 0] - x0[:, 0]) * (x2[:, 1] - x0[:, 1])
+                     - (x2[:, 0] - x0[:, 0]) * (x1[:, 1] - x0[:, 1]))
+            inv0 = np.where(np.abs(detA0) > 0.0, 1.0 / detA0, 0.0)
+            g0 = np.empty((len(EN0), 3, 2), 'd')
+            g0[:, 0, 0] = (x1[:, 1] - x2[:, 1]) * inv0; g0[:, 0, 1] = (x2[:, 0] - x1[:, 0]) * inv0
+            g0[:, 1, 0] = (x2[:, 1] - x0[:, 1]) * inv0; g0[:, 1, 1] = (x0[:, 0] - x2[:, 0]) * inv0
+            g0[:, 2, 0] = (x0[:, 1] - x1[:, 1]) * inv0; g0[:, 2, 1] = (x1[:, 0] - x0[:, 0]) * inv0
+            self._elem_nodes_p = EN0
+            self._elem_area_p = 0.5 * np.abs(detA0)
+            self._elem_gradphi_p = g0
+
+        if not hasattr(self, '_rt0_nbr'):
+            mesh = m.mesh
+            nE = int(mesh.nElements_global)
+            EN = self._elem_nodes_p[:nE]
+            X = np.asarray(mesh.nodeArray)
+            self._rt0_P = X[EN][:, :, :2]                       # (nE,3,2) vertices
+            area = self._elem_area_p[:nE]
+            self._rt0_area = area
+            # scaled outward edge normals m_i = -2|E| grad(lambda_i), |m_i| = L_i
+            self._rt0_m = -2.0 * area[:, None, None] * self._elem_gradphi_p[:nE]
+            # neighbour element per (eN, local edge i); self at the boundary.
+            EB = np.asarray(mesh.elementBoundariesArray)[:nE]    # (nE,3) global edge ids
+            ebe = np.asarray(mesh.elementBoundaryElementsArray)  # (nEB,2) [left,right], -1 exterior
+            left = ebe[EB, 0]; right = ebe[EB, 1]                 # (nE,3)
+            eidx = np.broadcast_to(np.arange(nE)[:, None], (nE, 3))
+            nbr = np.where(left == eidx, right, left)
+            self._rt0_nbr = np.where(nbr < 0, eidx, nbr).astype('i')
+            # exterior-boundary -> owning element, for the ebqe reconstruction.
+            extB = np.asarray(mesh.exteriorElementBoundariesArray)
+            self._rt0_ext_eN = (ebe[extB, 0].astype('i') if extB.size
+                                else np.zeros(0, 'i'))
+
+        P = self._rt0_P; area = self._rt0_area
+        mvec = self._rt0_m; nbr = self._rt0_nbr
+        nE = P.shape[0]
+        inv2A = 1.0 / (2.0 * np.maximum(area, 1.0e-30))
+
+        # --- element-constant velocity (Lobatto-1: identical at all qp) -----
+        vc = np.asarray(vc)                                      # numpy view of m.q array
+        v_e = vc[:nE, :, :2].mean(axis=1)                        # (nE,2)
+        v_nb = v_e[nbr]                                          # (nE,3,2)
+        # single-valued outward edge flux V_i = 1/2 (v_E + v_E') . m_i
+        V = 0.5 * ((v_e[:, None, :] + v_nb) * mvec).sum(axis=-1)  # (nE,3)
+
+        # --- reconstruct at element quadrature points -> overwrite q --------
+        qx = np.asarray(m.q['x'])[:nE, :, :2]                    # (nE,nQ,2)
+        diff = qx[:, :, None, :] - P[:, None, :, :]              # (nE,nQ,3,2)
+        v_q = (V[:, None, :, None] * diff).sum(axis=2) * inv2A[:, None, None]
+        raw_max = float(np.sqrt((v_e * v_e).sum(-1)).max()) if nE else 0.0
+        vc[:nE, :, :2] = v_q                                     # in-place into m.q
+        rt0_max = float(np.sqrt((v_q * v_q).sum(-1)).max()) if nE else 0.0
+
+        # --- reconstruct at exterior boundary quadrature points -> ebqe -----
+        vce = m.ebqe.get(('velocity_couple', 0), None)
+        if vce is not None and self._rt0_ext_eN.size:
+            vce = np.asarray(vce)
+            eN_e = self._rt0_ext_eN
+            xb = np.asarray(m.ebqe['x'])[:, :, :2]               # (nExt,nQb,2)
+            diffb = xb[:, :, None, :] - P[eN_e][:, None, :, :]
+            v_b = (V[eN_e][:, None, :, None] * diffb).sum(axis=2) \
+                * inv2A[eN_e][:, None, None]
+            vce[..., :2] = v_b                                   # in-place into m.ebqe
+
+        comm = MPI.COMM_WORLD
+        g_raw = comm.allreduce(raw_max, op=MPI.MAX)
+        g_rt0 = comm.allreduce(rt0_max, op=MPI.MAX)
+        if comm.Get_rank() == 0:
+            logEvent(
+                "[RT0 vel    ] t={:.4e} max|v_couple| raw={:.4e} -> RT0={:.4e} "
+                "(ratio={:.3f})".format(
+                    float(t), g_raw, g_rt0,
+                    (g_rt0 / g_raw if g_raw > 0.0 else 0.0)),
+                level=2)
 
     def _log_mass_balance(self, t):
         """Aggregate gas + dissolved CO2 mass and compare to cumulative
@@ -765,6 +1015,24 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             phi_node = np.where(phi_den > 0.0, phi_num / phi_den, 0.0)
             self._M_lump_node = ML
             self._phi_node = phi_node
+            # --- cache element geometry for the velocity-divergence probe ---
+            # P1 shape-function gradients (constant per triangle): grad phi_i =
+            # (b_i,c_i)/detA, detA = 2*signed_area.  Used to form the
+            # element-constant grad(c) and the weak nodal divergence of the
+            # Darcy flux TADR rides.
+            EN = np.asarray(elementNodes)[:mesh.nElements_global]
+            X = np.asarray(nodeArr)
+            x0 = X[EN[:, 0]]; x1 = X[EN[:, 1]]; x2 = X[EN[:, 2]]
+            detA = ((x1[:, 0] - x0[:, 0]) * (x2[:, 1] - x0[:, 1])
+                    - (x2[:, 0] - x0[:, 0]) * (x1[:, 1] - x0[:, 1]))  # 2*signed area
+            inv = np.where(np.abs(detA) > 0.0, 1.0 / detA, 0.0)
+            gphi = np.empty((len(EN), 3, 2), 'd')
+            gphi[:, 0, 0] = (x1[:, 1] - x2[:, 1]) * inv; gphi[:, 0, 1] = (x2[:, 0] - x1[:, 0]) * inv
+            gphi[:, 1, 0] = (x2[:, 1] - x0[:, 1]) * inv; gphi[:, 1, 1] = (x0[:, 0] - x2[:, 0]) * inv
+            gphi[:, 2, 0] = (x0[:, 1] - x1[:, 1]) * inv; gphi[:, 2, 1] = (x1[:, 0] - x0[:, 0]) * inv
+            self._elem_nodes_p = EN
+            self._elem_area_p = 0.5 * np.abs(detA)
+            self._elem_gradphi_p = gphi
 
         ML = self._M_lump_node
         phi = self._phi_node
@@ -780,6 +1048,31 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         local_dis = float(np.sum(w * (1.0 - S_n[:size]) * c[:size]))
         gas = comm.allreduce(local_gas, op=MPI.SUM)
         diss = comm.allreduce(local_dis, op=MPI.SUM)
+
+        # ---- COMPRESSIBLE-DENSITY MASS CHECK (is the "gas >> injected" real?) ----
+        # gas above uses constant rho_n; the kernel conserves the COMPRESSIBLE
+        # m_n = phi*rho_n*exp((pw+pc)/p_ref_n)*S_n.  p_c >= 0 always, so the
+        # pw-only factor exp(pw/p_ref_n) is a LOWER BOUND on the true compressible
+        # density => gas_pw <= gas_compressible.  If gas_pw is still ~gas_const
+        # (not ~1/28 of it) the mass discrepancy is REAL over-creation, not the
+        # const-rho diagnostic; the only density escape is pw ~ -p_ref_n*ln(ratio)
+        # (deep suction) in the gas zone -- which the pw range below tests directly.
+        pw_all = np.asarray(m.u[0].dof)
+        nn = min(size, len(pw_all))
+        pw = pw_all[:nn]
+        Sn_z = S_n[:nn]
+        inv_pref = (1.0 / float(self.p_ref_n)) if float(self.p_ref_n) > 0.0 else 0.0
+        rho_n_pw = float(self.rho_n) * np.exp(np.clip(pw * inv_pref, -50.0, 50.0))
+        local_gas_pw = float(np.sum(w[:nn] * rho_n_pw * Sn_z))
+        gas_pw = comm.allreduce(local_gas_pw, op=MPI.SUM)
+        gasmask = Sn_z > 1.0e-12
+        if bool(gasmask.any()):
+            pwz = pw[gasmask]
+            local_pwmin, local_pwmax = float(pwz.min()), float(pwz.max())
+        else:
+            local_pwmin, local_pwmax = 0.0, 0.0
+        pw_gas_min = comm.allreduce(local_pwmin, op=MPI.MIN)
+        pw_gas_max = comm.allreduce(local_pwmax, op=MPI.MAX)
 
         # ---- KERNEL-INJECTED MASS AUDIT ----
         # The kernel adds  M_lump_i * Q_inj_i * dt  to gas mass per node per
@@ -841,6 +1134,36 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         local_R_tadr = float(np.sum(R_per_node_tadr))
         R_flow_total = comm.allreduce(local_R_flow, op=MPI.SUM)
         R_tadr_total = comm.allreduce(local_R_tadr, op=MPI.SUM)
+
+        # ---- CUMULATIVE DISSOLUTION-TRANSFER AUDIT (localize the residual excess) ----
+        # The instantaneous [R_diss] ratio is ~tautological: R_flow_total and
+        # R_tadr_total are both recomputed here from the SAME arrays/formula, so
+        # they cannot detect a real gas<->brine transfer mismatch. Instead,
+        # INTEGRATE each side over time (trapezoidal) and compare to the ACTUAL
+        # mass changes the two kernels produced:
+        #   gas side: the gas kernel conserves except for injection and the
+        #     dissolution sink (kernel_telescope=0, sum_F~0), so the kernel-true
+        #     gas mass must satisfy  total_m_n = kernel_inj - cum_R_flow.
+        #       gas_side_resid = total_m_n - (kernel_inj - cum_R_flow) ~ 0
+        #       iff the gas-eq sink actually removed the integrated R_flow.
+        #   TADR side: diss starts at 0 and (if TADR advection conserves c)
+        #     changes only through the dissolution source, so  diss = cum_R_tadr.
+        #       tadr_side_resid = diss - cum_R_tadr ~ 0
+        #       iff the c-eq source actually added the integrated R_tadr.
+        # cum_R_flow == cum_R_tadr by construction, so the two residuals sum to
+        # the total imbalance (diss + total_m_n - kernel_inj) and SPLIT it: the
+        # nonzero side is the one over/under-transferring (prime suspect: the
+        # c-eq source over-injecting via the Sequential split lag).
+        if not hasattr(self, '_cum_R_flow'):
+            self._cum_R_flow = 0.0
+            self._cum_R_tadr = 0.0
+            self._cum_prev_R_flow = R_flow_total
+            self._cum_prev_R_tadr = R_tadr_total
+        if dt_balance > 0.0:
+            self._cum_R_flow += 0.5 * (self._cum_prev_R_flow + R_flow_total) * dt_balance
+            self._cum_R_tadr += 0.5 * (self._cum_prev_R_tadr + R_tadr_total) * dt_balance
+        self._cum_prev_R_flow = R_flow_total
+        self._cum_prev_R_tadr = R_tadr_total
 
         # ---- dLow SYMMETRY AUDIT ----
         # The Stage-2 Richards-style upwind dissipation contributes
@@ -971,12 +1294,207 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         c_min  = comm.allreduce(local_c_min,  op=MPI.MIN)
         c_max  = comm.allreduce(local_c_max,  op=MPI.MAX)
 
+        # ---- FLUX-IMBALANCE / TAU-SYMMETRY DIAGNOSTIC (mass-creation hunt) ----
+        # gd[0]=max|T_ij-T_ji| (tau asymmetry), [1]=max|T_ij| (scale),
+        # [2]=sum_ij F_ij (net mass rate from the edge flux; should be ~0 if
+        # antisymmetric), [3]=sum_ij|F_ij| (scale). If gd[0]/gd[1] >> 1e-12 the
+        # transmissibility read is asymmetric -> the tau gate creates mass.
+        gd = getattr(m, 'gas_diag', None)
+        if gd is not None and len(gd) >= 4:
+            Tasym = comm.allreduce(float(gd[0]), op=MPI.MAX)
+            Tmax  = comm.allreduce(float(gd[1]), op=MPI.MAX)
+            sumF  = comm.allreduce(float(gd[2]), op=MPI.SUM)
+            absF  = comm.allreduce(float(gd[3]), op=MPI.SUM)
+        else:
+            Tasym = Tmax = sumF = absF = 0.0
+
+        # ---- VELOCITY-DIVERGENCE / NON-CONSERVATION PROBE (mass-creation hunt) --
+        # TADR advects c with velocity_couple = the raw P1-gradient Darcy flux
+        # (no conservative post-processing: conservativeFlux=None).  An element-
+        # constant Darcy velocity is NOT discretely divergence-free.  If TADR's
+        # advection is effectively non-conservative, the global c-mass it creates
+        # per unit time is  -∫ v·∇c  (= -∫ c ∇·v on a closed domain, zero-flux
+        # BC).  This is computed element-by-element over OWNED elements (each
+        # counted once, so the SUM is MPI-exact) and should be compared to the
+        # measured diss_leak_rate on the [mass leak] line:
+        #   div_leak_est ≈ diss_leak_rate  -> non-conservative velocity confirmed.
+        #   div_leak_est >> diss_leak_rate -> TADR is conservative; look elsewhere.
+        # advect_scale = ∫|v·∇c| gives the magnitude the leak is a residual of.
+        # max|div_w v| is the weak nodal divergence peak (ghost-incomplete at
+        # rank boundaries -> qualitative only).
+        div_leak_est = advect_scale = div_max = 0.0
+        try:
+            nE_own = int(getattr(mesh, 'nElements_owned',
+                                 getattr(mesh, 'nElements_global',
+                                         len(self._elem_area_p))))
+            EN_o   = self._elem_nodes_p[:nE_own]
+            area_o = self._elem_area_p[:nE_own]
+            g_o    = self._elem_gradphi_p[:nE_own]
+            qv     = np.asarray(m.q[('velocity_couple', 0)])[:nE_own]   # (nE,nQ,nd)
+            v_e    = qv.mean(axis=1)                                    # (nE,nd) Darcy flux
+            c_e    = c[EN_o]                                            # (nE,3) nodal c
+            gradc_e = (c_e[:, :, None] * g_o).sum(axis=1)              # (nE,nd) grad c
+            vgc    = (v_e * gradc_e).sum(axis=1)                       # (nE,) v·grad c
+            div_leak_est = comm.allreduce(-float(np.sum(area_o * vgc)),    op=MPI.SUM)
+            advect_scale = comm.allreduce(float(np.sum(area_o * np.abs(vgc))), op=MPI.SUM)
+            D = np.zeros(len(ML), 'd')
+            vdotg = (v_e[:, None, :] * g_o).sum(axis=2) * area_o[:, None]  # (nE,3)
+            np.add.at(D, EN_o.ravel(), vdotg.ravel())
+            div_max = comm.allreduce(float(np.max(np.abs(D[:size]))) if size > 0 else 0.0,
+                                     op=MPI.MAX)
+        except Exception:
+            pass
+
+        # ---- Telescoping / per-step conservation probe ----------------------
+        # gas_old uses u_dof_n_old (the mass the kernel treats as m_n_old). If
+        # the time history telescopes correctly, gas_old THIS step == gas LAST
+        # step (telescope_gap ~ 0). The per-step total-CO2 defect
+        # d(gas+diss) - d(injected) is ~0 iff the operator conserves this step;
+        # a steady nonzero defect = real creation. Diagnostic only.
+        #   telescope_gap != 0  -> time-history (u_dof_n_old) bug.
+        #   telescope_gap ~ 0 but step_defect != 0 -> creation despite correct
+        #                                              telescoping (source/accum).
+        S_n_old_arr = getattr(m, 'u_dof_n_old', None)
+        gas_old = float('nan')
+        if S_n_old_arr is not None:
+            S_n_old_arr = np.asarray(S_n_old_arr)
+            if len(S_n_old_arr) >= size:
+                gas_old = comm.allreduce(
+                    float(np.sum(w * float(self.rho_n) * S_n_old_arr[:size])),
+                    op=MPI.SUM)
+        totCO2 = gas + diss
+        # Compressible telescoping: m_n_old's DENSITY uses pw_old (u_dof_old). If
+        # the pw history is stale (not refreshed each step) while S_n_old is, the
+        # old density is wrong -> m_n - m_n_old over-counts -> steady creation,
+        # invisible to the const-rho telescope_gap above. gas_old_comp uses
+        # pw_old + S_n_old; if it != last step's gas_pw, the pw history is stale.
+        pw_old_arr = getattr(m, 'u_dof_old', None)
+        gas_old_comp = float('nan'); pwold_min = float('nan'); pwold_max = float('nan')
+        if pw_old_arr is not None and S_n_old_arr is not None:
+            pw_old_arr = np.asarray(pw_old_arr)
+            mlen = min(nn, len(pw_old_arr), len(S_n_old_arr))
+            if mlen > 0:
+                rho_pwold = float(self.rho_n) * np.exp(
+                    np.clip(pw_old_arr[:mlen] * inv_pref, -50.0, 50.0))
+                gas_old_comp = comm.allreduce(
+                    float(np.sum(w[:mlen] * rho_pwold * S_n_old_arr[:mlen])), op=MPI.SUM)
+                pwold_min = comm.allreduce(float(np.min(pw_old_arr[:mlen])), op=MPI.MIN)
+                pwold_max = comm.allreduce(float(np.max(pw_old_arr[:mlen])), op=MPI.MAX)
+        if not hasattr(self, '_probe_prev'):
+            self._probe_prev = (totCO2, cum_inj, gas, gas_pw)
+        prev_totCO2, prev_cuminj, prev_gas, prev_gas_pw = self._probe_prev
+        d_totCO2      = totCO2 - prev_totCO2
+        d_inj         = cum_inj - prev_cuminj
+        step_defect   = d_totCO2 - d_inj          # ~0 if conserved this step
+        telescope_gap = gas_old - prev_gas        # ~0 if u_dof_n_old == last S_n
+        telescope_gap_comp = gas_old_comp - prev_gas_pw  # ~0 if pw history fresh
+        self._probe_prev = (totCO2, cum_inj, gas, gas_pw)
+
+        # ---- KERNEL's OWN conserved mass (exact: projected compressible density,
+        # kernel weights). mLow_n = rho_n_phi_dof*S_n (phi already in it), so
+        # total_m_n = sum(ML_area * mLow_n). This is what the kernel actually
+        # conserves -- NOT the const-rho/Python-weight [Mass balance] gas.
+        #   total_m_n / cum_inj ~ 1  -> kernel conserves; the 8x is a phantom -> bounds.
+        #   total_m_n / cum_inj ~ 8  -> REAL creation in the kernel.
+        #   kernel_telescope != 0    -> the KERNEL mass fails to telescope
+        #                               (which the const-rho telescope_gap missed).
+        mlow  = getattr(m, 'mLow_n', None)
+        mnold = getattr(m, 'mn_n', None)
+        total_m_n = float('nan'); total_m_n_old = float('nan')
+        if mlow is not None:
+            mlow = np.asarray(mlow)
+            if len(mlow) >= size:
+                total_m_n = comm.allreduce(
+                    float(np.sum(ML[:size] * mlow[:size])), op=MPI.SUM)
+        if mnold is not None:
+            mnold = np.asarray(mnold)
+            if len(mnold) >= size:
+                total_m_n_old = comm.allreduce(
+                    float(np.sum(ML[:size] * mnold[:size])), op=MPI.SUM)
+        if not hasattr(self, '_prev_total_m_n'):
+            self._prev_total_m_n = total_m_n
+        kernel_telescope = total_m_n_old - self._prev_total_m_n  # ~0 if kernel telescopes
+        self._prev_total_m_n = total_m_n
+
+        # ---- PER-TERM GAS-RESIDUAL BUDGET (kernel-exported, owned-node sum) ----
+        # gas_budget_node holds 6 per-node slots (term-major, numDOFs_n each):
+        # [0]accum [1]flux [2]sink [3]injection [4]boundary [5]total residual.
+        # Sum each over OWNED nodes only and MPI-reduce (parallel-exact, no
+        # overlap double-count). At convergence gb_total~0, so
+        #   gb_accum ~ gb_inj - gb_sink - gb_flux - gb_bnd.
+        # Interpretation:
+        #   gb_flux !~ 0  -> interior upwind flux not antisymmetric in assembly.
+        #   gb_bnd  !~ 0  -> exterior boundary leak. In PARALLEL this is the
+        #                    smoking gun for a rank treating an inter-processor
+        #                    (subdomain) face as a domain boundary: a true
+        #                    domain-boundary face contributes 0 here (isDir_n=0
+        #                    => F=0), so any nonzero gb_bnd is spurious.
+        #   gb_flux~0 & gb_bnd~0 but gas still grows -> creation is POST-kernel
+        #                    (FCT/inversion/coupling), not in this residual.
+        gb = getattr(m, 'gas_budget_node', None)
+        gb_accum = gb_flux = gb_sink = gb_inj = gb_bnd = gb_total = float('nan')
+        if gb is not None:
+            gb = np.asarray(gb)
+            n_n_loc = len(gb) // 6
+            if n_n_loc > 0:
+                ns = min(size, n_n_loc)
+                gb_accum = comm.allreduce(float(np.sum(gb[0 * n_n_loc:0 * n_n_loc + ns])), op=MPI.SUM)
+                gb_flux  = comm.allreduce(float(np.sum(gb[1 * n_n_loc:1 * n_n_loc + ns])), op=MPI.SUM)
+                gb_sink  = comm.allreduce(float(np.sum(gb[2 * n_n_loc:2 * n_n_loc + ns])), op=MPI.SUM)
+                gb_inj   = comm.allreduce(float(np.sum(gb[3 * n_n_loc:3 * n_n_loc + ns])), op=MPI.SUM)
+                gb_bnd   = comm.allreduce(float(np.sum(gb[4 * n_n_loc:4 * n_n_loc + ns])), op=MPI.SUM)
+                gb_total = comm.allreduce(float(np.sum(gb[5 * n_n_loc:5 * n_n_loc + ns])), op=MPI.SUM)
+
         if rank == 0:
+            logEvent(
+                "[cons probe ] t={:.4e} gas_old={:+.4e} telescope_gap={:+.4e} "
+                "d(gas+diss)={:+.4e} d(inj)={:+.4e} step_defect={:+.4e}".format(
+                    float(t), gas_old, telescope_gap, d_totCO2, d_inj, step_defect),
+                level=2)
+            logEvent(
+                "[cons probe2] t={:.4e} gas_old_comp={:+.4e} telescope_gap_comp={:+.4e} "
+                "gas_pw={:+.4e} pw_old=[{:+.4e},{:+.4e}]".format(
+                    float(t), gas_old_comp, telescope_gap_comp, gas_pw,
+                    pwold_min, pwold_max),
+                level=2)
+            logEvent(
+                "[cons probe3] t={:.4e} total_m_n={:+.4e} total_m_n/inj={:+.4e} "
+                "total_m_n_old={:+.4e} kernel_telescope={:+.4e}".format(
+                    float(t), total_m_n,
+                    (total_m_n / cum_inj if cum_inj != 0.0 else 0.0),
+                    total_m_n_old, kernel_telescope),
+                level=2)
+            # Per-term gas-residual budget. gb_total~0 confirms Newton converged;
+            # gb_resid_check = gb_accum-(gb_inj-gb_sink-gb_flux-gb_bnd) is the
+            # closure (should ~ -gb_total). gb_flux / gb_bnd are the only terms
+            # that can break conservation -- watch them (gb_bnd!=0 in parallel =>
+            # a rank leaking through a mis-tagged subdomain face).
+            # Self-consistency: the 6 slots are the actual scattered residual
+            # contributions, so slots[0..4] must sum to slot5 (total_resid).
+            # closure ~ 0 validates the probe; closure != 0 = a slot wiring bug.
+            gb_resid_check = (gb_accum + gb_flux + gb_sink + gb_inj + gb_bnd - gb_total
+                              if gb_accum == gb_accum else float('nan'))
+            logEvent(
+                "[gas budget ] t={:.4e} accum={:+.4e} flux={:+.4e} sink={:+.4e} "
+                "inj={:+.4e} bnd={:+.4e} total_resid={:+.4e} closure={:+.4e}".format(
+                    float(t), gb_accum, gb_flux, gb_sink, gb_inj, gb_bnd,
+                    gb_total, gb_resid_check),
+                level=2)
             # Reference balance line (kept for backward-compat / quick scan).
             logEvent(
                 "[Mass balance] t={:.4e} gas={:+.4e} diss={:+.4e} "
                 "injected={:+.4e} balance={:+.4e} rel={:+.3e}".format(
                     float(t), gas, diss, cum_inj, bal, rel),
+                level=2)
+            # gas_const vs gas_pw (compressible lower bound) + pw range over the
+            # gas zone.  If gas_pw ~ gas and both >> injected, the over-creation
+            # is REAL (not the const-rho diagnostic).  ratio_pw = gas_pw/gas.
+            logEvent(
+                "[gas comp   ] t={:.4e} gas_const={:+.4e} gas_pw={:+.4e} "
+                "ratio_pw={:.3f} injected={:+.4e} pw[gas]=[{:+.4e},{:+.4e}] "
+                "p_ref_n={:.3e}".format(
+                    float(t), gas, gas_pw, (gas_pw / gas if gas != 0.0 else 0.0),
+                    cum_inj, pw_gas_min, pw_gas_max, float(self.p_ref_n)),
                 level=2)
             # Field min/max: Sn_max > 1 or Sn_min < 0 indicates overshoot from
             # STAB=2 high-order EV term not being added to the residual (only
@@ -1007,6 +1525,26 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                 "ratio_flow/tadr={:.3f}  (k_d_flow={:.3e} k_d_tadr={:.3e})".format(
                     float(t), R_flow_total, R_tadr_total, R_ratio,
                     k_d_flow, k_d_tadr),
+                level=2)
+            # ---- Cumulative transfer audit: which side over/under-transfers? ----
+            # gas_side ~ 0 => gas-eq sink matches the integrated R_flow (kernel
+            #   conserves into total_m_n); nonzero => the gas sink removed != R_flow
+            #   (e.g. the kernel's lagged c, or a density-unit mismatch in R_diss_n,
+            #   which is built from rho_w/c but deducted from the rho_n gas mass).
+            # tadr_side ~ 0 => c-eq source matches the integrated R_tadr; nonzero =>
+            #   TADR added != R_tadr (source over-injection / advection c-leak).
+            # The larger-magnitude residual localizes the ~11% total-CO2 excess.
+            gas_side  = total_m_n - (kernel_inj - self._cum_R_flow)
+            tadr_side = diss - self._cum_R_tadr
+            denom_cr  = max(abs(kernel_inj), 1.0e-30)
+            logEvent(
+                "[diss audit ] t={:.4e} cum_R_flow={:+.4e} cum_R_tadr={:+.4e} "
+                "gas_side={:+.4e} (rel={:+.3e}) tadr_side={:+.4e} (rel={:+.3e}) "
+                "total_m_n+diss-kernel_inj={:+.4e}".format(
+                    float(t), self._cum_R_flow, self._cum_R_tadr,
+                    gas_side, gas_side / denom_cr,
+                    tadr_side, tadr_side / denom_cr,
+                    (total_m_n + diss - kernel_inj)),
                 level=2)
             # Per-equation conservation: if either leak_rate is non-trivial
             # relative to the active source/sink rate, that equation is the
@@ -1046,6 +1584,102 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                     float(t), max_asym_abs, max_asym_rel,
                     sum_dLow_flux, sum_dLow_flux / rate_scale),
                 level=2)
+            # Flux-imbalance probe: sumF is the net mass rate the edge flux
+            # injects/removes; compare to gas_leak_rate. Tasym_rel >> 1e-12
+            # means the transmissibility read is asymmetric (the suspected bug).
+            logEvent(
+                "[flux diag  ] t={:.4e} T_asym={:.3e} (rel={:+.2e})  "
+                "sum_F={:+.4e} (rel={:+.2e})  (leak_rate={:+.4e})".format(
+                    float(t), Tasym, (Tasym / Tmax if Tmax > 0 else 0.0),
+                    sumF, (sumF / absF if absF > 0 else 0.0),
+                    gas_leak_rate),
+                level=2)
+            # Velocity-divergence probe: div_leak_est is the c-mass/time a
+            # non-conservative advection of c by the (non-div-free) Darcy flux
+            # would create. Compare to diss_leak_rate above: if they match in
+            # sign+magnitude, the raw velocity_couple is the mass-creation source.
+            logEvent(
+                "[div probe  ] t={:.4e} div_leak_est=-int(v.gradc)={:+.4e}  "
+                "advect_scale=int|v.gradc|={:.4e}  max|div_w v|={:.4e}".format(
+                    float(t), div_leak_est, advect_scale, div_max),
+                level=2)
+
+        # ---- INTERFACE VELOCITY-SPIKE LOCALIZER (water vs gas bisection) ----
+        # Finds the element carrying max|velocity_couple| (the WATER Darcy
+        # velocity TADR rides) and reports there: |v|, the P1 grad(pw), the
+        # Sn / pw spread across the element, and whether the element straddles
+        # a material interface.  Reading: a spike on an interface element with
+        # a large grad(pw) while Sn is mid-range => the artifact is in the
+        # water-pressure reconstruction (comp-0); a spike tracking the Sn
+        # breakthrough front => the gas-side interface flux (comp-1).  All
+        # ranks must reach comm.gather, so any exception is deterministic
+        # (same missing key everywhere) -> all skip together, no deadlock.
+        try:
+            qv = np.asarray(m.q[('velocity_couple', 0)])
+            nE_own = int(getattr(mesh, 'nElements_owned',
+                                 getattr(mesh, 'nElements_global', qv.shape[0])))
+            qv = qv[:nE_own]
+            vmag = np.sqrt(np.sum(qv * qv, axis=-1))
+            if vmag.size:
+                eN_max, q_max = np.unravel_index(int(np.argmax(vmag)), vmag.shape)
+                local_vmax = float(vmag[eN_max, q_max])
+                elemNodes = np.asarray(mesh.elementNodesArray)
+                nodeArr = np.asarray(mesh.nodeArray)
+                matTypes = np.asarray(self.elementMaterialTypes)
+                pw_dof = np.asarray(m.u[0].dof)
+                Sn_dof = np.asarray(m.u[1].dof)
+                nA, nB, nC = (int(elemNodes[eN_max, 0]),
+                              int(elemNodes[eN_max, 1]),
+                              int(elemNodes[eN_max, 2]))
+                x0, y0 = float(nodeArr[nA, 0]), float(nodeArr[nA, 1])
+                x1, y1 = float(nodeArr[nB, 0]), float(nodeArr[nB, 1])
+                x2, y2 = float(nodeArr[nC, 0]), float(nodeArr[nC, 1])
+                # m.q['x'] is not populated in this model (the q_x fill is
+                # commented out in the kernel), so report the element centroid.
+                lx = (x0 + x1 + x2) / 3.0; ly = (y0 + y1 + y2) / 3.0
+                w0, w1, w2 = float(pw_dof[nA]), float(pw_dof[nB]), float(pw_dof[nC])
+                twoA = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)
+                if abs(twoA) > 1.0e-30:
+                    gpx = (w0 * (y1 - y2) + w1 * (y2 - y0) + w2 * (y0 - y1)) / twoA
+                    gpy = (w0 * (x2 - x1) + w1 * (x0 - x2) + w2 * (x1 - x0)) / twoA
+                else:
+                    gpx = gpy = 0.0
+                sn_vals = [float(Sn_dof[nA]), float(Sn_dof[nB]), float(Sn_dof[nC])]
+                if not hasattr(self, '_iface_elem'):
+                    node_mat = {}
+                    for e in range(len(matTypes)):
+                        me = int(matTypes[e])
+                        for nn in elemNodes[e]:
+                            node_mat.setdefault(int(nn), set()).add(me)
+                    ie = np.zeros(len(matTypes), dtype=bool)
+                    for e in range(len(matTypes)):
+                        mats = set()
+                        for nn in elemNodes[e]:
+                            mats |= node_mat[int(nn)]
+                        ie[e] = (len(mats) > 1)
+                    self._iface_elem = ie
+                iface_flag = 1 if self._iface_elem[eN_max] else 0
+                local_info = (local_vmax, lx, ly, int(matTypes[eN_max]),
+                              min(sn_vals), max(sn_vals),
+                              max(w0, w1, w2) - min(w0, w1, w2),
+                              float(gpx), float(gpy), iface_flag)
+            else:
+                local_info = (-1.0, float('nan'), float('nan'), -1,
+                              0.0, 0.0, 0.0, 0.0, 0.0, 0)
+            all_info = comm.gather(local_info, root=0)
+            if rank == 0:
+                (vmx, wx, wy, wmat, snmn, snmx, pwrng, gpx, gpy, ifl) = max(
+                    all_info, key=lambda r: r[0])
+                logEvent(
+                    "[iface diag ] t={:.4e} max|v|={:.4e} at ({:.4f},{:.4f}) "
+                    "mat={} iface={} Sn=[{:.4e},{:.4e}] pw_range={:.4e} "
+                    "grad_pw=({:+.4e},{:+.4e})".format(
+                        float(t), vmx, wx, wy, wmat, ifl, snmn, snmx,
+                        pwrng, gpx, gpy),
+                    level=2)
+        except Exception as _e:
+            if rank == 0:
+                logEvent("[iface diag ] skipped: {}".format(_e), level=2)
 
     # def postStep(self, t, firstStep=False):
     #     if not self.outputQuantDOFs:
@@ -1525,22 +2159,98 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.anb_seepage_flux_n = np.zeros(self.u[0].dof.shape, 'd')
         self.freeDOFMaterialTypes = np.zeros((self.nFreeDOF_global[0],), 'i')
         self.freeDOFToNode_u = -np.ones((self.nFreeDOF_global[0],), 'i')
-        if hasattr(self.mesh, 'nodeMaterialTypes'):
-            free_l2g = np.asarray(self.l2g[0]['freeGlobal']).ravel()
-            dof_l2g = np.asarray(self.u[0].femSpace.dofMap.l2g).ravel()
-            node_material_types = np.asarray(self.mesh.nodeMaterialTypes)
-            for free_dof, global_dof in zip(free_l2g, dof_l2g):
-                if 0 <= free_dof < self.freeDOFMaterialTypes.shape[0]:
-                    self.freeDOFMaterialTypes[free_dof] = node_material_types[global_dof]
-                    self.freeDOFToNode_u[free_dof] = global_dof
-        else:
-            free_l2g = np.asarray(self.l2g[0]['freeGlobal']).ravel()
-            dof_l2g = np.asarray(self.u[0].femSpace.dofMap.l2g).ravel()
-            for free_dof, global_dof in zip(free_l2g, dof_l2g):
-                if 0 <= free_dof < self.freeDOFToNode_u.shape[0]:
-                    self.freeDOFToNode_u[free_dof] = global_dof
+        # ----------------------------------------------------------------------
+        # DIAGNOSTIC TOGGLE (K-jump hypothesis test).  Set the environment var
+        #     MPHASE_CO2_HOMOG_MAT=<flag>     e.g.  MPHASE_CO2_HOMOG_MAT=12
+        # to overwrite elementMaterialTypes with a SINGLE rock everywhere BEFORE
+        # any material map is built.  That removes every interior permeability /
+        # capillary-entry-pressure jump from the whole kernel (transmissibility
+        # tau, porosity, closures, AND both node maps below).  If the
+        # velocity_couple spike and the gas over-creation/ratio_pw runaway VANISH
+        # under this, the cause is the discontinuous-K interface artifact (a
+        # continuous-p_w CG scheme cannot represent the flux/pc jump), NOT a
+        # gas-equation bug.  If they PERSIST homogeneous, the bug is in the gas
+        # equation itself.  Leave the var unset/empty for the true geology.
+        import os
+        _homog = os.environ.get('MPHASE_CO2_HOMOG_MAT', '').strip()
+        if _homog != '' and hasattr(self.mesh, 'elementMaterialTypes'):
+            _hm = int(_homog)
+            np.asarray(self.mesh.elementMaterialTypes)[:] = _hm
+            logEvent("[mphase_co2] K-JUMP TOGGLE ON: elementMaterialTypes forced "
+                     "to material %d everywhere (homogeneous; no interior K/pc "
+                     "jumps). Unset MPHASE_CO2_HOMOG_MAT to restore geology." % _hm)
+        # ----------------------------------------------------------------------
+        # Per-node ROCK-REGION map (the sand type at each mesh node), built from
+        # elementMaterialTypes -- the .ele region attribute -- via the first
+        # element containing each node.  This is the geology.  It is NOT
+        # mesh.nodeMaterialTypes: that array is the .node BOUNDARY-MARKER column
+        # (0 for every interior node, segment tags on the boundary), so using it
+        # as a rock index makes comp-0 read material 0 (= fallback sand) over the
+        # entire interior, blind to ESF/F/fault heterogeneity.  Comp-0 (wetting)
+        # and comp-1 (gas) both index THIS map so the coupled system solves one
+        # rock law per physical location.  (Comp-1 has no Dirichlet, so its DOF
+        # index == mesh node index.)
+        self.nodeMaterialTypes_n = np.zeros((self.u[1].dof.shape[0],), 'i')
+        # node_pd_min[gN] = the COARSEST (lowest) capillary entry pressure
+        # p_d = 1/alpha [head] among the element materials incident on node gN.
+        # Used by the comp-1 element-side gas flux as the capillary
+        # entry-pressure barrier: gas crosses an edge into a finer element e
+        # only when the gas-phase potential drop exceeds the entry-pressure
+        # JUMP (1/alpha_e - node_pd_min[upstream]).  In a homogeneous region
+        # node_pd_min == 1/alpha_e so the jump is 0 (no barrier); at a sand->seal
+        # interface it equals p_d_seal - p_d_sand (the van Duijn / extended-
+        # capillary-pressure breakthrough threshold).
+        self.node_pd_min = np.full((self.u[1].dof.shape[0],), np.inf, 'd')
+        # node_Sn_max[gN] = full gas saturation 1 - S_wr of the COARSEST incident
+        # medium (= max over incident materials of 1-S_wr, since coarse sands have
+        # the lowest residual).  This is the saturation the coarse pool fills to
+        # against a seal.  The element-side breakthrough valve opens as the
+        # upstream S_n rises toward this value over a fixed S_n window (so the
+        # valve derivative is bounded -- a thin p_c-ratio valve gave dgate/dSn~1e5
+        # and crashed Newton).
+        self.node_Sn_max = np.zeros((self.u[1].dof.shape[0],), 'd')
+        if hasattr(self.mesh, 'elementMaterialTypes') and hasattr(self.mesh, 'elementNodesArray'):
+            elem_nodes = np.asarray(self.mesh.elementNodesArray)
+            elem_mat   = np.asarray(self.mesh.elementMaterialTypes).astype(np.int32)
+            alpha_types  = np.asarray(self.coefficients.vgm_alpha_types)
+            thetaR_types = np.asarray(self.coefficients.thetaR_types)
+            thetaSR_types = np.asarray(self.coefficients.thetaSR_types)
+            seen = np.zeros((self.u[1].dof.shape[0],), 'b')
+            for eN in range(elem_nodes.shape[0]):
+                mat = int(elem_mat[eN])
+                a_m = float(alpha_types[mat]) if mat < alpha_types.shape[0] else 0.0
+                pd_m = (1.0 / a_m) if a_m > 0.0 else 0.0   # p_d=0 (alpha=0) -> no barrier
+                phi_m = float(thetaR_types[mat] + thetaSR_types[mat])
+                swr_m = (float(thetaR_types[mat]) / phi_m) if phi_m > 0.0 else 0.0
+                sn_max_m = 1.0 - swr_m
+                for i_local in range(elem_nodes.shape[1]):
+                    gN = int(elem_nodes[eN, i_local])
+                    if 0 <= gN < self.nodeMaterialTypes_n.shape[0]:
+                        if not seen[gN]:
+                            self.nodeMaterialTypes_n[gN] = mat
+                            seen[gN] = True
+                        if pd_m < self.node_pd_min[gN]:
+                            self.node_pd_min[gN] = pd_m
+                        if sn_max_m > self.node_Sn_max[gN]:
+                            self.node_Sn_max[gN] = sn_max_m
+        # Any node never visited (shouldn't happen) -> no barrier.
+        self.node_pd_min[~np.isfinite(self.node_pd_min)] = 0.0
+        self.node_Sn_max[self.node_Sn_max <= 0.0] = 1.0   # default full sat -> no barrier
+        # comp-0 free-DOF -> rock region, via the SAME per-node rock map (NOT
+        # boundary flags).  global_dof is the mesh node index for the C0P1
+        # wetting space, so it indexes nodeMaterialTypes_n directly.
+        free_l2g = np.asarray(self.l2g[0]['freeGlobal']).ravel()
+        dof_l2g = np.asarray(self.u[0].femSpace.dofMap.l2g).ravel()
+        for free_dof, global_dof in zip(free_l2g, dof_l2g):
+            if 0 <= free_dof < self.freeDOFMaterialTypes.shape[0]:
+                self.freeDOFToNode_u[free_dof] = global_dof
+                if 0 <= global_dof < self.nodeMaterialTypes_n.shape[0]:
+                    self.freeDOFMaterialTypes[free_dof] = self.nodeMaterialTypes_n[global_dof]
         if np.any(self.freeDOFToNode_u < 0):
             raise RuntimeError("Failed to build the component-0 free-DOF to node map needed by the stabilized EV/FCT path.")
+        # DIAG (mass-creation hunt): [0]=max|T_ij-T_ji|, [1]=max|T_ij|,
+        # [2]=sum_ij F_ij (flux imbalance), [3]=sum_ij|F_ij|.
+        self.gas_diag = np.zeros(4, 'd')
         comm = Comm.get()
         self.comm=comm
         if comm.size() > 1:
@@ -1561,6 +2271,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.dLow_n                 = None
         self.dEV_n                  = None
         self.mLow_n                 = None
+        self.gas_budget_node        = None
         self.mHigh_n                = None
         self.mDotLow_n              = None
         self.fluxMatrix_n           = None
@@ -2050,6 +2761,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.FluxCorrectionMatrix_n  = np.zeros((nnz_n_,), 'd')
         if self.mLow_n is None or self.mLow_n.shape[0] != n_n_:
             self.mLow_n             = np.zeros((n_n_,), 'd')
+            # Per-node gas-residual budget, 6 slots term-major (numDOFs_n each):
+            # [0]accum [1]flux [2]sink [3]injection [4]boundary [5]total-residual.
+            # Filled by calculateResidual_entropy_viscosity; summed over owned
+            # nodes + MPI-reduced in _log_mass_balance ([gas budget] line).
+            self.gas_budget_node    = np.zeros((6 * n_n_,), 'd')
             self.mHigh_n            = np.zeros((n_n_,), 'd')
             self.mDotLow_n          = np.zeros((n_n_,), 'd')
             self.fluxCorrection_n   = np.zeros((n_n_,), 'd')
@@ -2581,6 +3297,36 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["anb_seepage_flux_n"]= self.anb_seepage_flux_n
         argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
         argsDict["freeDOFToNode_u"] = self.freeDOFToNode_u
+        argsDict["nodeMaterialTypes_n"] = self.nodeMaterialTypes_n
+        # PARALLEL FIX (one-time): ghost-synchronize the capillary-gate nodal
+        # arrays. node_pd_min / node_Sn_max are built in __init__ by a LOCAL
+        # MIN/MAX over elementNodesArray with no ghost exchange. Owned nodes get
+        # the complete star (full overlap), but GHOST nodes (one layer out) see
+        # only this rank's incident elements -> an incomplete MIN/MAX. The
+        # interior gas-flux gate reads these at the UPSTREAM node, which may be a
+        # ghost, so the shared partition edge gets a DIFFERENT gate (hence a
+        # different F) on the two ranks -> the antisymmetric flux no longer
+        # cancels across the cut -> spurious gas mass created at every partition
+        # edge (diagnosed via [gas budget] flux != 0 while per-element sum_F~0).
+        # Owners hold the correct complete value (full overlap), so a
+        # forward-insert scatter (owner -> ghost copies) repairs every ghost.
+        # Done lazily here (not __init__) because u[1].par_dof exists only after
+        # the global parallel layout is built. par_dof is None / no-op in serial.
+        if not getattr(self, '_gate_arrays_synced', False):
+            _pd = getattr(self.u[1], 'par_dof', None)
+            if _pd is not None:
+                _save = self.u[1].dof.copy()
+                for _arr in (self.node_pd_min, self.node_Sn_max):
+                    n_arr = min(len(_arr), self.u[1].dof.shape[0])
+                    self.u[1].dof[:n_arr] = _arr[:n_arr]
+                    _pd.scatter_forward_insert()
+                    _arr[:n_arr] = self.u[1].dof[:n_arr]
+                self.u[1].dof[:] = _save
+            self._gate_arrays_synced = True
+        argsDict["node_pd_min"] = self.node_pd_min
+        argsDict["node_Sn_max"] = self.node_Sn_max
+        argsDict["gas_diag"] = self.gas_diag
+        argsDict["gas_budget_node"] = self.gas_budget_node
         ######################################################################################
         argsDict["pn"] = self.u[0].dof
         argsDict["mHigh"] = self.mHigh
