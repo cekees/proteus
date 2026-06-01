@@ -396,12 +396,13 @@ class Coefficients(TC_base):
 
 
         #must keep synchronized with TADR.h enums
-        stabilization_types = {"Galerkin":-1, 
-                               "VMS":0, 
-                               "TaylorGalerkinEV":1, 
-                               "EntropyViscosity":2, 
-                               "SmoothnessIndicator":3, 
-                               "Kuzmin":4}
+        stabilization_types = {"Galerkin":-1,
+                               "VMS":0,
+                               "TaylorGalerkinEV":1,
+                               "EntropyViscosity":2,
+                               "SmoothnessIndicator":3,
+                               "Kuzmin":4,
+                               "ImplicitEV":5}
         entropy_types = {'POWER':0 , 
                          'LOG':1}
         try:
@@ -1155,14 +1156,34 @@ class LevelModel(OneLevelTransport):
 
         # Stuff added by mql.
         # Some ASSERTS to restrict the combination of the methods
-        if self.coefficients.STABILIZATION_TYPE > 1:
+        # STABILIZATION_TYPE 2,3,4 are the EXPLICIT edge-based schemes (SSP +
+        # ExplicitLumpedMassMatrix).  Type 5 (ImplicitEV) is the IMPLICIT
+        # edge-based scheme: backward-Euler + Newton, so it is exempt from the
+        # SSP/Explicit-solver/LUMPED_MASS_MATRIX constraints below.
+        if self.coefficients.STABILIZATION_TYPE > 1 and self.coefficients.STABILIZATION_TYPE != 5:
             assert self.timeIntegration.isSSP == True, "If STABILIZATION_TYPE>1, use RKEV timeIntegration within TADR model"
             cond = 'levelNonlinearSolver' in dir(options) and (options.levelNonlinearSolver ==
                                                                ExplicitLumpedMassMatrix or options.levelNonlinearSolver == ExplicitConsistentMassMatrixForVOF)
             assert cond, "If STABILIZATION_TYPE>1, use levelNonlinearSolver=ExplicitLumpedMassMatrix or ExplicitConsistentMassMatrixForVOF"
+        if self.coefficients.STABILIZATION_TYPE == 5:
+            assert getattr(self.timeIntegration, 'isSSP', False) == False, \
+                "If STABILIZATION_TYPE==5 (ImplicitEV), use an implicit (non-SSP) timeIntegration, e.g. BackwardEuler"
+            assert self.coefficients.FCT == False, \
+                "STABILIZATION_TYPE==5 (ImplicitEV) is monotone by construction; run with FCT=False"
+            # ImplicitEV needs a genuine implicit Newton solve.  The explicit
+            # lumped-mass "solvers" only do one flux update and distribute uLow
+            # (which the ImplicitEV residual never populates), so they would
+            # leave the implicit system unsolved -- reject them explicitly.
+            if 'levelNonlinearSolver' in dir(options):
+                assert options.levelNonlinearSolver not in (ExplicitLumpedMassMatrix,
+                                                            ExplicitConsistentMassMatrixForVOF), \
+                    "If STABILIZATION_TYPE==5 (ImplicitEV), use an implicit Newton solver " \
+                    "(levelNonlinearSolver=Newton); ExplicitLumpedMassMatrix / " \
+                    "ExplicitConsistentMassMatrixForVOF only do a single lumped update and " \
+                    "leave the implicit system unsolved."
         if 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == ExplicitLumpedMassMatrix:
             assert self.coefficients.LUMPED_MASS_MATRIX, "If levelNonlinearSolver=ExplicitLumpedMassMatrix, use LUMPED_MASS_MATRIX=True"
-        if self.coefficients.LUMPED_MASS_MATRIX == True:
+        if self.coefficients.LUMPED_MASS_MATRIX == True and self.coefficients.STABILIZATION_TYPE != 5:
             cond = 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == ExplicitLumpedMassMatrix
             assert cond, "Use levelNonlinearSolver=ExplicitLumpedMassMatrix when the mass matrix is lumped"
         if self.coefficients.FCT is True:
@@ -1176,7 +1197,7 @@ class LevelModel(OneLevelTransport):
             assert isinstance(self.timeIntegration, TimeIntegration.BackwardEuler_cfl), "If STABILIZATION_TYPE=1, use BackwardEuler_cfl"
             assert options.levelNonlinearSolver == TwoStageNewton, "If STABILIZATION_TYPE=1, use levelNonlinearSolver=TwoStageNewton"
         assert self.coefficients.ENTROPY_TYPE in [0,1], "Set ENTROPY_TYPE={0,1}"
-        assert self.coefficients.STABILIZATION_TYPE in [-1,0,1,2,3,4], "Set STABILIZATION_TYPE={-1,0,1,2,3,4}"
+        assert self.coefficients.STABILIZATION_TYPE in [-1,0,1,2,3,4,5], "Set STABILIZATION_TYPE={-1,0,1,2,3,4,5}"
         if self.coefficients.STABILIZATION_TYPE==4:
             assert self.coefficients.FCT==True, "If STABILIZATION_TYPE=4, use FCT=True"
             
@@ -1641,11 +1662,20 @@ class LevelModel(OneLevelTransport):
                 r[dofN] = 0
 
         if (self.auxiliaryCallCalculateResidual == False):
-            edge_based_cflMax = globalMax(self.edge_based_cfl.max()) * self.timeIntegration.dt
-            cell_based_cflMax = globalMax(self.q[('cfl', 0)].max()) * self.timeIntegration.dt
-            logEvent("...   Current dt = " + str(self.timeIntegration.dt), level=4)
-            logEvent("...   Maximum Cell Based CFL = " + str(cell_based_cflMax), level=2)
-            logEvent("...   Maximum Edge Based CFL = " + str(edge_based_cflMax), level=2)
+            if self.coefficients.STABILIZATION_TYPE == 5:
+                # ImplicitEV is solved implicitly by Newton (which already logs
+                # per-iteration norm(r)); the CFL is NOT the time-step limiter
+                # here, so report the residual norm like the implicit flow model
+                # instead of the misleading CFL=0 lines.
+                res_inf = globalMax(np.abs(r).max())
+                logEvent("...   Current dt = " + str(self.timeIntegration.dt), level=2)
+                logEvent("...   TADR ImplicitEV max|residual| = " + str(res_inf), level=2)
+            else:
+                edge_based_cflMax = globalMax(self.edge_based_cfl.max()) * self.timeIntegration.dt
+                cell_based_cflMax = globalMax(self.q[('cfl', 0)].max()) * self.timeIntegration.dt
+                logEvent("...   Current dt = " + str(self.timeIntegration.dt), level=4)
+                logEvent("...   Maximum Cell Based CFL = " + str(cell_based_cflMax), level=2)
+                logEvent("...   Maximum Edge Based CFL = " + str(edge_based_cflMax), level=2)
 
         if self.stabilization:
             self.stabilization.accumulateSubgridMassHistory(self.q)
@@ -1751,6 +1781,16 @@ class LevelModel(OneLevelTransport):
         argsDict["Sn_dof"] = self.coefficients.Sn_dof
         argsDict["k_d"] = float(self.coefficients.k_d)
         argsDict["c_sat"] = float(self.coefficients.c_sat)
+        # Extra keys consumed only by the STABILIZATION_TYPE==ImplicitEV (5)
+        # branch of calculateJacobian, which assembles the implicit edge-based
+        # Jacobian using the DOF-loop CSR, lumped mass, time step and the
+        # low-order graph viscosity dLow the residual stored.
+        argsDict["dt"] = self.timeIntegration.dt
+        argsDict["numDOFs"] = len(self.rowptr) - 1
+        argsDict["ML"] = self.ML
+        argsDict["dLow"] = self.dLow
+        argsDict["csrRowIndeces_DofLoops"] = self.rowptr
+        argsDict["csrColumnOffsets_DofLoops"] = self.colind
         argsDict["forceStrongConditions"] = int(self.forceStrongConditions)
         argsDict["ebq_a"] = self.ebqe[('a',0,0)]
         #argsDict["D"] = self.coefficients.DTypes
