@@ -62,6 +62,7 @@ public:
   virtual void kth_FCT_step(arguments_dict &args)                        = 0;
   virtual void calculateResidual_entropy_viscosity(arguments_dict &args) = 0;
   virtual void calculateMassMatrix(arguments_dict &args)                 = 0;
+  virtual void dissolutionFlash(arguments_dict &args)                    = 0;
 };
 
 template <class CompKernelType, int nSpace, int nQuadraturePoints_element, int nDOF_mesh_trial_element, int nDOF_trial_element, int nDOF_test_element, int nQuadraturePoints_elementBoundary>
@@ -4823,6 +4824,112 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     }
     rho_n_phi_dof_member = rho_n_phi_mm;
   } //computeMassMatrix
+
+  // Local-equilibrium dissolution flash (the k_d -> inf limit of the kinetic
+  // R_diss).  Runs ONCE per step, after BOTH the flow (S_n) and transport (c)
+  // solves, as an algebraic gas<->brine CO2 exchange at every nodal DOF.  It
+  // replaces the in-residual kinetic sink, which -- because the gas mass
+  // m_n = phi*rho_n*S_n carries the tiny rho_n scale while R_diss removed mass
+  // at the rho_w~1 scale -- dissolved the gas ~rho_w/rho_n ~ 555x too fast and
+  // let it vanish before it could pool/spread.
+  //
+  // PART 1 (nodal exchange).  Conserved per-node CO2 per pore volume (rho_w
+  // units):  M = rho_n*S_n + (X_sat/c_sat)*(1-S_n)*c, where c=c_sat <=> the
+  // physical dissolved-CO2 mass fraction X_sat.  Two outcomes per node:
+  //   * M <= X_sat : brine absorbs all gas        -> S_n=0,    c=M*c_sat/X_sat
+  //   * else       : brine saturates, gas remains -> c=c_sat,  S_n=(M-X_sat)/(rho_n-X_sat)
+  // Requires 0 < X_sat < rho_n for any free gas to remain.  Sn_dof aliases the
+  // flow model's u[1].dof and c_dof the transport model's u[0].dof (both
+  // zero-copy), so BOTH are mutated in place.
+  //
+  // PART 2 (TADR old-mass rebuild).  The transport BDF time derivative reads
+  // the old mass m_last (<- m_tmp == TADR q[('m',0)], copied by the framework's
+  // end-of-step updateTimeHistory which runs AFTER the postStep that calls
+  // this).  So we rebuild that quadrature mass from the FLASHED c AND S_n,
+  // using the SAME valFromDOF / l2g / phi convention as calculateResidual --
+  // m = thetaW*rho*c with thetaW = phi*(1-S_n), phi = thetaR+thetaSR (per
+  // material), rho = rho_f*(1+eps*c), eps = (rho_s-rho_f)/rho_f.  Without this
+  // the next step's m_t = (m(c) - m_old)/dt cancels the flash increment and the
+  // dissolved CO2 is not conserved.  (The flow gas old-mass is nodal --
+  // u_dof_n_old -- and is repaired in Python.)
+  void dissolutionFlash(arguments_dict &args)
+  {
+    xt::pyarray<double> &c_dof   = args.array<double>("c_dof");    // c   (in/out)
+    xt::pyarray<double> &Sn_dof  = args.array<double>("Sn_dof");   // S_n (in/out)
+    const double rho_n           = args.scalar<double>("rho_n");
+    const double X_sat           = args.scalar<double>("X_sat");
+    const double c_sat           = args.scalar<double>("c_sat");
+    const double k_d             = args.scalar<double>("k_d");     // dissolution rate [1/time]
+    const double dt              = args.scalar<double>("dt");      // step size
+    const int    numDOFs         = args.scalar<int>("numDOFs");
+    if (X_sat <= 0.0 || k_d <= 0.0)
+      return;                                    // dissolution disabled
+    // --- PART 1: FINITE-RATE IMPLICIT nodal dissolution toward local equilib.
+    // Per node, the gas-limited equilibrium concentration is
+    //   c_eq = min(M/a, c_sat),   a = X_sat/c_sat,   M = rho_n*S_n + a*(1-S_n)*c
+    // (the instantaneous-flash target).  We relax c toward c_eq with an
+    // IMPLICIT-EULER step of the linear-driving-force ODE dc/dt = k_d*S_n*(c_eq-c):
+    //   frac = r/(1+r),  r = k_d*S_n*dt   (always < 1 -> unconditionally stable)
+    // then recover S_n from EXACT M-conservation.  k_d -> inf gives frac -> 1
+    // (the instantaneous local-equilibrium flash); k_d -> 0 gives no transfer.
+    // The finite rate is what lets the free-gas plume RISE (structural trapping)
+    // before it dissolves over a slower timescale (solubility trapping), instead
+    // of the instantaneous flash dissolving it in place.  Because dissolution is
+    // now rate-limited, the PHYSICAL X_sat (~rho_n) can be kept.
+    const double a = X_sat / c_sat;              // dissolved CO2 per unit c
+    for (int i = 0; i < numDOFs; i++)
+      {
+        const double Sn = Sn_dof.data()[i];
+        const double c  = c_dof.data()[i];
+        if (Sn > 0.0 && c < c_sat)
+          {
+            const double M    = rho_n * Sn + a * (1.0 - Sn) * c;
+            const double c_eq = (M <= X_sat) ? (M / a) : c_sat;   // gas-limited; in [c, c_sat]
+            const double r    = k_d * Sn * dt;
+            const double frac = (r > 0.0) ? r / (1.0 + r) : 0.0;
+            const double c_new = c + frac * (c_eq - c);           // in [c, c_eq]
+            const double denom = rho_n - a * c_new;               // > 0 since a*c_new <= X_sat < rho_n
+            double Sn_new = (denom != 0.0) ? (M - a * c_new) / denom : Sn;
+            if (Sn_new < 0.0) Sn_new = 0.0;                       // safety (denom>0 keeps it >=0)
+            c_dof.data()[i]  = c_new;
+            Sn_dof.data()[i] = Sn_new;
+          }
+      }
+    // --- PART 2: rebuild TADR's quadrature old-mass from the flashed fields ---
+    xt::pyarray<double> &q_m_tadr             = args.array<double>("q_m_tadr"); // TADR q[('m',0)] (out)
+    xt::pyarray<int>    &u_l2g                = args.array<int>("u_l2g");
+    xt::pyarray<double> &u_trial_ref          = args.array<double>("u_trial_ref");
+    xt::pyarray<int>    &elementMaterialTypes = args.array<int>("elementMaterialTypes");
+    xt::pyarray<double> &thetaR               = args.array<double>("thetaR");
+    xt::pyarray<double> &thetaSR              = args.array<double>("thetaSR");
+    const double rho_f                        = args.scalar<double>("rho_f");
+    const double rho_s                        = args.scalar<double>("rho_s");
+    const int nElements_global                = args.scalar<int>("nElements_global");
+    // Renamed (nQP_flash / nDOF_flash) to avoid shadowing the struct's
+    // template parameters nQuadraturePoints_element / nDOF_trial_element.
+    // These come from Python (derived from q[('m',0)].shape and the l2g),
+    // so the q_m_tadr write stays in bounds.
+    const int nQP_flash                       = args.scalar<int>("nQuadraturePoints_element");
+    const int nDOF_flash                      = args.scalar<int>("nDOF_trial_element");
+    const double eps = (rho_f != 0.0) ? (rho_s - rho_f) / rho_f : 0.0;
+    for (int eN = 0; eN < nElements_global; eN++)
+      {
+        const int    mat    = elementMaterialTypes.data()[eN];
+        const double phi_eN  = thetaR.data()[mat] + thetaSR.data()[mat];
+        const int    eN_nDOF = eN * nDOF_flash;
+        for (int k = 0; k < nQP_flash; k++)
+          {
+            double c_k = 0.0, Sn_k = 0.0;
+            ck.valFromDOF(c_dof.data(),  &u_l2g.data()[eN_nDOF],
+                          &u_trial_ref.data()[k * nDOF_flash], c_k);
+            ck.valFromDOF(Sn_dof.data(), &u_l2g.data()[eN_nDOF],
+                          &u_trial_ref.data()[k * nDOF_flash], Sn_k);
+            const double thetaW = phi_eN * (1.0 - Sn_k);
+            const double rho    = rho_f * (1.0 + eps * c_k);
+            q_m_tadr.data()[eN * nQP_flash + k] = thetaW * rho * c_k;
+          }
+      }
+  } //dissolutionFlash
 }; //Mphase_co2
 
 inline Mphase_co2_base *newmphase_co2(int nSpaceIn, int nQuadraturePoints_elementIn, int nDOF_mesh_trial_elementIn, int nDOF_trial_elementIn, int nDOF_test_elementIn, int nQuadraturePoints_elementBoundaryIn, int CompKernelFlag)

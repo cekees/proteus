@@ -30,5 +30,6 @@ PYBIND11_MODULE(cmphase_co2, m)
     .def("FCTStep", &Mphase_co2_base::FCTStep)
     //.def("kth_FCT_step", &Mphase_co2_base::kth_FCT_step)
     .def("calculateResidual_entropy_viscosity", &Mphase_co2_base::calculateResidual_entropy_viscosity)
-    .def("calculateMassMatrix", &Mphase_co2_base::calculateMassMatrix);
+    .def("calculateMassMatrix", &Mphase_co2_base::calculateMassMatrix)
+    .def("dissolutionFlash", &Mphase_co2_base::dissolutionFlash);
 }

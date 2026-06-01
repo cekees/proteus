@@ -1168,8 +1168,10 @@ class LevelModel(OneLevelTransport):
         if self.coefficients.STABILIZATION_TYPE == 5:
             assert getattr(self.timeIntegration, 'isSSP', False) == False, \
                 "If STABILIZATION_TYPE==5 (ImplicitEV), use an implicit (non-SSP) timeIntegration, e.g. BackwardEuler"
-            assert self.coefficients.FCT == False, \
-                "STABILIZATION_TYPE==5 (ImplicitEV) is monotone by construction; run with FCT=False"
+            # FCT is OPTIONAL for ImplicitEV: FCT=False -> pure (monotone) implicit
+            # upwind; FCT=True -> the implicit upwind solution is taken as the
+            # low-order uLow and the explicit FCTStep (Kuzmin antidiffusion) is
+            # applied as a post-step (see calculateAuxiliaryQuantitiesAfterStep).
             # ImplicitEV needs a genuine implicit Newton solve.  The explicit
             # lumped-mass "solvers" only do one flux update and distribute uLow
             # (which the ImplicitEV residual never populates), so they would
@@ -1887,7 +1889,17 @@ class LevelModel(OneLevelTransport):
         pass
 
     def calculateAuxiliaryQuantitiesAfterStep(self):
-        pass
+        # STAB=5 (ImplicitEV) is solved implicitly by Newton, so the explicit
+        # solver never calls FCTStep().  When FCT is on, apply it here (this
+        # hook is called by SplitOperator after the model's solve): the
+        # converged Newton solution IS the implicit, CFL-free LOW-ORDER
+        # solution uLow, and FCTStep adds the Zalesak-limited symmetric
+        # antidiffusion (Kuzmin branch) to recover a bounded high-order
+        # solution.  The residual stored the symmetric dLow and the min/max_u_bc
+        # bounds at the converged iterate, so FCTStep is consistent.
+        if self.coefficients.STABILIZATION_TYPE == 5 and self.coefficients.FCT:
+            self.uLow[:] = self.u[0].dof
+            self.FCTStep()
 
     def updateAfterMeshMotion(self):
         pass

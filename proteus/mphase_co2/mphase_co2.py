@@ -273,6 +273,20 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  # then sees no dissolution (legacy behavior preserved).
                  k_d=0.0,
                  c_sat=1.0,
+                 # Local-equilibrium dissolution flash (the k_d -> inf limit).
+                 # dissolution_mode='flash' replaces the in-residual kinetic
+                 # R_diss with a once-per-step nodal gas<->brine CO2 exchange
+                 # (TADR.h::dissolutionFlash), driven to local equilibrium each
+                 # step.  X_sat is the PHYSICAL dissolved-CO2 mass fraction at
+                 # solubility (c=c_sat <=> mass fraction X_sat), in the same
+                 # rho_w-normalized units as rho_n.  Requires 0 < X_sat < rho_n
+                 # for any free gas to remain (a pure-gas pore must hold more
+                 # CO2 than a saturated-brine pore); X_sat=0 disables it.
+                 # CO2-in-water at FluidFlower's near-atmospheric conditions is
+                 # ~1.7 g/kg -> X_sat ~ 0.0015 (just below rho_n=0.0018).
+                 # dissolution_mode='kinetic' keeps the legacy k_d sink.
+                 dissolution_mode='kinetic',
+                 X_sat=0.0,
                  # CO2 injection point sources: list of
                  # (x, y, rate, t_start, t_stop) tuples.  Each is an interior
                  # mass source on the gas (S_n) equation, active while
@@ -316,6 +330,19 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         # Stage 3b: gas-side kinetic dissolution sink parameters.
         self.k_d = k_d
         self.c_sat = c_sat
+        # Local-equilibrium dissolution flash parameters.
+        self.dissolution_mode = str(dissolution_mode)
+        self.X_sat = float(X_sat)
+        if self.dissolution_mode == 'flash':
+            if self.X_sat <= 0.0:
+                logEvent("[dissolution flash] WARNING: dissolution_mode='flash'"
+                         " but X_sat=%.3e <= 0 -> dissolution is DISABLED."
+                         % self.X_sat, level=1)
+            elif self.X_sat >= float(rho_n):
+                logEvent("[dissolution flash] WARNING: X_sat=%.3e >= rho_n=%.3e"
+                         " -> ALL gas dissolves where brine has capacity (no"
+                         " free-gas pooling possible)." % (self.X_sat, float(rho_n)),
+                         level=1)
         # CO2 injection point sources (see __init__ argument).
         self.injection_ports = list(injection_ports) if injection_ports else []
         self.injection_ramp_tau = float(injection_ramp_tau)
@@ -742,6 +769,109 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self._diagnose_velocity_spike(t)
         return {}
 
+    def apply_dissolution_flash(self, t):
+        r"""Finite-rate implicit dissolution (local-equilibrium flash limit).
+
+        Called ONCE per step from the transport coefficients' postStep
+        (Sequential_MinModelStep runs flow, then transport, so by here BOTH
+        S_n and c are the converged end-of-step values).  The whole exchange
+        runs in C++ (mphase_co2.h::dissolutionFlash via the flow model's
+        self.mphase_co2 object): it (1) relaxes c toward the gas-limited
+        equilibrium with an implicit linear-driving-force step (rate k_d*S_n),
+        recovering S_n from exact M-conservation, mutating S_n (flow.u[1].dof)
+        and c (tadr.u[0].dof) IN PLACE, and (2) rebuilds TADR's quadrature
+        old-mass q[('m',0)] from the updated fields using the same
+        valFromDOF/l2g/phi convention as the residual.  Python only repairs the
+        nodal time history and the ghost values.
+
+        Conserves per-node CO2 (rho_w-normalized) M = rho_n*S_n +
+        (X_sat/c_sat)*(1-S_n)*c exactly.  k_d is the dissolution rate: k_d -> inf
+        recovers the instantaneous local-equilibrium flash (dissolves in place),
+        finite k_d lets the free-gas plume rise before it dissolves over a
+        slower timescale.  X_sat is the physical solubility mass fraction.  See
+        the kernel comment in proteus/mphase_co2/mphase_co2.h.
+        """
+        if self.dissolution_mode != 'flash' or self.X_sat <= 0.0:
+            return
+        flow = self.model
+        tadr = getattr(self, 'densityModel', None)
+        if flow is None or tadr is None:
+            return
+        if not (hasattr(flow, 'mphase_co2') and hasattr(tadr, 'u') and len(tadr.u) >= 1):
+            return
+        c_dof  = tadr.u[0].dof
+        Sn_dof = flow.u[1].dof
+        numDOFs = int(min(len(c_dof), len(Sn_dof)))
+
+        # TADR old-mass array to rebuild (q[('m',0)] == m_tmp; the framework's
+        # end-of-step updateTimeHistory copies m_tmp -> m_last AFTER this
+        # postStep, so writing it here makes next step's BDF old-mass reflect
+        # the flash -- otherwise the flash's dissolved increment is not
+        # conserved).  Derive nElements/nQP FROM this array so the C++ QP write
+        # can never go out of bounds.
+        q_m_tadr = tadr.q.get(('m', 0), None)
+        if q_m_tadr is None or q_m_tadr.ndim != 2:
+            logEvent("[dissolution flash] WARNING: TADR q[('m',0)] missing; "
+                     "skipping flash this step.", level=1)
+            return
+        nE_qm, nQP_qm = int(q_m_tadr.shape[0]), int(q_m_tadr.shape[1])
+        tcoef = tadr.coefficients
+
+        # Single C++ call: nodal exchange (mutates c_dof, Sn_dof) + TADR
+        # quadrature old-mass rebuild (writes q_m_tadr).  u_trial_ref / u_l2g
+        # are the flow model's populated P1 basis and element->node map (same
+        # mesh, so valid for the co-located transport c too).
+        # Step size for the finite-rate implicit relaxation (LDF rate k_d*S_n);
+        # under Sequential_MinModelStep both models share the system dt.
+        ti = getattr(tadr, 'timeIntegration', None)
+        dt = float(getattr(ti, 'dt', 0.0)) if ti is not None else 0.0
+        argsDict = cArgumentsDict.ArgumentsDict()
+        argsDict["c_dof"]    = c_dof
+        argsDict["Sn_dof"]   = Sn_dof
+        argsDict["rho_n"]    = float(self.rho_n)
+        argsDict["X_sat"]    = float(self.X_sat)
+        argsDict["c_sat"]    = float(self.c_sat)
+        # k_d is the dissolution RATE [1/time] of the finite-rate implicit
+        # flash; k_d -> inf recovers the instantaneous local-equilibrium flash.
+        argsDict["k_d"]      = float(self.k_d)
+        argsDict["dt"]       = dt
+        argsDict["numDOFs"]  = numDOFs
+        argsDict["q_m_tadr"] = q_m_tadr
+        argsDict["u_l2g"]                = flow.u[0].femSpace.dofMap.l2g
+        argsDict["u_trial_ref"]          = flow.u[0].femSpace.psi
+        argsDict["elementMaterialTypes"] = flow.mesh.elementMaterialTypes
+        argsDict["thetaR"]               = self.thetaR_types
+        argsDict["thetaSR"]              = self.thetaSR_types
+        argsDict["rho_f"]    = float(getattr(tcoef, 'rho_f', 1.0))
+        argsDict["rho_s"]    = float(getattr(tcoef, 'rho_s',
+                                             getattr(tcoef, 'rho_f', 1.0)))
+        argsDict["nElements_global"]          = nE_qm
+        argsDict["nQuadraturePoints_element"] = nQP_qm
+        argsDict["nDOF_trial_element"]        = int(flow.u[0].femSpace.dofMap.l2g.shape[1])
+        flow.mphase_co2.dissolutionFlash(argsDict)
+
+        # Ghost-sync owned -> ghost for both fields (the flash is a pure local
+        # per-DOF map, so this just keeps ghosts identical to owners).
+        for fef in (tadr.u[0], flow.u[1]):
+            par = getattr(fef, 'par_dof', None)
+            if par is not None:
+                par.scatter_forward_insert()
+
+        # Flow gas history: the C++ gas residual reads u_dof_n_old (nodal) as
+        # m_n_old, so it MUST become the flashed S_n -- mirror the FCT
+        # write-back at FCTStep(component=1) (u_dof_n_old + scatter).
+        if getattr(flow, 'u_dof_n_old', None) is not None:
+            flow.u_dof_n_old[:] = flow.u[1].dof
+        flow._scatter_component_to_timeintegration(1)
+
+        # TADR c nodal history: u_dof_old feeds the entropy/advection of the
+        # old solution.  (The quadrature old-mass was rebuilt in C++ above.)
+        if getattr(tadr, 'u_dof_old', None) is not None:
+            tadr.u_dof_old[:] = tadr.u[0].dof
+            par_old = getattr(tadr, 'par_u_dof_old', None)
+            if par_old is not None:
+                par_old.scatter_forward_insert()
+
     def _diagnose_velocity_spike(self, t):
         r"""Classify the SOURCE of the velocity_couple spike that collapses the
         TADR advective-CFL dt.  velocity_couple = -(k_rw K)(grad p_w - rho g)
@@ -1044,8 +1174,15 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                               getattr(mesh, 'nNodes_global', len(S_n))))
         size = min(n_owned, len(ML), len(S_n), len(c))
         w = ML[:size] * phi[:size]
+        # In flash mode the PHYSICAL dissolved-CO2 mass is X_sat*(1-S_n)*c per
+        # pore volume (rho_w units), the same scale as the gas mass rho_n*S_n,
+        # so gas + diss is directly comparable to the injected gas mass.  In
+        # kinetic mode keep the legacy unit (factor 1) for back-compatibility.
+        diss_scale = (float(self.X_sat)
+                      if (self.dissolution_mode == 'flash' and self.X_sat > 0.0)
+                      else 1.0)
         local_gas = float(np.sum(w * float(self.rho_n) * S_n[:size]))
-        local_dis = float(np.sum(w * (1.0 - S_n[:size]) * c[:size]))
+        local_dis = float(np.sum(w * diss_scale * (1.0 - S_n[:size]) * c[:size]))
         gas = comm.allreduce(local_gas, op=MPI.SUM)
         diss = comm.allreduce(local_dis, op=MPI.SUM)
 
@@ -3134,7 +3271,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["stride_n"]    = self.stride[1]
         argsDict["c_dof"] = getattr(self.coefficients, "c_dof",
                                     np.zeros_like(self.u[1].dof))
-        argsDict["k_d"]   = float(self.coefficients.k_d)
+        # In flash mode the once-per-step nodal dissolutionFlash owns the
+        # gas<->brine exchange, so the in-residual kinetic R_diss MUST be off
+        # (pass k_d=0) to avoid double counting; self.coefficients.k_d is kept
+        # only for the diagnostic.
+        argsDict["k_d"]   = (0.0 if self.coefficients.dissolution_mode == 'flash'
+                             else float(self.coefficients.k_d))
         argsDict["c_sat"] = float(self.coefficients.c_sat)
         # CO2 injection: build the per-node source field consumed by the C++
         # gas-equation source term (applied like R_diss, opposite sign).
@@ -3678,7 +3820,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # to evaluate; defaulting to k_d=0 keeps legacy Jacobian unchanged.
         argsDict["c_dof"] = getattr(self.coefficients, "c_dof",
                                     np.zeros_like(self.u[1].dof))
-        argsDict["k_d"]   = float(self.coefficients.k_d)
+        # In flash mode the once-per-step nodal dissolutionFlash owns the
+        # gas<->brine exchange, so the in-residual kinetic R_diss MUST be off
+        # (pass k_d=0) to avoid double counting; self.coefficients.k_d is kept
+        # only for the diagnostic.
+        argsDict["k_d"]   = (0.0 if self.coefficients.dissolution_mode == 'flash'
+                             else float(self.coefficients.k_d))
         argsDict["c_sat"] = float(self.coefficients.c_sat)
         argsDict["globalJacobian"] = jacobian.getCSRrepresentation()[2]
         argsDict["delta_x_ij"] = self.delta_x_ij

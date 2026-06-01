@@ -1548,6 +1548,10 @@ inline
                   // and OVERWRITES globalResidual[i], so we must NOT add here).
                   // The boundary flux Jacobian is assembled in calculateJacobian.
                   boundary_integral[gi] += elementResidual_u[i];
+                  // FCT bounds at the boundary (used by the explicit FCT
+                  // post-step when FCT=True; harmless otherwise).
+                  min_u_bc[gi] = fmin(min_u_bc_local,min_u_bc[gi]);
+                  max_u_bc[gi] = fmax(max_u_bc_local,max_u_bc[gi]);
                 }
               else
                 {
@@ -1859,7 +1863,12 @@ inline
                       // frozen edge coefficient a_ij >= 0 (advection upwind + diffusion)
                       const double a_ij     = T_neg*(rho_up/rho_f) + D_neg;
                       ith_upwind_flux_term_mass += -a_ij*delta_c;
-                      dLow.data()[ij] = a_ij;   // stored for calculateJacobian
+                      // dLow stores the SYMMETRIC graph viscosity used by the
+                      // explicit FCT post-step (Kuzmin antidiffusive flux, which
+                      // must be antisymmetric per edge -> needs symmetric dLow,
+                      // NOT the directional a_ij).  calculateJacobian recomputes
+                      // a_ij directly from T,D, so it no longer reads dLow.
+                      dLow.data()[ij] = fmax(fabs(T_ij), fabs(TransposeTransportMatrix[ij]));
                     }
                   else
                     dLow.data()[ij] = 0.0;
@@ -2038,8 +2047,18 @@ inline
                   int j = csrColumnOffsets_DofLoops.data()[offset];
                   if (i != j)
                     {
-                      // off-diagonal upwind flux: J_ij = -a_ij  (a_ij = dLow[ij])
-                      const double a_ij = dLow.data()[ij];
+                      // off-diagonal upwind flux: J_ij = -a_ij.  Recompute a_ij
+                      // from the (frozen) transport/diffusion matrices and the
+                      // current iterate -- dLow now stores the symmetric FCT
+                      // viscosity, not a_ij.  Matches the residual exactly.
+                      const double T_ij  = TransportMatrix[ij];
+                      const double D_ij  = DiffusionMatrix[ij];
+                      const double cj    = u_dof.data()[j];
+                      const double rho_cj= rho_f*(1.0 + (drho_du/rho_f)*cj);
+                      const double T_neg = fmax(0.0, -T_ij);
+                      const double D_neg = fmax(0.0, -D_ij);
+                      const double rho_up= (-T_ij*(cj - ci) <= 0.0) ? rho_ci : rho_cj;
+                      const double a_ij  = T_neg*(rho_up/rho_f) + D_neg;
                       globalJacobian.data()[ij] += -a_ij;
                       sum_a += a_ij;
                     }
@@ -2694,9 +2713,12 @@ inline
             double solnmj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solnj)*solnj;
             double uDotLowj = (mLowj - solnmj)/dt;
             // i-th row of flux correction matrix
-            if (STABILIZATION_TYPE == STABILIZATION::Kuzmin)
+            if (STABILIZATION_TYPE == STABILIZATION::Kuzmin ||
+                STABILIZATION_TYPE == STABILIZATION::ImplicitEV)
               {
-              
+                // ImplicitEV uses the same Kuzmin antidiffusive flux: consistent
+                // mass correction + symmetric graph viscosity dLow*(mLow_i-mLow_j).
+                // uLow here is the converged implicit (Newton) low-order solution.
                 FluxCorrectionMatrix[ij] = dt*(MassMatrix.data()[ij]*(uDotLowi-uDotLowj)
                                                + dLow.data()[ij]*(mLowi-mLowj));
               }
