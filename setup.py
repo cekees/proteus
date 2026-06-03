@@ -226,6 +226,15 @@ EXTENSIONS_TO_BUILD = [
     ),
 
     Extension(
+        'm_comp_co2.cm_comp_co2',
+        sources=['proteus/m_comp_co2/cm_comp_co2.cpp'],
+        depends=['proteus/m_comp_co2/m_comp_co2.h', 'proteus/m_comp_co2/psk_comp.h', 'proteus/m_comp_co2/co2_brine_flash.h', 'proteus/m_comp_co2/co2_brine_eos.h', 'proteus/m_comp_co2/jet2.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_xtensor_include(),
+        language='c++',
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
+    ),
+
+    Extension(
         'elastoplastic.cElastoPlastic',
         sources=['proteus/elastoplastic/cElastoPlastic.cpp'],
         define_macros=[('PROTEUS_LAPACK_H',
@@ -834,6 +843,7 @@ def setup_given_extensions(extensions):
                       'proteus.richards',
                     #   'proteus.flow',
                       'proteus.mphase_co2',
+                      'proteus.m_comp_co2',
                       'proteus.elastoplastic',
                       'proteus.mbd',
                       'proteus.test_utils',
