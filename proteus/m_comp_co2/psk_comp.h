@@ -470,9 +470,10 @@ inline void bc_pc_from_Se(const double Se,
   // finite jump of size 1/alpha at Se = 1 and stalled Newton whenever an
   // iterate crossed this threshold.
   //
-  // Derivative discontinuity remains at Se = 1 (dpc/dSe goes from
-  // -(1/lambda)/alpha to 0), but this is a finite kink in slope, not a
-  // value jump, and Newton tolerates it.
+  // C1 at Se = 1: the Se >= 1 ramp's left slope is matched to the BC branch
+  // slope -(1/lambda)/alpha (see that branch), so dpc/dSe is now continuous
+  // across gas appearance.  (Previously the ramp left with slope 0, leaving a
+  // slope kink that mispredicted Newton steps overshooting across Se = 1.)
   // ----------------------------------------------------------------------
   const double delta_smooth = 5.0e-2;
 
@@ -484,15 +485,34 @@ inline void bc_pc_from_Se(const double Se,
   }
 
   if (Se >= 1.0) {
-    // Smooth ramp from pc(1) = 1/alpha down to pc(1+delta) = 0.
-    const double t        = (Se - 1.0) / delta_smooth;
-    const double phi      = 1.0 - 3.0 * t * t + 2.0 * t * t * t;
-    const double dphi_dt  = -6.0 * t + 6.0 * t * t;
-    const double d2phi_dt2 = -6.0 + 12.0 * t;
+    // Non-physical overshoot region (S_g < 0, only reached when a Newton iterate
+    // crosses gas appearance from above).  Cubic-Hermite ramp from pc(1) = 1/alpha
+    // (the Brooks-Corey entry pressure p_d) down to pc(1+delta) = 0.
+    //
+    // C1 ACROSS GAS APPEARANCE: the LEFT-end slope is matched to the BC branch
+    // slope at Se = 1, dpc/dSe = -1/(alpha*lam) (see the Se in [Se_min_pc,1)
+    // branch below).  The earlier ramp used phi'(0) = 0, leaving a slope kink at
+    // Se = 1 (BC side -p_d/lam vs ramp side 0); a Newton iterate overshooting
+    // across Se = 1 then saw an inconsistent linearization and mispredicted the
+    // step.  Right end keeps value 0 and slope 0 so pc joins the pc = 0 region C1.
+    //
+    // Hermite basis on t = (Se - 1)/delta in [0,1] with endpoints
+    //   left  (t=0): value p_d = 1/alpha, slope_t m0_t = (-1/(alpha*lam))*delta
+    //   right (t=1): value 0,             slope_t 0
+    // so only H00 (value) and H10 (left slope) contribute.
     const double inv_alpha = 1.0 / alpha;
-    pc        = inv_alpha * phi;
-    Dpc_DSe   = inv_alpha * dphi_dt / delta_smooth;
-    D2pc_DSe2 = inv_alpha * d2phi_dt2 / (delta_smooth * delta_smooth);
+    const double m0_t = (-inv_alpha / lam) * delta_smooth;   // BC slope*delta at Se=1
+    const double t  = (Se - 1.0) / delta_smooth;
+    const double t2 = t * t, t3 = t2 * t;
+    const double H00  = 2.0 * t3 - 3.0 * t2 + 1.0;
+    const double H10  = t3 - 2.0 * t2 + t;
+    const double dH00 = 6.0 * t2 - 6.0 * t;
+    const double dH10 = 3.0 * t2 - 4.0 * t + 1.0;
+    const double d2H00 = 12.0 * t - 6.0;
+    const double d2H10 = 6.0 * t - 4.0;
+    pc        = H00 * inv_alpha + H10 * m0_t;
+    Dpc_DSe   = (dH00 * inv_alpha + dH10 * m0_t) / delta_smooth;
+    D2pc_DSe2 = (d2H00 * inv_alpha + d2H10 * m0_t) / (delta_smooth * delta_smooth);
     return;
   }
 

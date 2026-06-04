@@ -3569,8 +3569,189 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.stabilization.accumulateSubgridMassHistory(self.q)
         logEvent("Global residual",level=9,data=r)
         self.nonlinear_function_evaluations += 1
+        # Per-Newton-iteration residual decomposition (divergence triage).
+        # Enable with MCOMP_RES_DBG=1.  Unlike the postStep [gas budget] line,
+        # this fires on EVERY residual evaluation -- so it still reports on a
+        # step that diverges before it can converge.
+        # Suppress during the FD-Jacobian probe: the probe's internal residual
+        # re-evaluations are rank-local (esp. the targeted row dump), and
+        # _log_residual_terms does an MPI allreduce -- calling it from only the
+        # owning rank deadlocks the others.  Also de-spams the probe.
+        if os.environ.get("MCOMP_RES_DBG") and not getattr(self, "_in_fd_probe", False):
+            self._log_residual_terms(self.timeIntegration.t, r)
         if self.globalResidualDummy is None:
             self.globalResidualDummy = np.zeros(r.shape,'d')
+
+    def _log_residual_terms(self, t, r):
+        r"""Per-residual-evaluation decomposition for divergence triage.
+
+        Enabled with MCOMP_RES_DBG=1.  Logged on EVERY residual evaluation
+        (unlike the [gas budget]/[Mass balance] lines, which run in postStep and
+        so are never reached on a step that diverges).  For the assembled
+        residual r it reports, each Newton iteration:
+          * per-component global ||r||_2 (and the change d= since the previous
+            evaluation) and global ||r||_inf -- the component whose norm climbs
+            is where Newton is diverging;
+          * the rank-0-local node carrying max|r| in each component: mesh node,
+            (x,y), material flag, and the current p and z there -- tells you
+            WHERE (which facies / front) the blow-up sits;
+          * the kernel-exported per-term comp-1 (CO2/z) budget for THIS eval
+            (accum / flux / sink / injection / boundary) -- the term whose
+            magnitude tracks the growth is the culprit term;
+          * a non-finite scan flagging the first NaN/Inf DOF.
+
+        Reads-only; no MPI collective is gated behind a rank test (allreduce is
+        called on every rank, printing on rank 0) so it is deadlock-safe in
+        parallel.
+        """
+        try:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            rank = comm.Get_rank()
+        except Exception:
+            comm = None
+            rank = 0
+        off = list(self.offset); strd = list(self.stride)
+        nfree = list(self.nFreeDOF_global)
+        pdof = np.asarray(self.u[0].dof)
+        zdof = np.asarray(self.u[1].dof) if self.nc >= 2 else None
+        f2n_u = np.asarray(self.freeDOFToNode_u)
+        X = np.asarray(self.mesh.nodeArray)
+        mat = np.asarray(self.nodeMaterialTypes_n)
+        names = {0: 'p', 1: 'z'}
+        it = int(getattr(self, 'nonlinear_function_evaluations', -1))
+        nsize = int(comm.Get_size()) if comm is not None else 1
+        # Owned-vs-ghost split.  In parallel the local free-DOF / node arrays
+        # carry a trailing ghost layer; those rows are NOT owned equations, so
+        # they must be excluded from the global ||r|| (otherwise shared DOFs are
+        # double-counted across ranks and the printed norm disagrees with the
+        # solver's own owned-only PETSc norm).  Mesh nodes [0, nNodes_owned) are
+        # owned on this rank; the rest are ghosts.
+        nodes_owned = int(getattr(self.mesh, 'nNodes_owned',
+                                  getattr(self.mesh, 'nNodes_global', X.shape[0])))
+
+        def _owned_mask(ci):
+            # boolean mask over this component's free-DOF slice: True = owned.
+            nf = int(nfree[ci])
+            if ci == 0:
+                m = np.zeros((nf,), dtype=bool)
+                k = min(nf, f2n_u.shape[0])
+                m[:k] = f2n_u[:k] < nodes_owned
+                return m
+            # comp-1 (z): no Dirichlet, free-DOF index == mesh-node index.
+            return np.arange(nf) < nodes_owned
+
+        def _is_partition_boundary(ci, li):
+            # owned free-DOF li whose stencil reaches a ghost node sits on a
+            # partition cut -- the prime suspect for a parallel-only blow-up
+            # (cross-cut flux inconsistency) vs an interior (front) blow-up.
+            try:
+                if ci == 0:
+                    rp = getattr(self, 'comp0_rowptr', None)
+                    cidx = getattr(self, 'comp0_colind', None)
+                    if rp is None or cidx is None or li + 1 >= rp.shape[0]:
+                        return -1
+                    for off2 in range(int(rp[li]), int(rp[li + 1])):
+                        jn = int(f2n_u[cidx[off2]]) if cidx[off2] < f2n_u.shape[0] else -1
+                        if jn >= nodes_owned:
+                            return 1
+                    return 0
+                rp = getattr(self, 'comp1_rowptr', None)
+                cidx = getattr(self, 'comp1_colind', None)
+                if rp is None or cidx is None or li + 1 >= rp.shape[0]:
+                    return -1
+                for off2 in range(int(rp[li]), int(rp[li + 1])):
+                    if int(cidx[off2]) >= nodes_owned:
+                        return 1
+                return 0
+            except Exception:
+                return -1
+
+        # non-finite scan (rank-local; first offending global index).
+        nfin_local = 0 if np.all(np.isfinite(r)) else 1
+        nfin = comm.allreduce(nfin_local, op=MPI.SUM) if comm is not None else nfin_local
+        if nfin and nfin_local:
+            bad = int(np.argmax(~np.isfinite(r)))
+            logEvent("[res dbg] t={:.4e} it={} rank={} *** NON-FINITE r at global "
+                     "idx {} (value={}) ***".format(float(t), it, rank, bad, r[bad]),
+                     level=1)
+
+        if not hasattr(self, '_res_dbg_prev'):
+            self._res_dbg_prev = {}
+        for ci in range(self.nc):
+            sl = r[off[ci]:off[ci] + strd[ci] * nfree[ci]:strd[ci]]
+            owned = _owned_mask(ci)
+            slo = sl[owned] if sl.size else sl
+            ss_local = float(np.sum(slo * slo)) if slo.size else 0.0
+            # This rank's owned argmax + full detail tuple.  EVERY rank assembles
+            # its own detail; we gather to rank 0 and rank 0 picks/prints the
+            # global max.  (proteus logEvent emits only on rank 0, so the owner
+            # rank cannot print the localization itself -- it would be dropped.)
+            node = -1; xloc = 0.0; yloc = 0.0; m = -1; bnd = -1
+            pv = float('nan'); zv = float('nan')
+            if slo.size:
+                li_owned = int(np.argmax(np.abs(slo)))
+                linf_local = float(np.abs(slo[li_owned]))
+                li_local = int(np.flatnonzero(owned)[li_owned])
+                node = int(f2n_u[li_local]) if (ci == 0 and li_local < f2n_u.shape[0]) else int(li_local)
+                if node < X.shape[0]:
+                    xloc = float(X[node][0]); yloc = float(X[node][1])
+                if node < mat.shape[0]:
+                    m = int(mat[node])
+                if node < pdof.shape[0]:
+                    pv = float(pdof[node])
+                if zdof is not None and node < zdof.shape[0]:
+                    zv = float(zdof[node])
+                bnd = _is_partition_boundary(ci, li_local)
+            else:
+                linf_local = 0.0
+            detail = (linf_local, rank, node, xloc, yloc, m, bnd, pv, zv)
+            if comm is not None:
+                ss = comm.allreduce(ss_local, op=MPI.SUM)
+                per_rank = comm.gather(np.sqrt(ss_local), root=0)
+                details = comm.gather(detail, root=0)
+            else:
+                ss = ss_local
+                per_rank = [np.sqrt(ss_local)]
+                details = [detail]
+            l2 = float(np.sqrt(ss))
+            prev = self._res_dbg_prev.get(ci, l2)
+            self._res_dbg_prev[ci] = l2
+
+            if rank == 0:
+                gmax, owner, gnode, gx, gy, gm, gbnd, gp, gz = max(details, key=lambda d: d[0])
+                logEvent("[res dbg] t={:.4e} it={} comp{}({}) ||r||2={:.4e} "
+                         "d={:+.3e} ||r||inf={:.4e}@rank{} node{} "
+                         "(x={:.4f},y={:.4f}) mat={} cut={} p={:.4e} z={:.4e}"
+                         .format(float(t), it, ci, names.get(ci, '?'), l2,
+                                 l2 - prev, float(gmax), int(owner), int(gnode),
+                                 float(gx), float(gy), int(gm), int(gbnd),
+                                 float(gp), float(gz)), level=1)
+                if nsize > 1 and per_rank is not None:
+                    # top-5 ranks by owned ||r||2 -- one rank dominating points
+                    # at a partition-local (cut) divergence.
+                    top = sorted(enumerate(per_rank), key=lambda kv: -kv[1])[:5]
+                    pr = " ".join("r{}={:.2e}".format(k, v) for k, v in top)
+                    logEvent("[res dbg] t={:.4e} it={} comp{} top5||r||2: {}"
+                             .format(float(t), it, ci, pr), level=1)
+
+        # per-term comp-1 (CO2/z) budget for THIS residual evaluation (owned only).
+        gb = getattr(self, 'gas_budget_node', None)
+        if gb is not None and self.nc >= 2:
+            gb = np.asarray(gb); n = gb.shape[0] // 6
+            if n > 0:
+                ns = min(nfree[1], n, nodes_owned)
+                terms_local = [float(np.sum(gb[k * n:k * n + ns])) for k in range(6)]
+                if comm is not None:
+                    terms = [comm.allreduce(v, op=MPI.SUM) for v in terms_local]
+                else:
+                    terms = terms_local
+                if rank == 0:
+                    acc, flx, snk, inj, bnd, tot = terms
+                    logEvent("[res dbg] t={:.4e} it={} z-budget accum={:+.4e} "
+                             "flux={:+.4e} sink={:+.4e} inj={:+.4e} bnd={:+.4e} "
+                             "total={:+.4e}".format(float(t), it, acc, flx, snk,
+                                                    inj, bnd, tot), level=1)
 
     def invert(self, u, r=None, ulow=None):
         """
@@ -3886,14 +4067,37 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # mid-Newton tangent).  Compares the assembled globalJacobian against
         # (R(u+eps e_j) - R(u))/eps for a sample of columns and reports the
         # worst row/col mismatches, classified interior / boundary / injection.
-        _fd_env = os.environ.get("MCOMP_FD_JAC")
-        if _fd_env is not None and not getattr(self, "_fd_done", False):
-            _target = int(_fd_env) if _fd_env.lstrip("-").isdigit() else 5
-            if self.nonlinear_function_jacobian_evaluations >= _target:
+        #
+        # Alternatively set MCOMP_FD_JAC_TIME=<t> to fire on the FIRST Jacobian
+        # eval at timeIntegration.t >= t (more robust than counting jac evals
+        # when you want the first Newton iterate of a specific diverging step --
+        # e.g. MCOMP_FD_JAC_TIME=1800 captures the still-finite tangent before
+        # the z<0 overshoot detonates).  Either trigger arms the probe.
+        _fd_env  = os.environ.get("MCOMP_FD_JAC")
+        _fd_time = os.environ.get("MCOMP_FD_JAC_TIME")
+        if (_fd_env is not None or _fd_time is not None) \
+                and not getattr(self, "_fd_done", False):
+            _fire = False
+            if _fd_time is not None:
+                # Fire on the (1 + MCOMP_FD_JAC_SKIP)-th Jacobian eval at t>=_fd_time.
+                # SKIP=0 (default) -> u0 / onset (S_g~0).  SKIP=3 probes a DEVELOPED
+                # two-phase iterate (e.g. Newton it 3, ||r||~1) to test whether the
+                # tangent stays consistent once gas has grown, not just at appearance.
+                _skip = int(os.environ.get("MCOMP_FD_JAC_SKIP", "0"))
+                if float(self.timeIntegration.t) >= float(_fd_time):
+                    self._fd_skip_seen = getattr(self, "_fd_skip_seen", 0)
+                    _fire = (self._fd_skip_seen >= _skip)
+                    self._fd_skip_seen += 1
+            else:
+                _target = int(_fd_env) if _fd_env.lstrip("-").isdigit() else 5
+                _fire = self.nonlinear_function_jacobian_evaluations >= _target
+            if _fire:
                 try:
+                    self._in_fd_probe = True   # gate off the MPI-collective res log
                     self._fd_jacobian_probe(jacobian)
                 finally:
                     self._fd_done = True
+                    self._in_fd_probe = False
         return jacobian
 
     def _fd_jacobian_probe(self, jacobian):
@@ -3975,6 +4179,108 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 if int(ii) not in have:
                     miss.append((float(fd[ii]), int(ii), int(j)))
 
+        # ---- targeted single-row dump (MCOMP_FD_JAC_ROW=<mesh node>|auto) ----
+        # Dump the FULL comp-0 AND comp-1 equation rows at the given mesh node:
+        # for every column in each row's CSR sparsity, perturb that column and
+        # read A_ij vs FD_ij at the target row.  Lets you see exactly which
+        # coupling (which neighbour node / which component column) is wrong --
+        # e.g. the 2x (1,0) flux off-diagonal at an injection-front node.
+        # MCOMP_FD_JAC_ROW=auto (or an out-of-range node) auto-targets the
+        # comp-1 node carrying the largest |A-FD| in the column sample, so it
+        # always lands on the worst node regardless of mesh / node numbering.
+        # SERIAL-ONLY: the row dump is rank-local (only the rank owning the
+        # target node enters the loop), but getResidual contains an MPI
+        # collective (scatter_forward_insert of the gate arrays), so a rank-local
+        # loop deadlocks the other ranks in parallel.  In serial that scatter is
+        # a no-op.  Run the coarse mesh serially for the row dump.
+        try:
+            from mpi4py import MPI as _MPI
+            _nranks = _MPI.COMM_WORLD.Get_size()
+        except Exception:
+            _nranks = 1
+        row_records = []   # (comp_eq, row, col, a_val, fd_val, rel)
+        _row_env = os.environ.get("MCOMP_FD_JAC_ROW")
+        if _row_env is not None and _nranks > 1:
+            logEvent("[FD JAC PROBE] targeted row dump SKIPPED in parallel "
+                     "({} ranks); rerun serial (mpiexec -n 1 / no mpiexec) for "
+                     "the row dump.".format(_nranks), level=1)
+            _row_env = None
+        if _row_env is not None:
+            nd_t = -1
+            if _row_env.lstrip("-").isdigit():
+                _c = int(_row_env)
+                if 0 <= _c < int(self.mesh.nNodes_global):
+                    nd_t = _c
+            elif _row_env.strip().lower() == "auto-front":
+                # FRONT auto-target: among nodes with z > zmin (the CO2 plume,
+                # where the bubble-point stiffness lives -- NOT the quiescent
+                # boundary), pick the one with the largest (1,1) diagonal |A-FD|
+                # via a quick per-node diagonal FD.  This lands on the 2x
+                # mis-weighting that drives the t=1800 detonation, skipping the
+                # large-but-benign y=0 boundary phantoms.
+                zmin = float(os.environ.get("MCOMP_FD_JAC_ZMIN", "1.0e-4"))
+                zdof = np.asarray(self.u[1].dof)
+                nN   = int(self.mesh.nNodes_global)
+                cand = np.where(zdof[:nN] > zmin)[0]
+                # bound cost: keep the top-N front nodes by z.
+                ncap = int(os.environ.get("MCOMP_FD_JAC_FRONT_CAP", "150"))
+                if cand.shape[0] > ncap:
+                    cand = cand[np.argsort(zdof[cand])[-ncap:]]
+                worst = -1.0
+                for nd in cand.tolist():
+                    row = off[1] + strd[1] * nd          # comp-1 diagonal row
+                    if row < 0 or row >= dim:
+                        continue
+                    o_diag = -1
+                    for o in range(int(rowptr[row]), int(rowptr[row + 1])):
+                        if colind[o] == row:
+                            o_diag = o; break
+                    if o_diag < 0:
+                        continue
+                    du = eps * max(1.0, abs(u0[row]))
+                    up = np.copy(u0); up[row] += du
+                    self.getResidual(up, rp)
+                    fd = float((rp[row] - r0[row]) / du)
+                    dab = abs(float(A[o_diag]) - fd)
+                    if dab > worst:
+                        worst = dab; nd_t = nd
+                logEvent("[FD JAC PROBE] MCOMP_FD_JAC_ROW=auto-front targeted node "
+                         "{} (z>{:.1e}: {} cand, worst (1,1)-diag |A-FD|={:.3e})"
+                         .format(nd_t, zmin, int(cand.shape[0]), worst), level=1)
+            if nd_t < 0:   # 'auto' or out-of-range -> worst comp-1 node sampled
+                worst = -1.0
+                for rel0, dab0, row0, col0, av0, fv0 in records:
+                    cci, cnode, _, _ = classify(row0)
+                    if cci == 1 and dab0 > worst:
+                        worst = dab0; nd_t = cnode
+                logEvent("[FD JAC PROBE] MCOMP_FD_JAC_ROW auto-targeted node {} "
+                         "(worst comp-1 |A-FD|={:.3e})".format(nd_t, worst), level=1)
+        if _row_env is not None and 0 <= nd_t < int(self.mesh.nNodes_global):
+            # node -> free-DOF index per component (comp-1 identity; comp-0 via
+            # the inverse of freeDOFToNode_u).
+            n2f_u = -np.ones(int(self.mesh.nNodes_global), 'i')
+            _valid = (f2n_u >= 0)
+            n2f_u[f2n_u[_valid]] = np.arange(f2n_u.shape[0])[_valid]
+            for ci in (0, 1) if self.nc >= 2 else (0,):
+                if ci == 0:
+                    free = int(n2f_u[nd_t]) if 0 <= nd_t < n2f_u.shape[0] else -1
+                else:
+                    free = nd_t
+                if free < 0 or free >= nfree[ci]:
+                    continue
+                row = off[ci] + strd[ci] * free
+                if row < 0 or row >= dim:
+                    continue
+                cols_r = colind[rowptr[row]:rowptr[row + 1]]
+                a_r    = A[rowptr[row]:rowptr[row + 1]]
+                for col, av in zip(cols_r.tolist(), a_r.tolist()):
+                    du = eps * max(1.0, abs(u0[col]))
+                    up = np.copy(u0); up[col] += du
+                    self.getResidual(up, rp)
+                    fv = float((rp[row] - r0[row]) / du)
+                    rel = abs(av - fv) / (abs(av) + abs(fv) + 1.0e-30)
+                    row_records.append((ci, int(row), int(col), float(av), fv, rel))
+
         # restore component DOFs to u0 and the full assembled matrix.
         self.getResidual(u0, rp)
         rowptr, colind, nzval = jacobian.getCSRrepresentation()
@@ -4012,6 +4318,19 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                          "(x={:.4f},y={:.4f}){}"
                          .format(fv, row, col, ci, node, x[0], x[1],
                                  "  INJ" if injf else ""))
+        if row_records:
+            lines.append("--- targeted row dump @ node {} "
+                         "(eqcomp | colcomp colnode (x,y) | A_ij | FD_ij | rel) ---"
+                         .format(nd_t))
+            for ci_eq, row, col, av, fv, rel in row_records:
+                cc, cnode, cx, cinj = classify(col)
+                flag = "  <<2x" if 0.4 <= rel <= 0.6 else (
+                       "  <<BAD" if rel > 0.1 else "")
+                lines.append("eq{}({}) <- col c{} node{} (x={:.4f},y={:.4f}){} "
+                             "A={:+.6e} FD={:+.6e} rel={:.3e}{}"
+                             .format(ci_eq, "p" if ci_eq == 0 else "z", cc, cnode,
+                                     cx[0], cx[1], "  INJ" if cinj else "",
+                                     av, fv, rel, flag))
         lines.append("===================================================")
         report = "\n".join(lines)
         logEvent(report, level=1)
