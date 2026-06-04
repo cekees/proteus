@@ -4370,6 +4370,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         double dram_dp_e[nDOF_trial_element], dram_dz_e[nDOF_trial_element];
         double Sg_e[nDOF_trial_element], Sg_old_e[nDOF_trial_element];
         double dSg_dp_e[nDOF_trial_element], dSg_dz_e[nDOF_trial_element];
+        double dlg_dz_o[nDOF_trial_element], dla_dz_o[nDOF_trial_element], dpc_dz_o[nDOF_trial_element]; // old-time z-derivs for lagged graph viscosity
         const double cg_eN  = krn_end_eN / mu_n;
         const double dMm_e  = ::m_comp_co2::eos::M_CO2_KG - ::m_comp_co2::eos::M_H2O_KG;
         for (int a = 0; a < nDOF_trial_element; a++) {
@@ -4440,6 +4441,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           rgm_old_e[a] = fo.rho_g*Mg_o;  ram_old_e[a] = fo.rho_a*Ma_o;
           lam_g_old_e[a] = cg_eN*fo.rho_g*fo.Y*krn_o;
           lam_a_old_e[a] = fo.rho_a*fo.X*krw_o;
+          const double dSe_o = (Se_o_raw>0.0 && Se_o_raw<1.0) ? -fo.dS_g_dz/one_m_Sr_eN : 0.0;
+          dlg_dz_o[a] = cg_eN*(fo.rho_g*fo.dY_dz*krn_o + fo.rho_g*fo.Y*dkrn_o*dSe_o);
+          dla_dz_o[a] = fo.drho_a_dz*fo.X*krw_o + fo.rho_a*fo.dX_dz*krw_o + fo.rho_a*fo.X*dkrw_o*dSe_o;
+          dpc_dz_o[a] = dpc_o*dSe_o;
         }
         // Edge pair flux. tau^e is symmetric and lambda_up picks the same
         // physical upstream node for (i,j) and (j,i), so F^e_ij = -F^e_ji
@@ -4561,6 +4566,25 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             elementJacobian_n_n[i][j] += -dF_dzj;
             elementJacobian_n_w[i][i] += -dF_dpi;
             elementJacobian_n_w[i][j] += -dF_dpj;
+            // Consistent STAB=2: lagged, capillary-GATED graph viscosity on z.
+            // Bounds z (LED) so the bubble-point overshoot can't form, but the
+            // gate_old factor suppresses it across the sand->seal entry-pressure
+            // jump so it does NOT diffuse CO2 through the seal (gas still pools &
+            // spreads laterally). Old-time coeff => constant in Newton => the
+            // +d/-d Jacobian is exact; antisymmetric => global CO2 mass conserved.
+            const double si = std::fabs(dlg_dz_o[i])*std::fabs(dPhi_g_old)
+                            + std::fabs(lam_g_old_e[i])*std::fabs(dpc_dz_o[i])
+                            + std::fabs(dla_dz_o[i])*std::fabs(dPhi_a_old);
+            const double sj = std::fabs(dlg_dz_o[j])*std::fabs(dPhi_g_old)
+                            + std::fabs(lam_g_old_e[j])*std::fabs(dpc_dz_o[j])
+                            + std::fabs(dla_dz_o[j])*std::fabs(dPhi_a_old);
+            const double dvg = cE*tau*gate_old*fmax(si,sj);
+            if (dvg > 0.0) {
+              const double Fv = dvg*(u_dof_n.data()[gN_e[j]] - u_dof_n.data()[gN_e[i]]);
+              elementResidual_n[i] -= Fv;
+              elementJacobian_n_n[i][i] += dvg;
+              elementJacobian_n_n[i][j] -= dvg;
+            }
           }
         }
       }
