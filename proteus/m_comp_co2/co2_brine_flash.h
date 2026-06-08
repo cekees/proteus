@@ -24,6 +24,17 @@ constexpr double PA_PER_BAR = 1.0e5;
 // 5e-4 leaked S_g~0.10 at z=1e-5; 1e-5 keeps spurious S_g ~5e-5 while staying C1.
 constexpr double EPS_Z      = 1.0e-5;   // composition-clamp smoothing band
 
+// Immiscible / incompressible limit (verification only) -- must match
+// co2_brine_flash.py.  When enabled (flashPZ immiscible=true, set from the
+// Coefficients 'immiscible' option) mutual solubility is suppressed (Xeq=0,
+// Yeq=1) and both phase densities are pinned to these constants, so the species
+// decouple into the classical immiscible two-phase saturation equations.  The
+// McWhorter-Sunada S_n similarity profile is invariant to the density values
+// (they divide out of each saturation equation); any IC/BC converting S_n <-> z
+// MUST use the SAME two constants.
+constexpr double RHO_A_IMM = 5.55e4;    // constant aqueous molar density [mol/m^3]
+constexpr double RHO_G_IMM = 2.00e4;    // constant gas     molar density [mol/m^3]
+
 struct FlashState {
     double S_g, X, Y, rho_a, rho_g, f_g;
     double dS_g_dp, dS_g_dz, dX_dp, dX_dz, dY_dp, dY_dz;
@@ -81,28 +92,43 @@ inline void _solubility_jet(double T_C, const Jet2& P_jet, bool liquid,
 }
 
 inline FlashState flashPZ(double p_Pa, double z, double T_C,
-                          double /*m_NaCl*/ = 0.0, double eps = EPS_Z) {
+                          double /*m_NaCl*/ = 0.0, double eps = EPS_Z,
+                          bool immiscible = false) {
     using namespace m_comp_co2::eos;
+    // Immiscible/incompressible verification limit (Xeq=0, Yeq=1, const
+    // densities); driven by the Coefficients 'immiscible' option via argsDict.
     Jet2 p_jet = Jet2::var_p(p_Pa);
     Jet2 z_jet = Jet2::var_z(z);
-    Jet2 pb_jet = p_jet*(1.0/PA_PER_BAR);
-    bool liquid = co2_is_liquid(T_C, pb_jet.v);
 
-    Jet2 Xeq, yH2O, V_jet;
-    _solubility_jet(T_C, pb_jet, liquid, Xeq, yH2O, V_jet);
-    Jet2 Yeq = 1.0 - yH2O;
-    Jet2 rho_g = 1.0e6*recip(V_jet);
+    Jet2 X, Y, rho_a, rho_g;
+    if (immiscible) {
+        // No mutual solubility (Xeq=0, Yeq=1), constant densities: f_g = z and
+        // the lever rule maps z -> S_g with all p-derivatives exactly zero, so
+        // the species balances reduce to the two saturation equations.
+        X = Jet2::cst(0.0);
+        Y = Jet2::cst(1.0);
+        rho_a = Jet2::cst(RHO_A_IMM);
+        rho_g = Jet2::cst(RHO_G_IMM);
+    } else {
+        Jet2 pb_jet = p_jet*(1.0/PA_PER_BAR);
+        bool liquid = co2_is_liquid(T_C, pb_jet.v);
 
-    Jet2 sx = jsqrt((z_jet - Xeq)*(z_jet - Xeq) + eps*eps);
-    Jet2 X = 0.5*(z_jet + Xeq - sx);
-    Jet2 sy = jsqrt((z_jet - Yeq)*(z_jet - Yeq) + eps*eps);
-    Jet2 Y = 0.5*(z_jet + Yeq + sy);
+        Jet2 Xeq, yH2O, V_jet;
+        _solubility_jet(T_C, pb_jet, liquid, Xeq, yH2O, V_jet);
+        Jet2 Yeq = 1.0 - yH2O;
+        rho_g = 1.0e6*recip(V_jet);
 
-    double rho_w = pure_water_density_gcc(T_C);
-    double Vphi = 37.51 - 9.585e-2*T_C + 8.740e-4*T_C*T_C - 5.044e-7*T_C*T_C*T_C;
-    double c0 = 18.015/rho_w;
-    Jet2 rho_a = (1.0e6*recip(c0 + (Vphi - c0)*X))
-               * jexp((p_jet - P_REF_BRINE)*C_F_BRINE);   // brine compressibility
+        Jet2 sx = jsqrt((z_jet - Xeq)*(z_jet - Xeq) + eps*eps);
+        X = 0.5*(z_jet + Xeq - sx);
+        Jet2 sy = jsqrt((z_jet - Yeq)*(z_jet - Yeq) + eps*eps);
+        Y = 0.5*(z_jet + Yeq + sy);
+
+        double rho_w = pure_water_density_gcc(T_C);
+        double Vphi = 37.51 - 9.585e-2*T_C + 8.740e-4*T_C*T_C - 5.044e-7*T_C*T_C*T_C;
+        double c0 = 18.015/rho_w;
+        rho_a = (1.0e6*recip(c0 + (Vphi - c0)*X))
+              * jexp((p_jet - P_REF_BRINE)*C_F_BRINE);   // brine compressibility
+    }
 
     Jet2 f_g = (z_jet - X)*recip(Y - X);
     Jet2 G = f_g*recip(rho_g);

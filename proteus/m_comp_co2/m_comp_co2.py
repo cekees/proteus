@@ -323,6 +323,16 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  # velocity; the flow Newton uses its own upwind potential flux.
                  # Default False -> legacy pointwise velocity_couple unchanged.
                  reconstruct_velocity_rt0=False,
+                 # Immiscible / incompressible limit (verification only).  When
+                 # immiscible=1 the (p,z) flash is forced to Xeq=0, Yeq=1 with
+                 # constant phase densities (co2_brine_flash RHO_A_IMM/RHO_G_IMM),
+                 # so mutual solubility and compressibility are suppressed and the
+                 # two species balances decouple into the classical immiscible
+                 # two-phase saturation equations (McWhorter-Sunada limit).  The
+                 # flag is passed to the kernel via argsDict['immiscible'] and
+                 # threaded into every flashPZ call.  Default 0 -> full
+                 # compositional behavior (reverts all immiscible overrides).
+                 immiscible=0,
                   ):
         self.VMS=VMS
         if density_model is None:
@@ -352,11 +362,11 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.anb_seepage_flux= 0.00
         #self.anb_seepage_flux_n =0.0
         # nc=2, primary vars (p_w, S_n).
-        # u[0] = p_w  (wetting-phase pressure in Pa)
-        # u[1] = S_n  (non-wetting saturation in [0, 1 - S_wr])
+        # u[0] = p  (pressure in Pa)
+        # u[1] = z  (overall CO2 composition / mole fraction in [0,1])
         # Compressibility beta is in 1/Pa and the user-supplied Ksw_types
         # array is interpreted as K/mu_w in 1/(Pa*s).
-        variableNames=['p_w', 'S_n']
+        variableNames=['p', 'z']
         nc=2
         # gas equation gains a diffusion term -div(a_n grad u_w).
         # Declaring diffusion[1][0][1]='nonlinear' and potential[1][0]='u'
@@ -381,6 +391,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         # when p_ref_n > 0; constant rho_n when p_ref_n == 0.
         self.rho_n = rho_n
         self.p_ref_n = p_ref_n
+        # Immiscible/incompressible verification limit (see __init__ argument).
+        self.immiscible = int(immiscible)
         self.beta=beta
         self.vgm_n_types = vgm_n_types
         self.vgm_alpha_types = vgm_alpha_types
@@ -2294,6 +2306,16 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # Component-1 (S_n) low-order EV buffers.
         self.mn_n        = np.zeros(self.u[1].dof.shape, 'd')
         self.quantDOFs_n = np.zeros(self.u[1].dof.shape, 'd')
+        # Post-step derived compositional fields for the XDMF archive.  Filled
+        # in calculateAuxiliaryQuantitiesAfterStep by the C++ flash from the
+        # primary (p,z) = (u[0].dof, u[1].dof); exposed to NumericalSolution via
+        # coefficients.archive_scalar_dofs so they ride into flow.xmf alongside
+        # p_w / S_n (named Sg0 / X0 / c_brine0 in the archive).
+        self.Sg_dof      = np.zeros(self.u[1].dof.shape, 'd')   # free-gas saturation
+        self.X_dof       = np.zeros(self.u[1].dof.shape, 'd')   # CO2 mole frac in brine
+        self.c_brine_dof = np.zeros(self.u[1].dof.shape, 'd')   # brine CO2 mass conc [kg/m^3]
+        self.coefficients.archive_scalar_dofs = {
+            'Sg': self.Sg_dof, 'X': self.X_dof, 'c_brine': self.c_brine_dof}
         self.anb_seepage_flux_n = np.zeros(self.u[0].dof.shape, 'd')
         self.freeDOFMaterialTypes = np.zeros((self.nFreeDOF_global[0],), 'i')
         self.freeDOFToNode_u = -np.ones((self.nFreeDOF_global[0],), 'i')
@@ -2686,6 +2708,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["rho"]                  = coef.rho
             argsDict["rho_n"]                = coef.rho_n
             argsDict["p_ref_n"]              = coef.p_ref_n
+            argsDict["immiscible"]           = int(coef.immiscible)
             argsDict["beta"]                 = coef.beta
             argsDict["gravity"]              = coef.gravity
             argsDict["alpha"]                = coef.vgm_alpha_types
@@ -2781,6 +2804,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["rho"]                  = coef.rho
             argsDict["rho_n"]                = coef.rho_n
             argsDict["p_ref_n"]              = coef.p_ref_n
+            argsDict["immiscible"]           = int(coef.immiscible)
             argsDict["beta"]                 = coef.beta
             argsDict["gravity"]              = coef.gravity
             argsDict["alpha"]                = coef.vgm_alpha_types
@@ -3221,6 +3245,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["rho"] = self.coefficients.rho
         argsDict["rho_n"] = self.coefficients.rho_n
         argsDict["p_ref_n"] = self.coefficients.p_ref_n
+        argsDict["immiscible"] = int(self.coefficients.immiscible)
         argsDict["beta"] = self.coefficients.beta
 
         argsDict["q_rho"]= self.q['rho']
@@ -3815,6 +3840,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["rho"] = self.coefficients.rho
         argsDict["rho_n"] = self.coefficients.rho_n
         argsDict["p_ref_n"] = self.coefficients.p_ref_n
+        argsDict["immiscible"] = int(self.coefficients.immiscible)
         argsDict["beta"] = self.coefficients.beta
         argsDict["gravity"] = self.coefficients.gravity
         argsDict["alpha"] = self.coefficients.vgm_alpha_types
@@ -3951,6 +3977,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["rho"] = self.coefficients.rho
         argsDict["rho_n"] = self.coefficients.rho_n
         argsDict["p_ref_n"] = self.coefficients.p_ref_n
+        argsDict["immiscible"] = int(self.coefficients.immiscible)
         argsDict["beta"] = self.coefficients.beta
 
         argsDict["q_rho"]= self.q['rho']
@@ -4396,7 +4423,22 @@ class LevelModel(proteus.Transport.OneLevelTransport):
     def calculateSolutionAtQuadrature(self):
         pass
     def calculateAuxiliaryQuantitiesAfterStep(self):
-        pass
+        # Refresh the derived compositional fields (Sg, X, c_brine) from the
+        # just-completed step's primary (p,z) so they archive consistently with
+        # this time level's p_w / S_n.  Uses the SAME C++ flashPZ as the
+        # residual (calculateFlashFields), so the XDMF fields are the solver's
+        # internal compositional state -- not an external post-process replica.
+        if getattr(self, 'Sg_dof', None) is None:
+            return
+        argsDict = cArgumentsDict.ArgumentsDict()
+        argsDict["p_dof"]      = self.u[0].dof
+        argsDict["z_dof"]      = self.u[1].dof
+        argsDict["Sg_dof"]     = self.Sg_dof
+        argsDict["X_dof"]      = self.X_dof
+        argsDict["c_dof"]      = self.c_brine_dof
+        argsDict["numDOFs"]    = self.u[1].dof.shape[0]
+        argsDict["immiscible"] = int(self.coefficients.immiscible)
+        self.m_comp_co2.calculateFlashFields(argsDict)
     #def postStep(self, t, firstStep=False):
     #    with open('seepage_flux_nnnnk', "a") as f:
     #        f.write("\n Time"+ ",\t" +"Seepage\n")

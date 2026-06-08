@@ -67,6 +67,7 @@ public:
   virtual void calculateResidual_entropy_viscosity(arguments_dict &args) = 0;
   virtual void calculateMassMatrix(arguments_dict &args)                 = 0;
   virtual void dissolutionFlash(arguments_dict &args)                    = 0;
+  virtual void calculateFlashFields(arguments_dict &args)                = 0;
 };
 
 template <class CompKernelType, int nSpace, int nQuadraturePoints_element, int nDOF_mesh_trial_element, int nDOF_trial_element, int nDOF_test_element, int nQuadraturePoints_elementBoundary>
@@ -93,6 +94,10 @@ public:
   // PSK_TYPE_member) at every top-level entry point once Python provides them.
   double T_C_member    = 20.0;   // temperature [degC]
   double m_NaCl_member = 0.0;    // salinity [mol/kg] (SP2005 salting-out is TODO)
+  // Immiscible/incompressible verification limit (McWhorter-Sunada).  Set (like
+  // PSK_TYPE_member) at every top-level entry point from argsDict["immiscible"];
+  // forces the flash to Xeq=0, Yeq=1 with constant phase densities.
+  bool immiscible_member = false;
   M_comp_co2() : nDOF_test_X_trial_element(nDOF_test_element * nDOF_trial_element), ck() { }
   // Wetting-equation coefficients in pressure / S_n form.
   // Primary variables:
@@ -164,7 +169,7 @@ public:
       const double z_cl = fmin(fmax(u_n, 1.0e-8), 1.0 - 1.0e-8);
       const double p_cl = fmax(u_w, 1.0e2);
       ::m_comp_co2::flash::FlashState fs =
-          ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member);
+          ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
       const double Sa    = 1.0 - fs.S_g;
       const double N     = fs.rho_g*fs.S_g + fs.rho_a*Sa;
       const double dN_dp = fs.drho_g_dp*fs.S_g + fs.rho_g*fs.dS_g_dp
@@ -249,7 +254,7 @@ public:
     const double z_cl     = fmin(fmax(u_n, 1.0e-8), 1.0 - 1.0e-8);
     const double p_cl     = fmax(u_w, 1.0e2);
     ::m_comp_co2::flash::FlashState f =
-        ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member);
+        ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
     o.S_g = f.S_g; o.dS_g_dp = f.dS_g_dp; o.dS_g_dz = f.dS_g_dz;
     o.rho_g = f.rho_g; o.rho_a = f.rho_a; o.Y = f.Y; o.X = f.X;
     o.drho_g_dp = f.drho_g_dp; o.drho_g_dz = f.drho_g_dz;
@@ -589,6 +594,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     int ENTROPY_TYPE = args.scalar<int>("ENTROPY_TYPE");
     // PSK closure selector for evaluateCoefficients (read from argsDict).
     PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
+    immiscible_member = (args.scalar<int>("immiscible") != 0);
     // FOR FCT
     xt::pyarray<double> &dLow                 = args.array<double>("dLow");
     xt::pyarray<double> &fluxMatrix           = args.array<double>("fluxMatrix");
@@ -717,7 +723,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           const double z0_m   = fmin(fmax(u_n_qp, 1.0e-8), 1.0 - 1.0e-8);
           const double p0_m   = fmax(u, 1.0e2);
           ::m_comp_co2::flash::FlashState fsm =
-              ::m_comp_co2::flash::flashPZ(p0_m, z0_m, T_C_member, m_NaCl_member);
+              ::m_comp_co2::flash::flashPZ(p0_m, z0_m, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
           const double Nm     = fsm.rho_g*fsm.S_g + fsm.rho_a*(1.0 - fsm.S_g);
           const double dNm_dp = fsm.drho_g_dp*fsm.S_g + fsm.rho_g*fsm.dS_g_dp
                               + fsm.drho_a_dp*(1.0-fsm.S_g) - fsm.rho_a*fsm.dS_g_dp;
@@ -766,7 +772,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double z_cl0     = fmin(fmax(u_n_qp, 1.0e-8), 1.0 - 1.0e-8);
         const double p_cl0     = fmax(u, 1.0e2);
         ::m_comp_co2::flash::FlashState fs0 =
-            ::m_comp_co2::flash::flashPZ(p_cl0, z_cl0, T_C_member, m_NaCl_member);
+            ::m_comp_co2::flash::flashPZ(p_cl0, z_cl0, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
         const double Se_a0 = fmin(fmax((1.0 - fs0.S_g - S_wr0) / one_m_Sr0, 0.0), 1.0);
         double KWr0 = 0.0, DKWr0 = 0.0, thW0 = 0.0, DthW0 = 0.0;
         double KNr0 = 0.0, DKNr0 = 0.0, pc0 = 0.0, dpc_dSe0 = 0.0, d2pc0 = 0.0;
@@ -824,13 +830,13 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       } //i
     } //elements
     //
-    // P3c STATUS: DEFERRED (boundary). This comp-0 (H2O) exterior loop is still
-    // the phase-based water Darcy trace flux (evaluateCoefficients_from_Se ->
-    // a_ext/f_ext -> exteriorNumericalFlux). Unlike the comp-1 boundaries it is
-    // ACTIVE in FluidFlower (open `p` Dirichlet faces), but the phase-based water
-    // flux is a good proxy there (H2O ~ single phase at those faces). Convert to
-    // the compositional boundary F_0.n when validating against an open boundary
-    // with appreciable CO2; see DESIGN "P3c flux -- BOUNDARIES DEFERRED".
+    // P3c STATUS: BOUNDARY PORTED. This comp-0 (H2O) exterior loop computes the
+    // compositional trace flux F_0.n = rho_g*(1-Y)*u_g + rho_a*(1-X)*u_a from the
+    // FLASH state (see the F_0.n block below, ~line 940; FD-verified in
+    // boundary0_test.cpp). evaluateCoefficients_from_Se is still called above but
+    // only to populate the water-velocity projection (ebqe_velocity_ext); it no
+    // longer feeds the residual flux. Active in FluidFlower (open `p` Dirichlet
+    // faces) and at the McWhorter-Sunada pressure inlet.
     //
     //loop over exterior element boundaries to calculate surface integrals and load into element and global residuals
     //
@@ -951,7 +957,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           const double z_clb   = fmin(fmax(u_n_ext_qp, 1.0e-8), 1.0 - 1.0e-8);
           const double p_clb   = fmax(u_ext, 1.0e2);
           ::m_comp_co2::flash::FlashState fsb =
-              ::m_comp_co2::flash::flashPZ(p_clb, z_clb, T_C_member, m_NaCl_member);
+              ::m_comp_co2::flash::flashPZ(p_clb, z_clb, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
           const double Se_ab = fmin(fmax((1.0 - fsb.S_g - S_wr_b)/one_m_Sr_b, 0.0), 1.0);
           double KWrb=0,DKWrb=0,thWb=0,DthWb=0,KNrb=0,DKNrb=0,pcb=0,dpc_dSeb=0,d2pcb=0;
           if (PSK_TYPE_member == 1) {
@@ -1102,9 +1108,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double p_cl     = fmax(u_w_qp,     1.0e2);
         const double p_cl_old = fmax(u_w_qp_old, 1.0e2);
         ::m_comp_co2::flash::FlashState fs_n =
-            ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member);
+            ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
         ::m_comp_co2::flash::FlashState fs_n_old =
-            ::m_comp_co2::flash::flashPZ(p_cl_old, z_cl_old, T_C_member, m_NaCl_member);
+            ::m_comp_co2::flash::flashPZ(p_cl_old, z_cl_old, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
         const double N_cur = fs_n.rho_g*fs_n.S_g + fs_n.rho_a*(1.0 - fs_n.S_g);
         const double N_old = fs_n_old.rho_g*fs_n_old.S_g
                            + fs_n_old.rho_a*(1.0 - fs_n_old.S_g);
@@ -1199,24 +1205,20 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     }
 
     // ============================================================================
-    // Comp-1 (S_n) exterior boundary loop -- STAB=0 path.
+    // Comp-1 (CO2 / z) exterior boundary loop -- STAB=0 path. COMPOSITIONAL.
     //
-    // P3c STATUS: DEFERRED (boundary). The interior gas flux is the compositional
-    // F_1; this boundary loop is still the phase-based (p_w,S_n) CG/Nitsche trace
-    // flux. Inert for FluidFlower (getDBC_Sn/getDBC_z returns None everywhere, so
-    // isDir_n==0 -> F_n.n=0). Convert to a compositional F_1.n + ghost-node TPFA
-    // boundary (see DESIGN_compositional_co2_brine.md "P3c flux -- BOUNDARIES
-    // DEFERRED") when a Dirichlet-z benchmark needs it.
-    //
-    // The STAB=0 calculateResidual originally added NOTHING to the gas equation
-    // on the boundary, so the comp-1 (S_n) Dirichlet BC was silently ignored
-    // (verified: S_n ~ 0.10 at a Dirichlet S_n=0 face). This loop is a faithful
-    // port of the comp-1 boundary loop in calculateResidual_entropy_viscosity,
-    // which itself mirrors Richards' exteriorNumericalFlux pattern:
-    //   isDir_n     : F_n.n = consistent flux (gravity + Darcy + capillary)
-    //                         + penalty*(u_n - bc_u_n)            [Nitsche]
-    //   not isDir_n : F_n.n = 0   (no-flow / closed -- no spurious boundary flux)
-    // so STAB=0 and STAB=2 now enforce identical comp-1 BCs.
+    // P3c STATUS: BOUNDARY PORTED (2026-06-06). Slot 1 is the overall CO2
+    // composition z, NOT a saturation. Computes the compositional molar CO2
+    // trace flux F_1.n = rho_g*Y*u_g + rho_a*X*u_a, mirroring the FD-verified
+    // interior element flux (~line 1152) and the STAB=2 boundary loop; every
+    // saturation-dependent property is recomputed from the FLASH saturation
+    // S_g(p,z). The surface term from div(F_1) by parts is +(F_1.n) N_i dS.
+    //   isDir_n     : F_1.n = consistent compositional flux
+    //                         + penalty*(z - z_BC)               [Nitsche]
+    //   not isDir_n : F_1.n = 0   (no-flow / closed -- no spurious boundary flux)
+    // so STAB=0 and STAB=2 now enforce identical compositional comp-1 BCs.
+    // McWhorter-Sunada drives this via getDBC_z at the inlet (z_BC = z(S_n_BC)).
+    // Jacobian is the matching (1,1)/(1,0) blocks in calculateJacobian.
     // ============================================================================
     for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++) {
       const int ebN = exteriorElementBoundariesArray.data()[ebNE];
@@ -1280,61 +1282,64 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double bc_u_n_ext_b = isDir_n * ebqe_bc_u_n_ext.data()[ebNE_kb]
                                   + (1 - isDir_n) * u_n_ext_b;
 
-        // Closure at the trace, in S_n form.
-        const double Se_b_raw = (1.0 - u_n_ext_b - S_wr_loc) / one_m_Sr_loc;
-        double Se_b;
-        if (Se_b_raw <= 0.0)      Se_b = 0.0;
-        else if (Se_b_raw >= 1.0) Se_b = 1.0;
-        else                      Se_b = Se_b_raw;
-        double KNr_b = 0.0, DKNr_b = 0.0;
-        if (PSK_TYPE_member == 1)
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
-        else
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
-        // Scale by measured end-point k_rn (FluidFlower Table 5; 1.0 default).
-        KNr_b  *= krn_end_eN;
-        DKNr_b *= krn_end_eN;
-        // Divide by gas viscosity so a_n_b, f_n_b inherit the 1/mu_n factor.
-        KNr_b  /= mu_n;
-        DKNr_b /= mu_n;
-        double pc_b = 0.0, dpc_dSn_b = 0.0, d2pc_dSn2_b = 0.0;
-        if (PSK_TYPE_member == 1)
-          proteus::m_comp_co2::psk::bc_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSn_b, d2pc_dSn2_b);
-        else
-          proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSn_b, d2pc_dSn2_b);
-        // dpc_dSn_b carries the dSe/du_n sign; mirror the EV-path convention.
-        const double dSe_du_n_b = (Se_b_raw <= 0.0 || Se_b_raw >= 1.0)
-                                ? 0.0 : -1.0 / one_m_Sr_loc;
-        dpc_dSn_b *= dSe_du_n_b;
-        // Linear gas EOS at the trace: rho_n(p_n) = c_n*(u_w + p_c(u_n))
-        // evaluated with the interior trace (matches the consistent-flux
-        // convention; Nitsche penalty handles the Dirichlet jump separately).
-        const double p_n_ext_b = u_w_ext_b + pc_b;
-        const double rho_n_loc_b = rho_n_compressible ? (c_n * p_n_ext_b) : rho_n;
-
-        double a_n_b[nnz], a_n_pc_b[nnz], f_n_b[nSpace];
-        for (int I = 0; I < nSpace; I++) f_n_b[I] = 0.0;
-        for (int I = 0; I < nSpace; I++) {
-          for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
-            const int J = a_colind.data()[ii];
-            a_n_b[ii]    = rho_n_loc_b * KNr_b * KWs_eN[ii];
-            a_n_pc_b[ii] = a_n_b[ii] * dpc_dSn_b;
-            f_n_b[I]    += rho_n_loc_b * rho_n_loc_b * KNr_b * KWs_eN[ii] * gravity.data()[J];
-          }
+        // ====================================================================
+        // P3c boundary (STAB=0): compositional comp-1 (CO2) trace flux F_1.n.
+        // Slot 1 is the overall CO2 composition z, NOT a saturation. Mirrors
+        // the FD-verified interior element flux F_1 = rho_g*Y*u_g + rho_a*X*u_a
+        // (~line 1152) and the STAB=2 boundary loop; every saturation-dependent
+        // property is recomputed from the FLASH saturation S_g(p,z) (psk
+        // closures on the wetting Se_a = (1-S_g-S_wr)/(1-S_wr)). Consistent flux
+        // on Dirichlet-z faces + a Nitsche penalty driving z at the trace toward
+        // bc_u_n_ext_b (= z_BC; McWhorter-Sunada inlet); no-flow faces contribute
+        // nothing (closed-box conservation). Jacobian is in calculateJacobian.
+        // ====================================================================
+        const double z_clb = fmin(fmax(u_n_ext_b, 1.0e-8), 1.0 - 1.0e-8);
+        const double p_clb = fmax(u_w_ext_b, 1.0e2);
+        ::m_comp_co2::flash::FlashState fsb =
+            ::m_comp_co2::flash::flashPZ(p_clb, z_clb, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
+        const double Se_ab = fmin(fmax((1.0 - fsb.S_g - S_wr_loc)/one_m_Sr_loc, 0.0), 1.0);
+        double KWr_b=0,DKWr_b=0,thW_b=0,DthW_b=0,KNr_b=0,DKNr_b=0,pc_b=0,dpc_dSe_b=0,d2pc_b=0;
+        if (PSK_TYPE_member == 1) {
+          proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_ab, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_ab, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::bc_pc_from_Se(Se_ab, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
+        } else {
+          proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_ab, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_ab, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_ab, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
         }
-
+        KNr_b *= krn_end_eN;
+        const double pcpb = dpc_dSe_b / one_m_Sr_loc;
+        const double Mbar_gb = fsb.Y*::m_comp_co2::eos::M_CO2_KG + (1.0 - fsb.Y)*::m_comp_co2::eos::M_H2O_KG;
+        const double Mbar_ab = fsb.X*::m_comp_co2::eos::M_CO2_KG + (1.0 - fsb.X)*::m_comp_co2::eos::M_H2O_KG;
+        const double rho_g_mass_b = fsb.rho_g*Mbar_gb;
+        const double rho_a_mass_b = fsb.rho_a*Mbar_ab;
         double F_n_dot_n = 0.0;
         for (int I = 0; I < nSpace; I++) {
-          F_n_dot_n += f_n_b[I] * normal_b[I];
+          double ua = 0.0, ug = 0.0;
           for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
             const int J = a_colind.data()[ii];
-            F_n_dot_n -= a_n_b[ii]    * grad_u_w_ext_b[J] * normal_b[I];
-            F_n_dot_n -= a_n_pc_b[ii] * grad_u_n_ext_b[J] * normal_b[I];
+            const double gradSa_J = -(fsb.dS_g_dp*grad_u_w_ext_b[J] + fsb.dS_g_dz*grad_u_n_ext_b[J]);
+            const double gp_a = grad_u_w_ext_b[J]                 - rho_a_mass_b*gravity.data()[J];
+            const double gp_g = grad_u_w_ext_b[J] + pcpb*gradSa_J - rho_g_mass_b*gravity.data()[J];
+            ua -= (KWr_b*KWs_eN[ii])      * gp_a;
+            ug -= (KNr_b*KWs_eN[ii]/mu_n) * gp_g;
           }
+          F_n_dot_n += (fsb.rho_g*fsb.Y*ug + fsb.rho_a*fsb.X*ua) * normal_b[I];
         }
         if (isDir_n) {
-          const double penalty = ebqe_penalty_ext.data()[ebNE_kb];
-          F_n_dot_n += penalty * (u_n_ext_b - bc_u_n_ext_b);   // Nitsche
+          // IIPG penalty scaled by the local comp-1 diffusion magnitude a_n
+          // (= rho_g*Y*krn/mu_n + rho_a*X*krw, times a representative K/mu_w).
+          // The framework penalty is const/h, UNSCALED by the coefficient; for
+          // comp-1 the ~1e4 molar density makes the bare penalty ~1e4x too weak
+          // to enforce z=z_BC, so the inlet floats (the McWhorter-Sunada
+          // convergence killer). Coefficient treated frozen in the Jacobian.
+          double Kw_rep = 0.0;
+          for (int ii = 0; ii < nnz; ii++) Kw_rep = fmax(Kw_rep, fabs(KWs_eN[ii]));
+          const double a_n_scale = (fsb.rho_g*fsb.Y*KNr_b/mu_n
+                                  + fsb.rho_a*fsb.X*KWr_b) * Kw_rep;
+          const double pen_eff = ebqe_penalty_ext.data()[ebNE_kb] * a_n_scale;
+          F_n_dot_n += pen_eff * (u_n_ext_b - bc_u_n_ext_b);   // Nitsche, drives z->z_BC
         } else {
           F_n_dot_n = 0.0;                                     // no-flow
         }
@@ -1462,6 +1467,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<int>    &csrColumnOffsets_eb_w_n                    = args.array<int>("csrColumnOffsets_eb_w_n");
     // PSK closure selector for evaluateCoefficients (read from argsDict).
     PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
+    immiscible_member = (args.scalar<int>("immiscible") != 0);
     int                  nExteriorElementBoundaries_global          = args.scalar<int>("nExteriorElementBoundaries_global");
     xt::pyarray<int>    &exteriorElementBoundariesArray             = args.array<int>("exteriorElementBoundariesArray");
     xt::pyarray<int>    &elementBoundaryElementsArray               = args.array<int>("elementBoundaryElementsArray");
@@ -1546,7 +1552,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double z_cl0 = fmin(fmax(u_n_qp, 1.0e-8), 1.0 - 1.0e-8);
         const double p_cl0 = fmax(u, 1.0e2);
         ::m_comp_co2::flash::FlashState fs0 =
-            ::m_comp_co2::flash::flashPZ(p_cl0, z_cl0, T_C_member, m_NaCl_member);
+            ::m_comp_co2::flash::flashPZ(p_cl0, z_cl0, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
         const double S_g0 = fs0.S_g, Sa0 = 1.0 - S_g0;
         // accumulation m_0 = phi*N*(1-z), N = rho_g*S_g + rho_a*S_a:
         const double N0     = fs0.rho_g*S_g0 + fs0.rho_a*Sa0;
@@ -1769,7 +1775,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           const double z_clb   = fmin(fmax(u_n_ext_qp_outer, 1.0e-8), 1.0 - 1.0e-8);
           const double p_clb   = fmax(u_ext, 1.0e2);
           ::m_comp_co2::flash::FlashState fsb =
-              ::m_comp_co2::flash::flashPZ(p_clb, z_clb, T_C_member, m_NaCl_member);
+              ::m_comp_co2::flash::flashPZ(p_clb, z_clb, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
           const double Sab = 1.0 - fsb.S_g;
           const double Se_rawb = (Sab - S_wr_b)/one_m_Sr_b;
           double Se_ab, dSeb_dp, dSeb_dz;
@@ -1943,7 +1949,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double z_cl_j = fmin(fmax(u_n,    1.0e-8), 1.0 - 1.0e-8);
         const double p_cl_j = fmax(u_w_qp, 1.0e2);
         ::m_comp_co2::flash::FlashState fs_j =
-            ::m_comp_co2::flash::flashPZ(p_cl_j, z_cl_j, T_C_member, m_NaCl_member);
+            ::m_comp_co2::flash::flashPZ(p_cl_j, z_cl_j, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
         const double S_g_j   = fs_j.S_g, Sa_j = 1.0 - S_g_j;
         // accumulation m_1 = phi*N*z, N = rho_g*S_g + rho_a*S_a:
         const double N_j     = fs_j.rho_g*S_g_j + fs_j.rho_a*Sa_j;
@@ -2078,14 +2084,14 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     }
 
     // ============================================================================
-    // Comp-1 (S_n) exterior boundary Jacobian -- STAB=0 path.
-    // Matching Jacobian for the comp-1 Dirichlet boundary residual term added
-    // to calculateResidual. Faithful port of the (1,1) + (1,0) boundary blocks
-    // from calculateResidual_entropy_viscosity:
-    //   (1,1): coefficient sens (df_n/du_n, da_n/du_n, da_n_pc/du_n) * trial_j
-    //          + capillary trial-fn variation - a_n_pc * grad N_j . n
+    // Comp-1 (CO2 / z) exterior boundary Jacobian -- STAB=0 path. COMPOSITIONAL.
+    // Matching Jacobian for the compositional F_1.n boundary residual term in
+    // calculateResidual. Mirrors the FD-verified interior comp-1 flux Jacobian
+    // (~line 1942) chain-ruled through the analytic flash, with the interior
+    // gradN_i replaced by the boundary normal n_I:
+    //   (1,1): d(F_1.n)/dz  (value-block * trial_j + grad-block . gradN_j)
     //          + Nitsche penalty * trial_j   (Dirichlet faces only)
-    //   (1,0): trial-fn variation of - a_n * grad N_j . n
+    //   (1,0): d(F_1.n)/dp  (value-block * trial_j + grad-block . gradN_j)
     // Gated on isDir_n: no-flow faces contribute nothing (matches the residual).
     // ============================================================================
     for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++) {
@@ -2152,74 +2158,90 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const int    isDir_n  = isDOFBoundary_n.data()[ebNE_kb];
         const double penalty  = ebqe_penalty_ext.data()[ebNE_kb];
 
-        // Closure at the trace + derivatives.
-        const double Se_b_raw = (1.0 - u_n_ext_b - S_wr_loc) / one_m_Sr_loc;
-        double Se_b, dSe_du_n_b;
-        if (Se_b_raw <= 0.0)      { Se_b = 0.0; dSe_du_n_b = 0.0; }
-        else if (Se_b_raw >= 1.0) { Se_b = 1.0; dSe_du_n_b = 0.0; }
-        else                      { Se_b = Se_b_raw; dSe_du_n_b = -1.0 / one_m_Sr_loc; }
-        double KNr_b = 0.0, DKNr_b = 0.0;
-        if (PSK_TYPE_member == 1)
+        // ====================================================================
+        // P3c boundary (STAB=0): compositional comp-1 (CO2) flux Jacobian.
+        // Matches the F_1.n residual boundary; mirrors the FD-verified interior
+        // comp-1 Jacobian (~line 1942) chain-ruled through the analytic flash,
+        // with the interior gradN_i replaced by the boundary normal n_I:
+        //   (1,1) d(F_1.n)/dz  + Nitsche penalty * trial_j (Dirichlet faces),
+        //   (1,0) d(F_1.n)/dp.
+        // ====================================================================
+        const double z_clb = fmin(fmax(u_n_ext_b, 1.0e-8), 1.0 - 1.0e-8);
+        const double p_clb = fmax(u_w_ext_b, 1.0e2);
+        ::m_comp_co2::flash::FlashState fsb =
+            ::m_comp_co2::flash::flashPZ(p_clb, z_clb, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
+        const double Sa_b = 1.0 - fsb.S_g;
+        const double Se_raw_b = (Sa_b - S_wr_loc) / one_m_Sr_loc;
+        double Se_b, dSe_dp_b, dSe_dz_b;
+        if (Se_raw_b <= 0.0)      { Se_b = 0.0; dSe_dp_b = 0.0; dSe_dz_b = 0.0; }
+        else if (Se_raw_b >= 1.0) { Se_b = 1.0; dSe_dp_b = 0.0; dSe_dz_b = 0.0; }
+        else { Se_b = Se_raw_b; dSe_dp_b = -fsb.dS_g_dp/one_m_Sr_loc; dSe_dz_b = -fsb.dS_g_dz/one_m_Sr_loc; }
+        double KWr_b=0,DKWr_b=0,thW_b=0,DthW_b=0,KNr_b=0,DKNr_b=0,pc_b=0,dpc_dSe_b=0,d2pc_b=0;
+        if (PSK_TYPE_member == 1) {
+          proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_b, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
           proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
-        else
+          proteus::m_comp_co2::psk::bc_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
+        } else {
+          proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_b, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
           proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
-        // Scale by measured end-point k_rn (FluidFlower Table 5; 1.0 default).
-        KNr_b  *= krn_end_eN;
-        DKNr_b *= krn_end_eN;
-        // Divide by gas viscosity so a_n_b, f_n_b inherit the 1/mu_n factor.
-        KNr_b  /= mu_n;
-        DKNr_b /= mu_n;
-        DKNr_b *= dSe_du_n_b;
-        double pc_b = 0.0, dpc_dSn_b = 0.0, d2pc_dSn2_b = 0.0;
-        if (PSK_TYPE_member == 1)
-          proteus::m_comp_co2::psk::bc_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSn_b, d2pc_dSn2_b);
-        else
-          proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSn_b, d2pc_dSn2_b);
-        dpc_dSn_b   *= dSe_du_n_b;
-        d2pc_dSn2_b *= dSe_du_n_b * dSe_du_n_b;
-        // Linear gas EOS at the boundary trace.
-        const double p_n_ext_b   = u_w_ext_b + pc_b;
-        const double rho_n_loc_b = rho_n_compressible ? (c_n * p_n_ext_b) : rho_n;
-
-        double a_n_b[nnz], da_n_du_n_b[nnz], da_n_du_w_b[nnz];
-        double a_n_pc_b[nnz], da_n_pc_du_n_b[nnz], da_n_pc_du_w_b[nnz];
-        double df_n_du_n_b[nSpace], df_n_du_w_b[nSpace];
-        for (int I = 0; I < nSpace; I++) { df_n_du_n_b[I] = 0.0; df_n_du_w_b[I] = 0.0; }
+          proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
+        }
+        KNr_b *= krn_end_eN;  DKNr_b *= krn_end_eN;
+        const double pcp_b     = dpc_dSe_b / one_m_Sr_loc;
+        const double dpcp_dp_b = (d2pc_b / one_m_Sr_loc) * dSe_dp_b;
+        const double dpcp_dz_b = (d2pc_b / one_m_Sr_loc) * dSe_dz_b;
+        const double dMm_b = ::m_comp_co2::eos::M_CO2_KG - ::m_comp_co2::eos::M_H2O_KG;
+        const double Mbar_g_b = fsb.Y*::m_comp_co2::eos::M_CO2_KG + (1.0-fsb.Y)*::m_comp_co2::eos::M_H2O_KG;
+        const double Mbar_a_b = fsb.X*::m_comp_co2::eos::M_CO2_KG + (1.0-fsb.X)*::m_comp_co2::eos::M_H2O_KG;
+        const double rho_g_mass_b = fsb.rho_g*Mbar_g_b, rho_a_mass_b = fsb.rho_a*Mbar_a_b;
+        const double drgm_dp_b = fsb.drho_g_dp*Mbar_g_b + fsb.rho_g*fsb.dY_dp*dMm_b;
+        const double drgm_dz_b =                          fsb.rho_g*fsb.dY_dz*dMm_b;
+        const double dram_dp_b = fsb.drho_a_dp*Mbar_a_b + fsb.rho_a*fsb.dX_dp*dMm_b;
+        const double dram_dz_b = fsb.drho_a_dz*Mbar_a_b + fsb.rho_a*fsb.dX_dz*dMm_b;
+        const double Ag = fsb.rho_g*fsb.Y, Aa = fsb.rho_a*fsb.X;
+        const double dAg_dp = fsb.drho_g_dp*fsb.Y + fsb.rho_g*fsb.dY_dp;
+        const double dAg_dz =                        fsb.rho_g*fsb.dY_dz;
+        const double dAa_dp = fsb.drho_a_dp*fsb.X + fsb.rho_a*fsb.dX_dp;
+        const double dAa_dz = fsb.drho_a_dz*fsb.X + fsb.rho_a*fsb.dX_dz;
+        double ug_b[nSpace], ua_b[nSpace];
+        double dug_dp_b[nSpace], dug_dz_b[nSpace], dua_dp_b[nSpace], dua_dz_b[nSpace];
         for (int I = 0; I < nSpace; I++) {
+          double ugI=0.0, uaI=0.0, dugp=0.0, dugz=0.0, duap=0.0, duaz=0.0;
           for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
             const int J = a_colind.data()[ii];
-            const double base_b      = KNr_b * KWs_eN[ii];
-            const double dbase_du_n  = DKNr_b * KWs_eN[ii];
-            a_n_b[ii]          = rho_n_loc_b * base_b;
-            da_n_du_n_b[ii]    = rho_n_loc_b * dbase_du_n + c_n * dpc_dSn_b * base_b;
-            da_n_du_w_b[ii]    = c_n * base_b;
-            a_n_pc_b[ii]       = a_n_b[ii] * dpc_dSn_b;
-            da_n_pc_du_n_b[ii] = da_n_du_n_b[ii] * dpc_dSn_b + a_n_b[ii] * d2pc_dSn2_b;
-            da_n_pc_du_w_b[ii] = da_n_du_w_b[ii] * dpc_dSn_b;
-            const double rho2_b = rho_n_loc_b * rho_n_loc_b;
-            df_n_du_n_b[I]    += rho2_b * dbase_du_n * gravity.data()[J]
-                              + 2.0 * rho_n_loc_b * c_n * dpc_dSn_b * base_b * gravity.data()[J];
-            df_n_du_w_b[I]    += 2.0 * rho_n_loc_b * c_n * base_b * gravity.data()[J];
+            const double Kii = KWs_eN[ii];
+            const double Mob_g = KNr_b*Kii/mu_n, Mob_a = KWr_b*Kii;
+            const double dMobg_dp = (DKNr_b*Kii/mu_n)*dSe_dp_b, dMobg_dz = (DKNr_b*Kii/mu_n)*dSe_dz_b;
+            const double dMoba_dp = (DKWr_b*Kii)*dSe_dp_b,        dMoba_dz = (DKWr_b*Kii)*dSe_dz_b;
+            const double gJ = gravity.data()[J];
+            const double gradSa = -(fsb.dS_g_dp*grad_u_w_ext_b[J] + fsb.dS_g_dz*grad_u_n_ext_b[J]);
+            const double gp_a = grad_u_w_ext_b[J] - rho_a_mass_b*gJ;
+            const double gp_g = grad_u_w_ext_b[J] + pcp_b*gradSa - rho_g_mass_b*gJ;
+            ugI -= Mob_g*gp_g;  uaI -= Mob_a*gp_a;
+            const double dgradSa_dp = -(fsb.d2S_g_dp2 *grad_u_w_ext_b[J] + fsb.d2S_g_dpdz*grad_u_n_ext_b[J]);
+            const double dgradSa_dz = -(fsb.d2S_g_dpdz*grad_u_w_ext_b[J] + fsb.d2S_g_dz2 *grad_u_n_ext_b[J]);
+            const double dgpg_dp = dpcp_dp_b*gradSa + pcp_b*dgradSa_dp - drgm_dp_b*gJ;
+            const double dgpg_dz = dpcp_dz_b*gradSa + pcp_b*dgradSa_dz - drgm_dz_b*gJ;
+            dugp -= dMobg_dp*gp_g + Mob_g*dgpg_dp;
+            dugz -= dMobg_dz*gp_g + Mob_g*dgpg_dz;
+            duap -= dMoba_dp*gp_a + Mob_a*(-dram_dp_b*gJ);
+            duaz -= dMoba_dz*gp_a + Mob_a*(-dram_dz_b*gJ);
           }
+          ug_b[I]=ugI; ua_b[I]=uaI;
+          dug_dp_b[I]=dugp; dug_dz_b[I]=dugz; dua_dp_b[I]=duap; dua_dz_b[I]=duaz;
         }
-
-        // Coefficient sensitivities (independent of trial j). Separate (1,1)
-        // and (1,0) totals: the latter is NEW and vanishes when c_n == 0.
-        double adv_sens_n_b = 0.0, diff_sens_n_b = 0.0, cap_sens_n_b = 0.0;
-        double adv_sens_w_b = 0.0, diff_sens_w_b = 0.0, cap_sens_w_b = 0.0;
+        // value-block scalars dotted with the normal (interior gradN_i -> n_I).
+        double Sval_p_b = 0.0, Sval_z_b = 0.0;
         for (int I = 0; I < nSpace; I++) {
-          adv_sens_n_b += df_n_du_n_b[I] * normal_b[I];
-          adv_sens_w_b += df_n_du_w_b[I] * normal_b[I];
-          for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
-            const int J = a_colind.data()[ii];
-            diff_sens_n_b -= da_n_du_n_b[ii]    * grad_u_w_ext_b[J] * normal_b[I];
-            cap_sens_n_b  -= da_n_pc_du_n_b[ii] * grad_u_n_ext_b[J] * normal_b[I];
-            diff_sens_w_b -= da_n_du_w_b[ii]    * grad_u_w_ext_b[J] * normal_b[I];
-            cap_sens_w_b  -= da_n_pc_du_w_b[ii] * grad_u_n_ext_b[J] * normal_b[I];
-          }
+          Sval_p_b += (dAg_dp*ug_b[I] + Ag*dug_dp_b[I] + dAa_dp*ua_b[I] + Aa*dua_dp_b[I]) * normal_b[I];
+          Sval_z_b += (dAg_dz*ug_b[I] + Ag*dug_dz_b[I] + dAa_dz*ua_b[I] + Aa*dua_dz_b[I]) * normal_b[I];
         }
-        const double sens_total_n = adv_sens_n_b + diff_sens_n_b + cap_sens_n_b;
-        const double sens_total_w = adv_sens_w_b + diff_sens_w_b + cap_sens_w_b;
+        // IIPG penalty scaled by the comp-1 diffusion magnitude a_n (frozen
+        // coefficient) -- MUST match the residual loop in calculateResidual.
+        double Kw_rep = 0.0;
+        for (int ii = 0; ii < nnz; ii++) Kw_rep = fmax(Kw_rep, fabs(KWs_eN[ii]));
+        const double a_n_scale = (Ag*KNr_b/mu_n + Aa*KWr_b) * Kw_rep;
+        const double pen_eff = penalty * a_n_scale;
 
         for (int i = 0; i < nDOF_test_element; i++) {
           const double test_i_dS = u_test_trace_ref.data()[
@@ -2227,24 +2249,23 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           for (int j = 0; j < nDOF_trial_element; j++) {
             const double trial_j_b = u_trial_trace_ref.data()[
                 ebN_local_kb * nDOF_test_element + j];
-            double jac_nn = sens_total_n * trial_j_b;
-            double cap_trial = 0.0;
+            double Sgrad_p_b = 0.0, Sgrad_z_b = 0.0;
             for (int I = 0; I < nSpace; I++) {
               for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
                 const int J = a_colind.data()[ii];
-                cap_trial -= a_n_pc_b[ii] * u_grad_trial_trace_b[j * nSpace + J] * normal_b[I];
+                const double Kii = KWs_eN[ii];
+                const double Mob_g = KNr_b*Kii/mu_n, Mob_a = KWr_b*Kii;
+                const double gNjJ = u_grad_trial_trace_b[j * nSpace + J];
+                const double dFdgp = Ag*(-Mob_g*(1.0 - pcp_b*fsb.dS_g_dp)) + Aa*(-Mob_a);
+                const double dFdgz = Ag*(-Mob_g*(-pcp_b*fsb.dS_g_dz));
+                Sgrad_p_b += dFdgp * gNjJ * normal_b[I];
+                Sgrad_z_b += dFdgz * gNjJ * normal_b[I];
               }
             }
-            jac_nn += cap_trial;
-            double jac_nw = sens_total_w * trial_j_b;
-            for (int I = 0; I < nSpace; I++) {
-              for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
-                const int J = a_colind.data()[ii];
-                jac_nw -= a_n_b[ii] * u_grad_trial_trace_b[j * nSpace + J] * normal_b[I];
-              }
-            }
+            double jac_nn = Sval_z_b * trial_j_b + Sgrad_z_b;
+            double jac_nw = Sval_p_b * trial_j_b + Sgrad_p_b;
             if (isDir_n) {
-              jac_nn += penalty * trial_j_b;
+              jac_nn += pen_eff * trial_j_b;
             } else {
               jac_nn = 0.0;
               jac_nw = 0.0;
@@ -2797,6 +2818,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
 
     int ENTROPY_TYPE = args.scalar<int>("ENTROPY_TYPE");
     PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
+    immiscible_member = (args.scalar<int>("immiscible") != 0);
     // FOR FCT
     xt::pyarray<double> &dLow                 = args.array<double>("dLow");
     xt::pyarray<double> &fluxMatrix           = args.array<double>("fluxMatrix");
@@ -3095,9 +3117,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double z_cl_pr_old = fmin(fmax(u_n_p_old, 1.0e-8), 1.0 - 1.0e-8);
         const double p_cl_pr_old = fmax(u_w_p_old, 1.0e2);
         ::m_comp_co2::flash::FlashState fs_pr =
-            ::m_comp_co2::flash::flashPZ(p_cl_pr, z_cl_pr, T_C_member, m_NaCl_member);
+            ::m_comp_co2::flash::flashPZ(p_cl_pr, z_cl_pr, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
         ::m_comp_co2::flash::FlashState fs_pr_old =
-            ::m_comp_co2::flash::flashPZ(p_cl_pr_old, z_cl_pr_old, T_C_member, m_NaCl_member);
+            ::m_comp_co2::flash::flashPZ(p_cl_pr_old, z_cl_pr_old, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
         const double Sa_pr    = 1.0 - fs_pr.S_g;
         const double N_pr     = fs_pr.rho_g*fs_pr.S_g + fs_pr.rho_a*Sa_pr;
         const double dN_dp_pr = fs_pr.drho_g_dp*fs_pr.S_g + fs_pr.rho_g*fs_pr.dS_g_dp
@@ -3593,7 +3615,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double z_clb0   = fmin(fmax(u_n_ext_qp, 1.0e-8), 1.0 - 1.0e-8);
         const double p_clb0   = fmax(u_ext, 1.0e2);
         ::m_comp_co2::flash::FlashState fsb0 =
-            ::m_comp_co2::flash::flashPZ(p_clb0, z_clb0, T_C_member, m_NaCl_member);
+            ::m_comp_co2::flash::flashPZ(p_clb0, z_clb0, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
         const double Sab0 = 1.0 - fsb0.S_g;
         const double Se_rawb0 = (Sab0 - S_wr_b0)/one_m_Sr_b0;
         double Se_ab0, dSeb0_dp, dSeb0_dz;
@@ -3902,7 +3924,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double z_cl = fmin(fmax(u_dof_n.data()[node_i], 1.0e-8), 1.0 - 1.0e-8);
         const double p_cl = fmax(u_free_dof[i], 1.0e2);
         ::m_comp_co2::flash::FlashState f =
-            ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member);
+            ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
         const double Sa = 1.0 - f.S_g;
         const double Se_raw = (Sa - S_wr_i) / one_m_Sr_i;
         double Se, dSe_dp, dSe_dz;
@@ -3938,7 +3960,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double z_cl_o = fmin(fmax(u_dof_n_old.data()[node_i], 1.0e-8), 1.0 - 1.0e-8);
         const double p_cl_o = fmax(u_free_dof_old[i], 1.0e2);
         ::m_comp_co2::flash::FlashState fo =
-            ::m_comp_co2::flash::flashPZ(p_cl_o, z_cl_o, T_C_member, m_NaCl_member);
+            ::m_comp_co2::flash::flashPZ(p_cl_o, z_cl_o, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
         const double Sa_o = 1.0 - fo.S_g;
         const double Se_o_raw = (Sa_o - S_wr_i) / one_m_Sr_i;
         const double Se_o = Se_o_raw <= 0.0 ? 0.0 : (Se_o_raw >= 1.0 ? 1.0 : Se_o_raw);
@@ -4230,6 +4252,32 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     if (have_gas_budget)
       for (int s = 0; s < 6 * numDOFs_n; ++s) gas_budget_node.data()[s] = 0.0;
 
+    // z-based smoothness indicator psi_n (Kuzmin alpha^2) on the comp-1 DOF
+    // graph, used to GATE the comp-1 graph viscosity dvg below. alpha_i =
+    // |sum_j (z_i - z_j)| / (sum_j |z_i - z_j|): ~0 in smooth/linear regions
+    // (so dvg -> 0 and the EV recovers high-order accuracy on smooth problems
+    // like McWhorter-Sunada) and ~1 at sharp z fronts (so the bubble-point
+    // overshoot bound is preserved for FluidFlower). Built from OLD z so dvg
+    // stays a frozen old-time coefficient (exact antisymmetric Jacobian).
+    std::vector<double> psi_n(numDOFs_n, 1.0);
+    if (STABILIZATION_TYPE == STABILIZATION::EV_Stab) {
+      for (int i_n = 0; i_n < numDOFs_n; i_n++) {
+        const double zi = u_dof_n_old.data()[i_n];
+        double num = 0.0, den = 0.0;
+        for (int offset = csrRowIndeces_n_DofLoops.data()[i_n];
+             offset < csrRowIndeces_n_DofLoops.data()[i_n + 1]; offset++) {
+          const int j_n = csrColumnOffsets_n_DofLoops.data()[offset];
+          if (j_n == i_n) continue;
+          const double d = zi - u_dof_n_old.data()[j_n];
+          num += d;
+          den += fabs(d);
+        }
+        const double alpha_i = fabs(num) / (den + 1.0e-15);
+        psi_n[i_n] = (POWER_SMOOTHNESS_INDICATOR == 0)
+                   ? 1.0 : std::pow(alpha_i, POWER_SMOOTHNESS_INDICATOR);
+      }
+    }
+
     for (int eN = 0; eN < nElements_global; eN++) {
       const int    mat_eN    = elementMaterialTypes.data()[eN];
       const double phi_eN    = thetaR.data()[mat_eN] + thetaSR.data()[mat_eN];
@@ -4385,7 +4433,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           const double z_cl = fmin(fmax(z_a, 1.0e-8), 1.0 - 1.0e-8);
           const double p_cl = fmax(p_a, 1.0e2);
           ::m_comp_co2::flash::FlashState f =
-              ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member);
+              ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
           Sg_e[a] = f.S_g;  dSg_dp_e[a] = f.dS_g_dp;  dSg_dz_e[a] = f.dS_g_dz;
           const double Sa = 1.0 - f.S_g;
           const double Se_raw = (Sa - S_wr_eN) / one_m_Sr_eN;
@@ -4420,7 +4468,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           const double z_cl_o = fmin(fmax(z_a_o, 1.0e-8), 1.0 - 1.0e-8);
           const double p_cl_o = fmax(p_a_o, 1.0e2);
           ::m_comp_co2::flash::FlashState fo =
-              ::m_comp_co2::flash::flashPZ(p_cl_o, z_cl_o, T_C_member, m_NaCl_member);
+              ::m_comp_co2::flash::flashPZ(p_cl_o, z_cl_o, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
           Sg_old_e[a] = fo.S_g;
           const double Sa_o = 1.0 - fo.S_g;
           const double Se_o_raw = (Sa_o - S_wr_eN) / one_m_Sr_eN;
@@ -4566,19 +4614,35 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             elementJacobian_n_n[i][j] += -dF_dzj;
             elementJacobian_n_w[i][i] += -dF_dpi;
             elementJacobian_n_w[i][j] += -dF_dpj;
-            // Consistent STAB=2: lagged, capillary-GATED graph viscosity on z.
-            // Bounds z (LED) so the bubble-point overshoot can't form, but the
-            // gate_old factor suppresses it across the sand->seal entry-pressure
-            // jump so it does NOT diffuse CO2 through the seal (gas still pools &
-            // spreads laterally). Old-time coeff => constant in Newton => the
-            // +d/-d Jacobian is exact; antisymmetric => global CO2 mass conserved.
-            const double si = std::fabs(dlg_dz_o[i])*std::fabs(dPhi_g_old)
-                            + std::fabs(lam_g_old_e[i])*std::fabs(dpc_dz_o[i])
-                            + std::fabs(dla_dz_o[i])*std::fabs(dPhi_a_old);
-            const double sj = std::fabs(dlg_dz_o[j])*std::fabs(dPhi_g_old)
-                            + std::fabs(lam_g_old_e[j])*std::fabs(dpc_dz_o[j])
-                            + std::fabs(dla_dz_o[j])*std::fabs(dPhi_a_old);
-            const double dvg = cE*tau*gate_old*fmax(si,sj);
+            // Consistent STAB=2: lagged, PHASE-SPLIT graph viscosity on z.
+            // Split into a GAS part and an AQUEOUS (dissolved-CO2) part so each
+            // is gated like the flux branch it stabilizes:
+            //   * gas part   -> multiplied by gate_old, so it vanishes across a
+            //     sand->seal entry-pressure jump and does NOT diffuse free CO2
+            //     through the seal (gas pools & spreads laterally as intended).
+            //   * aqueous part -> NOT gated.  The aqueous flux Fa = tau*lam_a*dPhi_a
+            //     has no gate (dissolved CO2 freely crosses the interface with the
+            //     brine), so its stabilization must stay ON across interfaces too.
+            //     Gating it (the old `*gate_old` on the whole dvg) switched off all
+            //     z-dissipation exactly at sand interfaces, leaving the ungated
+            //     aqueous advection unstabilized -> interface-aligned z (=> c)
+            //     fingers in the dissolved tongues.  This split removes them while
+            //     preserving the seal barrier for the gas.
+            // Old-time coeff => constant in Newton => the +d/-d Jacobian is exact;
+            // antisymmetric => global CO2 mass conserved.
+            const double si_g = std::fabs(dlg_dz_o[i])*std::fabs(dPhi_g_old)
+                              + std::fabs(lam_g_old_e[i])*std::fabs(dpc_dz_o[i]);
+            const double si_a = std::fabs(dla_dz_o[i])*std::fabs(dPhi_a_old);
+            const double sj_g = std::fabs(dlg_dz_o[j])*std::fabs(dPhi_g_old)
+                              + std::fabs(lam_g_old_e[j])*std::fabs(dpc_dz_o[j]);
+            const double sj_a = std::fabs(dla_dz_o[j])*std::fabs(dPhi_a_old);
+            // Smoothness gate (z-based, alpha^2): kills the LED dissipation in
+            // smooth regions so the EV recovers high-order accuracy (McWhorter-
+            // Sunada converges) while keeping it ~full at sharp z fronts (the
+            // FluidFlower bubble-point bound). psi_edge = max over the edge.
+            const double psi_edge = fmax(psi_n[gN_e[i]], psi_n[gN_e[j]]);
+            const double dvg = cE*tau*psi_edge
+                             * ( gate_old*fmax(si_g,sj_g) + fmax(si_a,sj_a) );
             if (dvg > 0.0) {
               const double Fv = dvg*(u_dof_n.data()[gN_e[j]] - u_dof_n.data()[gN_e[i]]);
               elementResidual_n[i] -= Fv;
@@ -4635,44 +4699,37 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
 
 
     // ============================================================================
-    // Comp-1 (S_n) exterior boundary loop.
+    // Comp-1 (CO2 / z) exterior boundary loop -- STAB=2 path. COMPOSITIONAL.
     //
-    // P3c STATUS: DEFERRED (boundary) -- the interior STAB=2 edge flux is the
-    // compositional F_1 (eftest-verified); this boundary loop is NOT yet ported.
-    // See DESIGN_compositional_co2_brine.md "P3c flux -- BOUNDARIES DEFERRED".
+    // P3c STATUS: BOUNDARY PORTED (2026-06-06). Slot 1 is the overall CO2
+    // composition z, NOT a saturation. This loop computes the compositional
+    // molar CO2 trace flux F_1.n, mirroring the FD-verified interior element
+    // flux (calculateResidual / calculateJacobian, lines ~1119/1942):
+    //   F_1 = rho_g*Y*u_g + rho_a*X*u_a,
+    //   u_a = -(K krw/mu_w)(grad p - rho_a_mass g),    p_a = p
+    //   u_g = -(K krg/mu_g)(grad p + pc'(S_a) grad S_a - rho_g_mass g),
+    //   grad S_a = -(dSg/dp grad p + dSg/dz grad z),
+    // with every saturation-dependent property recomputed from the FLASH
+    // saturation S_g(p,z) (psk closures take the wetting Se_a = (1-S_g-S_wr)/
+    // (1-S_wr)). The surface term from integrating div(F_1) by parts is
+    // +(F_1.n) N_i dS, so the residual mirrors the interior with gradN_i -> n.
     //
-    // TODO: structurally inconsistent with the new interior upwind potential
-    // flux. This loop still computes the consistent CG Galerkin trace flux
-    // (-a_n . grad u_w . n - a_n_pc . grad u_n . n + f_n . n)  plus a
-    // u_n-space Nitsche penalty. Algebraically that is still -lambda . K .
-    // grad Phi . n, but lambda is evaluated at the trace (no upwind) and the
-    // penalty is in u_n, not Phi_n. Operationally inert when isDir_n == 0 on
-    // every face (FluidFlower: getDBC_Sn returns None everywhere). When a
-    // benchmark needs Dirichlet S_n, this loop should be re-derived as a
-    // ghost-node TPFA boundary:
-    //   F_b = tau_b * lambda_up * (Phi_BC - Phi_trace),
-    //         upstream by sign of (Phi_BC - Phi_trace),
-    //         tau_b = penalty * dS_eb (Nitsche-as-conductance).
-    // See [[m_comp_co2_stab2_upwind_potential_flux]] memory note for the
-    // alignment plan.
+    // BC handling: a Nitsche-style penalty drives z at the trace toward the
+    // prescribed bc_u_n_ext_b (= z_BC) on Dirichlet-z faces (isDir_n != 0;
+    // McWhorter-Sunada inlet). No-Dirichlet faces are no-flow (F_1.n = 0) so a
+    // closed box conserves mass.
     //
-    // Mirrors the interior gas-eq flux structure at element boundaries:
-    //   F_n . n = -a_n   . grad u_w . n      (Darcy diffusion against grad p_w)
-    //             -a_n_pc . grad u_n . n     (capillary diffusion against grad S_n)
-    //             +f_n   . n                 (gas gravity flux)
-    // Dirichlet on u_n is enforced via a Nitsche-style penalty added to the
-    // boundary flux. Faces with no Dirichlet on u_n contribute the interior
-    // flux directly -- consistent with how the interior CG operator already
-    // sees grad_u_n at trace QPs through the element-volume gradient.
+    // Jacobian contributions (chain rule through the analytic flash; interior
+    // gradN_i replaced by the boundary normal n_I):
+    //   (1,1) self  : d(F_1.n)/dz  (value-block * trial_j + grad-block . gradN_j)
+    //                 + Dirichlet penalty * trial_j.
+    //   (1,0) cross : d(F_1.n)/dp  (value-block * trial_j + grad-block . gradN_j).
     //
-    // Jacobian contributions:
-    //   (1,1) self    : coefficient sens (df_n/du_n, da_n/du_n, da_n_pc/du_n)
-    //                   + trial-fn variation of a_n_pc * grad N_j . n
-    //                   + Dirichlet penalty * trial_j.
-    //   (1,0) cross   : trial-fn variation of -a_n * grad N_j . n.
-    //
-    // Closure dispatch uses PSK_TYPE_member already set at the top of this
-    // routine.
+    // NOTE: structurally a consistent CG/Nitsche trace flux (lambda at the
+    // trace, no upwind), not the interior edge-based upwind potential flux. A
+    // ghost-node TPFA boundary (F_b = tau_b lambda_up (Phi_BC - Phi_trace)) is
+    // the eventual sharper form; see [[m_comp_co2_stab2_upwind_potential_flux]].
+    // Closure dispatch uses PSK_TYPE_member set at the top of this routine.
     // ============================================================================
     for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++) {
       const int ebN = exteriorElementBoundariesArray.data()[ebNE];
@@ -4746,87 +4803,116 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double bc_u_n_ext_b = isDir_n * ebqe_bc_u_n_ext.data()[ebNE_kb]
                                   + (1 - isDir_n) * u_n_ext_b;
 
-        // Closure at the trace, in S_n form.
-        const double Se_b_raw = (1.0 - u_n_ext_b - S_wr_loc) / one_m_Sr_loc;
-        double Se_b, dSe_du_n_b;
-        if (Se_b_raw <= 0.0)      { Se_b = 0.0; dSe_du_n_b = 0.0; }
-        else if (Se_b_raw >= 1.0) { Se_b = 1.0; dSe_du_n_b = 0.0; }
-        else                      { Se_b = Se_b_raw; dSe_du_n_b = -1.0 / one_m_Sr_loc; }
-        double KNr_b = 0.0, DKNr_b = 0.0;
+        // ====================================================================
+        // P3c boundary (STAB=2): compositional comp-1 (CO2) trace flux F_1.n.
+        // Mirrors the interior element flux F_1 = rho_g*Y*u_g + rho_a*X*u_a
+        // (calculateResidual / calculateJacobian), recomputing every saturation-
+        // dependent property from the FLASH saturation S_g(p,z) -- slot 1 is z,
+        // NOT S_n.  The surface term from integrating div(F_1) by parts is
+        // +(F_1.n) N_i dS, so the residual adds +F_1.n*test_i and the Jacobian
+        // mirrors the interior chain rule with gradN_i replaced by the normal.
+        // Consistent flux is applied only on Dirichlet-z faces (isDir_n); a
+        // Nitsche penalty drives z at the trace toward bc_u_n_ext_b (= z_BC).
+        // No-flow faces contribute nothing (closed-box conservation).
+        // ====================================================================
+        const double z_clb = fmin(fmax(u_n_ext_b, 1.0e-8), 1.0 - 1.0e-8);
+        const double p_clb = fmax(u_w_ext_b, 1.0e2);
+        ::m_comp_co2::flash::FlashState fsb =
+            ::m_comp_co2::flash::flashPZ(p_clb, z_clb, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
+        const double S_g_b = fsb.S_g, Sa_b = 1.0 - S_g_b;
+        // wetting effective saturation from the FLASH saturation + (p,z) derivs.
+        const double Se_raw_b = (Sa_b - S_wr_loc) / one_m_Sr_loc;
+        double Se_b, dSe_dp_b, dSe_dz_b;
+        if (Se_raw_b <= 0.0)      { Se_b = 0.0; dSe_dp_b = 0.0; dSe_dz_b = 0.0; }
+        else if (Se_raw_b >= 1.0) { Se_b = 1.0; dSe_dp_b = 0.0; dSe_dz_b = 0.0; }
+        else { Se_b = Se_raw_b; dSe_dp_b = -fsb.dS_g_dp/one_m_Sr_loc; dSe_dz_b = -fsb.dS_g_dz/one_m_Sr_loc; }
+        double KWr_b=0.0, DKWr_b=0.0, thW_b=0.0, DthW_b=0.0, KNr_b=0.0, DKNr_b=0.0;
+        double pc_b=0.0, dpc_dSe_b=0.0, d2pc_b=0.0;
         if (PSK_TYPE_member == 1) {
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(
-              Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_b, alpha_eN, n_vg_eN,
+              thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::bc_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
         } else {
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(
-              Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_b, alpha_eN, n_vg_eN,
+              thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
         }
-        // Scale by measured end-point k_rn (FluidFlower Table 5; 1.0 default).
-        KNr_b  *= krn_end_eN;
-        DKNr_b *= krn_end_eN;
-        // Divide by gas viscosity so a_n_b, f_n_b inherit the 1/mu_n factor.
-        KNr_b  /= mu_n;
-        DKNr_b /= mu_n;
-        DKNr_b *= dSe_du_n_b;
-        double pc_b = 0.0, dpc_dSn_b = 0.0, d2pc_dSn2_b = 0.0;
-        if (PSK_TYPE_member == 1) {
-          proteus::m_comp_co2::psk::bc_pc_from_Se(
-              Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSn_b, d2pc_dSn2_b);
-        } else {
-          proteus::m_comp_co2::psk::vgm_pc_from_Se(
-              Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSn_b, d2pc_dSn2_b);
-        }
-        dpc_dSn_b   *= dSe_du_n_b;
-        d2pc_dSn2_b *= dSe_du_n_b * dSe_du_n_b;
-        // Exponential gas EOS at the trace (mirrors the interior).
-        const double p_n_ext_b   = u_w_ext_b + pc_b;
-        const double rho_n_loc_b = rho_n_compressible ? (rho_n * exp(fmin(p_n_ext_b * inv_p_ref_n, 50.0))) : rho_n;
-        const double drho_n_dp_b = rho_n_compressible ? (rho_n_loc_b * inv_p_ref_n) : 0.0;  // drho_n/dp_n
-
-        // Build flux coefficients and sensitivities at the trace, including
-        // the (1,0) compressibility sensitivities (zero when incompressible).
-        double a_n_b[nnz], da_n_du_n_b[nnz], da_n_du_w_b[nnz];
-        double a_n_pc_b[nnz], da_n_pc_du_n_b[nnz], da_n_pc_du_w_b[nnz];
-        double f_n_b[nSpace], df_n_du_n_b[nSpace], df_n_du_w_b[nSpace];
+        KNr_b *= krn_end_eN;  DKNr_b *= krn_end_eN;
+        const double pcp_b     = dpc_dSe_b / one_m_Sr_loc;            // pc'(S_a)
+        const double dpcp_dp_b = (d2pc_b / one_m_Sr_loc) * dSe_dp_b;  // d pc'(S_a)/dp
+        const double dpcp_dz_b = (d2pc_b / one_m_Sr_loc) * dSe_dz_b;
+        // mass densities for gravity (molar density * mean molar mass) + derivs.
+        const double dMm_b = ::m_comp_co2::eos::M_CO2_KG - ::m_comp_co2::eos::M_H2O_KG;
+        const double Mbar_g_b = fsb.Y*::m_comp_co2::eos::M_CO2_KG + (1.0-fsb.Y)*::m_comp_co2::eos::M_H2O_KG;
+        const double Mbar_a_b = fsb.X*::m_comp_co2::eos::M_CO2_KG + (1.0-fsb.X)*::m_comp_co2::eos::M_H2O_KG;
+        const double rho_g_mass_b = fsb.rho_g*Mbar_g_b, rho_a_mass_b = fsb.rho_a*Mbar_a_b;
+        const double drgm_dp_b = fsb.drho_g_dp*Mbar_g_b + fsb.rho_g*fsb.dY_dp*dMm_b;
+        const double drgm_dz_b =                          fsb.rho_g*fsb.dY_dz*dMm_b;
+        const double dram_dp_b = fsb.drho_a_dp*Mbar_a_b + fsb.rho_a*fsb.dX_dp*dMm_b;
+        const double dram_dz_b = fsb.drho_a_dz*Mbar_a_b + fsb.rho_a*fsb.dX_dz*dMm_b;
+        // CO2 transport coefficients Ag=rho_g*Y, Aa=rho_a*X + (p,z) derivatives.
+        const double Ag = fsb.rho_g*fsb.Y, Aa = fsb.rho_a*fsb.X;
+        const double dAg_dp = fsb.drho_g_dp*fsb.Y + fsb.rho_g*fsb.dY_dp;
+        const double dAg_dz =                        fsb.rho_g*fsb.dY_dz;
+        const double dAa_dp = fsb.drho_a_dp*fsb.X + fsb.rho_a*fsb.dX_dp;
+        const double dAa_dz = fsb.drho_a_dz*fsb.X + fsb.rho_a*fsb.dX_dz;
+        // per-direction Darcy velocities ug[I], ua[I] + value-block partials
+        // (gradients held fixed). Mobilities carry the 1/mu_n (gas) factor.
+        double ug_b[nSpace], ua_b[nSpace];
+        double dug_dp_b[nSpace], dug_dz_b[nSpace], dua_dp_b[nSpace], dua_dz_b[nSpace];
         for (int I = 0; I < nSpace; I++) {
-          f_n_b[I] = 0.0; df_n_du_n_b[I] = 0.0; df_n_du_w_b[I] = 0.0;
-        }
-        for (int I = 0; I < nSpace; I++) {
+          double ugI=0.0, uaI=0.0, dugp=0.0, dugz=0.0, duap=0.0, duaz=0.0;
           for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
             const int J = a_colind.data()[ii];
-            const double base_b     = KNr_b * KWs_eN[ii];
-            const double dbase_du_n = DKNr_b * KWs_eN[ii];
-            a_n_b[ii]          = rho_n_loc_b * base_b;
-            da_n_du_n_b[ii]    = rho_n_loc_b * dbase_du_n + drho_n_dp_b * dpc_dSn_b * base_b;
-            da_n_du_w_b[ii]    = drho_n_dp_b * base_b;
-            a_n_pc_b[ii]       = a_n_b[ii] * dpc_dSn_b;
-            da_n_pc_du_n_b[ii] = da_n_du_n_b[ii] * dpc_dSn_b
-                               + a_n_b[ii] * d2pc_dSn2_b;
-            da_n_pc_du_w_b[ii] = da_n_du_w_b[ii] * dpc_dSn_b;
-            const double rho2_b = rho_n_loc_b * rho_n_loc_b;
-            f_n_b[I]       += rho2_b * base_b * gravity.data()[J];
-            df_n_du_n_b[I] += rho2_b * dbase_du_n * gravity.data()[J]
-                            + 2.0 * rho_n_loc_b * drho_n_dp_b * dpc_dSn_b * base_b * gravity.data()[J];
-            df_n_du_w_b[I] += 2.0 * rho_n_loc_b * drho_n_dp_b * base_b * gravity.data()[J];
+            const double Kii = KWs_eN[ii];
+            const double Mob_g = KNr_b*Kii/mu_n, Mob_a = KWr_b*Kii;
+            const double dMobg_dp = (DKNr_b*Kii/mu_n)*dSe_dp_b, dMobg_dz = (DKNr_b*Kii/mu_n)*dSe_dz_b;
+            const double dMoba_dp = (DKWr_b*Kii)*dSe_dp_b,        dMoba_dz = (DKWr_b*Kii)*dSe_dz_b;
+            const double gJ = gravity.data()[J];
+            const double gradSa = -(fsb.dS_g_dp*grad_u_w_ext_b[J] + fsb.dS_g_dz*grad_u_n_ext_b[J]);
+            const double gp_a = grad_u_w_ext_b[J] - rho_a_mass_b*gJ;
+            const double gp_g = grad_u_w_ext_b[J] + pcp_b*gradSa - rho_g_mass_b*gJ;
+            ugI -= Mob_g*gp_g;  uaI -= Mob_a*gp_a;
+            const double dgradSa_dp = -(fsb.d2S_g_dp2 *grad_u_w_ext_b[J] + fsb.d2S_g_dpdz*grad_u_n_ext_b[J]);
+            const double dgradSa_dz = -(fsb.d2S_g_dpdz*grad_u_w_ext_b[J] + fsb.d2S_g_dz2 *grad_u_n_ext_b[J]);
+            const double dgpg_dp = dpcp_dp_b*gradSa + pcp_b*dgradSa_dp - drgm_dp_b*gJ;
+            const double dgpg_dz = dpcp_dz_b*gradSa + pcp_b*dgradSa_dz - drgm_dz_b*gJ;
+            dugp -= dMobg_dp*gp_g + Mob_g*dgpg_dp;
+            dugz -= dMobg_dz*gp_g + Mob_g*dgpg_dz;
+            duap -= dMoba_dp*gp_a + Mob_a*(-dram_dp_b*gJ);
+            duaz -= dMoba_dz*gp_a + Mob_a*(-dram_dz_b*gJ);
           }
+          ug_b[I]=ugI; ua_b[I]=uaI;
+          dug_dp_b[I]=dugp; dug_dz_b[I]=dugz; dua_dp_b[I]=duap; dua_dz_b[I]=duaz;
         }
 
-        // F_n . n at this QP (without the penalty term, which depends only
-        // on the test function row).
+        // F_1 . n at this QP (consistent flux, before the penalty term which
+        // depends only on the test-function row).
         double F_n_dot_n = 0.0;
         for (int I = 0; I < nSpace; I++) {
-          F_n_dot_n += f_n_b[I] * normal_b[I];
-          for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
-            const int J = a_colind.data()[ii];
-            F_n_dot_n -= a_n_b[ii]    * grad_u_w_ext_b[J] * normal_b[I];
-            F_n_dot_n -= a_n_pc_b[ii] * grad_u_n_ext_b[J] * normal_b[I];
-          }
+          F_n_dot_n += (Ag*ug_b[I] + Aa*ua_b[I]) * normal_b[I];
         }
-        const double penalty = ebqe_penalty_ext.data()[ebNE_kb];
+        // value-block scalars dotted with the normal (interior gradN_i -> n_I).
+        double Sval_p_b = 0.0, Sval_z_b = 0.0;
+        for (int I = 0; I < nSpace; I++) {
+          Sval_p_b += (dAg_dp*ug_b[I] + Ag*dug_dp_b[I] + dAa_dp*ua_b[I] + Aa*dua_dp_b[I]) * normal_b[I];
+          Sval_z_b += (dAg_dz*ug_b[I] + Ag*dug_dz_b[I] + dAa_dz*ua_b[I] + Aa*dua_dz_b[I]) * normal_b[I];
+        }
+        // IIPG penalty scaled by the comp-1 diffusion magnitude a_n (= rho_g*Y*
+        // krn/mu_n + rho_a*X*krw, times a representative K/mu_w; frozen in the
+        // Jacobian). The bare framework penalty (const/h) is ~1e4x too weak vs
+        // the molar-density-scaled comp-1 equation, so z floats off the BC.
+        double Kw_rep = 0.0;
+        for (int ii = 0; ii < nnz; ii++) Kw_rep = fmax(Kw_rep, fabs(KWs_eN[ii]));
+        const double a_n_scale = (Ag*KNr_b/mu_n + Aa*KWr_b) * Kw_rep;
+        const double penalty = ebqe_penalty_ext.data()[ebNE_kb] * a_n_scale;
         if (isDir_n) {
-          // Nitsche penalty drives u_n at the trace toward the prescribed BC.
+          // Nitsche penalty drives z at the trace toward the prescribed BC.
           F_n_dot_n += penalty * (u_n_ext_b - bc_u_n_ext_b);
         } else {
-          // No Dirichlet on u_n => no-flow / closed boundary for the gas eq.
+          // No Dirichlet on z => no-flow / closed boundary for the CO2 eq.
           // The consistent interior-trace flux must NOT be applied here: it
           // is generally nonzero (gravity + capillary at the trace) and would
           // inject a spurious boundary flux that breaks mass conservation on
@@ -4836,55 +4922,36 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           F_n_dot_n = 0.0;
         }
 
-        // Coefficient-sensitivity precomputes (independent of trial j).
-        // Separate (1,1) and (1,0) totals; the latter is NEW.
-        double adv_sens_n_b = 0.0, diff_sens_n_b = 0.0, cap_sens_n_b  = 0.0;
-        double adv_sens_w_b = 0.0, diff_sens_w_b = 0.0, cap_sens_w_b  = 0.0;
-        for (int I = 0; I < nSpace; I++) {
-          adv_sens_n_b += df_n_du_n_b[I] * normal_b[I];
-          adv_sens_w_b += df_n_du_w_b[I] * normal_b[I];
-          for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
-            const int J = a_colind.data()[ii];
-            diff_sens_n_b -= da_n_du_n_b[ii]    * grad_u_w_ext_b[J] * normal_b[I];
-            cap_sens_n_b  -= da_n_pc_du_n_b[ii] * grad_u_n_ext_b[J] * normal_b[I];
-            diff_sens_w_b -= da_n_du_w_b[ii]    * grad_u_w_ext_b[J] * normal_b[I];
-            cap_sens_w_b  -= da_n_pc_du_w_b[ii] * grad_u_n_ext_b[J] * normal_b[I];
-          }
-        }
-        const double sens_total_n = adv_sens_n_b + diff_sens_n_b + cap_sens_n_b;
-        const double sens_total_w = adv_sens_w_b + diff_sens_w_b + cap_sens_w_b;
-
         for (int i = 0; i < nDOF_test_element; i++) {
           const double test_i_dS = u_test_trace_ref.data()[
               ebN_local_kb * nDOF_test_element + i] * dS_eb;
-          // Residual contribution.
+          // Residual contribution: +(F_1.n) N_i dS.
           elementResidual_n_eb[i] += F_n_dot_n * test_i_dS;
-          // Jacobian (per trial j).
+          // Jacobian (per trial j).  d(F_1.n)/du_j = value-block * trial_j +
+          // gradient-block . gradN_j, the interior chain rule with gradN_i->n.
           for (int j = 0; j < nDOF_trial_element; j++) {
             const double trial_j_b = u_trial_trace_ref.data()[
                 ebN_local_kb * nDOF_test_element + j];
-            // (1,1) self: coefficient sensitivity * trial_j.
-            double jac_nn = sens_total_n * trial_j_b;
-            // (1,1) self: capillary trial-fn variation (-a_n_pc * grad N_j . n).
-            double cap_trial = 0.0;
+            // gradient-block scalars dotted with the normal:
+            //   sum_{I,ii} (dF_1[I]/dgrad_var[J]) gradN_j[J] n_I.
+            double Sgrad_p_b = 0.0, Sgrad_z_b = 0.0;
             for (int I = 0; I < nSpace; I++) {
               for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
                 const int J = a_colind.data()[ii];
-                cap_trial -= a_n_pc_b[ii] * u_grad_trial_trace_b[j * nSpace + J]
-                                          * normal_b[I];
+                const double Kii = KWs_eN[ii];
+                const double Mob_g = KNr_b*Kii/mu_n, Mob_a = KWr_b*Kii;
+                const double gNjJ = u_grad_trial_trace_b[j * nSpace + J];
+                // d ug[I]/d grad_p[J] = -Mob_g*(1 - pcp*dSg_dp); d ua[I]/d grad_p[J] = -Mob_a
+                const double dFdgp = Ag*(-Mob_g*(1.0 - pcp_b*fsb.dS_g_dp)) + Aa*(-Mob_a);
+                // d ug[I]/d grad_z[J] = -Mob_g*(-pcp*dSg_dz); d ua[I]/d grad_z[J] = 0
+                const double dFdgz = Ag*(-Mob_g*(-pcp_b*fsb.dS_g_dz));
+                Sgrad_p_b += dFdgp * gNjJ * normal_b[I];
+                Sgrad_z_b += dFdgz * gNjJ * normal_b[I];
               }
             }
-            jac_nn += cap_trial;
-            // (1,0) cross: coefficient sensitivity * trial_j (NEW)
-            //            + trial-fn variation of -a_n * grad N_j . n (existing).
-            double jac_nw = sens_total_w * trial_j_b;
-            for (int I = 0; I < nSpace; I++) {
-              for (int ii = a_rowptr.data()[I]; ii < a_rowptr.data()[I + 1]; ii++) {
-                const int J = a_colind.data()[ii];
-                jac_nw -= a_n_b[ii] * u_grad_trial_trace_b[j * nSpace + J]
-                                    * normal_b[I];
-              }
-            }
+            // (1,1) self: d(F_1.n)/dz ; (1,0) cross: d(F_1.n)/dp.
+            double jac_nn = Sval_z_b * trial_j_b + Sgrad_z_b;
+            double jac_nw = Sval_p_b * trial_j_b + Sgrad_p_b;
             // Same no-flow gate as the residual: only Dirichlet faces
             // contribute a boundary flux (consistent flux + Nitsche penalty).
             if (isDir_n) {
@@ -5145,6 +5212,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     int                  LUMPED_MASS_MATRIX                         = args.scalar<int>("LUMPED_MASS_MATRIX");
     // PSK closure selector for evaluateCoefficients (read from argsDict).
     PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
+    immiscible_member = (args.scalar<int>("immiscible") != 0);
     double Ct_sge = 4.0;
     //
     //loop over elements to compute volume integrals and load them into the element Jacobians and global Jacobian
@@ -5309,7 +5377,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double z_cl_mm = fmin(fmax(u_n_p, 1.0e-8), 1.0 - 1.0e-8);
         const double p_cl_mm = fmax(u_w_p, 1.0e2);
         ::m_comp_co2::flash::FlashState fs_mm =
-            ::m_comp_co2::flash::flashPZ(p_cl_mm, z_cl_mm, T_C_member, m_NaCl_member);
+            ::m_comp_co2::flash::flashPZ(p_cl_mm, z_cl_mm, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
         const double phi_rho_n_qp = phi_eN_mm * (fs_mm.rho_g*fs_mm.S_g
                                                + fs_mm.rho_a*(1.0 - fs_mm.S_g));
         for (int i = 0; i < nDOF_test_element; i++) {
@@ -5446,6 +5514,44 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           }
       }
   } //dissolutionFlash
+
+  // ---- Post-step derived-field export ---------------------------------------
+  // Per-node value-only flash of the PRIMARY (p,z) state into the three
+  // human-facing compositional fields that the archiver writes to the XDMF:
+  //   Sg = free-gas saturation               (FlashState.S_g)
+  //   X  = CO2 mole fraction dissolved in brine  (FlashState.X)
+  //   c  = brine CO2 MASS concentration [kg/m^3] = rho_a * X * M_CO2
+  // This uses the SAME flashPZ the residual uses (T_C_member/m_NaCl_member
+  // defaults, immiscible from argsDict), so the exported fields are exactly the
+  // solver's internal compositional state -- not an external numpy replica.
+  // Called once per completed step from Python's
+  // calculateAuxiliaryQuantitiesAfterStep, so the values archived for a time
+  // level match that level's (p,z).
+  void calculateFlashFields(arguments_dict &args)
+  {
+    xt::pyarray<double> &p_dof  = args.array<double>("p_dof");   // comp-0 (pressure) [Pa]
+    xt::pyarray<double> &z_dof  = args.array<double>("z_dof");   // comp-1 (overall CO2 mole frac)
+    xt::pyarray<double> &Sg_dof = args.array<double>("Sg_dof");  // out: gas saturation
+    xt::pyarray<double> &X_dof  = args.array<double>("X_dof");   // out: CO2 mole frac in brine
+    xt::pyarray<double> &c_dof  = args.array<double>("c_dof");   // out: brine CO2 mass conc [kg/m^3]
+    const int numDOFs           = args.scalar<int>("numDOFs");
+    immiscible_member = (args.scalar<int>("immiscible") != 0);
+    const double M_CO2 = 0.04401;                                // CO2 molar mass [kg/mol]
+    for (int i = 0; i < numDOFs; i++)
+      {
+        const double p_i = (p_dof.data()[i] > 1.0e2) ? p_dof.data()[i] : 1.0e2;
+        double z_i = z_dof.data()[i];
+        if (z_i < 1.0e-12)        z_i = 1.0e-12;                  // match plot-side clamp
+        if (z_i > 1.0 - 1.0e-12)  z_i = 1.0 - 1.0e-12;
+        ::m_comp_co2::flash::FlashState fs =
+            ::m_comp_co2::flash::flashPZ(p_i, z_i, T_C_member, m_NaCl_member,
+                                         ::m_comp_co2::flash::EPS_Z,
+                                         immiscible_member);
+        Sg_dof.data()[i] = fs.S_g;
+        X_dof.data()[i]  = (fs.X > 0.0) ? fs.X : 0.0;
+        c_dof.data()[i]  = (fs.rho_a * fs.X > 0.0) ? fs.rho_a * fs.X * M_CO2 : 0.0;
+      }
+  } //calculateFlashFields
 }; //M_comp_co2
 
 inline M_comp_co2_base *newm_comp_co2(int nSpaceIn, int nQuadraturePoints_elementIn, int nDOF_mesh_trial_elementIn, int nDOF_trial_elementIn, int nDOF_test_elementIn, int nQuadraturePoints_elementBoundaryIn, int CompKernelFlag)
