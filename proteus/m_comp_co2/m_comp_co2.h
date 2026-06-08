@@ -4071,8 +4071,13 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
                         + (1.0 - Theta) * tau * lam_a_up_old * dPhi_a_old;
         // R_w[i] -= F_0 (the residual subtracts ith_flux_term below).  Same +sign
         // convention as the old fL (~ +delta_phi = p_j - p_i).
-        ith_flux_term            += Fg + Fa;
-        ith_consistent_flux_term += Fg + Fa;        // cflux diagnostic (write-only)
+        // P1: the single-nodal-rock comp-0 water flux is RETIRED here -- it is now
+        // assembled TWO-SIDED per element-side (elementMaterialTypes[eN]) in the
+        // comp-1 element loop below (elementResidual_w + full-CSR scatter).  Keeping
+        // ith_flux_term = 0 makes this loop comp-0 ACCUMULATION-ONLY:
+        // R_w[i] = MLi*(m-mn)/dt.  (The w_* per-DOF cache above is now unused by the
+        // residual; left in place for this correctness pass, TODO: drop for speed.)
+        (void)Fg; (void)Fa;
         // ===== Theta-part Jacobian wrt (p_i,z_i,p_j,z_j).  Mirrors comp-1 (eftest). =====
         const double ddPhig_dpi = -1.0 - w_dpc_dp[i] - 0.5 * w_drgm_dp[i] * g_dot_dx;
         const double ddPhig_dzi =      - w_dpc_dz[i] - 0.5 * w_drgm_dz[i] * g_dot_dx;
@@ -4096,24 +4101,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         // aqueous mobility part (upstream node only)
         if (up_i_a) { dF_dpi += Tt*w_dlam_a_dp[i]*dPhi_a; dF_dzi += Tt*w_dlam_a_dz[i]*dPhi_a; }
         else        { dF_dpj += Tt*w_dlam_a_dp[j]*dPhi_a; dF_dzj += Tt*w_dlam_a_dz[j]*dPhi_a; }
-        // --- assemble into the residual Jacobian.  dR_w[i] = -dF_0. ---
-        // (0,0) p-block: diagonal accumulates -dF/dp_i (added to globalJacobian[ii]
-        // after the j-loop); off-diagonal col j gets -dF/dp_j.  bc_mask keeps
-        // Dirichlet wetting rows as identity rows.
-        J_ii += -dF_dpi;
-        globalJacobian.data()[full_offset] += bc_mask.data()[i] * (-dF_dpj);
-        // (0,1) z-block: -dF/dz_i at col_n=node_i, -dF/dz_j at col_n=node_j.
-        {
-          const int row_w   = offset_u + stride_u * i;
-          const int col_n_i = offset_n + stride_n * node_i;
-          const int col_n_j = offset_n + stride_n * node_j;
-          for (int o = csrRowIndeces_Full.data()[row_w];
-               o < csrRowIndeces_Full.data()[row_w + 1]; o++) {
-            const int col = csrColumnOffsets_Full.data()[o];
-            if      (col == col_n_i) globalJacobian.data()[o] += bc_mask.data()[i] * (-dF_dzi);
-            else if (col == col_n_j) globalJacobian.data()[o] += bc_mask.data()[i] * (-dF_dzj);
-          }
-        }
+        // P1: the comp-0 flux Jacobian is RETIRED here too -- its (0,0)/(0,1)
+        // blocks are assembled two-sided in the element loop below.  J_ii stays 0,
+        // so globalJacobian[ii] below carries only the mass diagonal MLi*dm/dt.
+        (void)dF_dpi; (void)dF_dpj; (void)dF_dzi; (void)dF_dzj;
       }
       mDotLow.data()[i] = ith_flux_term/MLi;
       cflux[i] = ith_consistent_flux_term;
@@ -4278,6 +4269,26 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       }
     }
 
+    // P0 (Newton-safe z bound): per-node MATERIAL-INTERFACE flag.  A node is an
+    // interface node if the elements touching it carry >1 material type.  Used to
+    // restore FULL (low-order Rusanov) graph dissipation for the AQUEOUS z-branch
+    // on interface-crossing edges, where the discontinuous K/krw advection is
+    // otherwise under-stabilized (the z-smoothness gate psi -> 0 there) and z
+    // undershoots below 0.  Geometric => constant in Newton (exact Jacobian), and
+    // inert on homogeneous problems (McWhorter-Sunada has no interfaces).
+    std::vector<int> node_iface(numDOFs_n, 0);
+    {
+      std::vector<int> node_mat0(numDOFs_n, -1);
+      for (int eN = 0; eN < nElements_global; eN++) {
+        const int mat_eN_if = elementMaterialTypes.data()[eN];
+        for (int a = 0; a < nDOF_trial_element; a++) {
+          const int gN = u_l2g.data()[eN * nDOF_trial_element + a];
+          if (node_mat0[gN] < 0)            node_mat0[gN] = mat_eN_if;
+          else if (node_mat0[gN] != mat_eN_if) node_iface[gN] = 1;
+        }
+      }
+    }
+
     for (int eN = 0; eN < nElements_global; eN++) {
       const int    mat_eN    = elementMaterialTypes.data()[eN];
       const double phi_eN    = thetaR.data()[mat_eN] + thetaSR.data()[mat_eN];
@@ -4289,6 +4300,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       // per-DOF lumped diagonal is taken from rho_n_phi_dof, so the
       // (1,1) lumped contribution lives inside the per-i loop below.
       double elementResidual_n[nDOF_test_element];
+      // P1: comp-0 (H2O) two-sided water flux residual assembled in THIS element
+      // loop (replaces the single-nodal-rock DOF-graph water flux).  Its (0,0)/
+      // (0,1) Jacobian scatters directly into globalJacobian via the full CSR
+      // inside the edge loop (same mapping the DOF-graph loop used).
+      double elementResidual_w[nDOF_test_element];
       double elementMass_n[nDOF_test_element];
       double u_n_local[nDOF_trial_element];
       double u_n_old_local[nDOF_trial_element];
@@ -4303,6 +4319,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const int eN_nDOF_trial_element = eN * nDOF_trial_element;
       for (int i = 0; i < nDOF_test_element; i++) {
         elementResidual_n[i] = 0.0;
+        elementResidual_w[i] = 0.0;
         elementMass_n[i]     = 0.0;
         for (int j = 0; j < nDOF_trial_element; j++) {
           elementJacobian_n_n[i][j] = 0.0;
@@ -4412,6 +4429,14 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         double lam_g_old_e[nDOF_trial_element], lam_a_old_e[nDOF_trial_element];
         double dlam_g_dp_e[nDOF_trial_element], dlam_g_dz_e[nDOF_trial_element];
         double dlam_a_dp_e[nDOF_trial_element], dlam_a_dz_e[nDOF_trial_element];
+        // P1: H2O-weighted molar mobilities for the two-sided comp-0 water flux.
+        // lam_g^w = cg*rho_g*(1-Y)*krn, lam_a^w = rho_a*(1-X)*krw -- same flash /
+        // krn / krw primitives as the CO2 mobilities, weights flipped Y->(1-Y),
+        // X->(1-X), no gate.  FD-verified in comp0_elem_test.cpp (c0etest).
+        double lwg_e[nDOF_trial_element], lwa_e[nDOF_trial_element];
+        double lwg_old_e[nDOF_trial_element], lwa_old_e[nDOF_trial_element];
+        double dlwg_dp_e[nDOF_trial_element], dlwg_dz_e[nDOF_trial_element];
+        double dlwa_dp_e[nDOF_trial_element], dlwa_dz_e[nDOF_trial_element];
         double rgm_e[nDOF_trial_element], ram_e[nDOF_trial_element];
         double rgm_old_e[nDOF_trial_element], ram_old_e[nDOF_trial_element];
         double drgm_dp_e[nDOF_trial_element], drgm_dz_e[nDOF_trial_element];
@@ -4464,6 +4489,17 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           lam_a_e[a]     = f.rho_a*f.X*krw;
           dlam_a_dp_e[a] = f.drho_a_dp*f.X*krw + f.rho_a*f.dX_dp*krw + f.rho_a*f.X*dkrw*dSe_dp;
           dlam_a_dz_e[a] = f.drho_a_dz*f.X*krw + f.rho_a*f.dX_dz*krw + f.rho_a*f.X*dkrw*dSe_dz;
+          // P1: H2O-weighted siblings (1-Y),(1-X) -- same krn/krw/dSe, no gate.
+          {
+            const double yw=1.0-f.Y, dyw_dp=-f.dY_dp, dyw_dz=-f.dY_dz;
+            const double xw=1.0-f.X, dxw_dp=-f.dX_dp, dxw_dz=-f.dX_dz;
+            lwg_e[a]     = cg_eN*f.rho_g*yw*krn;
+            dlwg_dp_e[a] = cg_eN*(f.drho_g_dp*yw*krn + f.rho_g*dyw_dp*krn + f.rho_g*yw*dkrn*dSe_dp);
+            dlwg_dz_e[a] = cg_eN*(                      f.rho_g*dyw_dz*krn + f.rho_g*yw*dkrn*dSe_dz);
+            lwa_e[a]     = f.rho_a*xw*krw;
+            dlwa_dp_e[a] = f.drho_a_dp*xw*krw + f.rho_a*dxw_dp*krw + f.rho_a*xw*dkrw*dSe_dp;
+            dlwa_dz_e[a] = f.drho_a_dz*xw*krw + f.rho_a*dxw_dz*krw + f.rho_a*xw*dkrw*dSe_dz;
+          }
           // --- old time level (frozen; feeds the (1-Theta) part, no derivatives) ---
           const double z_cl_o = fmin(fmax(z_a_o, 1.0e-8), 1.0 - 1.0e-8);
           const double p_cl_o = fmax(p_a_o, 1.0e2);
@@ -4489,6 +4525,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           rgm_old_e[a] = fo.rho_g*Mg_o;  ram_old_e[a] = fo.rho_a*Ma_o;
           lam_g_old_e[a] = cg_eN*fo.rho_g*fo.Y*krn_o;
           lam_a_old_e[a] = fo.rho_a*fo.X*krw_o;
+          lwg_old_e[a]   = cg_eN*fo.rho_g*(1.0-fo.Y)*krn_o;   // P1: H2O old-time
+          lwa_old_e[a]   = fo.rho_a*(1.0-fo.X)*krw_o;
           const double dSe_o = (Se_o_raw>0.0 && Se_o_raw<1.0) ? -fo.dS_g_dz/one_m_Sr_eN : 0.0;
           dlg_dz_o[a] = cg_eN*(fo.rho_g*fo.dY_dz*krn_o + fo.rho_g*fo.Y*dkrn_o*dSe_o);
           dla_dz_o[a] = fo.drho_a_dz*fo.X*krw_o + fo.rho_a*fo.dX_dz*krw_o + fo.rho_a*fo.X*dkrw_o*dSe_o;
@@ -4614,6 +4652,52 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             elementJacobian_n_n[i][j] += -dF_dzj;
             elementJacobian_n_w[i][i] += -dF_dpi;
             elementJacobian_n_w[i][j] += -dF_dpj;
+            // ===== P1: comp-0 (H2O) two-sided water flux  F_0^e = F_g^w + F_a^w.
+            // Reuses THIS edge's dPhi_g/dPhi_a/tau and the SAME upstream switches
+            // (phase potentials are composition-independent); only the mobilities
+            // change to the H2O weights lwg=cg*rho_g*(1-Y)*krn, lwa=rho_a*(1-X)*krw.
+            // NO gate (matches the verified comp-0 kernel c0test/c0etest; the
+            // (1-Y) gas branch is water vapor ~ 0 anyway).  R_w[i] -= F_0^e and the
+            // (0,0)/(0,1) Jacobian scatter into comp-0 rows via the full CSR -- the
+            // SAME mapping the retired single-nodal DOF-graph water loop used.  The
+            // water MASS + Dirichlet identity stay in the DOF-graph accumulation.
+            {
+              const double lwg_up     = up_i_g     ? lwg_e[i]     : lwg_e[j];
+              const double lwg_up_old = up_i_g_old ? lwg_old_e[i] : lwg_old_e[j];
+              const double lwa_up     = up_i_a     ? lwa_e[i]     : lwa_e[j];
+              const double lwa_up_old = up_i_a_old ? lwa_old_e[i] : lwa_old_e[j];
+              const double Fwg = Theta         * tau * lwg_up     * dPhi_g
+                               + (1.0 - Theta) * tau * lwg_up_old * dPhi_g_old;
+              const double Fwa = Theta         * tau * lwa_up     * dPhi_a
+                               + (1.0 - Theta) * tau * lwa_up_old * dPhi_a_old;
+              elementResidual_w[i] -= Fwg + Fwa;
+              // Theta-part Jacobian wrt (p_i,z_i,p_j,z_j) (gate=1, no gate deriv).
+              double dFw_dpi=0.0, dFw_dzi=0.0, dFw_dpj=0.0, dFw_dzj=0.0;
+              dFw_dpi += Tt*lwg_up*ddPhig_dpi; dFw_dzi += Tt*lwg_up*ddPhig_dzi;
+              dFw_dpj += Tt*lwg_up*ddPhig_dpj; dFw_dzj += Tt*lwg_up*ddPhig_dzj;
+              if (up_i_g) { dFw_dpi += Tt*dlwg_dp_e[i]*dPhi_g; dFw_dzi += Tt*dlwg_dz_e[i]*dPhi_g; }
+              else        { dFw_dpj += Tt*dlwg_dp_e[j]*dPhi_g; dFw_dzj += Tt*dlwg_dz_e[j]*dPhi_g; }
+              dFw_dpi += Tt*lwa_up*ddPhia_dpi; dFw_dzi += Tt*lwa_up*ddPhia_dzi;
+              dFw_dpj += Tt*lwa_up*ddPhia_dpj; dFw_dzj += Tt*lwa_up*ddPhia_dzj;
+              if (up_i_a) { dFw_dpi += Tt*dlwa_dp_e[i]*dPhi_a; dFw_dzi += Tt*dlwa_dz_e[i]*dPhi_a; }
+              else        { dFw_dpj += Tt*dlwa_dp_e[j]*dPhi_a; dFw_dzj += Tt*dlwa_dz_e[j]*dPhi_a; }
+              const int fi = r_l2g.data()[eN_nDOF_trial_element + i];
+              const int fj = r_l2g.data()[eN_nDOF_trial_element + j];
+              const double mwi = bc_mask.data()[fi];
+              const int row_w   = offset_u + stride_u * fi;
+              const int col_w_i = offset_u + stride_u * fi;
+              const int col_w_j = offset_u + stride_u * fj;
+              const int col_n_i = offset_n + stride_n * gN_e[i];
+              const int col_n_j = offset_n + stride_n * gN_e[j];
+              for (int o = csrRowIndeces_Full.data()[row_w];
+                   o < csrRowIndeces_Full.data()[row_w + 1]; o++) {
+                const int col = csrColumnOffsets_Full.data()[o];
+                if      (col == col_w_i) globalJacobian.data()[o] += mwi * (-dFw_dpi);
+                else if (col == col_w_j) globalJacobian.data()[o] += mwi * (-dFw_dpj);
+                else if (col == col_n_i) globalJacobian.data()[o] += mwi * (-dFw_dzi);
+                else if (col == col_n_j) globalJacobian.data()[o] += mwi * (-dFw_dzj);
+              }
+            }
             // Consistent STAB=2: lagged, PHASE-SPLIT graph viscosity on z.
             // Split into a GAS part and an AQUEOUS (dissolved-CO2) part so each
             // is gated like the flux branch it stabilizes:
@@ -4641,8 +4725,19 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             // Sunada converges) while keeping it ~full at sharp z fronts (the
             // FluidFlower bubble-point bound). psi_edge = max over the edge.
             const double psi_edge = fmax(psi_n[gN_e[i]], psi_n[gN_e[j]]);
-            const double dvg = cE*tau*psi_edge
-                             * ( gate_old*fmax(si_g,sj_g) + fmax(si_a,sj_a) );
+            // P0 (Newton-safe z bound): on edges crossing a MATERIAL INTERFACE the
+            // aqueous z-advection sees a discontinuous K/krw jump that the EV
+            // (cE*psi_edge ~ 0 in smooth z) under-stabilizes -> z undershoots < 0.
+            // Restore the FULL low-order Rusanov coefficient (1.0, no cE down-scale,
+            // no psi gate) for the AQUEOUS branch there; the GAS branch keeps its
+            // gate_old barrier and the EV scaling everywhere.  Smooth/lagged =>
+            // exact antisymmetric Jacobian, conservative, no FCT, no Newton hit.
+            // Homogeneous problems have no interface edges -> coeff_a == cE*psi_edge
+            // (McWhorter-Sunada accuracy unchanged).
+            const bool   iface_edge = (node_iface[gN_e[i]] != 0) || (node_iface[gN_e[j]] != 0);
+            const double coeff_a    = iface_edge ? 1.0 : (cE*psi_edge);
+            const double dvg = tau * ( cE*psi_edge*gate_old*fmax(si_g,sj_g)
+                                     + coeff_a*fmax(si_a,sj_a) );
             if (dvg > 0.0) {
               const double Fv = dvg*(u_dof_n.data()[gN_e[j]] - u_dof_n.data()[gN_e[i]]);
               elementResidual_n[i] -= Fv;
@@ -4660,6 +4755,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         globalResidual.data()[offset_n + stride_n * gi] += elementResidual_n[i];
         if (have_gas_budget)
           gas_budget_node.data()[5 * numDOFs_n + gi] += elementResidual_n[i];
+        // P1: comp-0 (H2O) two-sided water flux residual (Dirichlet-masked).
+        const int fi_w = r_l2g.data()[eN_nDOF_trial_element + i];
+        globalResidual.data()[offset_u + stride_u * fi_w] += bc_mask.data()[fi_w] * elementResidual_w[i];
         for (int j = 0; j < nDOF_trial_element; j++) {
           const int eN_i_j = eN_i * nDOF_trial_element + j;
           globalJacobian.data()[csrRowIndeces_n_n.data()[eN_i] + csrColumnOffsets_n_n.data()[eN_i_j]]
