@@ -304,6 +304,13 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  # Pass a (nMaterialTypes,) array to scale k_rn(*) by the
                  # measured endpoint; None -> all-ones (legacy behavior).
                  krn_end_types=None,
+                 # Residual (trapped) gas saturation S_gr per material type.
+                 # Gas-only Brooks-Corey/vGM trapping: k_rn -> 0 for S_g <= S_gr
+                 # (immobile gas), via the Se_trap remap in psk_comp.h.  k_rw and
+                 # p_c keep the drainage Se.  Pass a (nMaterialTypes,) array of
+                 # imbibition residuals (FluidFlower Sg,i = 0.06..0.14); None ->
+                 # all-zeros (no trapping, legacy behavior).
+                 S_gr_types=None,
                  # Gas dynamic viscosity in the simulation's units.  The
                  # gas-flux terms (a_n, f_n) are divided by mu_n at every
                  # quadrature point.  Default 1.0 = legacy (mu implicit at 1).
@@ -406,6 +413,14 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             self.krn_end_types = np.asarray(krn_end_types, dtype='d')
             assert self.krn_end_types.shape == np.asarray(thetaR_types).shape, \
                 "krn_end_types must have the same shape as thetaR_types"
+        # Per-material residual (trapped) gas saturation S_gr.  Default all-zeros
+        # so Se_trap = 1 and the no-trapping closure is recovered.
+        if S_gr_types is None:
+            self.S_gr_types = np.zeros_like(np.asarray(thetaR_types, dtype='d'))
+        else:
+            self.S_gr_types = np.asarray(S_gr_types, dtype='d')
+            assert self.S_gr_types.shape == np.asarray(thetaR_types).shape, \
+                "S_gr_types must have the same shape as thetaR_types"
         # Gas dynamic viscosity (see __init__ argument).  Stored as scalar.
         self.mu_n = float(mu_n)
         # Flux-continuous RT0 projection of the exported coupling velocity.
@@ -2717,6 +2732,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["thetaSR"]              = coef.thetaSR_types
             argsDict["KWs"]                  = coef.Ksw_types
             argsDict["krn_end"]              = coef.krn_end_types
+            argsDict["S_gr"]                 = coef.S_gr_types
             argsDict["mu_n"]                 = coef.mu_n
             argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
             argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
@@ -2813,6 +2829,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["thetaSR"]              = coef.thetaSR_types
             argsDict["KWs"]                  = coef.Ksw_types
             argsDict["krn_end"]              = coef.krn_end_types
+            argsDict["S_gr"]                 = coef.S_gr_types
             argsDict["mu_n"]                 = coef.mu_n
             argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
             argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
@@ -3258,6 +3275,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
         argsDict["KWs"] = self.coefficients.Ksw_types
         argsDict["krn_end"] = self.coefficients.krn_end_types
+        argsDict["S_gr"] = self.coefficients.S_gr_types
         argsDict["mu_n"]    = self.coefficients.mu_n
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
@@ -3849,6 +3867,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
         argsDict["KWs"] = self.coefficients.Ksw_types
         argsDict["krn_end"] = self.coefficients.krn_end_types
+        argsDict["S_gr"] = self.coefficients.S_gr_types
         argsDict["mu_n"]    = self.coefficients.mu_n
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
@@ -3990,6 +4009,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
         argsDict["KWs"] = self.coefficients.Ksw_types
         argsDict["krn_end"] = self.coefficients.krn_end_types
+        argsDict["S_gr"] = self.coefficients.S_gr_types
         argsDict["mu_n"]    = self.coefficients.mu_n
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf

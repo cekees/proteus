@@ -490,6 +490,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &thetaSR                                    = args.array<double>("thetaSR");
     xt::pyarray<double> &KWs                                        = args.array<double>("KWs");
     xt::pyarray<double> &krn_end                                    = args.array<double>("krn_end");
+    xt::pyarray<double> &S_gr                                       = args.array<double>("S_gr");
     double               mu_n                                       = args.scalar<double>("mu_n");
     double               useMetrics                                 = args.scalar<double>("useMetrics");
     double               alphaBDF                                   = args.scalar<double>("alphaBDF");
@@ -769,6 +770,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double phi0      = thetaR.data()[mat_eN0] + thetaSR.data()[mat_eN0];
         const double S_wr0     = thetaR.data()[mat_eN0] / phi0;
         const double one_m_Sr0 = 1.0 - S_wr0;
+        const double Se_trap_L771 = 1.0 - S_gr.data()[mat_eN0] / one_m_Sr0;  // gas-only residual trapping
         const double z_cl0     = fmin(fmax(u_n_qp, 1.0e-8), 1.0 - 1.0e-8);
         const double p_cl0     = fmax(u, 1.0e2);
         ::m_comp_co2::flash::FlashState fs0 =
@@ -779,12 +781,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         if (PSK_TYPE_member == 1) {
           proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0,
               thetaR.data()[mat_eN0], thetaSR.data()[mat_eN0], thW0, DthW0, KWr0, DKWr0);
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0, KNr0, DKNr0);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0, KNr0, DKNr0, Se_trap_L771);
           proteus::m_comp_co2::psk::bc_pc_from_Se(Se_a0, alpha_eN0, n_vg_eN0, pc0, dpc_dSe0, d2pc0);
         } else {
           proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0,
               thetaR.data()[mat_eN0], thetaSR.data()[mat_eN0], thW0, DthW0, KWr0, DKWr0);
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0, KNr0, DKNr0);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0, KNr0, DKNr0, Se_trap_L771);
           proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_a0, alpha_eN0, n_vg_eN0, pc0, dpc_dSe0, d2pc0);
         }
         KNr0 *= krn_end0;
@@ -954,6 +956,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           const double phi_b   = thetaR.data()[mat_b] + thetaSR.data()[mat_b];
           const double S_wr_b  = thetaR.data()[mat_b] / phi_b;
           const double one_m_Sr_b = 1.0 - S_wr_b;
+          const double Se_trap_L956 = 1.0 - S_gr.data()[mat_b] / one_m_Sr_b;  // gas-only residual trapping
           const double z_clb   = fmin(fmax(u_n_ext_qp, 1.0e-8), 1.0 - 1.0e-8);
           const double p_clb   = fmax(u_ext, 1.0e2);
           ::m_comp_co2::flash::FlashState fsb =
@@ -962,11 +965,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           double KWrb=0,DKWrb=0,thWb=0,DthWb=0,KNrb=0,DKNrb=0,pcb=0,dpc_dSeb=0,d2pcb=0;
           if (PSK_TYPE_member == 1) {
             proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_ab, alpha_b, n_vg_b, thetaR.data()[mat_b], thetaSR.data()[mat_b], thWb, DthWb, KWrb, DKWrb);
-            proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_ab, alpha_b, n_vg_b, KNrb, DKNrb);
+            proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_ab, alpha_b, n_vg_b, KNrb, DKNrb, Se_trap_L956);
             proteus::m_comp_co2::psk::bc_pc_from_Se(Se_ab, alpha_b, n_vg_b, pcb, dpc_dSeb, d2pcb);
           } else {
             proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_ab, alpha_b, n_vg_b, thetaR.data()[mat_b], thetaSR.data()[mat_b], thWb, DthWb, KWrb, DKWrb);
-            proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_ab, alpha_b, n_vg_b, KNrb, DKNrb);
+            proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_ab, alpha_b, n_vg_b, KNrb, DKNrb, Se_trap_L956);
             proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_ab, alpha_b, n_vg_b, pcb, dpc_dSeb, d2pcb);
           }
           KNrb *= krn_end_b;
@@ -1101,6 +1104,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double phi_loc      = thetaR.data()[mat_eN] + thetaSR.data()[mat_eN];
         const double S_wr_loc     = thetaR.data()[mat_eN] / phi_loc;
         const double one_m_Sr_loc = 1.0 - S_wr_loc;
+        const double Se_trap_L1103 = 1.0 - S_gr.data()[mat_eN] / one_m_Sr_loc;  // gas-only residual trapping
         // component-1 (CO2) accumulation, compositional (p,z) form:
         //   m_1 = phi * N * z,   N = rho_g*S_g + rho_a*(1-S_g),  z = u_n.
         const double z_cl     = fmin(fmax(u_n,     1.0e-8), 1.0 - 1.0e-8);
@@ -1128,12 +1132,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         if (PSK_TYPE_member == 1) {
           proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_a, alpha_eN, n_vg_eN,
               thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_a, DthW_a, KWr_a, DKWr_a);
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_a, alpha_eN, n_vg_eN, KNr_a, DKNr_a);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_a, alpha_eN, n_vg_eN, KNr_a, DKNr_a, Se_trap_L1103);
           proteus::m_comp_co2::psk::bc_pc_from_Se(Se_a, alpha_eN, n_vg_eN, pc_a, dpc_dSe_a, d2pc_a);
         } else {
           proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_a, alpha_eN, n_vg_eN,
               thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_a, DthW_a, KWr_a, DKWr_a);
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_a, alpha_eN, n_vg_eN, KNr_a, DKNr_a);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_a, alpha_eN, n_vg_eN, KNr_a, DKNr_a, Se_trap_L1103);
           proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_a, alpha_eN, n_vg_eN, pc_a, dpc_dSe_a, d2pc_a);
         }
         KNr_a *= krn_end_eN;
@@ -1233,6 +1237,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const double *KWs_eN   = &KWs.data()[mat_eN * nnz];
       const double S_wr_loc      = thetaR.data()[mat_eN] / phi_eN;
       const double one_m_Sr_loc  = 1.0 - S_wr_loc;
+      const double Se_trap_L1235 = 1.0 - S_gr.data()[mat_eN] / one_m_Sr_loc;  // gas-only residual trapping
 
       double elementResidual_n_eb[nDOF_test_element];
       for (int i = 0; i < nDOF_test_element; i++) elementResidual_n_eb[i] = 0.0;
@@ -1301,11 +1306,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         double KWr_b=0,DKWr_b=0,thW_b=0,DthW_b=0,KNr_b=0,DKNr_b=0,pc_b=0,dpc_dSe_b=0,d2pc_b=0;
         if (PSK_TYPE_member == 1) {
           proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_ab, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_ab, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_ab, alpha_eN, n_vg_eN, KNr_b, DKNr_b, Se_trap_L1235);
           proteus::m_comp_co2::psk::bc_pc_from_Se(Se_ab, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
         } else {
           proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_ab, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_ab, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_ab, alpha_eN, n_vg_eN, KNr_b, DKNr_b, Se_trap_L1235);
           proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_ab, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
         }
         KNr_b *= krn_end_eN;
@@ -1410,6 +1415,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &thetaSR                   = args.array<double>("thetaSR");
     xt::pyarray<double> &KWs                       = args.array<double>("KWs");
     xt::pyarray<double> &krn_end                   = args.array<double>("krn_end");
+    xt::pyarray<double> &S_gr                      = args.array<double>("S_gr");
     double               mu_n                      = args.scalar<double>("mu_n");
     double               useMetrics                = args.scalar<double>("useMetrics");
     double               alphaBDF                  = args.scalar<double>("alphaBDF");
@@ -1544,6 +1550,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double phi_eN0     = thetaR.data()[mat_eN0] + thetaSR.data()[mat_eN0];
         const double S_wr_loc0   = thetaR.data()[mat_eN0] / phi_eN0;
         const double one_m_Sr0   = 1.0 - S_wr_loc0;
+        const double Se_trap_L1547 = 1.0 - S_gr.data()[mat_eN0] / one_m_Sr0;  // gas-only residual trapping
         double u_n_qp = 0.0, grad_u_n[nSpace];
         ck.valFromDOF(u_dof_n.data(), &u_l2g.data()[eN_nDOF_trial_element],
                       &u_trial_ref.data()[k * nDOF_trial_element], u_n_qp);
@@ -1573,12 +1580,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         if (PSK_TYPE_member == 1) {
           proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0,
               thetaR.data()[mat_eN0], thetaSR.data()[mat_eN0], thW0, DthW0, KWr0, DKWr0);
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0, KNr0, DKNr0);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0, KNr0, DKNr0, Se_trap_L1547);
           proteus::m_comp_co2::psk::bc_pc_from_Se(Se_a0, alpha_eN0, n_vg_eN0, pc0, dpc_dSe0, d2pc0);
         } else {
           proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0,
               thetaR.data()[mat_eN0], thetaSR.data()[mat_eN0], thW0, DthW0, KWr0, DKWr0);
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0, KNr0, DKNr0);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_a0, alpha_eN0, n_vg_eN0, KNr0, DKNr0, Se_trap_L1547);
           proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_a0, alpha_eN0, n_vg_eN0, pc0, dpc_dSe0, d2pc0);
         }
         KNr0 *= krn_end_eN0;  DKNr0 *= krn_end_eN0;
@@ -1772,6 +1779,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           const double phi_b   = thetaR.data()[mat_b] + thetaSR.data()[mat_b];
           const double S_wr_b  = thetaR.data()[mat_b] / phi_b;
           const double one_m_Sr_b = 1.0 - S_wr_b;
+          const double Se_trap_L1775 = 1.0 - S_gr.data()[mat_b] / one_m_Sr_b;  // gas-only residual trapping
           const double z_clb   = fmin(fmax(u_n_ext_qp_outer, 1.0e-8), 1.0 - 1.0e-8);
           const double p_clb   = fmax(u_ext, 1.0e2);
           ::m_comp_co2::flash::FlashState fsb =
@@ -1785,11 +1793,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           double KWrb=0,DKWrb=0,thWb=0,DthWb=0,KNrb=0,DKNrb=0,pcb=0,dpc_dSeb=0,d2pcb=0;
           if (PSK_TYPE_member == 1) {
             proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_ab, alpha_b, n_vg_b, thetaR.data()[mat_b], thetaSR.data()[mat_b], thWb, DthWb, KWrb, DKWrb);
-            proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_ab, alpha_b, n_vg_b, KNrb, DKNrb);
+            proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_ab, alpha_b, n_vg_b, KNrb, DKNrb, Se_trap_L1775);
             proteus::m_comp_co2::psk::bc_pc_from_Se(Se_ab, alpha_b, n_vg_b, pcb, dpc_dSeb, d2pcb);
           } else {
             proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_ab, alpha_b, n_vg_b, thetaR.data()[mat_b], thetaSR.data()[mat_b], thWb, DthWb, KWrb, DKWrb);
-            proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_ab, alpha_b, n_vg_b, KNrb, DKNrb);
+            proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_ab, alpha_b, n_vg_b, KNrb, DKNrb, Se_trap_L1775);
             proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_ab, alpha_b, n_vg_b, pcb, dpc_dSeb, d2pcb);
           }
           KNrb *= krn_end_b; DKNrb *= krn_end_b;
@@ -1962,6 +1970,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         // wetting effective saturation from the FLASH saturation + (p,z) derivs.
         const double S_wr_loc     = thetaR.data()[mat_eN] / phi_eN;
         const double one_m_Sr_loc = 1.0 - S_wr_loc;
+        const double Se_trap_L1965 = 1.0 - S_gr.data()[mat_eN] / one_m_Sr_loc;  // gas-only residual trapping
         const double Se_raw_j = (Sa_j - S_wr_loc) / one_m_Sr_loc;
         double Se_a, dSe_dp, dSe_dz;
         if (Se_raw_j <= 0.0)      { Se_a = 0.0; dSe_dp = 0.0; dSe_dz = 0.0; }
@@ -1972,12 +1981,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         if (PSK_TYPE_member == 1) {
           proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_a, alpha_eN, n_vg_eN,
               thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_a, DthW_a, KWr_a, DKWr_a);
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_a, alpha_eN, n_vg_eN, KNr_a, DKNr_a);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_a, alpha_eN, n_vg_eN, KNr_a, DKNr_a, Se_trap_L1965);
           proteus::m_comp_co2::psk::bc_pc_from_Se(Se_a, alpha_eN, n_vg_eN, pc_a, dpc_dSe_a, d2pc_a);
         } else {
           proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_a, alpha_eN, n_vg_eN,
               thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_a, DthW_a, KWr_a, DKWr_a);
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_a, alpha_eN, n_vg_eN, KNr_a, DKNr_a);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_a, alpha_eN, n_vg_eN, KNr_a, DKNr_a, Se_trap_L1965);
           proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_a, alpha_eN, n_vg_eN, pc_a, dpc_dSe_a, d2pc_a);
         }
         KNr_a *= krn_end_eN;  DKNr_a *= krn_end_eN;
@@ -2107,6 +2116,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const double *KWs_eN   = &KWs.data()[mat_eN * nnz];
       const double S_wr_loc      = thetaR.data()[mat_eN] / phi_eN;
       const double one_m_Sr_loc  = 1.0 - S_wr_loc;
+      const double Se_trap_L2110 = 1.0 - S_gr.data()[mat_eN] / one_m_Sr_loc;  // gas-only residual trapping
 
       double elementJacobian_n_n_eb[nDOF_test_element][nDOF_trial_element];
       double elementJacobian_n_w_eb[nDOF_test_element][nDOF_trial_element];
@@ -2179,11 +2189,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         double KWr_b=0,DKWr_b=0,thW_b=0,DthW_b=0,KNr_b=0,DKNr_b=0,pc_b=0,dpc_dSe_b=0,d2pc_b=0;
         if (PSK_TYPE_member == 1) {
           proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_b, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b, Se_trap_L2110);
           proteus::m_comp_co2::psk::bc_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
         } else {
           proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_b, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b, Se_trap_L2110);
           proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
         }
         KNr_b *= krn_end_eN;  DKNr_b *= krn_end_eN;
@@ -2707,6 +2717,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &thetaSR                                    = args.array<double>("thetaSR");
     xt::pyarray<double> &KWs                                        = args.array<double>("KWs");
     xt::pyarray<double> &krn_end                                    = args.array<double>("krn_end");
+    xt::pyarray<double> &S_gr                                       = args.array<double>("S_gr");
     double               mu_n                                       = args.scalar<double>("mu_n");
     double               useMetrics                                 = args.scalar<double>("useMetrics");
     double               alphaBDF                                   = args.scalar<double>("alphaBDF");
@@ -3039,6 +3050,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const double krn_end_p   = krn_end.data()[mat_eN_proj];
       const double S_wr_p      = thetaR.data()[mat_eN_proj] / phi_eN;
       const double one_m_Sr_p  = 1.0 - S_wr_p;
+      const double Se_trap_L3043 = 1.0 - S_gr.data()[mat_eN_proj] / one_m_Sr_p;  // gas-only residual trapping
       const int    eN_nDOF_trial_element = eN * nDOF_trial_element;
       for (int k = 0; k < nQuadraturePoints_element; k++) {
         double jac[nSpace * nSpace], jacDet, jacInv[nSpace * nSpace], x_p, y_p, z_p;
@@ -3068,9 +3080,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double dpc_dSn_p = dpc_dSe_p * dSe_du_n_p;
         double krn_p = 0.0, dkrn_dSe_p = 0.0;
         if (PSK_TYPE_member == 1)
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_p, alpha_eN_p, n_vg_eN_p, krn_p, dkrn_dSe_p);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_p, alpha_eN_p, n_vg_eN_p, krn_p, dkrn_dSe_p, Se_trap_L3043);
         else
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_p, alpha_eN_p, n_vg_eN_p, krn_p, dkrn_dSe_p);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_p, alpha_eN_p, n_vg_eN_p, krn_p, dkrn_dSe_p, Se_trap_L3043);
         krn_p             = krn_p * krn_end_p / mu_n;
         const double dkrn_dSn_p = dkrn_dSe_p * krn_end_p * dSe_du_n_p / mu_n;
         // EOS exponent clamped at 50 (exp(50)~5e21, finite): a bad Newton trial
@@ -3101,9 +3113,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_p_old, alpha_eN_p, n_vg_eN_p, pc_p_old, dpc_p_old_unused, d2pc_p_old_unused);
         double krn_p_old = 0.0, dkrn_p_old_unused = 0.0;
         if (PSK_TYPE_member == 1)
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_p_old, alpha_eN_p, n_vg_eN_p, krn_p_old, dkrn_p_old_unused);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_p_old, alpha_eN_p, n_vg_eN_p, krn_p_old, dkrn_p_old_unused, Se_trap_L3043);
         else
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_p_old, alpha_eN_p, n_vg_eN_p, krn_p_old, dkrn_p_old_unused);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_p_old, alpha_eN_p, n_vg_eN_p, krn_p_old, dkrn_p_old_unused, Se_trap_L3043);
         krn_p_old = krn_p_old * krn_end_p / mu_n;
         const double rho_n_p_old = rho_n_compressible ? (rho_n * exp(fmin((u_w_p_old + pc_p_old) * inv_p_ref_n, 50.0))) : rho_n;
         // TADR brine density at this QP.
@@ -3612,6 +3624,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double phi_b0   = thetaR.data()[mat_b0] + thetaSR.data()[mat_b0];
         const double S_wr_b0  = thetaR.data()[mat_b0] / phi_b0;
         const double one_m_Sr_b0 = 1.0 - S_wr_b0;
+        const double Se_trap_L3616 = 1.0 - S_gr.data()[mat_b0] / one_m_Sr_b0;  // gas-only residual trapping
         const double z_clb0   = fmin(fmax(u_n_ext_qp, 1.0e-8), 1.0 - 1.0e-8);
         const double p_clb0   = fmax(u_ext, 1.0e2);
         ::m_comp_co2::flash::FlashState fsb0 =
@@ -3625,11 +3638,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         double KWrb0=0,DKWrb0=0,thWb0=0,DthWb0=0,KNrb0=0,DKNrb0=0,pcb0=0,dpc_dSeb0=0,d2pcb0=0;
         if (PSK_TYPE_member == 1) {
           proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_ab0, alpha_b0, n_vg_b0, thetaR.data()[mat_b0], thetaSR.data()[mat_b0], thWb0, DthWb0, KWrb0, DKWrb0);
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_ab0, alpha_b0, n_vg_b0, KNrb0, DKNrb0);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_ab0, alpha_b0, n_vg_b0, KNrb0, DKNrb0, Se_trap_L3616);
           proteus::m_comp_co2::psk::bc_pc_from_Se(Se_ab0, alpha_b0, n_vg_b0, pcb0, dpc_dSeb0, d2pcb0);
         } else {
           proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_ab0, alpha_b0, n_vg_b0, thetaR.data()[mat_b0], thetaSR.data()[mat_b0], thWb0, DthWb0, KWrb0, DKWrb0);
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_ab0, alpha_b0, n_vg_b0, KNrb0, DKNrb0);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_ab0, alpha_b0, n_vg_b0, KNrb0, DKNrb0, Se_trap_L3616);
           proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_ab0, alpha_b0, n_vg_b0, pcb0, dpc_dSeb0, d2pcb0);
         }
         KNrb0 *= krn_end_b0; DKNrb0 *= krn_end_b0;
@@ -3919,6 +3932,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double phi_i    = thetaR.data()[mat_i] + thetaSR.data()[mat_i];
         const double S_wr_i   = thetaR.data()[mat_i] / phi_i;
         const double one_m_Sr_i = 1.0 - S_wr_i;
+        const double Se_trap_L3923 = 1.0 - S_gr.data()[mat_i] / one_m_Sr_i;  // gas-only residual trapping
         const double cg_i     = krn_end_i / mu_n;
         // --- current iterate ---
         const double z_cl = fmin(fmax(u_dof_n.data()[node_i], 1.0e-8), 1.0 - 1.0e-8);
@@ -3933,11 +3947,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         else { Se = Se_raw; dSe_dp = -f.dS_g_dp/one_m_Sr_i; dSe_dz = -f.dS_g_dz/one_m_Sr_i; }
         double krn=0,dkrn=0,krw=0,dkrw=0,thW=0,DthW=0,pc=0,dpc_dSe=0,d2pc=0;
         if (PSK_TYPE_member == 1) {
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se, alpha_i, n_vg_i, krn, dkrn);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se, alpha_i, n_vg_i, krn, dkrn, Se_trap_L3923);
           proteus::m_comp_co2::psk::bc_wetting_from_Se(Se, alpha_i, n_vg_i, thetaR.data()[mat_i], thetaSR.data()[mat_i], thW, DthW, krw, dkrw);
           proteus::m_comp_co2::psk::bc_pc_from_Se(Se, alpha_i, n_vg_i, pc, dpc_dSe, d2pc);
         } else {
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se, alpha_i, n_vg_i, krn, dkrn);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se, alpha_i, n_vg_i, krn, dkrn, Se_trap_L3923);
           proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se, alpha_i, n_vg_i, thetaR.data()[mat_i], thetaSR.data()[mat_i], thW, DthW, krw, dkrw);
           proteus::m_comp_co2::psk::vgm_pc_from_Se(Se, alpha_i, n_vg_i, pc, dpc_dSe, d2pc);
         }
@@ -3966,11 +3980,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double Se_o = Se_o_raw <= 0.0 ? 0.0 : (Se_o_raw >= 1.0 ? 1.0 : Se_o_raw);
         double krn_o=0,dkrn_o=0,krw_o=0,dkrw_o=0,thW_o=0,DthW_o=0,pc_o=0,dpc_o=0,d2pc_o=0;
         if (PSK_TYPE_member == 1) {
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_o, alpha_i, n_vg_i, krn_o, dkrn_o);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_o, alpha_i, n_vg_i, krn_o, dkrn_o, Se_trap_L3923);
           proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_o, alpha_i, n_vg_i, thetaR.data()[mat_i], thetaSR.data()[mat_i], thW_o, DthW_o, krw_o, dkrw_o);
           proteus::m_comp_co2::psk::bc_pc_from_Se(Se_o, alpha_i, n_vg_i, pc_o, dpc_o, d2pc_o);
         } else {
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_o, alpha_i, n_vg_i, krn_o, dkrn_o);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_o, alpha_i, n_vg_i, krn_o, dkrn_o, Se_trap_L3923);
           proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_o, alpha_i, n_vg_i, thetaR.data()[mat_i], thetaSR.data()[mat_i], thW_o, DthW_o, krw_o, dkrw_o);
           proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_o, alpha_i, n_vg_i, pc_o, dpc_o, d2pc_o);
         }
@@ -4411,6 +4425,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       {
         const double S_wr_eN     = thetaR.data()[mat_eN] / phi_eN;
         const double one_m_Sr_eN = 1.0 - S_wr_eN;
+        const double Se_trap_L4415 = 1.0 - S_gr.data()[mat_eN] / one_m_Sr_eN;  // gas-only residual trapping
         // Capillary entry pressure of THIS element's rock, p_d_e = 1/alpha [head].
         // The barrier below charges the gas flux the entry-pressure JUMP
         // (p_d_e - p_d_coarsest_neighbor) when gas crosses an edge INTO this
@@ -4468,11 +4483,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           else { Se = Se_raw; dSe_dp = -f.dS_g_dp/one_m_Sr_eN; dSe_dz = -f.dS_g_dz/one_m_Sr_eN; }
           double krn=0,dkrn=0,krw=0,dkrw=0,thW=0,DthW=0,pc=0,dpc_dSe=0,d2pc=0;
           if (PSK_TYPE_member == 1) {
-            proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se, alpha_eN, n_vg_eN, krn, dkrn);
+            proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se, alpha_eN, n_vg_eN, krn, dkrn, Se_trap_L4415);
             proteus::m_comp_co2::psk::bc_wetting_from_Se(Se, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW, DthW, krw, dkrw);
             proteus::m_comp_co2::psk::bc_pc_from_Se(Se, alpha_eN, n_vg_eN, pc, dpc_dSe, d2pc);
           } else {
-            proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se, alpha_eN, n_vg_eN, krn, dkrn);
+            proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se, alpha_eN, n_vg_eN, krn, dkrn, Se_trap_L4415);
             proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW, DthW, krw, dkrw);
             proteus::m_comp_co2::psk::vgm_pc_from_Se(Se, alpha_eN, n_vg_eN, pc, dpc_dSe, d2pc);
           }
@@ -4511,11 +4526,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           const double Se_o = Se_o_raw <= 0.0 ? 0.0 : (Se_o_raw >= 1.0 ? 1.0 : Se_o_raw);
           double krn_o=0,dkrn_o=0,krw_o=0,dkrw_o=0,thW_o=0,DthW_o=0,pc_o=0,dpc_o=0,d2pc_o=0;
           if (PSK_TYPE_member == 1) {
-            proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_o, alpha_eN, n_vg_eN, krn_o, dkrn_o);
+            proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_o, alpha_eN, n_vg_eN, krn_o, dkrn_o, Se_trap_L4415);
             proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_o, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_o, DthW_o, krw_o, dkrw_o);
             proteus::m_comp_co2::psk::bc_pc_from_Se(Se_o, alpha_eN, n_vg_eN, pc_o, dpc_o, d2pc_o);
           } else {
-            proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_o, alpha_eN, n_vg_eN, krn_o, dkrn_o);
+            proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_o, alpha_eN, n_vg_eN, krn_o, dkrn_o, Se_trap_L4415);
             proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_o, alpha_eN, n_vg_eN, thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_o, DthW_o, krw_o, dkrw_o);
             proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_o, alpha_eN, n_vg_eN, pc_o, dpc_o, d2pc_o);
           }
@@ -4842,6 +4857,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const double *KWs_eN   = &KWs.data()[mat_eN * nnz];
       const double S_wr_loc      = thetaR.data()[mat_eN] / phi_eN;
       const double one_m_Sr_loc  = 1.0 - S_wr_loc;
+      const double Se_trap_L4846 = 1.0 - S_gr.data()[mat_eN] / one_m_Sr_loc;  // gas-only residual trapping
 
       double elementResidual_n_eb[nDOF_test_element];
       double elementJacobian_n_n_eb[nDOF_test_element][nDOF_trial_element];
@@ -4929,12 +4945,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         if (PSK_TYPE_member == 1) {
           proteus::m_comp_co2::psk::bc_wetting_from_Se(Se_b, alpha_eN, n_vg_eN,
               thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
-          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b, Se_trap_L4846);
           proteus::m_comp_co2::psk::bc_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
         } else {
           proteus::m_comp_co2::psk::vgm_wetting_from_Se(Se_b, alpha_eN, n_vg_eN,
               thetaR.data()[mat_eN], thetaSR.data()[mat_eN], thW_b, DthW_b, KWr_b, DKWr_b);
-          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b);
+          proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_b, alpha_eN, n_vg_eN, KNr_b, DKNr_b, Se_trap_L4846);
           proteus::m_comp_co2::psk::vgm_pc_from_Se(Se_b, alpha_eN, n_vg_eN, pc_b, dpc_dSe_b, d2pc_b);
         }
         KNr_b *= krn_end_eN;  DKNr_b *= krn_end_eN;
@@ -5131,6 +5147,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &thetaSR              = args.array<double>("thetaSR");
     xt::pyarray<double> &KWs                  = args.array<double>("KWs");
     xt::pyarray<double> &krn_end              = args.array<double>("krn_end");
+    xt::pyarray<double> &S_gr                 = args.array<double>("S_gr");
     double               mu_n                 = args.scalar<double>("mu_n");
     xt::pyarray<int>    &elementMaterialTypes = args.array<int>("elementMaterialTypes");
     xt::pyarray<int>    &freeDOFMaterialTypes = args.array<int>("freeDOFMaterialTypes");
@@ -5265,6 +5282,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &thetaSR              = args.array<double>("thetaSR");
     xt::pyarray<double> &KWs                  = args.array<double>("KWs");
     xt::pyarray<double> &krn_end              = args.array<double>("krn_end");
+    xt::pyarray<double> &S_gr                 = args.array<double>("S_gr");
     double               mu_n                 = args.scalar<double>("mu_n");
     //end new
     double               useMetrics                                 = args.scalar<double>("useMetrics");

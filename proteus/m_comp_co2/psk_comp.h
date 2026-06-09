@@ -714,12 +714,18 @@ inline void vgm_wetting_from_Se(const double Se,
   DKWr_DSe = (0.5 / sqrtSe_safe) * term * term + 2.0 * sqrtSe * term * Dterm_DSe;
 }
 
-inline void vgm_kr_nonwetting_from_Se(const double Se,
+inline void vgm_kr_nonwetting_from_Se(const double Se_w,
                                       const double /*alpha*/,
                                       const double n_vg,
                                       double &KNr,
-                                      double &DKNr_DSe)
+                                      double &DKNr_DSe,
+                                      const double Se_trap = 1.0)
 {
+  // Gas-only residual trapping: see bc_kr_nonwetting_from_Se.  Remap the
+  // wetting Se_w over the mobile range [0,Se_trap]; k_rn=0 for S_g<=S_gr.
+  // Se_trap=1 -> original.  DKNr_DSe is d k_rn/d Se_w (1/Se_trap folded in).
+  const double inv_trap = 1.0 / Se_trap;
+  const double Se       = Se_w * inv_trap;
   const double m_vg = 1.0 - 1.0 / n_vg;
   if (Se >= 1.0) {
     KNr = 0.0;
@@ -744,7 +750,7 @@ inline void vgm_kr_nonwetting_from_Se(const double Se,
   KNr = sqrt_oms * y2m;
   // d(y^(2m))/dSe = 2m * x^(2m - 1) * dx/dSe = -2 * x^(2m - 1) * Se^(1/m - 1)
   const double Dy2m_DSe = -2.0 * pow(xStar, 2.0 * m_vg - 1.0) * pow(SeStar, 1.0 / m_vg - 1.0);
-  DKNr_DSe = (-0.5 / sqrt_oms) * y2m + sqrt_oms * Dy2m_DSe;
+  DKNr_DSe = ((-0.5 / sqrt_oms) * y2m + sqrt_oms * Dy2m_DSe) * inv_trap;
 }
 
 inline void bc_wetting_from_Se(const double Se,
@@ -776,12 +782,24 @@ inline void bc_wetting_from_Se(const double Se,
   DKWr_DSe = exp_w * pow(Se, exp_w - 1.0);
 }
 
-inline void bc_kr_nonwetting_from_Se(const double Se,
+inline void bc_kr_nonwetting_from_Se(const double Se_w,
                                      const double /*alpha*/,
                                      const double lam,
                                      double &KNr,
-                                     double &DKNr_DSe)
+                                     double &DKNr_DSe,
+                                     const double Se_trap = 1.0)
 {
+  // ---------------------------------------------------------------------
+  // Gas-only residual trapping (Jun 2026): remap the wetting effective
+  // saturation Se_w onto [0,1] over the MOBILE gas range Se_w in [0,Se_trap],
+  //   Se_trap = (1 - S_wr - S_gr)/(1 - S_wr) = 1 - S_gr/(1 - S_wr).
+  // Gas is immobile (k_rn = 0) for Se_w >= Se_trap, i.e. S_g <= S_gr.
+  // Se_trap = 1.0 recovers the original no-trapping closure.  Only k_rn is
+  // remapped here (gas-only) -- k_rw and p_c keep the drainage Se_w.  The
+  // returned DKNr_DSe is d k_rn / d Se_w (the 1/Se_trap chain factor is folded
+  // in), so every caller's existing dkrn*dSe_dp chain stays correct unchanged.
+  const double inv_trap = 1.0 / Se_trap;
+  const double Se       = Se_w * inv_trap;
   // ---------------------------------------------------------------------
   // Option A regularisation (May 2026): cubic-Hermite endpoint bridge for
   // k_rn near the wet endpoint Se = 1.
@@ -826,7 +844,7 @@ inline void bc_kr_nonwetting_from_Se(const double Se,
     // Beyond the wet endpoint: value clamps to 0, derivative continues at
     // -s_min_brn for C^1 consistency with the bridge at Se = 1.
     KNr      = 0.0;
-    DKNr_DSe = -s_min_brn;
+    DKNr_DSe = -s_min_brn * inv_trap;
     return;
   }
 
@@ -838,8 +856,8 @@ inline void bc_kr_nonwetting_from_Se(const double Se,
     const double oneMinusSe = 1.0 - Se;
     const double Y          = 1.0 - SeExp;
     KNr      = oneMinusSe * oneMinusSe * Y;
-    DKNr_DSe = -2.0 * oneMinusSe * Y
-             - oneMinusSe * oneMinusSe * exp_n * pow(Se, exp_n - 1.0);
+    DKNr_DSe = (-2.0 * oneMinusSe * Y
+             - oneMinusSe * oneMinusSe * exp_n * pow(Se, exp_n - 1.0)) * inv_trap;
     return;
   }
 
@@ -869,7 +887,7 @@ inline void bc_kr_nonwetting_from_Se(const double Se,
 
   KNr      = H00 * fa + H10 * delta_brn * da + H11 * delta_brn * (-s_min_brn);
   DKNr_DSe = (dH00 * fa + dH10 * delta_brn * da
-              + dH11 * delta_brn * (-s_min_brn)) / delta_brn;
+              + dH11 * delta_brn * (-s_min_brn)) / delta_brn * inv_trap;
 }
 
 } // namespace psk
