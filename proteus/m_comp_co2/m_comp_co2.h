@@ -89,10 +89,13 @@ public:
   // calculateJacobian / calculateMassMatrix) from argsDict before any
   // evaluateCoefficients call. evaluateCoefficients dispatches on this.
   int PSK_TYPE_member = 0;
-  // Compositional (p,z) state for the flash.  Isothermal / fixed-salinity for
-  // now; defaults used until P4 wires T_C / m_NaCl through argsDict.  Set (like
-  // PSK_TYPE_member) at every top-level entry point once Python provides them.
-  double T_C_member    = 20.0;   // temperature [degC]
+  // Compositional (p,z) state for the flash.  Isothermal / fixed-salinity per
+  // solve.  T_C_member is now wired through argsDict["T_C"] and set (like
+  // PSK_TYPE_member) at every top-level entry point from Coefficients.T_C, so
+  // temperature can be changed from the input deck without recompiling.  The
+  // 20.0 default is only the pre-first-entry fallback.  m_NaCl is still fixed
+  // (SP2005 salting-out is TODO); wire it the same way if salinity is needed.
+  double T_C_member    = 20.0;   // temperature [degC] (default; overwritten from argsDict["T_C"])
   double m_NaCl_member = 0.0;    // salinity [mol/kg] (SP2005 salting-out is TODO)
   // Immiscible/incompressible verification limit (McWhorter-Sunada).  Set (like
   // PSK_TYPE_member) at every top-level entry point from argsDict["immiscible"];
@@ -596,6 +599,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     // PSK closure selector for evaluateCoefficients (read from argsDict).
     PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
     immiscible_member = (args.scalar<int>("immiscible") != 0);
+    T_C_member        = args.scalar<double>("T_C");      // temperature [degC] from input
     // FOR FCT
     xt::pyarray<double> &dLow                 = args.array<double>("dLow");
     xt::pyarray<double> &fluxMatrix           = args.array<double>("fluxMatrix");
@@ -1474,6 +1478,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     // PSK closure selector for evaluateCoefficients (read from argsDict).
     PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
     immiscible_member = (args.scalar<int>("immiscible") != 0);
+    T_C_member        = args.scalar<double>("T_C");      // temperature [degC] from input
     int                  nExteriorElementBoundaries_global          = args.scalar<int>("nExteriorElementBoundaries_global");
     xt::pyarray<int>    &exteriorElementBoundariesArray             = args.array<int>("exteriorElementBoundariesArray");
     xt::pyarray<int>    &elementBoundaryElementsArray               = args.array<int>("elementBoundaryElementsArray");
@@ -2830,6 +2835,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     int ENTROPY_TYPE = args.scalar<int>("ENTROPY_TYPE");
     PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
     immiscible_member = (args.scalar<int>("immiscible") != 0);
+    T_C_member        = args.scalar<double>("T_C");      // temperature [degC] from input
     // FOR FCT
     xt::pyarray<double> &dLow                 = args.array<double>("dLow");
     xt::pyarray<double> &fluxMatrix           = args.array<double>("fluxMatrix");
@@ -4258,9 +4264,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       for (int s = 0; s < 6 * numDOFs_n; ++s) gas_budget_node.data()[s] = 0.0;
 
     // z-based smoothness indicator psi_n (Kuzmin alpha^2) on the comp-1 DOF
-    // graph, used to GATE the comp-1 graph viscosity dvg below. alpha_i =
+    // graph, used to GATE the comp-1 high-order graph viscosity dEV below.
+    // alpha_i =
     // |sum_j (z_i - z_j)| / (sum_j |z_i - z_j|): ~0 in smooth/linear regions
-    // (so dvg -> 0 and the EV recovers high-order accuracy on smooth problems
+    // (so dEV -> 0 and the EV recovers high-order accuracy on smooth problems
     // like McWhorter-Sunada) and ~1 at sharp z fronts (so the bubble-point
     // overshoot bound is preserved for FluidFlower). Built from OLD z so dvg
     // stays a frozen old-time coefficient (exact antisymmetric Jacobian).
@@ -4301,6 +4308,27 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           else if (node_mat0[gN] != mat_eN_if) node_iface[gN] = 1;
         }
       }
+    }
+
+    // Map an (i_n, j_n) comp-1 DOF pair to its compact comp-1 CSR offset (the
+    // same indexing as dLow_n / dEV_n / dt_times_fH_minus_fL_n / MC_n).  Used to
+    // SCATTER the element-side antidiffusive predictor onto the edge graph that
+    // FCTStep_n consumes.
+    auto comp1_offset = [&](int i_n, int j_n) -> int {
+      for (int off = csrRowIndeces_n_DofLoops.data()[i_n];
+           off < csrRowIndeces_n_DofLoops.data()[i_n + 1]; ++off)
+        if (csrColumnOffsets_n_DofLoops.data()[off] == j_n) return off;
+      return -1;
+    };
+    // Zero the comp-1 FCT predictor edge arrays BEFORE the element loop -- the
+    // antidiffusive flux below is ACCUMULATED element-by-element (each interior
+    // edge is shared by <=2 element sides), so it must start clean each call.
+    // When FCT_n == 0 nothing accumulates and they stay zero (a stray FCTStep_n
+    // then scatters limited_solution_n == low-order iterate, unchanged).
+    for (int off = 0; off < NNZ_n; ++off) {
+      dLow_n.data()[off]                 = 0.0;
+      dEV_n.data()[off]                  = 0.0;
+      dt_times_fH_minus_fL_n.data()[off] = 0.0;
     }
 
     for (int eN = 0; eN < nElements_global; eN++) {
@@ -4751,13 +4779,44 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             // (McWhorter-Sunada accuracy unchanged).
             const bool   iface_edge = (node_iface[gN_e[i]] != 0) || (node_iface[gN_e[j]] != 0);
             const double coeff_a    = iface_edge ? 1.0 : (cE*psi_edge);
-            const double dvg = tau * ( cE*psi_edge*gate_old*fmax(si_g,sj_g)
+            // dEV = entropy-viscosity / smoothness-gated HIGH-order dissipation
+            // (recovers McWhorter-Sunada accuracy in smooth z, preserves the
+            // bubble-point bound at sharp fronts).  This is the coefficient the
+            // residual used directly before FCT was wired.
+            const double dEV = tau * ( cE*psi_edge*gate_old*fmax(si_g,sj_g)
                                      + coeff_a*fmax(si_a,sj_a) );
-            if (dvg > 0.0) {
-              const double Fv = dvg*(u_dof_n.data()[gN_e[j]] - u_dof_n.data()[gN_e[i]]);
+            // dLow = FULL low-order Rusanov dissipation (EV down-scale -> 1).  The
+            // gas branch KEEPS its entry-pressure gate_old barrier (free CO2 still
+            // cannot diffuse through a seal even at low order); the aqueous branch
+            // is ungated.  dLow >= dEV by construction, so f^A below has the right
+            // sign and FCT only ever REMOVES dissipation.
+            const double dLow = tau * ( gate_old*fmax(si_g,sj_g) + fmax(si_a,sj_a) );
+            const double dHi  = fmin(dEV, dLow);   // high-order target, clamped <= dLow
+            // TADR-style defect-correction (see the FCT comment block above): with
+            // FCT requested, Newton solves the LOW-order operator (dLow) cleanly and
+            // the post-step Zalesak limiter adds back the bounded antidiffusion
+            //     f^A_ij = dt * (dLow - dHi) * (z_j - z_i).
+            // With FCT off the residual keeps the EV dissipation dEV directly, so
+            // the FCT-off solve is byte-for-byte the legacy scheme.
+            const double dResid = (FCT_n == 1) ? dLow : dEV;
+            if (dResid > 0.0) {
+              const double Fv = dResid*(u_dof_n.data()[gN_e[j]] - u_dof_n.data()[gN_e[i]]);
               elementResidual_n[i] -= Fv;
-              elementJacobian_n_n[i][i] += dvg;
-              elementJacobian_n_n[i][j] -= dvg;
+              elementJacobian_n_n[i][i] += dResid;
+              elementJacobian_n_n[i][j] -= dResid;
+            }
+            // Scatter the antidiffusive predictor onto the compact comp-1 CSR edge.
+            // dLow,dHi are symmetric in (i,j) and the (z_j - z_i) factor is
+            // antisymmetric, so summing the <=2 element sides sharing an edge keeps
+            // f^A_ij = -f^A_ji  =>  global CO2 mass is conserved by the limiter.
+            if (FCT_n == 1) {
+              const int off_n = comp1_offset(gN_e[i], gN_e[j]);
+              if (off_n >= 0) {
+                const double dz = u_dof_n.data()[gN_e[j]] - u_dof_n.data()[gN_e[i]];
+                dLow_n.data()[off_n]                 += dLow;
+                dEV_n.data()[off_n]                  += dHi;
+                dt_times_fH_minus_fL_n.data()[off_n] += dt * (dLow - dHi) * dz;
+              }
             }
           }
         }
@@ -4783,21 +4842,21 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       }
     }
     // ============================================================================
-    // Comp-1 FCT predictor no-ops + diagnostics.
+    // Comp-1 FCT per-DOF predictor.
     //
-    // The gas flux and its (1,1)/(1,0) Jacobian are assembled element-by-element
-    // in the cell loop above (two-sided per-element-side closure). FCT for
-    // comp-1 is a pass-through: zero the antidiffusive predictor arrays and set
-    // mLow_n / mDotLow_n to the low-order iterate, so a postStep FCTStep_n (if
-    // Python calls it) returns limited_solution_n == u_dof_n unchanged.
+    // The gas/aqueous flux and its (1,1)/(1,0) Jacobian are assembled
+    // element-by-element in the cell loop above (two-sided per-element-side
+    // closure); that loop also SCATTERED the per-edge antidiffusive predictor
+    // dt_times_fH_minus_fL_n (= dt*(dLow-dEV)*dz) onto the compact comp-1 CSR.
+    // Here we only finish the per-DOF predictor: mLow_n is the converged
+    // low-order CO2 mass m_c = (phi*N)*z (under FCT_n==1 the Newton residual IS
+    // the low-order operator, so the converged iterate is exactly the bounded
+    // low-order solution), and mDotLow_n its lumped time derivative.  FCTStep_n
+    // (postStep) then limits mLow_n + ML^{-1} sum_j L_ij f^A_ij toward the
+    // high-order solution while enforcing the local discrete-maximum-principle
+    // bounds on m_c.
     // ============================================================================
     for (int i_n = 0; i_n < numDOFs_n; i_n++) {
-      for (int offset = csrRowIndeces_n_DofLoops.data()[i_n];
-           offset < csrRowIndeces_n_DofLoops.data()[i_n + 1]; offset++) {
-        dt_times_fH_minus_fL_n.data()[offset] = 0.0;
-        dLow_n.data()[offset]                 = 0.0;
-        dEV_n.data()[offset]                  = 0.0;
-      }
       mLow_n.data()[i_n]    = m_n_DOF[i_n];
       mDotLow_n.data()[i_n] = (m_n_DOF[i_n] - mn_n.data()[i_n]) / dt;
     }
@@ -5329,6 +5388,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     // PSK closure selector for evaluateCoefficients (read from argsDict).
     PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
     immiscible_member = (args.scalar<int>("immiscible") != 0);
+    T_C_member        = args.scalar<double>("T_C");      // temperature [degC] from input
     double Ct_sge = 4.0;
     //
     //loop over elements to compute volume integrals and load them into the element Jacobians and global Jacobian
@@ -5652,6 +5712,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &c_dof  = args.array<double>("c_dof");   // out: brine CO2 mass conc [kg/m^3]
     const int numDOFs           = args.scalar<int>("numDOFs");
     immiscible_member = (args.scalar<int>("immiscible") != 0);
+    T_C_member        = args.scalar<double>("T_C");      // temperature [degC] from input
     const double M_CO2 = 0.04401;                                // CO2 molar mass [kg/mol]
     for (int i = 0; i < numDOFs; i++)
       {

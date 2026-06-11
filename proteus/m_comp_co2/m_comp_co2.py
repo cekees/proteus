@@ -340,6 +340,13 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  # threaded into every flashPZ call.  Default 0 -> full
                  # compositional behavior (reverts all immiscible overrides).
                  immiscible=0,
+                 # Flash temperature [deg C].  Threaded to the kernel via
+                 # argsDict['T_C'] and used by every flashPZ call (solubility +
+                 # phase densities are strongly T-dependent).  Changing this in
+                 # the input deck takes effect WITHOUT recompiling m_comp_co2.h
+                 # (the .h reads it from argsDict at every entry point).  The
+                 # kernel is isothermal per solve.  Default 20 C.
+                 T_C=20.0,
                   ):
         self.VMS=VMS
         if density_model is None:
@@ -400,6 +407,9 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.p_ref_n = p_ref_n
         # Immiscible/incompressible verification limit (see __init__ argument).
         self.immiscible = int(immiscible)
+        # Flash temperature [deg C] (see __init__ argument); passed to the
+        # kernel via argsDict['T_C'] at every entry point.
+        self.T_C = float(T_C)
         self.beta=beta
         self.vgm_n_types = vgm_n_types
         self.vgm_alpha_types = vgm_alpha_types
@@ -2724,6 +2734,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["rho_n"]                = coef.rho_n
             argsDict["p_ref_n"]              = coef.p_ref_n
             argsDict["immiscible"]           = int(coef.immiscible)
+            argsDict["T_C"]                  = coef.T_C
             argsDict["beta"]                 = coef.beta
             argsDict["gravity"]              = coef.gravity
             argsDict["alpha"]                = coef.vgm_alpha_types
@@ -2821,6 +2832,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             argsDict["rho_n"]                = coef.rho_n
             argsDict["p_ref_n"]              = coef.p_ref_n
             argsDict["immiscible"]           = int(coef.immiscible)
+            argsDict["T_C"]                  = coef.T_C
             argsDict["beta"]                 = coef.beta
             argsDict["gravity"]              = coef.gravity
             argsDict["alpha"]                = coef.vgm_alpha_types
@@ -3263,6 +3275,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["rho_n"] = self.coefficients.rho_n
         argsDict["p_ref_n"] = self.coefficients.p_ref_n
         argsDict["immiscible"] = int(self.coefficients.immiscible)
+        argsDict["T_C"] = self.coefficients.T_C
         argsDict["beta"] = self.coefficients.beta
 
         argsDict["q_rho"]= self.q['rho']
@@ -3859,6 +3872,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["rho_n"] = self.coefficients.rho_n
         argsDict["p_ref_n"] = self.coefficients.p_ref_n
         argsDict["immiscible"] = int(self.coefficients.immiscible)
+        argsDict["T_C"] = self.coefficients.T_C
         argsDict["beta"] = self.coefficients.beta
         argsDict["gravity"] = self.coefficients.gravity
         argsDict["alpha"] = self.coefficients.vgm_alpha_types
@@ -3997,6 +4011,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["rho_n"] = self.coefficients.rho_n
         argsDict["p_ref_n"] = self.coefficients.p_ref_n
         argsDict["immiscible"] = int(self.coefficients.immiscible)
+        argsDict["T_C"] = self.coefficients.T_C
         argsDict["beta"] = self.coefficients.beta
 
         argsDict["q_rho"]= self.q['rho']
@@ -4458,6 +4473,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["c_dof"]      = self.c_brine_dof
         argsDict["numDOFs"]    = self.u[1].dof.shape[0]
         argsDict["immiscible"] = int(self.coefficients.immiscible)
+        argsDict["T_C"] = self.coefficients.T_C
         self.m_comp_co2.calculateFlashFields(argsDict)
     #def postStep(self, t, firstStep=False):
     #    with open('seepage_flux_nnnnk', "a") as f:
