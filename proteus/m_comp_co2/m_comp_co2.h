@@ -2731,6 +2731,20 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     double               sc_uref                                    = args.scalar<double>("sc_uref");
     double               sc_alpha                                   = args.scalar<double>("sc_alpha");
     xt::pyarray<int>    &u_l2g                                      = args.array<int>("u_l2g");
+    // ---- Node-split component-1 (z) map (DESIGN_nodesplit_consistent.md) -------
+    // u_l2g_n routes each element's local nodes to ITS material side's z-DOF, so
+    // an interface node carries an independent z (=> S_g) per facies and the
+    // capillary-pressure jump is representable.  p (comp-0) and geometry stay on
+    // the single mesh node u_l2g.  Python passes u_l2g_n == u_l2g, n_interface_pairs
+    // == 0 and split_z == 0 on a homogeneous / non-split run, so EVERY read/scatter
+    // below is BYTE-IDENTICAL to the nodal kernel (regression guard).  Style: the
+    // z_c<->z_f coupling is assembled as an EDGE in the split DOF graph (Richards.h
+    // edge-based DOF-loop), not a bolted-on flux -- see the interface loop below.
+    xt::pyarray<int>    &u_l2g_n                                    = args.array<int>("u_l2g_n");
+    const int            split_z                                    = args.scalar<int>("split_z");
+    const double         D_m                                        = args.scalar<double>("D_m");           // molecular diffusion of dissolved CO2 [m2/s]
+    xt::pyarray<int>    &interface_pairs                            = args.array<int>("interface_pairs");    // 5*n: [node, z_a, mat_a, z_b, mat_b]
+    const int            n_interface_pairs                          = args.scalar<int>("n_interface_pairs");
     xt::pyarray<int>    &r_l2g                                      = args.array<int>("r_l2g");
     xt::pyarray<double> &elementDiameter                            = args.array<double>("elementDiameter");
     int                  degree_polynomial                          = args.scalar<int>("degree_polynomial");
@@ -2862,6 +2876,13 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &limited_solution          = args.array<double>("limited_solution");
     xt::pyarray<int>    &freeDOFMaterialTypes      = args.array<int>("freeDOFMaterialTypes");
     xt::pyarray<int>    &freeDOFToNode_u           = args.array<int>("freeDOFToNode_u");
+    // node2zdof[mesh node] -> comp-1 (z) split DOF for that node (primary copy at a
+    // facies interface).  Under split_z the comp-1 DOF numbering is RENUMBERED off the
+    // mesh-node index, so the comp-0 lumped-mass DOF-graph loop (indexed by mesh node
+    // via freeDOFToNode_u) must map node -> z-DOF to read the right z and to write the
+    // (0,1) dR_w/dz tangent to the column that actually exists in the split sparsity.
+    // Identity (== mesh node) when split_z == 0 -> byte-identical.
+    xt::pyarray<int>    &node2zdof                 = args.array<int>("node2zdof");
     // Per-comp-1-DOF volume material (mesh node index == comp-1 DOF index, since
     // gas has no Dirichlet). Used by the nodal closure-eval block below to
     // evaluate krn / p_c / rho_n with the node's actual sand parameters --
@@ -2923,6 +2944,25 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     int                  NNZ_n                      = args.scalar<int>("NNZ_n");
     xt::pyarray<int>    &csrRowIndeces_n_DofLoops    = args.array<int>("csrRowIndeces_n_DofLoops");
     xt::pyarray<int>    &csrColumnOffsets_n_DofLoops = args.array<int>("csrColumnOffsets_n_DofLoops");
+    // comp1_full_offsets[k] = full globalJacobian flat offset of the k-th compact
+    // comp-1 (1,1) CSR entry -- lets the node-split interface loop write the comp-1
+    // tangent directly into globalJacobian (Richards DOF-graph style).
+    xt::pyarray<int>    &comp1_full_offsets         = args.array<int>("comp1_full_offsets");
+    // comp10_full_offsets[2*ip+s] = full globalJacobian flat offset of the (1,0)
+    // cross-block entry (row = comp-1 DOF z_{a|b} of interface pair ip, col = the
+    // shared pressure DOF p_node), s=0 -> z_a, s=1 -> z_b.  The node-split interface
+    // CO2 flux F is evaluated from flashPZ(p_node, z) so dF/dp_node != 0; this map
+    // lets the interface loop scatter that pressure tangent Richards-style (direct
+    // globalJacobian[off] write), mirroring comp1_full_offsets for the (1,1) block.
+    // -1 sentinel => slot absent (skipped).  Empty / unused when split_z == 0.
+    xt::pyarray<int>    &comp10_full_offsets        = args.array<int>("comp10_full_offsets");
+    // comp1_iface_offsets[2*ip+s] = full globalJacobian flat offset of the (1,1)
+    // interface OFF-DIAGONAL: s=0 -> (z_a row, z_b col), s=1 -> (z_b row, z_a col).
+    // These slots are allocated by getExtraSparsityElements (the two z-copies share no
+    // element, so findNonzeros never makes them) and EXCLUDED from the compact comp-1
+    // graph, so the off-diagonal tangent is scattered HERE -- not via comp1_offset /
+    // comp1_full_offsets, which no longer carry it.  -1 => absent (warns).
+    xt::pyarray<int>    &comp1_iface_offsets        = args.array<int>("comp1_iface_offsets");
     xt::pyarray<double> &dLow_n                     = args.array<double>("dLow_n");
     xt::pyarray<double> &dEV_n                      = args.array<double>("dEV_n");
     xt::pyarray<double> &fluxMatrix_n               = args.array<double>("fluxMatrix_n");
@@ -3090,7 +3130,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
                       &u_l2g.data()[eN_nDOF_trial_element],
                       &u_trial_ref.data()[k * nDOF_trial_element], u_w_p);
         ck.valFromDOF(u_dof_n.data(),
-                      &u_l2g.data()[eN_nDOF_trial_element],
+                      &u_l2g_n.data()[eN_nDOF_trial_element],
                       &u_trial_ref.data()[k * nDOF_trial_element], u_n_p);
         // Closure at current iterate -- Se, p_c, dp_c/dS_n, k_rn, dk_rn/dS_n.
         const double Se_p_raw = (1.0 - u_n_p - S_wr_p) / one_m_Sr_p;
@@ -3125,7 +3165,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
                       &u_l2g.data()[eN_nDOF_trial_element],
                       &u_trial_ref.data()[k * nDOF_trial_element], u_w_p_old);
         ck.valFromDOF(u_dof_n_old.data(),
-                      &u_l2g.data()[eN_nDOF_trial_element],
+                      &u_l2g_n.data()[eN_nDOF_trial_element],
                       &u_trial_ref.data()[k * nDOF_trial_element], u_n_p_old);
         const double Se_p_old_raw = (1.0 - u_n_p_old - S_wr_p) / one_m_Sr_p;
         double Se_p_old;
@@ -3172,7 +3212,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double dphiN_dp_qp = phi_eN * dN_dp_pr;
         for (int i = 0; i < nDOF_test_element; i++) {
           const int    eN_i = eN * nDOF_test_element + i;
-          const int    gi   = u_l2g.data()[eN_i];
+          const int    gi   = u_l2g_n.data()[eN_i];   // comp-1 split DOF (lumped phi*N projection)
           const double u_test_dV = u_test_ref.data()[k * nDOF_trial_element + i] * dV;
           // P1: phi*N (and derivatives) for the compositional CO2 accumulation.
           rho_n_phi_dof[gi]     += phiN_qp * u_test_dV;
@@ -3951,6 +3991,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       const double dMm_w = ::m_comp_co2::eos::M_CO2_KG - ::m_comp_co2::eos::M_H2O_KG;
       for (int i = 0; i < numDOFs_u; i++) {
         const int    node_i   = freeDOFToNode_u.data()[i];
+        // comp-1 (z) split DOF for this node -- u_dof_n is in the split numbering,
+        // so reading z must go through node2zdof (identity when split_z == 0).
+        const int    z_i      = (split_z != 0) ? node2zdof.data()[node_i] : node_i;
         const int    mat_i    = freeDOFMaterialTypes.data()[i];
         const double alpha_i  = alpha.data()[mat_i];
         const double n_vg_i   = n.data()[mat_i];
@@ -3961,7 +4004,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double Se_trap_L3923 = 1.0 - S_gr.data()[mat_i] / one_m_Sr_i;  // gas-only residual trapping
         const double cg_i     = krn_end_i / mu_n;
         // --- current iterate ---
-        const double z_cl = fmin(fmax(u_dof_n.data()[node_i], 1.0e-8), 1.0 - 1.0e-8);
+        const double z_cl = fmin(fmax(u_dof_n.data()[z_i], 1.0e-8), 1.0 - 1.0e-8);
         const double p_cl = fmax(u_free_dof[i], 1.0e2);
         ::m_comp_co2::flash::FlashState f =
             ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
@@ -3997,7 +4040,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         w_dlam_a_dp[i] = f.drho_a_dp*xw*krw + f.rho_a*dxw_dp*krw + f.rho_a*xw*dkrw*dSe_dp;
         w_dlam_a_dz[i] = f.drho_a_dz*xw*krw + f.rho_a*dxw_dz*krw + f.rho_a*xw*dkrw*dSe_dz;
         // --- old time level (frozen; feeds the (1-Theta) part, no derivatives) ---
-        const double z_cl_o = fmin(fmax(u_dof_n_old.data()[node_i], 1.0e-8), 1.0 - 1.0e-8);
+        const double z_cl_o = fmin(fmax(u_dof_n_old.data()[z_i], 1.0e-8), 1.0 - 1.0e-8);
         const double p_cl_o = fmax(u_free_dof_old[i], 1.0e2);
         ::m_comp_co2::flash::FlashState fo =
             ::m_comp_co2::flash::flashPZ(p_cl_o, z_cl_o, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
@@ -4050,6 +4093,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
 
       const double rho_i = rho_dof[i];
       const int node_i = freeDOFToNode_u.data()[i];
+      // comp-1 (z) split DOF for this node (see node2zdof note above): u_dof_n reads
+      // and the (0,1) dR_w/dz column both index the split numbering, not the mesh node.
+      const int z_i = (split_z != 0) ? node2zdof.data()[node_i] : node_i;
 
       double thetaW_tmp = 0.0;
       // loop over the sparsity pattern of the i-th DOF
@@ -4155,12 +4201,12 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       evaluateCoefficients_from_Se(a_rowptr.data(), a_colind.data(), rho, rho_i, beta, gravity.data(),
                                    alpha.data()[freeDOFMaterialTypes.data()[i]],
                                    n.data()[freeDOFMaterialTypes.data()[i]], thetaR.data()[freeDOFMaterialTypes.data()[i]], thetaSR.data()[freeDOFMaterialTypes.data()[i]], &KWs.data()[freeDOFMaterialTypes.data()[i] * nnz],
-                                   u_free_dof[i], u_dof_n.data()[node_i],
+                                   u_free_dof[i], u_dof_n.data()[z_i],
                                    m, dm, dm_du_n_fct, f, df, df_du_n_fct, a, da, da_du_n_fct, as, Kr, dKr, dkr_du_n_fct, thetaW_tmp);
       evaluateCoefficients_from_Se(a_rowptr.data(), a_colind.data(), rho, rho_i, beta, gravity.data(),
                                    alpha.data()[freeDOFMaterialTypes.data()[i]],
                                    n.data()[freeDOFMaterialTypes.data()[i]], thetaR.data()[freeDOFMaterialTypes.data()[i]], thetaSR.data()[freeDOFMaterialTypes.data()[i]], &KWs.data()[freeDOFMaterialTypes.data()[i] * nnz],
-                                   u_free_dof_old[i], u_dof_n_old.data()[node_i],
+                                   u_free_dof_old[i], u_dof_n_old.data()[z_i],
                                    mn.data()[i], dmn, dmn_du_n_fct, fn, dfn, dfn_du_n_fct, an, dan, dan_du_n_fct, asn, Krn, dKrn, dkrn_du_n_fct, thetaW_tmp);
       mLow.data()[i] = m;
       globalResidual.data()[offset_u + stride_u * i] += bc_mask.data()[i] * (MLi * (m - mn.data()[i]) / dt - ith_flux_term);
@@ -4172,7 +4218,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       // low-order operator fully consistent with d R_w / d u_n.
       {
         const int row_w   = offset_u + stride_u * i;
-        const int col_n   = offset_n + stride_n * node_i;
+        const int col_n   = offset_n + stride_n * z_i;   // split z-DOF column (== node_i if split_z==0)
         int off_wv = -1;
         for (int o = csrRowIndeces_Full.data()[row_w];
              o < csrRowIndeces_Full.data()[row_w + 1]; o++) {
@@ -4350,6 +4396,17 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       dEV_n.data()[off]                  = 0.0;
       dt_times_fH_minus_fL_n.data()[off] = 0.0;
     }
+    // Node-split interface transmissibility: per comp-1 DOF, the K-weighted nodal
+    // conductance sum_eN int K grad N . grad N (the diagonal of elementTransport_n).
+    // Accumulated in the element loop; the interface-pair loop uses the harmonic
+    // mean of the two copies as tau_if (the "assembled transport" Richards uses for
+    // every edge).  Inert when split_z == 0 (no interface pairs).
+    // PARALLEL: the interface pairs are OWNED-node-only, so the interface loop reads
+    // node_Kdiag only at OWNED DOFs; the owner holds the COMPLETE element star of its
+    // owned nodes via the standard ghost overlap (the same "owners hold the correct
+    // complete value (full overlap)" property the gate-array sync in m_comp_co2.py
+    // relies on), so this local sum is complete and needs no ghost exchange.
+    std::vector<double> node_Kdiag(numDOFs_n, 0.0);
 
     for (int eN = 0; eN < nElements_global; eN++) {
       const int    mat_eN    = elementMaterialTypes.data()[eN];
@@ -4403,8 +4460,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
       }
       for (int j = 0; j < nDOF_trial_element; j++) {
-        u_n_local[j]     = u_dof_n.data()[u_l2g.data()[eN_nDOF_trial_element + j]];
-        u_n_old_local[j] = u_dof_n_old.data()[u_l2g.data()[eN_nDOF_trial_element + j]];
+        u_n_local[j]     = u_dof_n.data()[u_l2g_n.data()[eN_nDOF_trial_element + j]];
+        u_n_old_local[j] = u_dof_n_old.data()[u_l2g_n.data()[eN_nDOF_trial_element + j]];
       }
       for (int k = 0; k < nQuadraturePoints_element; k++) {
         double jac[nSpace * nSpace], jacDet, jacInv[nSpace * nSpace], x_q, y_q, z_q;
@@ -4450,7 +4507,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       //   dm_c/dp = z*phi*dN/dp              (1,0) diagonal
       // Accumulation Jacobian formulas FD-verified in kernel_math_test.cpp (kmtest).
       for (int i = 0; i < nDOF_test_element; i++) {
-        const int    gi        = u_l2g.data()[eN * nDOF_test_element + i];
+        const int    gi        = u_l2g_n.data()[eN * nDOF_test_element + i];   // comp-1 split DOF
+        node_Kdiag[gi]        += fmax(0.0, elementTransport_n[i][i]);          // K-weighted nodal conductance
         const double phiN_i    = rho_n_phi_dof[gi];       // lumped phi*N (current)
         const double phiN_old_i= rho_n_phi_dof_old[gi];   // lumped phi*N (t^n)
         const double z_i       = u_n_local[i];
@@ -4491,7 +4549,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
               const double w = inj_weight.data()[p * nDOF_test_element + i];
               elementResidual_n[i] -= qp * w;
               if (have_gas_budget) {
-                const int gii = u_l2g.data()[eN * nDOF_test_element + i];
+                const int gii = u_l2g_n.data()[eN * nDOF_test_element + i];   // comp-1 split DOF
                 gas_budget_node.data()[3 * numDOFs_n + gii] -= qp * w;
               }
             }
@@ -4521,7 +4579,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         //   lam_g = (krn_end/mu_n)*rho_g*Y*krn,   lam_a = rho_a*X*krw   (molar)
         //   dPhi_g = d(p+pc) - rho_g_mass_edge*g.dx,  dPhi_a = dp - rho_a_mass_edge*g.dx
         // All flash-derived; FD-verified in edge_flux_test.cpp.
-        int    gN_e[nDOF_trial_element];
+        int    gN_e[nDOF_trial_element];   // mesh-node id (p, geometry)
+        int    zN_e[nDOF_trial_element];   // split comp-1 z-DOF (== gN_e off interfaces)
         double uw_e[nDOF_trial_element],   uw_old_e[nDOF_trial_element];
         double pc_e[nDOF_trial_element],   pc_old_e[nDOF_trial_element];
         double dpc_dp_e[nDOF_trial_element], dpc_dz_e[nDOF_trial_element];
@@ -4547,12 +4606,14 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double cg_eN  = krn_end_eN / mu_n;
         const double dMm_e  = ::m_comp_co2::eos::M_CO2_KG - ::m_comp_co2::eos::M_H2O_KG;
         for (int a = 0; a < nDOF_trial_element; a++) {
-          const int gN = u_l2g.data()[eN_nDOF_trial_element + a];
+          const int gN = u_l2g.data()[eN_nDOF_trial_element + a];      // mesh node: p + geometry
+          const int zN = u_l2g_n.data()[eN_nDOF_trial_element + a];    // split z-DOF (== gN if not split)
           gN_e[a]      = gN;
+          zN_e[a]      = zN;
           const double p_a   = u_dof.data()[gN];
-          const double z_a   = u_dof_n.data()[gN];        // u_n = z (compositional)
+          const double z_a   = u_dof_n.data()[zN];        // u_n = z (compositional), split copy
           const double p_a_o = u_dof_old.data()[gN];
-          const double z_a_o = u_dof_n_old.data()[gN];
+          const double z_a_o = u_dof_n_old.data()[zN];
           uw_e[a] = p_a;  uw_old_e[a] = p_a_o;
           // --- current iterate: flash + closures ---
           const double z_cl = fmin(fmax(z_a, 1.0e-8), 1.0 - 1.0e-8);
@@ -4658,47 +4719,15 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             const bool   up_i_g_old = (dPhi_g_old <= 0.0);
             const double lam_g_up     = up_i_g     ? lam_g_e[i]     : lam_g_e[j];
             const double lam_g_up_old = up_i_g_old ? lam_g_old_e[i] : lam_g_old_e[j];
-            // Capillary entry-pressure valve on the gas branch.  Identical logic
-            // to the legacy gas-only flux, but the COARSE saturation now comes
-            // from the flash gas saturation S_g at the upstream node (not u_n=z).
-            const int    gN_up_g     = up_i_g     ? gN_e[i] : gN_e[j];
-            const int    gN_up_g_old = up_i_g_old ? gN_e[i] : gN_e[j];
-            const double Sg_up       = up_i_g     ? Sg_e[i]     : Sg_e[j];
-            const double Sg_up_old   = up_i_g_old ? Sg_old_e[i] : Sg_old_e[j];
-            double gate = 1.0, gate_old = 1.0, dgate_dSg_up = 0.0;
-            const double pd_co     = node_pd_min.data()[gN_up_g];
-            const double pd_co_old = node_pd_min.data()[gN_up_g_old];
-            const double delta_bt  = 0.25;
-            if (pd_co < p_d_e) {
-              const double Snmax = node_Sn_max.data()[gN_up_g];
-              double Se_co = (Snmax - Sg_up) / Snmax;
-              Se_co = Se_co < 0.0 ? 0.0 : (Se_co > 1.0 ? 1.0 : Se_co);
-              if (Se_co <= 1.0e-12) { gate = 1.0; }
-              else {
-                const double ratio = (pd_co / p_d_e) * pow(Se_co, -1.0 / n_vg_eN);
-                double s = (ratio - (1.0 - delta_bt)) / delta_bt;
-                if (s <= 0.0)      { gate = 0.0; }
-                else if (s >= 1.0) { gate = 1.0; }
-                else {
-                  gate = s * s * (3.0 - 2.0 * s);
-                  dgate_dSg_up = (6.0 * s * (1.0 - s) / delta_bt)
-                               * (ratio / (n_vg_eN * Se_co)) * (1.0 / Snmax);
-                }
-              }
-            }
-            if (pd_co_old < p_d_e) {
-              const double Snmax_o = node_Sn_max.data()[gN_up_g_old];
-              double Se_co_o = (Snmax_o - Sg_up_old) / Snmax_o;
-              Se_co_o = Se_co_o < 0.0 ? 0.0 : (Se_co_o > 1.0 ? 1.0 : Se_co_o);
-              if (Se_co_o <= 1.0e-12) { gate_old = 1.0; }
-              else {
-                const double ratio_o = (pd_co_old / p_d_e) * pow(Se_co_o, -1.0 / n_vg_eN);
-                double s = (ratio_o - (1.0 - delta_bt)) / delta_bt;
-                gate_old = s <= 0.0 ? 0.0 : (s >= 1.0 ? 1.0 : s * s * (3.0 - 2.0 * s));
-              }
-            }
-            const double Fg = Theta         * tau * lam_g_up     * gate     * dPhi_g
-                            + (1.0 - Theta) * tau * lam_g_up_old * gate_old * dPhi_g_old;
+            // GATE-FREE gas branch -- the capillary entry-pressure valve is DELETED.
+            // The seal barrier is now carried by the genuinely two-sided capillary
+            // pressure: each facies side holds its OWN z (node-split via u_l2g_n)
+            // hence its OWN S_g and p_c, and the explicit interface-pair flux below
+            // charges the gas the p_c(S_g,coarse) - p_c(S_g,seal) jump -- the van
+            // Duijn entry condition, emergent from physics.  No node_pd_min /
+            // node_Sn_max valve, no gate Jacobian, no smoothstep.
+            const double Fg = Theta         * tau * lam_g_up     * dPhi_g
+                            + (1.0 - Theta) * tau * lam_g_up_old * dPhi_g_old;
             // ================= AQUEOUS branch (dissolved CO2, no gate) =========
             // lam_a = rho_a*X*krw ; dPhi_a = dp - rho_a_mass*g.dx
             const double ram_edge     = 0.5 * (ram_e[i]     + ram_e[j]);
@@ -4714,7 +4743,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             // R_n[i] -= F_g + F_a.
             elementResidual_n[i] -= Fg + Fa;
             if (have_gas_budget)
-              gas_budget_node.data()[1 * numDOFs_n + gN_e[i]] -= Fg + Fa;
+              gas_budget_node.data()[1 * numDOFs_n + zN_e[i]] -= Fg + Fa;
             diag_sumF += Fg + Fa;
             diag_absF += std::fabs(Fg + Fa);
             // ===== Theta-part Jacobian wrt (p_i,z_i,p_j,z_j). FD-verified. =====
@@ -4728,19 +4757,13 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             const double ddPhia_dzj =      - 0.5 * dram_dz_e[j] * g_dot_dx;
             const double Tt = Theta * tau;
             double dF_dpi = 0.0, dF_dzi = 0.0, dF_dpj = 0.0, dF_dzj = 0.0;
-            // gas potential part (all four DOFs)
-            dF_dpi += Tt*lam_g_up*gate*ddPhig_dpi; dF_dzi += Tt*lam_g_up*gate*ddPhig_dzi;
-            dF_dpj += Tt*lam_g_up*gate*ddPhig_dpj; dF_dzj += Tt*lam_g_up*gate*ddPhig_dzj;
+            // gas potential part (all four DOFs) -- gate-free
+            dF_dpi += Tt*lam_g_up*ddPhig_dpi; dF_dzi += Tt*lam_g_up*ddPhig_dzi;
+            dF_dpj += Tt*lam_g_up*ddPhig_dpj; dF_dzj += Tt*lam_g_up*ddPhig_dzj;
             // gas mobility part (upstream node only)
-            if (up_i_g) { dF_dpi += Tt*dlam_g_dp_e[i]*gate*dPhi_g; dF_dzi += Tt*dlam_g_dz_e[i]*gate*dPhi_g; }
-            else        { dF_dpj += Tt*dlam_g_dp_e[j]*gate*dPhi_g; dF_dzj += Tt*dlam_g_dz_e[j]*gate*dPhi_g; }
-            // gate part (upstream gas node only; gate depends on S_g_up(p,z))
-            if (dgate_dSg_up != 0.0) {
-              if (up_i_g) { dF_dpi += Tt*lam_g_up*dgate_dSg_up*dSg_dp_e[i]*dPhi_g;
-                            dF_dzi += Tt*lam_g_up*dgate_dSg_up*dSg_dz_e[i]*dPhi_g; }
-              else        { dF_dpj += Tt*lam_g_up*dgate_dSg_up*dSg_dp_e[j]*dPhi_g;
-                            dF_dzj += Tt*lam_g_up*dgate_dSg_up*dSg_dz_e[j]*dPhi_g; }
-            }
+            if (up_i_g) { dF_dpi += Tt*dlam_g_dp_e[i]*dPhi_g; dF_dzi += Tt*dlam_g_dz_e[i]*dPhi_g; }
+            else        { dF_dpj += Tt*dlam_g_dp_e[j]*dPhi_g; dF_dzj += Tt*dlam_g_dz_e[j]*dPhi_g; }
+            // (gate Jacobian removed with the gate)
             // aqueous potential part (all four DOFs)
             dF_dpi += Tt*lam_a_up*ddPhia_dpi; dF_dzi += Tt*lam_a_up*ddPhia_dzi;
             dF_dpj += Tt*lam_a_up*ddPhia_dpj; dF_dzj += Tt*lam_a_up*ddPhia_dzj;
@@ -4820,7 +4843,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             // smooth regions so the EV recovers high-order accuracy (McWhorter-
             // Sunada converges) while keeping it ~full at sharp z fronts (the
             // FluidFlower bubble-point bound). psi_edge = max over the edge.
-            const double psi_edge = fmax(psi_n[gN_e[i]], psi_n[gN_e[j]]);
+            const double psi_edge = fmax(psi_n[zN_e[i]], psi_n[zN_e[j]]);
             // PHASE 1 -- CONSISTENT FCT=False aqueous dissipation.
             // The aqueous z-dissipation now uses the SAME smoothness-gated entropy-
             // viscosity coefficient cE*psi_edge as the gas branch and the interior --
@@ -4838,14 +4861,18 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             // so the bubble-point lower bound is deferred to the FCT=True path
             // (separate session).  node_iface (built above) is retained for that work
             // and for Phase 2 (node-split p_c jump); it is intentionally unused here.
-            const double dEV = tau * ( cE*psi_edge*gate_old*fmax(si_g,sj_g)
+            // GATE-FREE dissipation: the gas-branch graph viscosity is no longer
+            // multiplied by gate_old (gate deleted).  The seal barrier is carried
+            // by the two-sided p_c flux + node-split, NOT by switching off the
+            // gas-branch stabilization at interfaces.  Both branches use the same
+            // smoothness-gated EV coefficient cE*psi_edge (consistent; -> 0 in
+            // smooth z so McWhorter-Sunada accuracy is unchanged).
+            const double dEV = tau * ( cE*psi_edge*fmax(si_g,sj_g)
                                      + cE*psi_edge*fmax(si_a,sj_a) );
-            // dLow = FULL low-order Rusanov dissipation (EV down-scale -> 1).  The
-            // gas branch KEEPS its entry-pressure gate_old barrier (free CO2 still
-            // cannot diffuse through a seal even at low order); the aqueous branch
-            // is ungated.  dLow >= dEV by construction, so f^A below has the right
-            // sign and FCT only ever REMOVES dissipation.
-            const double dLow = tau * ( gate_old*fmax(si_g,sj_g) + fmax(si_a,sj_a) );
+            // dLow = FULL low-order Rusanov dissipation (EV down-scale -> 1), both
+            // branches ungated.  dLow >= dEV by construction, so f^A below has the
+            // right sign and FCT only ever REMOVES dissipation.
+            const double dLow = tau * ( fmax(si_g,sj_g) + fmax(si_a,sj_a) );
             const double dHi  = fmin(dEV, dLow);   // high-order target, clamped <= dLow
             // TADR-style defect-correction (see the FCT comment block above): with
             // FCT requested, Newton solves the LOW-order operator (dLow) cleanly and
@@ -4855,7 +4882,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             // the FCT-off solve is byte-for-byte the legacy scheme.
             const double dResid = (FCT_n == 1) ? dLow : dEV;
             if (dResid > 0.0) {
-              const double Fv = dResid*(u_dof_n.data()[gN_e[j]] - u_dof_n.data()[gN_e[i]]);
+              const double Fv = dResid*(u_dof_n.data()[zN_e[j]] - u_dof_n.data()[zN_e[i]]);
               elementResidual_n[i] -= Fv;
               elementJacobian_n_n[i][i] += dResid;
               elementJacobian_n_n[i][j] -= dResid;
@@ -4865,9 +4892,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             // antisymmetric, so summing the <=2 element sides sharing an edge keeps
             // f^A_ij = -f^A_ji  =>  global CO2 mass is conserved by the limiter.
             if (FCT_n == 1) {
-              const int off_n = comp1_offset(gN_e[i], gN_e[j]);
+              const int off_n = comp1_offset(zN_e[i], zN_e[j]);
               if (off_n >= 0) {
-                const double dz = u_dof_n.data()[gN_e[j]] - u_dof_n.data()[gN_e[i]];
+                const double dz = u_dof_n.data()[zN_e[j]] - u_dof_n.data()[zN_e[i]];
                 dLow_n.data()[off_n]                 += dLow;
                 dEV_n.data()[off_n]                  += dHi;
                 dt_times_fH_minus_fL_n.data()[off_n] += dt * (dLow - dHi) * dz;
@@ -4880,7 +4907,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       // -------- Distribute element arrays to global storage. --------
       for (int i = 0; i < nDOF_test_element; i++) {
         const int eN_i = eN * nDOF_test_element + i;
-        const int gi   = u_l2g.data()[eN_i];
+        const int gi   = u_l2g_n.data()[eN_i];   // comp-1 split DOF (residual + budget)
         globalResidual.data()[offset_n + stride_n * gi] += elementResidual_n[i];
         if (have_gas_budget)
           gas_budget_node.data()[5 * numDOFs_n + gi] += elementResidual_n[i];
@@ -4924,6 +4951,138 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     for (int i_n = 0; i_n < numDOFs_n; i_n++) {
       mLow_n.data()[i_n]    = m_n_DOF[i_n];
       mDotLow_n.data()[i_n] = (m_n_DOF[i_n] - mn_n.data()[i_n]) / dt;
+    }
+
+    // ===================== NODE-SPLIT interface-pair coupling =====================
+    // The gate-free seal barrier.  At a facies interface the coarse copy z_a and the
+    // seal copy z_b of a split node share NO element, so the element loop above can't
+    // couple them; this loop adds the one coupling it misses -- the genuine two-sided
+    // capillary-pressure gas flux + Fickian D_m between the copies (verified gate-free
+    // form, nodesplit_iface_realclosure_test.cpp).  Geometry: the copies are coincident
+    // (single continuous mesh-node pressure u_dof[nodeN], dx == 0), so the aqueous
+    // ADVECTIVE potential vanishes and the coupling is gas two-sided p_c + Fickian D_m.
+    //   F(a->b) = tau_if * lam_g_up * (p_c(S_g,a) - p_c(S_g,b))   [gas, NO gate]
+    //           + D_m * tau_if * (rho_a*X|a - rho_a*X|b)          [Fickian]
+    // The van Duijn entry condition is automatic: when the seal is dry lam_g_up = 0
+    // (gas blocked); gas crosses only when p_c,coarse > p_c,seal.  Antisymmetric
+    // (R_a += F, R_b -= F) => CO2 conserved.  tau_if = harmonic K-conductance of the
+    // two copies (assembled transport, the same kind Richards puts on every edge).
+    // Residual + diagonal tangent scatter directly into globalResidual / globalJacobian
+    // (Richards DOF-graph style) via comp1_full_offsets; the z_a<->z_b off-diagonal is
+    // written only if the sparsity already carries that slot (else treated explicitly).
+    if (split_z != 0) {
+      const double mu_n_loc = mu_n;
+      // Sanity counters: number of interface tangents that could NOT be scattered
+      // because their matrix slot is absent.  cab/cba (z_a<->z_b off-diagonal) MUST
+      // be present (allocated by getExtraSparsityElements in Transport.py) for a
+      // consistent Jacobian; comp10 (z<->p_node) lives in the standard (1,0) cross
+      // block so it should always be present.  A nonzero count => stale/incomplete
+      // sparsity -> degraded Newton; reported once after the loop.
+      int n_drop_offdiag = 0, n_drop_pcol = 0;
+      for (int ip = 0; ip < n_interface_pairs; ip++) {
+        const int nodeN = interface_pairs.data()[5 * ip + 0];   // shared mesh node (for p)
+        const int zc[2] = { interface_pairs.data()[5 * ip + 1], interface_pairs.data()[5 * ip + 3] };
+        const int mc[2] = { interface_pairs.data()[5 * ip + 2], interface_pairs.data()[5 * ip + 4] };
+        const double p_node = u_dof.data()[nodeN];
+        double pc2[2], dpc_dz2[2], lam_g2[2], dlam_g_dz2[2], C2[2], dC_dz2[2];
+        // (1,0) pressure partials: F is built from flashPZ(p_node, z), so pc / lam_g /
+        // C all depend on the shared pressure DOF.  Same flash chain rule the boundary
+        // loop (~line 5178) uses, evaluated at the interface node.
+        double dpc_dp2[2], dlam_g_dp2[2], dC_dp2[2];
+        for (int s = 0; s < 2; s++) {
+          const int    mat     = mc[s];
+          const double phi_m   = thetaR.data()[mat] + thetaSR.data()[mat];
+          const double S_wr_m  = thetaR.data()[mat] / phi_m;
+          const double oneSr_m = 1.0 - S_wr_m;
+          const double alpha_m = alpha.data()[mat];
+          const double n_m     = n.data()[mat];
+          const double cg_m    = krn_end.data()[mat] / mu_n_loc;
+          const double Setrap_m= 1.0 - S_gr.data()[mat] / oneSr_m;
+          const double z_cl = fmin(fmax(u_dof_n.data()[zc[s]], 1.0e-8), 1.0 - 1.0e-8);
+          const double p_cl = fmax(p_node, 1.0e2);
+          ::m_comp_co2::flash::FlashState f =
+              ::m_comp_co2::flash::flashPZ(p_cl, z_cl, T_C_member, m_NaCl_member, ::m_comp_co2::flash::EPS_Z, immiscible_member);
+          const double Sa = 1.0 - f.S_g;
+          const double Se_raw = (Sa - S_wr_m) / oneSr_m;
+          double Se, dSe_dz, dSe_dp;
+          if (Se_raw <= 0.0)      { Se = 0.0; dSe_dz = 0.0; dSe_dp = 0.0; }
+          else if (Se_raw >= 1.0) { Se = 1.0; dSe_dz = 0.0; dSe_dp = 0.0; }
+          else { Se = Se_raw; dSe_dz = -f.dS_g_dz / oneSr_m; dSe_dp = -f.dS_g_dp / oneSr_m; }
+          double krn = 0, dkrn = 0, kpc = 0, dpc_dSe = 0, d2pc = 0, thw = 0, Dthw = 0, krw = 0, dkrw = 0;
+          if (PSK_TYPE_member == 1) {
+            proteus::m_comp_co2::psk::bc_kr_nonwetting_from_Se(Se, alpha_m, n_m, krn, dkrn, Setrap_m);
+            proteus::m_comp_co2::psk::bc_pc_from_Se(Se, alpha_m, n_m, kpc, dpc_dSe, d2pc);
+          } else {
+            proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se, alpha_m, n_m, krn, dkrn, Setrap_m);
+            proteus::m_comp_co2::psk::vgm_pc_from_Se(Se, alpha_m, n_m, kpc, dpc_dSe, d2pc);
+          }
+          pc2[s]       = kpc;
+          dpc_dz2[s]   = dpc_dSe * dSe_dz;
+          dpc_dp2[s]   = dpc_dSe * dSe_dp;
+          lam_g2[s]    = cg_m * f.rho_g * f.Y * krn;
+          dlam_g_dz2[s]= cg_m * (f.rho_g * f.dY_dz * krn + f.rho_g * f.Y * dkrn * dSe_dz);
+          // gas molar density rho_g is p-dependent (compressible) -> keep drho_g_dp
+          // (same convention as the boundary loop; the z-deriv drops it as ~0).
+          dlam_g_dp2[s]= cg_m * (f.drho_g_dp * f.Y * krn + f.rho_g * f.dY_dp * krn
+                                 + f.rho_g * f.Y * dkrn * dSe_dp);
+          C2[s]        = f.rho_a * f.X;
+          dC_dz2[s]    = f.drho_a_dz * f.X + f.rho_a * f.dX_dz;
+          dC_dp2[s]    = f.drho_a_dp * f.X + f.rho_a * f.dX_dp;
+        }
+        const int    z_a = zc[0], z_b = zc[1];
+        const double Ka = node_Kdiag[z_a], Kb = node_Kdiag[z_b];
+        const double tau_if = (Ka + Kb > 0.0) ? (2.0 * Ka * Kb / (Ka + Kb)) : 0.0;
+        if (tau_if == 0.0) continue;
+        const double dPhi_g = pc2[0] - pc2[1];        // two-sided p_c (p continuous, dx=0)
+        const bool   up_a   = (dPhi_g >= 0.0);
+        const double lam_up      = up_a ? lam_g2[0]    : lam_g2[1];
+        const double dlam_up_dza = up_a ? dlam_g_dz2[0] : 0.0;
+        const double dlam_up_dzb = up_a ? 0.0           : dlam_g_dz2[1];
+        const double Fg = tau_if * lam_up * dPhi_g;
+        const double Fd = D_m * tau_if * (C2[0] - C2[1]);     // Fickian (D_m effective, tunable)
+        const double F  = Fg + Fd;
+        const double dF_dza = tau_if * (dlam_up_dza * dPhi_g + lam_up * dpc_dz2[0]) + D_m * tau_if * ( dC_dz2[0]);
+        const double dF_dzb = tau_if * (dlam_up_dzb * dPhi_g - lam_up * dpc_dz2[1]) + D_m * tau_if * (-dC_dz2[1]);
+        // (1,0) pressure tangent: F = tau_if*lam_up*(pc_a - pc_b) + D_m*tau_if*(C_a - C_b)
+        // depends on the SHARED p_node through the flash on both sides, so
+        //   dF/dp = tau_if*( dlam_up_dp*dPhi_g + lam_up*(dpc_dp_a - dpc_dp_b) )
+        //         + D_m*tau_if*( dC_dp_a - dC_dp_b ).
+        const double dlam_up_dp = up_a ? dlam_g_dp2[0] : dlam_g_dp2[1];
+        const double dF_dp = tau_if * (dlam_up_dp * dPhi_g + lam_up * (dpc_dp2[0] - dpc_dp2[1]))
+                           + D_m * tau_if * (dC_dp2[0] - dC_dp2[1]);
+        // residual (antisymmetric): R_a += F, R_b -= F
+        globalResidual.data()[offset_n + stride_n * z_a] += F;
+        globalResidual.data()[offset_n + stride_n * z_b] -= F;
+        diag_sumF += 0.0;  // interface flux telescopes to 0 globally (antisymmetric)
+        // diagonal tangent into the existing (z,z) slots (always present)
+        const int caa = comp1_offset(z_a, z_a), cbb = comp1_offset(z_b, z_b);
+        if (caa >= 0) globalJacobian.data()[comp1_full_offsets.data()[caa]] +=  dF_dza;
+        if (cbb >= 0) globalJacobian.data()[comp1_full_offsets.data()[cbb]] += -dF_dzb;
+        // off-diagonal z_a<->z_b tangent: scatter into the dedicated interface slots
+        // allocated by getExtraSparsityElements (NOT comp1_offset, which excludes them
+        // from the compact graph).  d(R_a)/dz_b = dF_dzb, d(R_b)/dz_a = -dF_dza.
+        const int cab = comp1_iface_offsets.data()[2 * ip + 0];   // (z_a row, z_b col)
+        const int cba = comp1_iface_offsets.data()[2 * ip + 1];   // (z_b row, z_a col)
+        if (cab >= 0) globalJacobian.data()[cab] +=  dF_dzb;
+        else          ++n_drop_offdiag;
+        if (cba >= 0) globalJacobian.data()[cba] += -dF_dza;
+        else          ++n_drop_offdiag;
+        // (1,0) cross-block: R_a/R_b vs the shared pressure DOF p_node.  Flat offsets
+        // precomputed in Python (comp10_full_offsets), -1 if the slot is absent.
+        const int oa = comp10_full_offsets.data()[2 * ip + 0];
+        const int ob = comp10_full_offsets.data()[2 * ip + 1];
+        if (oa >= 0) globalJacobian.data()[oa] +=  dF_dp;
+        else         ++n_drop_pcol;
+        if (ob >= 0) globalJacobian.data()[ob] += -dF_dp;
+        else         ++n_drop_pcol;
+      }
+      if (n_drop_offdiag > 0 || n_drop_pcol > 0) {
+        std::cerr << "[m_comp_co2 split_z] WARNING: dropped interface tangents -- "
+                  << n_drop_offdiag << " z_a<->z_b off-diagonal, "
+                  << n_drop_pcol << " z<->p_node (1,0) slot(s) absent "
+                  << "(stale/incomplete Jacobian sparsity -> degraded Newton)"
+                  << std::endl;
+      }
     }
     // DIAG: net gas-flux imbalance (Python prints + MPI-reduces). The T-asymmetry
     // probes [0]/[1] retired with the DOF-graph loop; [2]=sum F, [3]=sum|F|.
@@ -5414,6 +5573,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     int                  lag_shockCapturing                         = args.scalar<int>("lag_shockCapturing");
     double               shockCapturingDiffusion                    = args.scalar<double>("shockCapturingDiffusion");
     xt::pyarray<int>    &u_l2g                                      = args.array<int>("u_l2g");
+    // Node-split comp-1 (z) map -- MUST match the residual's u_l2g_n so the mass /
+    // (1,1) tangent is assembled on the same split DOFs (== u_l2g off interfaces).
+    xt::pyarray<int>    &u_l2g_n                                    = args.array<int>("u_l2g_n");
     xt::pyarray<int>    &r_l2g                                      = args.array<int>("r_l2g");
     xt::pyarray<double> &elementDiameter                            = args.array<double>("elementDiameter");
     int                  degree_polynomial                          = args.scalar<int>("degree_polynomial");
@@ -5505,7 +5667,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         for (int ii = 0; ii < nnz; ii++) da_du_n_mm[ii] = 0.0;
         double u_n_qp = 0.0;
         ck.valFromDOF(u_dof_n.data(),
-                      &u_l2g.data()[eN_nDOF_trial_element],
+                      &u_l2g_n.data()[eN_nDOF_trial_element],
                       &u_trial_ref.data()[k * nDOF_trial_element], u_n_qp);
         evaluateCoefficients_from_Se(a_rowptr.data(), a_colind.data(), rho, q_rho.data()[eN_k], beta, gravity.data(),
                                      alpha.data()[elementMaterialTypes.data()[eN]], n.data()[elementMaterialTypes.data()[eN]],
@@ -5586,8 +5748,13 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     // correct projection if mass-matrix assembly runs more recently than the
     // residual.
     const int numDOFs_u_mm = static_cast<int>(u_dof.size());
-    std::vector<double> rho_n_phi_mm(numDOFs_u_mm, 0.0);
-    std::vector<double> ML_n_mm(numDOFs_u_mm, 0.0);
+    // Node-split: these are indexed by the comp-1 split DOF (u_l2g_n), so they MUST
+    // be sized by the comp-1 DOF count (= u_dof_n.size(), the split count), NOT the
+    // comp-0/mesh-node count u_dof.size() -- otherwise the projection writes past the
+    // array end (heap corruption).  Off interfaces the two counts coincide.
+    const int numDOFs_n_mm = static_cast<int>(u_dof_n.size());
+    std::vector<double> rho_n_phi_mm(numDOFs_n_mm, 0.0);
+    std::vector<double> ML_n_mm(numDOFs_n_mm, 0.0);
     for (int eN = 0; eN < nElements_global; eN++) {
       double elementJacobian_n_n[nDOF_test_element][nDOF_trial_element];
       for (int i = 0; i < nDOF_test_element; i++)
@@ -5613,7 +5780,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
                       &u_l2g.data()[eN_nDOF_trial_element],
                       &u_trial_ref.data()[k * nDOF_trial_element], u_w_p);
         ck.valFromDOF(u_dof_n.data(),
-                      &u_l2g.data()[eN_nDOF_trial_element],
+                      &u_l2g_n.data()[eN_nDOF_trial_element],
                       &u_trial_ref.data()[k * nDOF_trial_element], u_n_p);
         const double z_cl_mm = fmin(fmax(u_n_p, 1.0e-8), 1.0 - 1.0e-8);
         const double p_cl_mm = fmax(u_w_p, 1.0e2);
@@ -5623,7 +5790,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
                                                + fs_mm.rho_a*(1.0 - fs_mm.S_g));
         for (int i = 0; i < nDOF_test_element; i++) {
           const double test_i = u_test_ref.data()[k * nDOF_test_element + i];
-          const int    gi     = u_l2g.data()[eN * nDOF_test_element + i];
+          const int    gi     = u_l2g_n.data()[eN * nDOF_test_element + i];   // comp-1 split DOF
           rho_n_phi_mm[gi] += phi_rho_n_qp * test_i * dV;
           ML_n_mm[gi]      += test_i * dV;
           for (int j = 0; j < nDOF_trial_element; j++) {
@@ -5642,7 +5809,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
       }
     }
-    for (int i = 0; i < numDOFs_u_mm; ++i) {
+    for (int i = 0; i < numDOFs_n_mm; ++i) {
       if (ML_n_mm[i] > 0.0) rho_n_phi_mm[i] /= ML_n_mm[i];
       else rho_n_phi_mm[i] = thetaR.data()[0] + thetaSR.data()[0];
       rho_n_phi_mm[i] = std::max(rho_n_phi_mm[i], 1.0e-16);
@@ -5776,13 +5943,24 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &X_dof  = args.array<double>("X_dof");   // out: CO2 mole frac in brine
     xt::pyarray<double> &c_dof  = args.array<double>("c_dof");   // out: brine CO2 mass conc [kg/m^3]
     const int numDOFs           = args.scalar<int>("numDOFs");
+    // NODE-SPLIT (split_z): the OUTPUT fields are MESH-NODE quantities (one value
+    // per node, plotted through comp-0's continuous node space), so this loop
+    // runs over the numDOFs == nnode mesh nodes -- NOT the nz split comp-1 DOFs.
+    // p_dof is already mesh-node indexed; z_dof is SPLIT-DOF indexed, so we pull
+    // each node's z through node2zdof (mesh node -> primary split z-DOF).  Without
+    // this the flash would pair p[node i] with z[split-DOF i] (different physical
+    // nodes once any interface node is split) and scatter bogus Sg/X/c across the
+    // field (the "speckle"), AND the split-ordered array would be archived against
+    // the mesh-node space.  Python passes node2zdof == arange(nnode) when split_z
+    // == 0, so the byte-identical path is i -> i.
+    xt::pyarray<int>    &node2zdof = args.array<int>("node2zdof");
     immiscible_member = (args.scalar<int>("immiscible") != 0);
     T_C_member        = args.scalar<double>("T_C");      // temperature [degC] from input
     const double M_CO2 = 0.04401;                                // CO2 molar mass [kg/mol]
     for (int i = 0; i < numDOFs; i++)
       {
         const double p_i = (p_dof.data()[i] > 1.0e2) ? p_dof.data()[i] : 1.0e2;
-        double z_i = z_dof.data()[i];
+        double z_i = z_dof.data()[node2zdof.data()[i]];          // split z-DOF for mesh node i
         if (z_i < 1.0e-12)        z_i = 1.0e-12;                  // match plot-side clamp
         if (z_i > 1.0 - 1.0e-12)  z_i = 1.0 - 1.0e-12;
         ::m_comp_co2::flash::FlashState fs =

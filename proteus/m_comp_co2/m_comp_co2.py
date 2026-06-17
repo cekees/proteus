@@ -261,6 +261,10 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  cE=1.0,
                  uL=0.0,
                  uR=1.0,
+                 # FOR NODE-SPLIT z (capillary-pressure jump; gate-free seal barrier)
+                 split_z=0,        # 0 = continuous z (legacy); 1 = discontinuous z at facies interfaces
+                 D_m=0.0,          # molecular diffusion of dissolved CO2 [m^2/s] (interior + interface Fickian)
+                 split_materials=None,  # iterable of seal/fault material ids to split at; None = every multi-material node
                  # FOR ARTIFICIAL COMPRESSION
                  cK=1.0,
                  # OUTPUT quantDOFs
@@ -553,6 +557,9 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.cK = cK
         self.forceStrongConditions = False
         self.cE = cE
+        self.split_z = split_z
+        self.D_m = D_m
+        self.split_materials = split_materials
         self.outputQuantDOFs = outputQuantDOFs
         #For seepage anb
         self.model = None 
@@ -2062,6 +2069,17 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                                                  (self.fluxBoundaryConditions[ci] == 'mixedFlow') or
                                                  (self.fluxBoundaryConditions[ci] == 'setFlow'))
         #
+        # NODE-SPLIT z: make comp-1 (z) DOFs discontinuous at facies interfaces
+        # BEFORE the DOF dimensions / free-DOF counts are read below, so proteus
+        # sizes nFreeDOF_global, offset, the (1,1) Jacobian sparsity and the par
+        # layer from the SPLIT comp-1 dofMap automatically (legacy proteus path).
+        # Inert (and byte-identical) when split_z == 0.
+        self.interface_pairs   = np.zeros(0, 'i')
+        self.n_interface_pairs = 0
+        self._split_z_active   = False
+        if getattr(self.coefficients, 'split_z', 0):
+            self._apply_node_split_z()
+        #
         #calculate some dimensions
         #
         self.nSpace_global    = self.u[0].femSpace.nSpace_global #assume same space dim for all variables
@@ -2279,6 +2297,38 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         for ci in range(1,self.nc):
             self.offset += [self.offset[ci-1]+self.nFreeDOF_global[ci-1]]
         self.stride = [1 for ci in range(self.nc)]
+        # NODE-SPLIT sparsity precondition check: proteus's getCSR requires EVERY
+        # coupled free-DOF row (0..nFreeVDOF_global-1) to be referenced by some
+        # element (else the row is empty and getCSR's columnIndecesMap[I] inserts a
+        # key mid-loop -> rowptr overrun -> SIGSEGV).  Verify it here and report the
+        # exact empty rows per component, so a gap is diagnosed instead of segfaulting.
+        if getattr(self, '_split_z_active', False):
+            referenced = np.zeros(self.nFreeVDOF_global, 'bool')
+            for ci in range(self.nc):
+                fg  = np.asarray(self.l2g[ci]['freeGlobal'])
+                nfd = np.asarray(self.l2g[ci]['nFreeDOF'])
+                off, st = self.offset[ci], self.stride[ci]
+                for a in range(fg.shape[1]):
+                    sel = a < nfd
+                    referenced[off + st * fg[sel, a]] = True
+            missing = np.where(~referenced)[0]
+            logEvent("[m_comp_co2] SPLIT SPARSITY CHECK: nFreeVDOF=%d per-comp nFreeDOF=%s "
+                     "comp1 dofMap.nDOF=%d u[1].dof=%d empty_rows=%d"
+                     % (self.nFreeVDOF_global, list(self.nFreeDOF_global),
+                        int(self.u[1].femSpace.dofMap.nDOF), int(self.u[1].dof.shape[0]),
+                        int(missing.size)), level=1)
+            if missing.size:
+                per_c = [int(((missing >= self.offset[ci]) &
+                              (missing < self.offset[ci] + self.nFreeDOF_global[ci])).sum())
+                         for ci in range(self.nc)]
+                logEvent("[m_comp_co2] SPLIT SPARSITY GAP: %d empty rows of %d "
+                         "(per-component %s, e.g. rows %s); getCSR would segfault."
+                         % (missing.size, self.nFreeVDOF_global, per_c,
+                            missing[:10].tolist()), level=1)
+                raise RuntimeError(
+                    "[m_comp_co2] node-split produced %d empty matrix rows "
+                    "(per-component %s) -- see [SPLIT SPARSITY GAP] log." %
+                    (missing.size, per_c))
         #use contiguous layout of components for parallel, requires weak DBC's
         # mql. Some ASSERTS to restrict the combination of the methods
         if self.coefficients.STABILIZATION_TYPE > 0:
@@ -2345,9 +2395,16 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # primary (p,z) = (u[0].dof, u[1].dof); exposed to NumericalSolution via
         # coefficients.archive_scalar_dofs so they ride into flow.xmf alongside
         # p_w / S_n (named Sg0 / X0 / c_brine0 in the archive).
-        self.Sg_dof      = np.zeros(self.u[1].dof.shape, 'd')   # free-gas saturation
-        self.X_dof       = np.zeros(self.u[1].dof.shape, 'd')   # CO2 mole frac in brine
-        self.c_brine_dof = np.zeros(self.u[1].dof.shape, 'd')   # brine CO2 mass conc [kg/m^3]
+        # MESH-NODE sized (== u[0].dof / p), NOT the split comp-1 size: these are
+        # per-node visualization fields written through comp-0's continuous node
+        # space in NumericalSolution (archive_scalar_dofs -> {0: arr}).  Under
+        # node-split the comp-1 DOFs are renumbered/duplicated, so a split-sized
+        # array archived against the mesh-node space would be scrambled (speckle);
+        # keeping them node-sized + the node2zdof pull in calculateFlashFields
+        # keeps the output correct.  Identical to before when split_z == 0.
+        self.Sg_dof      = np.zeros(self.u[0].dof.shape, 'd')   # free-gas saturation
+        self.X_dof       = np.zeros(self.u[0].dof.shape, 'd')   # CO2 mole frac in brine
+        self.c_brine_dof = np.zeros(self.u[0].dof.shape, 'd')   # brine CO2 mass conc [kg/m^3]
         self.coefficients.archive_scalar_dofs = {
             'Sg': self.Sg_dof, 'X': self.X_dof, 'c_brine': self.c_brine_dof}
         self.anb_seepage_flux_n = np.zeros(self.u[0].dof.shape, 'd')
@@ -2385,6 +2442,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # rock law per physical location.  (Comp-1 has no Dirichlet, so its DOF
         # index == mesh node index.)
         self.nodeMaterialTypes_n = np.zeros((self.u[1].dof.shape[0],), 'i')
+        # (interface_pairs / n_interface_pairs are set earlier, by _apply_node_split_z
+        # when split_z is on, BEFORE the DOF dimensions are read.)
         # node_pd_min[gN] = the COARSEST (lowest) capillary entry pressure
         # p_d = 1/alpha [head] among the element materials incident on node gN.
         # Used by the comp-1 element-side gas flux as the capillary
@@ -2449,10 +2508,31 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.comm=comm
         if comm.size() > 1:
             assert numericalFluxType != None and numericalFluxType.useWeakDirichletConditions,"You must use a numerical flux to apply weak boundary conditions for parallel runs"
-            self.offset = [0]
-            for ci in range(1,self.nc):
-                self.offset += [ci]
-            self.stride = [self.nc for ci in range(self.nc)]
+            if getattr(self, '_split_z_active', False):
+                # NODE-SPLIT z: comp-1 (z) has MORE DOFs than comp-0 (p) once the
+                # seal-interface copies are added, so the default interleaved
+                # parallel layout (offset=[0,1,..], stride=nc) is INVALID -- it
+                # assumes every component has the same DOF count and pairs
+                # comp-ci DOF d at global row ci+nc*d.  With unequal sizes the
+                # interleaved row indices are non-contiguous and exceed
+                # nFreeVDOF_global, so getCSR's columnIndecesMap[I] inserts a
+                # missing key mid-loop and overruns rowptr -> SIGSEGV in
+                # "Building sparse matrix structure".  Use the contiguous BLOCK
+                # layout instead (offset[ci]=Sum_{k<ci} nFreeDOF_global[k],
+                # stride=1); MultilevelTransport's MIXED multicomponent parallel
+                # branch keys its owned/ghost ranges off exactly these block
+                # offsets (subdomain2global[offset[ci]:offset[ci]+par_n_list[ci]]).
+                # This also matches the serial layout, so the kernel's
+                # offset_n/stride_n consumers are unchanged.
+                self.offset = [0]
+                for ci in range(1, self.nc):
+                    self.offset += [self.offset[ci-1] + self.nFreeDOF_global[ci-1]]
+                self.stride = [1 for ci in range(self.nc)]
+            else:
+                self.offset = [0]
+                for ci in range(1,self.nc):
+                    self.offset += [ci]
+                self.stride = [self.nc for ci in range(self.nc)]
         self.comp0_rowptr = None
         self.comp0_colind = None
         self.comp0_full_offsets = None
@@ -2461,6 +2541,18 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.comp1_rowptr       = None
         self.comp1_colind       = None
         self.comp1_full_offsets = None
+        # Node-split (1,0) cross-block flat offsets for the interface flux pressure
+        # tangent (z_{a|b}-row vs the shared p_node-col).  Empty / unused when
+        # split_z == 0; lazy-built from the full Jacobian CSR (_ensure_interface_p_offsets).
+        self.interface_p_offsets = None
+        # (1,1) interface off-diagonal (z_a<->z_b) flat offsets, allocated by
+        # getExtraSparsityElements and EXCLUDED from the compact comp-1 graph.
+        self.interface_zz_offsets = None
+        # mesh node -> comp-1 (z) split DOF (primary copy).  The comp-0 lumped-mass
+        # DOF-graph loop reads z / writes the (0,1) tangent by mesh node, but u_dof_n
+        # and the matrix columns use the SPLIT z numbering; this remaps.  Identity
+        # when split_z == 0 (byte-identical).
+        self.node2zdof = None
         # Component-1 EV edge/DOF buffers (lazy-allocated on first use).
         self.dLow_n                 = None
         self.dEV_n                  = None
@@ -2609,6 +2701,18 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         n_n = self.u[1].dof.shape[0]
         offset_n = self.offset[1]
         stride_n = self.stride[1]
+        # Node-split: the interface off-diagonal (z_a,z_b)/(z_b,z_a) slots are now
+        # ALLOCATED in the full Jacobian (getExtraSparsityElements) so the interface
+        # flux off-diagonal tangent can land there, but they must be EXCLUDED from this
+        # COMPACT comp-1 graph -- it drives the EV smoothness sensor and FCT bounds,
+        # which must see ONLY FE connectivity (the two z-copies are coupled by the
+        # dedicated two-sided flux, NOT by EV dissipation / DMP bound widening).
+        iface_skip = set()
+        if getattr(self, '_split_z_active', False) and self.n_interface_pairs > 0:
+            _ip = np.asarray(self.interface_pairs).reshape(-1, 5)
+            for _r in _ip:
+                za, zb = int(_r[1]), int(_r[3])
+                iface_skip.add((za, zb)); iface_skip.add((zb, za))
         rowptr_n = np.zeros((n_n + 1,), dtype='i')
         colind_n = []
         full_offsets_n = []
@@ -2620,7 +2724,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 if shifted_col < 0 or shifted_col % stride_n != 0:
                     continue
                 j_n = shifted_col // stride_n
-                if 0 <= j_n < n_n:
+                if 0 <= j_n < n_n and (i_n, j_n) not in iface_skip:
                     colind_n.append(j_n)
                     full_offsets_n.append(full_offset)
             rowptr_n[i_n + 1] = len(colind_n)
@@ -2633,6 +2737,430 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 self.comp1_colind is None or
                 getattr(self, 'comp1_full_offsets', None) is None):
             self._build_component1_compact_csr(full_rowptr, full_colind)
+
+    def getExtraSparsityElements(self):
+        """Jacobian nonzeros not implied by the FE element graph (Transport hook).
+
+        Node-split couples z_a and z_b (comp-1) of a split interface node that share
+        NO element, so findNonzeros never allocates the (z_a,z_b)/(z_b,z_a) cross
+        slots -- the interface-flux off-diagonal tangent has nowhere to land (kernel
+        drops it).  Return ONE synthetic comp-1 "element" block whose elements are the
+        interface pairs (2 local DOFs = [z_a, z_b]); fed through sparsityInfo.findNonzeros
+        it allocates the full 2x2 block per pair (the z-z diagonals already exist).
+        Empty list when split_z==0 -> sparsity byte-identical."""
+        if not getattr(self, '_split_z_active', False) or self.n_interface_pairs == 0:
+            return []
+        ip    = np.asarray(self.interface_pairs).reshape(-1, 5)
+        npair = ip.shape[0]
+        freeG = np.ascontiguousarray(ip[:, [1, 3]].astype('i'))   # (npair, 2) = [z_a, z_b]
+        nFree = np.full((npair,), 2, dtype='i')
+        m     = self.mesh
+        off1, st1 = self.offset[1], self.stride[1]
+        # findNonzeros arg-tuple; all numerical-flux / outflow flags 0 so ONLY the
+        # element-local block coupling runs (boundary arrays passed but never read).
+        blk = (npair, 2, 2,
+               nFree, freeG, nFree, freeG,
+               off1, st1, off1, st1,
+               0, 0, 0,
+               m.nElementBoundaries_element,
+               m.elementNeighborsArray,
+               0, m.interiorElementBoundariesArray,
+               m.elementBoundaryElementsArray,
+               m.elementBoundaryLocalElementBoundariesArray,
+               0, 0, m.exteriorElementBoundariesArray, 0, 0)
+        return [blk]
+
+    def _build_interface_p_offsets(self, full_rowptr, full_colind):
+        """(1,0) tangent slots for the node-split interface flux.
+
+        The interface CO2 flux F (kernel calculateResidual_entropy_viscosity) is
+        evaluated from flashPZ(p_node, z) on both sides of a split node, so it has a
+        nonzero pressure tangent dF/dp_node.  For each interface pair this stores the
+        FULL-globalJacobian flat offsets of the two (1,0) cross-block entries
+        (row = comp-1 DOF z_a / z_b, col = the shared pressure DOF p_node), letting
+        the kernel scatter that tangent Richards-style -- the comp10 analogue of
+        comp1_full_offsets for the (1,1) block.  -1 sentinel => slot absent.
+
+        The (z_a, p_node) / (z_b, p_node) couplings are in the STANDARD (1,0) cross
+        sparsity (p_node sits in z_a's / z_b's element star), so no extra sparsity
+        allocation is needed -- unlike the z_a<->z_b off-diagonal.  Empty array
+        (size 0) when split_z == 0 (n_interface_pairs == 0): the kernel never indexes
+        it then, so the residual stays byte-identical."""
+        npair = int(self.n_interface_pairs)
+        offs  = np.full((2 * npair,), -1, dtype='i')
+        if npair > 0:
+            offset_u = self.offset[0]; stride_u = self.stride[0]
+            offset_n = self.offset[1]; stride_n = self.stride[1]
+            # interface_pairs is 2-D (n_pairs, 5); the kernel reads it flat via
+            # .data() [5*ip+s], so ravel here to match that row-major convention.
+            ip_arr = np.asarray(self.interface_pairs).ravel()
+            # interface_pairs node column is a LOCAL MESH-NODE index (the kernel reads
+            # the pressure as u_dof[nodeN]); the global-Jacobian COLUMN, however, uses
+            # comp-0 free-DOF (freeGlobal) numbering -- identical to node numbering
+            # only if no pressure DOF is Dirichlet-eliminated.  Build node -> free so
+            # the column is correct in either case.  Comp-1 rows are full-numbered
+            # (no elimination), so the ROW uses offset_n + stride_n*z directly.
+            u_l2g0  = np.asarray(self.u[0].femSpace.dofMap.l2g)            # (nE, nLoc) node ids
+            free_l2g = np.asarray(self.l2g[0]['freeGlobal']).reshape(u_l2g0.shape)
+            n_nodes0 = int(self.u[0].dof.shape[0])
+            node2free = np.full((n_nodes0,), -1, dtype=np.int64)
+            node2free[u_l2g0.ravel()] = free_l2g.ravel()
+            for ip in range(npair):
+                nodeN = int(ip_arr[5 * ip + 0])
+                jfree = int(node2free[nodeN]) if 0 <= nodeN < n_nodes0 else -1
+                if jfree < 0:
+                    continue                       # Dirichlet/eliminated pressure DOF -> no column
+                gcol  = offset_u + stride_u * jfree
+                for s, z in ((0, int(ip_arr[5 * ip + 1])),
+                             (1, int(ip_arr[5 * ip + 3]))):
+                    grow = offset_n + stride_n * z
+                    for k in range(int(full_rowptr[grow]), int(full_rowptr[grow + 1])):
+                        if int(full_colind[k]) == gcol:
+                            offs[2 * ip + s] = k
+                            break
+        self.interface_p_offsets = np.asarray(offs, dtype='i')
+
+        # (1,1) interface OFF-DIAGONAL slots: full-Jacobian flat offsets of (z_a row,
+        # z_b col) [index 2*ip+0] and (z_b row, z_a col) [2*ip+1].  These are the slots
+        # allocated by getExtraSparsityElements and EXCLUDED from the compact comp-1
+        # graph, so the kernel scatters the off-diagonal here instead of via
+        # comp1_offset/comp1_full_offsets (which no longer carry them).  -1 => absent
+        # (=> getExtraSparsityElements/Transport hook not active -> kernel warns).
+        zzoffs = np.full((2 * npair,), -1, dtype='i')
+        if npair > 0:
+            offset_n = self.offset[1]; stride_n = self.stride[1]
+            ip_arr = np.asarray(self.interface_pairs).ravel()
+            for ip in range(npair):
+                z_a = int(ip_arr[5 * ip + 1]); z_b = int(ip_arr[5 * ip + 3])
+                for s, (zr, zcol) in enumerate(((z_a, z_b), (z_b, z_a))):
+                    grow = offset_n + stride_n * zr
+                    gcol = offset_n + stride_n * zcol
+                    for k in range(int(full_rowptr[grow]), int(full_rowptr[grow + 1])):
+                        if int(full_colind[k]) == gcol:
+                            zzoffs[2 * ip + s] = k
+                            break
+        self.interface_zz_offsets = np.asarray(zzoffs, dtype='i')
+
+    def _ensure_interface_p_offsets(self, full_rowptr, full_colind):
+        if (getattr(self, 'interface_p_offsets', None) is None or
+                getattr(self, 'interface_zz_offsets', None) is None):
+            self._build_interface_p_offsets(full_rowptr, full_colind)
+
+    def _ensure_node2zdof(self):
+        """mesh node -> comp-1 (z) split DOF (primary = lowest-index copy).
+
+        The comp-0 lumped-mass DOF-graph loop is indexed by mesh node
+        (freeDOFToNode_u) and reads z via u_dof_n / writes the (0,1) dR_w/dz tangent
+        by that node index -- but u_dof_n and the matrix columns use the SPLIT z
+        numbering, which is renumbered off the mesh-node index once interface
+        duplicates are inserted.  This map fixes both.  Identity when split_z == 0."""
+        if self.node2zdof is not None:
+            return
+        nnode = int(self.mesh.nodeArray.shape[0])
+        if getattr(self, '_split_z_active', False):
+            zl2g = np.asarray(self.u[1].femSpace.dofMap.l2g).ravel().astype('i')
+            enod = np.asarray(self.mesh.elementNodesArray).ravel().astype('i')
+            big  = np.iinfo('i').max
+            n2z  = np.full((nnode,), big, dtype='i')
+            np.minimum.at(n2z, enod, zl2g)            # lowest split z-DOF per mesh node
+            bad = (n2z == big)
+            if bad.any():                              # untouched node -> identity fallback
+                n2z[bad] = np.flatnonzero(bad).astype('i')
+            self.node2zdof = n2z
+        else:
+            self.node2zdof = np.arange(nnode, dtype='i')
+
+    def _apply_node_split_z(self):
+        """Make component-1 (z) DOFs discontinuous at facies interfaces, the legacy
+        proteus way: OVERRIDE comp-1's nodal dofMap with the split map from
+        self._build_split_z_parallel (inlined).  Each element's local nodes route to
+        ITS material side's z-DOF (l2g_z); extra material sides at an interface node get
+        fresh, parallel-consistent global ids (owned/ghost numbered exactly like
+        proteus's own DiscontinuousGalerkinDOFMap).  Because nFreeDOF_global,
+        offset/stride, the (1,1) Jacobian sparsity (findNonzeros over l2g) and the
+        ParVec/ParMat layer are ALL derived from this dofMap downstream, proteus
+        sizes the whole split system automatically -- no manual sparsity except the
+        z_c<->z_f interface slots (no shared element), injected in initializeJacobian
+        and assembled by the kernel interface-pair loop.  p (comp-0) and geometry
+        stay on the single continuous mesh node.  Called once, early in __init__,
+        only when coefficients.split_z is set.
+        """
+        from proteus import Comm
+        comm = Comm.get().comm.tompi4py()
+        mesh = self.mesh
+        # Local node count = the nodes actually referenced by the connectivity (the
+        # authoritative size; mesh.nodeNumbering_subdomain2global is not a reliable
+        # per-local-node map in serial).  Serial (1 rank) => identity numbering.
+        eNA   = np.asarray(mesh.elementNodesArray)
+        nNloc = int(eNA.max()) + 1
+        if comm.size == 1:
+            s2g           = np.arange(nNloc, dtype='i')
+            nNodes_owned  = nNloc
+            nNodes_global = nNloc
+        else:
+            # Parallel: the split numbering needs the real subdomain->global node map
+            # (one entry per LOCAL node, owned + ghost).  proteus builds it on the
+            # nodal dofMap via updateAfterParallelPartitioning; the subdomain mesh's
+            # own nodeNumbering_subdomain2global is EMPTY here, so read the authoritative
+            # values straight off the comp-1 nodal dofMap (== what proteus uses), with
+            # fallbacks to the global mesh.  Fail loudly if none covers the connectivity.
+            dm0 = self.u[1].femSpace.dofMap            # nodal dofMap (before override)
+            gm  = getattr(mesh, 'globalMesh', None)
+            s2g = None
+            for cand in (getattr(dm0, 'subdomain2global', None),
+                         getattr(gm, 'nodeNumbering_subdomain2global', None),
+                         getattr(mesh, 'nodeNumbering_subdomain2global', None)):
+                if cand is not None and np.asarray(cand).shape[0] >= nNloc:
+                    s2g = np.asarray(cand, dtype='i'); break
+            if s2g is None:
+                raise RuntimeError(
+                    "[m_comp_co2] node-split parallel: no subdomain->global node map "
+                    "(dofMap.subdomain2global / globalMesh.nodeNumbering_subdomain2global) "
+                    "covers the %d local nodes; cannot build a parallel-consistent split "
+                    "numbering." % nNloc)
+            nNodes_global = int(getattr(dm0, 'nDOF_all_processes', 0)) or (int(s2g.max()) + 1)
+            nNodes_global = max(nNodes_global, int(s2g.max()) + 1)
+            # owned local-node count = size of this rank's owned global range
+            doff = getattr(dm0, 'dof_offsets_subdomain_owned', None)
+            if doff is not None and len(np.asarray(doff)) > comm.rank + 1:
+                doff = np.asarray(doff)
+                nNodes_owned = int(doff[comm.rank + 1] - doff[comm.rank])
+            else:
+                nNodes_owned = int(getattr(mesh, 'nNodes_owned', nNloc))
+            nNodes_owned = min(max(nNodes_owned, 0), s2g.shape[0])     # clamp to valid range
+        info = self._build_split_z_parallel(
+            eNA, mesh.elementMaterialTypes,
+            s2g, nNodes_owned, nNodes_global,
+            self.coefficients.split_materials, comm)
+        nz = int(info['nDOF_subdomain'])
+        # --- override the comp-1 nodal dofMap with the split map ---
+        # proteus keeps SEPARATE trial and test dofMaps (see the periodic branch in
+        # Transport.initialize, which overrides trialSpaceDict[ci].dofMap AND
+        # testSpaceDict[ci].dofMap).  Overriding only the trial leaves the test map
+        # nodal -> proteus's parallel C build sees an inconsistent test/trial pair
+        # -> getCSR corruption (only with split).  So patch EVERY comp-1 femSpace's
+        # dofMap (trial u[1], test, and phi if distinct objects) with the SAME map.
+        _l2g_z   = np.asarray(info['l2g_z'], 'i')
+        _s2g     = np.asarray(info['subdomain2global'], 'i')
+        _doff_a  = np.asarray(info['dof_offsets_subdomain_owned'], 'i')
+        _ndof_all = int(info['nDOF_all_processes'])
+        _maxnbr  = int(info['max_dof_neighbors'])
+        _owned   = int(_doff_a[comm.rank + 1] - _doff_a[comm.rank]) if comm.size > 1 else nz
+        def _patch_dofmap(dm):
+            dm.l2g                         = _l2g_z
+            dm.nDOF                        = nz
+            dm.nDOF_subdomain              = nz
+            dm.nDOF_subdomain_owned        = _owned
+            dm.nDOF_all_processes          = _ndof_all
+            dm.subdomain2global            = _s2g
+            dm.dof_offsets_subdomain_owned = _doff_a
+            dm.max_dof_neighbors           = _maxnbr
+            dm.range_nDOF                  = range(nz)
+        _seen = set()
+        for _fs in (self.u[1].femSpace,
+                    self.testSpace[1] if 1 in self.testSpace else None,
+                    self.phi[1].femSpace if (1 in self.phi and self.phi[1] is not None) else None):
+            if _fs is None or id(_fs) in _seen:
+                continue
+            _seen.add(id(_fs))
+            _patch_dofmap(_fs.dofMap)
+            _fs.dim = nz
+        # --- rebuild comp-1's no-Dirichlet free-DOF maps over the new DOF count ---
+        # (comp-1 has no Dirichlet BC, so free == global: identity over [0,nz).)
+        dc = self.dirichletConditions[1]
+        dc.freeDOFSet        = set(range(nz))
+        dc.nFreeDOF_global   = nz
+        dc.global2freeGlobal = {i: i for i in range(nz)}
+        g = np.arange(nz, dtype='i')
+        dc.global2freeGlobal_global_dofs = g.copy()
+        dc.global2freeGlobal_free_dofs   = g.copy()
+        # --- resize the comp-1 FE-function arrays onto the split DOFs: every local
+        #     copy of a node inherits that node's value.  FiniteElementFunction holds
+        #     dof / dof_last / dof_last_last (all allocated at the OLD nodal size), so
+        #     ALL must be remapped or proteus's dof_last[:] = dof broadcast fails. ---
+        n_dof_before = int(self.u[1].dof.shape[0])     # pre-split comp-1 DOF count (for the log)
+        zdof_to_node = np.full(nz, -1, 'i')
+        for (ln, _m), lid in info['node_mat_to_localzdof'].items():
+            zdof_to_node[lid] = ln
+        self.zdof_to_node = zdof_to_node               # split DOF -> mesh node (output/IC/diag)
+        def _to_split(arr):
+            a = np.asarray(arr); out = np.zeros(nz, a.dtype)
+            valid = (zdof_to_node >= 0) & (zdof_to_node < a.shape[0])
+            out[valid] = a[zdof_to_node[valid]]
+            return out
+        for _attr in ('dof', 'dof_last', 'dof_last_last'):
+            if getattr(self.u[1], _attr, None) is not None:
+                setattr(self.u[1], _attr, _to_split(getattr(self.u[1], _attr)))
+        # --- interface coupling list (kernel interface-pair loop + sparsity inject) ---
+        self.interface_pairs   = np.asarray(info['interface_pairs'], 'i')
+        self.n_interface_pairs = int(self.interface_pairs.shape[0])
+        self._split_z_active   = True
+        logEvent("[m_comp_co2] NODE-SPLIT z ON: comp-1 DOFs %d -> %d  (%d interface pairs, %d split nodes)"
+                 % (n_dof_before, nz, self.n_interface_pairs,
+                    len(info['interface_local_nodes'])))
+
+    def _build_split_z_parallel(self, elementNodesArray, elementMaterialTypes,
+                                nodeNumbering_subdomain2global, nNodes_owned,
+                                nNodes_global, barrier_materials, comm):
+        """Parallel-consistent discontinuous component-1 (z) DOF map at facies
+        interfaces (inlined; no external module).  ONLY z is split: each material
+        side at a multi-material node gets its OWN z-DOF, while p (comp-0) and the
+        geometry stay on the single mesh node.  Duplicated z-DOFs are owned/ghost
+        numbered with a CONTIGUOUS owned global range per rank (the proteus/petsc
+        parallel layout), using only Allreduce(BOR) for the global per-node
+        incident-material mask and Allreduce(SUM) to broadcast each node's primary
+        global id -- no point-to-point ghost exchange.  Determinism: incident
+        materials are processed in ASCENDING order on every rank, so all ranks
+        agree on the per-node side numbering.  Serial (comm.size == 1) reduces to a
+        valid single-rank numbering.  The two copies of an interface node are
+        coupled later by the kernel's gate-free two-sided p_c + D_m interface flux.
+
+        Returns a dict with l2g_z, nDOF_subdomain, subdomain2global,
+        dof_offsets_subdomain_owned, nDOF_all_processes, max_dof_neighbors,
+        node_mat_to_localzdof, interface_local_nodes, interface_pairs
+        (columns [local node, z_a, mat_a, z_b, mat_b]).
+        """
+        from mpi4py import MPI
+        eNA = np.asarray(elementNodesArray)
+        emt = np.asarray(elementMaterialTypes).astype(np.int64)
+        g2l = np.asarray(nodeNumbering_subdomain2global).astype(np.int64)
+        nE, nLoc = eNA.shape
+        nNsub = g2l.shape[0]
+        rank = comm.Get_rank(); nranks = comm.Get_size()
+        bset = None if barrier_materials is None else set(int(m) for m in barrier_materials)
+
+        # --- local incident-material sets per LOCAL node ---
+        node_mats_local = [set() for _ in range(nNsub)]
+        for eN in range(nE):
+            m = int(emt[eN]); row = eNA[eN]
+            for a in range(nLoc):
+                node_mats_local[int(row[a])].add(m)
+
+        # === STEP 1: global per-node incident-material MASK (Allreduce BOR) ===
+        # materials are small ids -> one int64 bitmask per global node.
+        local_mask = np.zeros(nNodes_global, dtype=np.int64)
+        for ln in range(nNsub):
+            mm = 0
+            for m in node_mats_local[ln]:
+                mm |= (np.int64(1) << np.int64(m))
+            local_mask[int(g2l[ln])] |= mm
+        global_mask = np.zeros(nNodes_global, dtype=np.int64)
+        comm.Allreduce(local_mask, global_mask, op=MPI.BOR)
+
+        def _mats_of(mask):
+            return [m for m in range(63) if (mask >> np.int64(m)) & np.int64(1)]
+        gn_mats = [None] * nNodes_global       # sorted materials, or None if not split
+        nside   = np.ones(nNodes_global, dtype=np.int64)   # split z-DOFs per node (1 = not split)
+        for gn in range(nNodes_global):
+            ms = _mats_of(int(global_mask[gn]))
+            if len(ms) >= 2 and (bset is None or any(m in bset for m in ms)):
+                gn_mats[gn] = ms
+                nside[gn]   = len(ms)
+
+        # === STEP 2: contiguous-owned global numbering ===
+        owned_gn = g2l[:nNodes_owned]
+        n_owned_split = int(np.sum(nside[owned_gn]))
+        counts = np.array(comm.allgather(n_owned_split), dtype=np.int64)
+        dof_offsets = np.zeros(nranks + 1, dtype=np.int64)
+        dof_offsets[1:] = np.cumsum(counts)
+        nDOF_all = int(dof_offsets[-1])
+        my_base = int(dof_offsets[rank])
+
+        local_first = np.zeros(nNodes_global, dtype=np.int64)
+        cur = my_base
+        for ln in range(nNodes_owned):
+            gn = int(g2l[ln])
+            local_first[gn] = cur
+            cur += int(nside[gn])
+        global_first = np.zeros(nNodes_global, dtype=np.int64)
+        comm.Allreduce(local_first, global_first, op=MPI.SUM)  # each node owned once
+
+        # === STEP 3: LOCAL split-DOF numbering + subdomain2global + l2g_z ===
+        node_mat_to_local = {}
+        sub2glob = []
+        iface_local_nodes = []
+
+        def _emit_node(ln):
+            mats_here = node_mats_local[ln]
+            if not mats_here:
+                # Node not referenced by ANY local element (an isolated ghost, or a
+                # node beyond the connectivity if subdomain2global is longer).  Emitting
+                # a DOF for it would create an ORPHAN row (no element -> no diagonal ->
+                # empty row), which crashes proteus's getCSR (columnIndecesMap[I] then
+                # inserts a key mid-loop and overruns rowptr).  Skip it.
+                return
+            gn = int(g2l[ln])
+            if gn_mats[gn] is None:
+                lid = len(sub2glob)
+                sub2glob.append(int(global_first[gn]))
+                for m in mats_here:
+                    node_mat_to_local[(ln, int(m))] = lid
+            else:
+                iface_local_nodes.append(ln)
+                for m in sorted(int(mm) for mm in mats_here):
+                    si = gn_mats[gn].index(m)
+                    lid = len(sub2glob)
+                    sub2glob.append(int(global_first[gn]) + si)
+                    node_mat_to_local[(ln, m)] = lid
+
+        for ln in range(nNodes_owned):              # owned first (contiguous global)
+            _emit_node(ln)
+        for ln in range(nNodes_owned, nNsub):       # then ghosts
+            _emit_node(ln)
+
+        nDOF_subdomain = len(sub2glob)
+        subdomain2global = np.asarray(sub2glob, dtype='i')
+
+        l2g_z = np.empty((nE, nLoc), 'i')
+        for eN in range(nE):
+            m = int(emt[eN]); row = eNA[eN]
+            for a in range(nLoc):
+                l2g_z[eN, a] = node_mat_to_local[(int(row[a]), m)]
+
+        max_nbr = 0
+        _adj = [set() for _ in range(nDOF_subdomain)]
+        for eN in range(nE):
+            ld = [l2g_z[eN, a] for a in range(nLoc)]
+            for a in ld:
+                _adj[a].update(ld)
+        if nDOF_subdomain:
+            max_nbr = max(len(s) for s in _adj) + 1   # +1 for the inter-side pair
+        # Orphan guard: every split DOF MUST be referenced by some local element
+        # (else its matrix row is empty and getCSR crashes).  After the skip above
+        # this should be zero; assert it loudly if not so we catch any regression.
+        n_orphan = sum(1 for s in _adj if not s)
+        if n_orphan:
+            raise RuntimeError(
+                "[m_comp_co2] node-split: %d orphan split DOF(s) (no incident local "
+                "element) out of %d on rank %d -- would crash getCSR with an empty row."
+                % (n_orphan, nDOF_subdomain, rank))
+
+        # --- interface pairs: OWNED nodes ONLY, from the GLOBAL side list ---
+        iface_pairs = []
+        for ln in range(nNodes_owned):
+            gn = int(g2l[ln])
+            ms = gn_mats[gn]
+            if ms is None:
+                continue
+            m0 = ms[0]; z0 = node_mat_to_local[(ln, m0)]
+            for m in ms[1:]:
+                zm = node_mat_to_local.get((ln, m))
+                if zm is not None and zm != z0:
+                    iface_pairs.append((ln, z0, m0, zm, m))
+        iface_pairs = (np.array(iface_pairs, 'i') if iface_pairs
+                       else np.zeros((0, 5), 'i'))
+
+        return {
+            'l2g_z': l2g_z,
+            'nDOF_subdomain': nDOF_subdomain,
+            'subdomain2global': subdomain2global,
+            'dof_offsets_subdomain_owned': dof_offsets.astype('i'),
+            'nDOF_all_processes': nDOF_all,
+            'max_dof_neighbors': int(max_nbr),
+            'node_mat_to_localzdof': node_mat_to_local,
+            'interface_local_nodes': iface_local_nodes,
+            'interface_pairs': iface_pairs,
+        }
 
     def _scatter_component_to_timeintegration(self, ci):
         if not hasattr(self.timeIntegration, 'u'):
@@ -2953,6 +3481,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         comp0_colind = self.comp0_colind
         # Component-1 (S_n) compact DOF CSR + lazy EV edge/DOF buffers.
         self._ensure_component1_compact_csr(rowptr, colind)
+        # Node-split (1,0) interface pressure-tangent offsets (empty when split_z==0).
+        self._ensure_interface_p_offsets(rowptr, colind)
         n_n_   = self.u[1].dof.shape[0]
         nnz_n_ = int(self.comp1_colind.shape[0])
         if self.dLow_n is None or self.dLow_n.shape[0] != nnz_n_:
@@ -3307,6 +3837,19 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["sc_uref"] = 1.0
         argsDict["sc_alpha"] = 2.0
         argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
+        # ---- Node-split component-1 (z) map, legacy proteus style ----------------
+        # Each component owns its own femSpace.dofMap.l2g (standard multi-component
+        # proteus layout); comp-1's is already parallel-correct via the same
+        # offset[1]/stride[1]/par_dof machinery Richards.h uses for its single
+        # component.  u_l2g_n == u_l2g element-wise on the shared P1 mesh, so the
+        # kernel stays byte-identical until split_z is enabled (then this becomes
+        # the discontinuous split map -- DESIGN_nodesplit_consistent.md).  split_z
+        # and D_m are Coefficients kwargs threaded exactly like cE above.
+        argsDict["u_l2g_n"] = self.u[1].femSpace.dofMap.l2g
+        argsDict["split_z"] = self.coefficients.split_z
+        argsDict["D_m"]     = self.coefficients.D_m
+        argsDict["interface_pairs"]   = self.interface_pairs
+        argsDict["n_interface_pairs"] = self.n_interface_pairs
         argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["degree_polynomial"] = degree_polynomial
@@ -3365,9 +3908,17 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         if injection_ports:
             if getattr(self, "_injection_masks", None) is None:
                 nodes = self.mesh.nodeArray
+                # When z is node-split, injection_dof is sized by the split comp-1
+                # DOFs; map each split DOF to its mesh node's coordinates so the disk
+                # mask matches (every copy of an in-disk node inherits the source).
+                if getattr(self, "_split_z_active", False):
+                    nx = nodes[self.zdof_to_node, 0]
+                    ny = nodes[self.zdof_to_node, 1]
+                else:
+                    nx = nodes[:, 0]; ny = nodes[:, 1]
                 self._injection_masks = []
                 for (px, py, rate, radius, t0, t1) in injection_ports:
-                    d2 = ((nodes[:, 0] - px) ** 2 + (nodes[:, 1] - py) ** 2)
+                    d2 = ((nx - px) ** 2 + (ny - py) ** 2)
                     self._injection_masks.append(d2 <= radius * radius)
             t_now = float(self.timeIntegration.t)
             # tanh ramp at each port's start so Newton can track the
@@ -3497,6 +4048,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["csrRowIndeces_n_DofLoops"]    = self.comp1_rowptr
         argsDict["csrColumnOffsets_n_DofLoops"] = self.comp1_colind
         argsDict["comp1_full_offsets"]          = self.comp1_full_offsets
+        argsDict["comp10_full_offsets"]         = self.interface_p_offsets
+        argsDict["comp1_iface_offsets"]         = self.interface_zz_offsets
+        self._ensure_node2zdof()
+        argsDict["node2zdof"]                   = self.node2zdof
         argsDict["dLow_n"]                      = self.dLow_n
         argsDict["dEV_n"]                       = self.dEV_n
         argsDict["fluxMatrix_n"]                = self.fluxMatrix_n
@@ -3958,6 +4513,19 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["sc_uref"] = 1.0
         argsDict["sc_alpha"] = 2.0
         argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
+        # ---- Node-split component-1 (z) map, legacy proteus style ----------------
+        # Each component owns its own femSpace.dofMap.l2g (standard multi-component
+        # proteus layout); comp-1's is already parallel-correct via the same
+        # offset[1]/stride[1]/par_dof machinery Richards.h uses for its single
+        # component.  u_l2g_n == u_l2g element-wise on the shared P1 mesh, so the
+        # kernel stays byte-identical until split_z is enabled (then this becomes
+        # the discontinuous split map -- DESIGN_nodesplit_consistent.md).  split_z
+        # and D_m are Coefficients kwargs threaded exactly like cE above.
+        argsDict["u_l2g_n"] = self.u[1].femSpace.dofMap.l2g
+        argsDict["split_z"] = self.coefficients.split_z
+        argsDict["D_m"]     = self.coefficients.D_m
+        argsDict["interface_pairs"]   = self.interface_pairs
+        argsDict["n_interface_pairs"] = self.n_interface_pairs
         argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["degree_polynomial"] = degree_polynomial
@@ -4099,6 +4667,19 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["lag_shockCapturing"] = 0
         argsDict["shockCapturingDiffusion"] = 0.1
         argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
+        # ---- Node-split component-1 (z) map, legacy proteus style ----------------
+        # Each component owns its own femSpace.dofMap.l2g (standard multi-component
+        # proteus layout); comp-1's is already parallel-correct via the same
+        # offset[1]/stride[1]/par_dof machinery Richards.h uses for its single
+        # component.  u_l2g_n == u_l2g element-wise on the shared P1 mesh, so the
+        # kernel stays byte-identical until split_z is enabled (then this becomes
+        # the discontinuous split map -- DESIGN_nodesplit_consistent.md).  split_z
+        # and D_m are Coefficients kwargs threaded exactly like cE above.
+        argsDict["u_l2g_n"] = self.u[1].femSpace.dofMap.l2g
+        argsDict["split_z"] = self.coefficients.split_z
+        argsDict["D_m"]     = self.coefficients.D_m
+        argsDict["interface_pairs"]   = self.interface_pairs
+        argsDict["n_interface_pairs"] = self.n_interface_pairs
         argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["degree_polynomial"] = degree_polynomial
@@ -4268,6 +4849,17 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         inj = getattr(self, "injection_dof", None)
         is_dbc0 = self.numericalFlux.isDOFBoundary[0]
         is_dbc1 = self.numericalFlux.isDOFBoundary[1] if self.nc >= 2 else None
+        # Node-split: comp-1 (z) duplicate DOFs at facies interfaces have indices
+        # >= nNodes, so a bare mesh.nodeArray[li] overruns.  Map each split z-DOF
+        # back to its mesh node via the comp-1 dofMap (== identity when not split).
+        nnodes_mesh = int(self.mesh.nodeArray.shape[0])
+        zdof2node = None
+        if self.nc >= 2:
+            _zl2g = np.asarray(self.u[1].femSpace.dofMap.l2g).ravel()
+            _enod = np.asarray(self.mesh.elementNodesArray).ravel()
+            zdof2node = np.arange(nfree[1], dtype=np.int64)   # identity fallback
+            _m = (_zl2g >= 0) & (_zl2g < nfree[1]) & (np.arange(_zl2g.shape[0]) < _enod.shape[0])
+            zdof2node[_zl2g[_m]] = _enod[:_zl2g.shape[0]][_m]
 
         def classify(row):
             for ci in (0, 1) if self.nc >= 2 else (0,):
@@ -4275,7 +4867,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 if d >= 0 and (strd[ci] == 0 or d % strd[ci] == 0):
                     li = d // strd[ci] if strd[ci] else d
                     if 0 <= li < nfree[ci]:
-                        node = int(f2n_u[li]) if ci == 0 else int(li)
+                        node = int(f2n_u[li]) if ci == 0 else int(zdof2node[li])
+                        if node < 0 or node >= nnodes_mesh:
+                            return ci, node, np.zeros(3), False
                         x = self.mesh.nodeArray[node]
                         injf = bool(inj is not None and node < inj.shape[0]
                                     and inj[node] != 0.0)
@@ -4539,7 +5133,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["Sg_dof"]     = self.Sg_dof
         argsDict["X_dof"]      = self.X_dof
         argsDict["c_dof"]      = self.c_brine_dof
-        argsDict["numDOFs"]    = self.u[1].dof.shape[0]
+        # Loop over MESH NODES (== p_dof / Sg_dof size), pulling each node's z from
+        # the SPLIT comp-1 DOFs via node2zdof so the flash pairs (p,z) at the same
+        # physical node and the output stays mesh-node ordered. Identity when off.
+        argsDict["numDOFs"]    = self.u[0].dof.shape[0]
+        self._ensure_node2zdof()
+        argsDict["node2zdof"]  = np.ascontiguousarray(self.node2zdof, 'i')
         argsDict["immiscible"] = int(self.coefficients.immiscible)
         argsDict["T_C"] = self.coefficients.T_C
         self.m_comp_co2.calculateFlashFields(argsDict)
