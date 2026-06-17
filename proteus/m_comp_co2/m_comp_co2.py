@@ -298,6 +298,14 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  # (e.g. hours if dt is in hours).  0 -> no ramp (legacy).
                  # Ramp is centred at t0+3*tau, full rate by t0+6*tau.
                  injection_ramp_tau=0.0,
+                 # Injection discretization.  False (default) = legacy LUMPED
+                 # volumetric disk source over the INJ_RADIUS nodes (byte-identical
+                 # to before).  True = CONSISTENT (Galerkin) point source at each
+                 # port: R^c_i -= Q_port * N_i(x_p) on the containing element only,
+                 # the MOOSE DiracKernel form -- mesh-exact total, concentrates the
+                 # CO2 at one element (high local S_g) instead of diluting it over
+                 # the disk.  Q_port recovered as rate*pi*radius^2 (= Q_mol/depth).
+                 injection_point_source=False,
                  # End-point gas relperm per material type.  Brooks-Corey /
                  # van Genuchten-Mualem give k_rn(S_e=0) = 1 for every sand;
                  # multi-phase rigs (e.g. FluidFlower) measure 0.02..0.16.
@@ -371,6 +379,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         # CO2 injection point sources (see __init__ argument).
         self.injection_ports = list(injection_ports) if injection_ports else []
         self.injection_ramp_tau = float(injection_ramp_tau)
+        self.injection_point_source = bool(injection_point_source)
         self.modelIndex=1
         self.SC=SC
         self.anb_seepage_flux= 0.00
@@ -3374,6 +3383,54 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                         ramp = 1.0
                     self.injection_dof[mask] = rate * ramp
         argsDict["injection_dof"] = self.injection_dof
+        # --- Consistent (Galerkin) point-source injection (MOOSE DiracKernel) ---
+        # Always passed (kernel reads unconditionally).  inj_point_mode==0 -> the
+        # lumped disk above is used and these are inert.  inj_point_mode==1 ->
+        # R^c_i -= Q_port*N_i(x_p) on the containing element.  We cache, per port,
+        # the OWNED element that contains the port point and its P1 shape-function
+        # values N_i (barycentric coords); the rate is time-gated each call.
+        point_mode = 1 if getattr(self.coefficients, "injection_point_source", False) else 0
+        nDOFel = self.mesh.elementNodesArray.shape[1]   # 3 for P1 triangles
+        if point_mode and injection_ports and getattr(self, "_inj_pts", None) is None:
+            nodesA = self.mesh.nodeArray
+            elemsA = self.mesh.elementNodesArray
+            nOwned = int(getattr(self.mesh, "nElements_owned", elemsA.shape[0]))
+            x0 = nodesA[elemsA[:nOwned, 0], :2]
+            x1 = nodesA[elemsA[:nOwned, 1], :2]
+            x2 = nodesA[elemsA[:nOwned, 2], :2]
+            det = (x1[:, 1]-x2[:, 1])*(x0[:, 0]-x2[:, 0]) + (x2[:, 0]-x1[:, 0])*(x0[:, 1]-x2[:, 1])
+            det = np.where(np.abs(det) < 1e-300, 1e-300, det)
+            self._inj_pts = []     # per port: (elem_id_or_-1, [N0,N1,N2], Q2D, t0, t1)
+            for (px, py, rate, radius, t0, t1) in injection_ports:
+                l0 = ((x1[:, 1]-x2[:, 1])*(px-x2[:, 0]) + (x2[:, 0]-x1[:, 0])*(py-x2[:, 1])) / det
+                l1 = ((x2[:, 1]-x0[:, 1])*(px-x2[:, 0]) + (x0[:, 0]-x2[:, 0])*(py-x2[:, 1])) / det
+                l2 = 1.0 - l0 - l1
+                inside = (l0 >= -1e-9) & (l1 >= -1e-9) & (l2 >= -1e-9)
+                if inside.any():
+                    e = int(np.argmax(inside))
+                    w = np.array([l0[e], l1[e], l2[e]], 'd')
+                else:
+                    e, w = -1, np.zeros(3, 'd')        # port not on this rank
+                Q2D = float(rate) * np.pi * float(radius) ** 2   # = Q_mol/RIG_DEPTH (abs molar rate/depth)
+                self._inj_pts.append((e, w, Q2D, float(t0), float(t1)))
+        nP = len(injection_ports) if (point_mode and injection_ports) else 0
+        inj_element = np.full(max(nP, 1), -1, 'i')
+        inj_weight  = np.zeros(max(nP, 1) * nDOFel, 'd')
+        inj_rate    = np.zeros(max(nP, 1), 'd')
+        if nP:
+            t_now = float(self.timeIntegration.t)
+            tau   = self.coefficients.injection_ramp_tau
+            for p, (e, w, Q2D, t0, t1) in enumerate(self._inj_pts):
+                inj_element[p] = e
+                inj_weight[p * nDOFel:p * nDOFel + len(w)] = w
+                if e >= 0 and t0 <= t_now < t1:
+                    ramp = 0.5 * (1.0 + np.tanh((t_now - t0) / tau - 3.0)) if tau > 0.0 else 1.0
+                    inj_rate[p] = Q2D * ramp
+        argsDict["inj_point_mode"] = point_mode
+        argsDict["inj_n_ports"]    = nP
+        argsDict["inj_element"]    = inj_element
+        argsDict["inj_weight"]     = inj_weight
+        argsDict["inj_rate"]       = inj_rate
         # csr maps for the (1,1) Jacobian block (not used by residual; staged
         # for turn 3 when calculateJacobian gains the (1,1) diagonal block).
         argsDict["csrRowIndeces_n_n"]      = self.csrRowIndeces[(1, 1)]
@@ -3381,6 +3438,17 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # (1,0) cross-block CSR maps for gas-eq diffusion against grad u_w.
         argsDict["csrRowIndeces_n_w"]      = self.csrRowIndeces[(1, 0)]
         argsDict["csrColumnOffsets_n_w"]   = self.csrColumnOffsets[(1, 0)]
+        # P1: comp-0 (H2O) (0,0) and (0,1) block CSR maps. The water-flux
+        # Jacobian scatters through these (Richards-style, eN_i_j offset) so the
+        # (0,1) off-diagonal water<-neighbor-z coupling always lands -- replaces
+        # the Full-CSR column search that dropped it (FD-probe structural
+        # misses -> stalled Newton). These keys are allocated by the framework
+        # because mass[0][1]/advection[0][1]/diffusion[0][0][1] declare the
+        # (0,1) coupling, exactly mirroring the (1,0) block above.
+        argsDict["csrRowIndeces_w_w"]      = self.csrRowIndeces[(0, 0)]
+        argsDict["csrColumnOffsets_w_w"]   = self.csrColumnOffsets[(0, 0)]
+        argsDict["csrRowIndeces_w_n"]      = self.csrRowIndeces[(0, 1)]
+        argsDict["csrColumnOffsets_w_n"]   = self.csrColumnOffsets[(0, 1)]
         argsDict["csrColumnOffsets_eb_n_n"] = self.csrColumnOffsets_eb[(1, 1)]
         # (1,0) boundary cross-block: gas-eq Darcy diffusion through ext faces.
         argsDict["csrColumnOffsets_eb_n_w"] = self.csrColumnOffsets_eb[(1, 0)]

@@ -2767,6 +2767,17 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     const double         inv_p_ref_n                                = rho_n_compressible ? (1.0 / p_ref_n) : 0.0;
     const int            offset_n                                   = args.scalar<int>("offset_n");
     const int            stride_n                                   = args.scalar<int>("stride_n");
+    // Consistent (Galerkin) point-source injection (MOOSE DiracKernel form):
+    //   R^c_i -= Q_port * N_i(x_p)  on the element containing the port.
+    // sum_i N_i = 1 (partition of unity) -> total injected mass is EXACT and
+    // mesh-independent; no elementMass lumping.  Solution-independent => zero
+    // Jacobian (same as the lumped path).  inj_point_mode==0 keeps the legacy
+    // lumped volumetric-disk source (injection_dof) byte-identical.
+    const int            inj_point_mode = args.scalar<int>("inj_point_mode");
+    const int            inj_n_ports    = args.scalar<int>("inj_n_ports");
+    xt::pyarray<int>    &inj_element    = args.array<int>("inj_element");   // containing elem id / rank (-1 if absent)
+    xt::pyarray<double> &inj_weight     = args.array<double>("inj_weight"); // N_i(x_p), [port*nDOF_test_element + i]
+    xt::pyarray<double> &inj_rate       = args.array<double>("inj_rate");   // Q_port * ramp(t)  [mol/(s*m_depth)]
     // Stage 3b: gas-side kinetic dissolution sink.  R_diss = k_d * S_n *
     // (1 - S_n) * theta_w * rho_w(c) * (c_sat - c) is subtracted from the
     // gas-equation residual at each quadrature point.  c is read from TADR's
@@ -2890,6 +2901,15 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<int>    &csrRowIndeces_n_w                          = args.array<int>("csrRowIndeces_n_w");
     xt::pyarray<int>    &csrColumnOffsets_n_n                       = args.array<int>("csrColumnOffsets_n_n");
     xt::pyarray<int>    &csrColumnOffsets_n_w                       = args.array<int>("csrColumnOffsets_n_w");
+    // P1: comp-0 (H2O) (0,0) and (0,1) block CSR maps -- the framework's
+    // authoritative (row,col)->flat-nzval offsets for the water equation's
+    // dependence on p (w_w) and z (w_n).  Used by the Richards-style block
+    // scatter of the two-sided water flux Jacobian (replaces the Full-CSR
+    // column search that dropped the (0,1) off-diagonal coupling).
+    xt::pyarray<int>    &csrRowIndeces_w_w                          = args.array<int>("csrRowIndeces_w_w");
+    xt::pyarray<int>    &csrColumnOffsets_w_w                       = args.array<int>("csrColumnOffsets_w_w");
+    xt::pyarray<int>    &csrRowIndeces_w_n                          = args.array<int>("csrRowIndeces_w_n");
+    xt::pyarray<int>    &csrColumnOffsets_w_n                       = args.array<int>("csrColumnOffsets_w_n");
     // Comp-1 boundary CSR maps used by the exterior boundary loop appended
     // at the end of this routine.
     xt::pyarray<int>    &csrColumnOffsets_eb_n_n                    = args.array<int>("csrColumnOffsets_eb_n_n");
@@ -4352,6 +4372,17 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       double u_n_old_local[nDOF_trial_element];
       double elementJacobian_n_n[nDOF_test_element][nDOF_trial_element];
       double elementJacobian_n_w[nDOF_test_element][nDOF_trial_element];
+      // P1 (Richards-style block assembly): the comp-0 (H2O) water-flux
+      // Jacobian collects into dedicated element arrays and scatters via the
+      // framework's (0,0)/(0,1) block CSR maps (csr*_w_w / csr*_w_n) with the
+      // element-local eN_i_j offset -- EXACTLY mirroring the comp-1 (1,1)/(1,0)
+      // scatter below and Richards.h's direct globalJacobian[ij] write.  This
+      // replaces the old Full-CSR column SEARCH (col==col_n_j ...), which
+      // silently dropped the (0,1) off-diagonal water<-neighbor-z coupling when
+      // the hand-computed column index didn't match the matrix layout (the
+      // "structural misses" in the FD Jacobian probe -> stalled Newton).
+      double elementJacobian_w_w[nDOF_test_element][nDOF_trial_element];
+      double elementJacobian_w_n[nDOF_test_element][nDOF_trial_element];
       // elementTransport_n collects the mobility-free gas transmissibility
       //   tau_ij = int K . grad N_j . grad N_i dV
       // consumed by the post-element-loop upwind potential-flux edge pass.
@@ -4366,6 +4397,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         for (int j = 0; j < nDOF_trial_element; j++) {
           elementJacobian_n_n[i][j] = 0.0;
           elementJacobian_n_w[i][j] = 0.0;
+          elementJacobian_w_w[i][j] = 0.0;
+          elementJacobian_w_n[i][j] = 0.0;
           elementTransport_n[i][j]  = 0.0;
         }
       }
@@ -4432,14 +4465,38 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         elementJacobian_n_w[i][i] += elementMass_n[i] * (z_i * dphiN_dp_dof[gi]) / dt;
         // (Kinetic R_diss dissolution sink removed -- dissolution is handled
         // thermodynamically by the inline flash; no lumped sink residual/Jacobian.)
-        // CO2 injection source (lumped).
+        // CO2 injection source (legacy LUMPED volumetric disk; inj_point_mode==0).
         // injection_dof carries the per-node source rate; elementMass_n[i] is
         // the local volume weight, so summed over the mesh the total injected
         // equals rate * (nodal volume) -- mass-conservative, parallel-safe.
-        const double Q_inj_n    = injection_dof.data()[gi];
-        elementResidual_n[i]   -= elementMass_n[i] * Q_inj_n;
-        if (have_gas_budget)
-          gas_budget_node.data()[3 * numDOFs_n + gi] -= elementMass_n[i] * Q_inj_n;
+        if (inj_point_mode == 0) {
+          const double Q_inj_n    = injection_dof.data()[gi];
+          elementResidual_n[i]   -= elementMass_n[i] * Q_inj_n;
+          if (have_gas_budget)
+            gas_budget_node.data()[3 * numDOFs_n + gi] -= elementMass_n[i] * Q_inj_n;
+        }
+      }
+
+      // CO2 injection source (CONSISTENT / Galerkin point source; inj_point_mode==1).
+      // For the element that contains a port, R^c_i -= Q_port * N_i(x_p), with
+      // N_i the P1 shape functions (barycentric coords) at the port point, built
+      // Python-side.  sum_i N_i = 1 => exact total mass at any resolution, no
+      // lumping.  Only the OWNING rank reports inj_element[p]==eN (others -1), so
+      // it is parallel-safe and contributes exactly once.
+      if (inj_point_mode == 1) {
+        for (int p = 0; p < inj_n_ports; p++) {
+          if (inj_element.data()[p] == eN && inj_rate.data()[p] != 0.0) {
+            const double qp = inj_rate.data()[p];
+            for (int i = 0; i < nDOF_test_element; i++) {
+              const double w = inj_weight.data()[p * nDOF_test_element + i];
+              elementResidual_n[i] -= qp * w;
+              if (have_gas_budget) {
+                const int gii = u_l2g.data()[eN * nDOF_test_element + i];
+                gas_budget_node.data()[3 * numDOFs_n + gii] -= qp * w;
+              }
+            }
+          }
+        }
       }
 
       // -------- Element-local two-sided upwind potential flux. --------
@@ -4724,22 +4781,18 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
               dFw_dpj += Tt*lwa_up*ddPhia_dpj; dFw_dzj += Tt*lwa_up*ddPhia_dzj;
               if (up_i_a) { dFw_dpi += Tt*dlwa_dp_e[i]*dPhi_a; dFw_dzi += Tt*dlwa_dz_e[i]*dPhi_a; }
               else        { dFw_dpj += Tt*dlwa_dp_e[j]*dPhi_a; dFw_dzj += Tt*dlwa_dz_e[j]*dPhi_a; }
+              // Richards-style block scatter: accumulate into the element
+              // (0,0)/(0,1) arrays; the end-of-element loop loads them into the
+              // global Jacobian via the framework's csr*_w_w / csr*_w_n block
+              // maps (eN_i_j offset), so the off-diagonal water<-neighbor-z
+              // slot is ALWAYS hit (no column search, no dropped coupling).
+              // Dirichlet mask uses the comp-0 free-DOF tag of the test node.
               const int fi = r_l2g.data()[eN_nDOF_trial_element + i];
-              const int fj = r_l2g.data()[eN_nDOF_trial_element + j];
               const double mwi = bc_mask.data()[fi];
-              const int row_w   = offset_u + stride_u * fi;
-              const int col_w_i = offset_u + stride_u * fi;
-              const int col_w_j = offset_u + stride_u * fj;
-              const int col_n_i = offset_n + stride_n * gN_e[i];
-              const int col_n_j = offset_n + stride_n * gN_e[j];
-              for (int o = csrRowIndeces_Full.data()[row_w];
-                   o < csrRowIndeces_Full.data()[row_w + 1]; o++) {
-                const int col = csrColumnOffsets_Full.data()[o];
-                if      (col == col_w_i) globalJacobian.data()[o] += mwi * (-dFw_dpi);
-                else if (col == col_w_j) globalJacobian.data()[o] += mwi * (-dFw_dpj);
-                else if (col == col_n_i) globalJacobian.data()[o] += mwi * (-dFw_dzi);
-                else if (col == col_n_j) globalJacobian.data()[o] += mwi * (-dFw_dzj);
-              }
+              elementJacobian_w_w[i][i] += mwi * (-dFw_dpi);
+              elementJacobian_w_w[i][j] += mwi * (-dFw_dpj);
+              elementJacobian_w_n[i][i] += mwi * (-dFw_dzi);
+              elementJacobian_w_n[i][j] += mwi * (-dFw_dzj);
             }
             // Consistent STAB=2: lagged, PHASE-SPLIT graph viscosity on z.
             // Split into a GAS part and an AQUEOUS (dissolved-CO2) part so each
@@ -4768,23 +4821,25 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             // Sunada converges) while keeping it ~full at sharp z fronts (the
             // FluidFlower bubble-point bound). psi_edge = max over the edge.
             const double psi_edge = fmax(psi_n[gN_e[i]], psi_n[gN_e[j]]);
-            // P0 (Newton-safe z bound): on edges crossing a MATERIAL INTERFACE the
-            // aqueous z-advection sees a discontinuous K/krw jump that the EV
-            // (cE*psi_edge ~ 0 in smooth z) under-stabilizes -> z undershoots < 0.
-            // Restore the FULL low-order Rusanov coefficient (1.0, no cE down-scale,
-            // no psi gate) for the AQUEOUS branch there; the GAS branch keeps its
-            // gate_old barrier and the EV scaling everywhere.  Smooth/lagged =>
-            // exact antisymmetric Jacobian, conservative, no FCT, no Newton hit.
-            // Homogeneous problems have no interface edges -> coeff_a == cE*psi_edge
-            // (McWhorter-Sunada accuracy unchanged).
-            const bool   iface_edge = (node_iface[gN_e[i]] != 0) || (node_iface[gN_e[j]] != 0);
-            const double coeff_a    = iface_edge ? 1.0 : (cE*psi_edge);
-            // dEV = entropy-viscosity / smoothness-gated HIGH-order dissipation
-            // (recovers McWhorter-Sunada accuracy in smooth z, preserves the
-            // bubble-point bound at sharp fronts).  This is the coefficient the
-            // residual used directly before FCT was wired.
+            // PHASE 1 -- CONSISTENT FCT=False aqueous dissipation.
+            // The aqueous z-dissipation now uses the SAME smoothness-gated entropy-
+            // viscosity coefficient cE*psi_edge as the gas branch and the interior --
+            // there is NO full-Rusanov (1.0) override on material-interface edges.
+            // The old override (coeff_a = iface_edge ? 1.0 : cE*psi_edge) deposited
+            // O(h) ARTIFICIAL z-diffusion across seal interfaces: it does NOT vanish
+            // under refinement, so it pumped dissolved CO2 into the ESF/FAULT interior
+            // where the flash pinned it to saturation and the low seal mobility
+            // trapped it (~18.5% interior-seal penetration in flow_old.h5, persistent
+            // and non-convergent).  cE*psi_edge -> 0 in smooth z (consistent;
+            // McWhorter-Sunada accuracy unchanged) and stays ~full only at genuine
+            // sharp z fronts, so a seal interface is stabilized by the PHYSICAL EV
+            // amount, not an artificial one -- the consistent discretization.
+            // TRADE-OFF: with FCT off there is no strict z>=0 limiter on this edge,
+            // so the bubble-point lower bound is deferred to the FCT=True path
+            // (separate session).  node_iface (built above) is retained for that work
+            // and for Phase 2 (node-split p_c jump); it is intentionally unused here.
             const double dEV = tau * ( cE*psi_edge*gate_old*fmax(si_g,sj_g)
-                                     + coeff_a*fmax(si_a,sj_a) );
+                                     + cE*psi_edge*fmax(si_a,sj_a) );
             // dLow = FULL low-order Rusanov dissipation (EV down-scale -> 1).  The
             // gas branch KEEPS its entry-pressure gate_old barrier (free CO2 still
             // cannot diffuse through a seal even at low order); the aqueous branch
@@ -4838,6 +4893,16 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
               += elementJacobian_n_n[i][j];
           globalJacobian.data()[csrRowIndeces_n_w.data()[eN_i] + csrColumnOffsets_n_w.data()[eN_i_j]]
               += elementJacobian_n_w[i][j];
+          // P1: comp-0 (H2O) water-flux Jacobian -- (0,0) and (0,1) blocks via
+          // the framework's dedicated CSR maps (Richards-style direct scatter,
+          // mirrors the (1,1)/(1,0) writes above).  The (0,0) flux diagonal adds
+          // to the per-DOF water mass diagonal (globalJacobian[ii]) in the SAME
+          // flat slot; the (0,1) off-diagonal water<-neighbor-z coupling now
+          // always lands (was dropped by the old Full-CSR search).
+          globalJacobian.data()[csrRowIndeces_w_w.data()[eN_i] + csrColumnOffsets_w_w.data()[eN_i_j]]
+              += elementJacobian_w_w[i][j];
+          globalJacobian.data()[csrRowIndeces_w_n.data()[eN_i] + csrColumnOffsets_w_n.data()[eN_i_j]]
+              += elementJacobian_w_n[i][j];
         }
       }
     }
