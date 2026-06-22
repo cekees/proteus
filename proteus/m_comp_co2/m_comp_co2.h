@@ -2745,6 +2745,19 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     const double         D_m                                        = args.scalar<double>("D_m");           // molecular diffusion of dissolved CO2 [m2/s]
     xt::pyarray<int>    &interface_pairs                            = args.array<int>("interface_pairs");    // 5*n: [node, z_a, mat_a, z_b, mat_b]
     const int            n_interface_pairs                          = args.scalar<int>("n_interface_pairs");
+    // CO2-free anchor strength (absolute z-pin applied per comp-1 DOF after the
+    // element/interface assembly below -- see the "CO2-FREE ANCHOR" block).  alpha
+    // is the pin stiffness as a fraction of the nodal accumulation capacity:
+    // lam = alpha * (phi*N)*V_node / dt.  alpha = 0 -> inactive (byte-identical).
+    const double         split_anchor_alpha                         = args.scalar<double>("split_anchor_alpha");
+    // CO2-free anchor gate tolerances + pin floor (from Coefficients, tunable
+    // without recompiling once built).  A node is anchored only where the flash
+    // says S_g < Sg_tol AND X < X_tol (genuinely no CO2); X_tol just above the
+    // CO2-free background z preserves the dilute dissolution fringe (less CO2
+    // removed).  z_floor is the value a CO2-free node's z is pinned toward.
+    const double         split_anchor_Sg_tol                        = args.scalar<double>("split_anchor_Sg_tol");
+    const double         split_anchor_X_tol                         = args.scalar<double>("split_anchor_X_tol");
+    const double         split_anchor_zfloor                        = args.scalar<double>("split_anchor_zfloor");
     xt::pyarray<int>    &r_l2g                                      = args.array<int>("r_l2g");
     xt::pyarray<double> &elementDiameter                            = args.array<double>("elementDiameter");
     int                  degree_polynomial                          = args.scalar<int>("degree_polynomial");
@@ -3108,6 +3121,14 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     std::vector<double> dpc_uncap_dof(numDOFs_n, 0.0);
     std::vector<double> pc_uncap_dof_old(numDOFs_n, 0.0);
     std::vector<double> ML_n(numDOFs_n, 0.0);
+    // OLD-time per-DOF flash gas saturation S_g and dissolved-CO2 mole fraction X,
+    // lumped like the others.  The CO2-free anchor (below) gates on these LAGGED
+    // values (not the current iterate) so its active set is FROZEN during the Newton
+    // solve -- a hard current-iterate gate would flip nodes on/off between Newton
+    // steps (active-set chatter -> stalled convergence).  The set just updates
+    // between time steps, which is fine since CO2-free regions evolve slowly.
+    std::vector<double> Sg_dof_old(numDOFs_n, 0.0);
+    std::vector<double> X_dof_old(numDOFs_n, 0.0);
     for (int eN = 0; eN < nElements_global; eN++) {
       const int    mat_eN_proj = elementMaterialTypes.data()[eN];
       const double phi_eN      = thetaR.data()[mat_eN_proj] + thetaSR.data()[mat_eN_proj];
@@ -3229,6 +3250,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           rho_n_dof_old[gi] += rho_n_p_old * u_test_dV;
           pc_dof_old[gi]    += pc_p_old * u_test_dV;
           krn_dof_old[gi]   += krn_p_old * u_test_dV;
+          // CO2-free-anchor gate inputs, OLD-time flash (lagged -> frozen active set).
+          Sg_dof_old[gi]    += fs_pr_old.S_g * u_test_dV;
+          X_dof_old[gi]     += fs_pr_old.X   * u_test_dV;
           ML_n[gi]          += u_test_dV;
         }
       }
@@ -3251,6 +3275,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         rho_n_dof_old[i] /= ML_n[i];
         pc_dof_old[i]    /= ML_n[i];
         krn_dof_old[i]   /= ML_n[i];
+        Sg_dof_old[i]    /= ML_n[i];
+        X_dof_old[i]     /= ML_n[i];
       } else {
         rho_n_phi_dof[i] = thetaR.data()[0] + thetaSR.data()[0]; // fallback
         rho_n_phi_dof_old[i] = thetaR.data()[0] + thetaSR.data()[0]; // fallback
@@ -5082,6 +5108,42 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
                   << n_drop_pcol << " z<->p_node (1,0) slot(s) absent "
                   << "(stale/incomplete Jacobian sparsity -> degraded Newton)"
                   << std::endl;
+      }
+    }
+    // ============================================================================
+    // CO2-FREE ANCHOR (absolute z-pin).  In a CO2-free pocket every comp-1 coupling
+    // vanishes (gas mobility ~ S_g -> 0, Fickian ~ X -> 0, EV dissipation ~ S_g -> 0)
+    // and the comp-1 mass is lumped (diagonal), so a node's z is held by nothing but
+    // its own accumulation -> an isolated DOF (especially a node-split fine copy)
+    // drifts z unbounded with no spatial reference (the top-right z->3.19 runaway).
+    // A copy-to-copy spring can't fix this: BOTH copies are unanchored, so it only
+    // damps their DIFFERENCE, not the COMMON-MODE drift.  Where the flash says a node
+    // holds essentially NO CO2 (S_g < Sg_tol AND X < X_tol) add an ABSOLUTE pin to a
+    // small floor z_floor:
+    //     R_z[i] += lam_abs*(z_i - z_floor),   lam_abs = alpha * cap_i / dt,
+    //     cap_i  = (phi*N)_i * V_node_i = rho_n_phi_dof[i] * ML_n[i]   [mol].
+    // This references z to a FIXED value (kills the common-mode drift) and is exactly
+    // Jacobian-consistent (lam_abs constant in z).  The gate is FALSE wherever gas
+    // ponds or CO2 dissolves, so it never touches a real plume / capillary jump.  Not
+    // mass-conserving -- but a node with S_g~0 AND X~0 holds no CO2, so any z>floor is
+    // phantom mass and removing it CORRECTS a spurious source.  alpha =
+    // split_anchor_alpha (same knob); alpha = 0 -> inactive (byte-identical legacy).
+    if (split_anchor_alpha > 0.0 && dt > 0.0) {
+      const double Sg_tol  = split_anchor_Sg_tol;   // S_g below this => no free gas
+      const double X_tol   = split_anchor_X_tol;    // dissolved-CO2 mole frac below this => no CO2
+      const double z_floor = split_anchor_zfloor;   // physical zero-CO2 floor (~ flash z clamp)
+      for (int i = 0; i < numDOFs_n; i++) {
+        if (ML_n[i] <= 0.0) continue;
+        // Gate on the LAGGED (old-time) flash so the active set is fixed during this
+        // Newton solve (no current-iterate on/off chatter).
+        if (Sg_dof_old[i] >= Sg_tol || X_dof_old[i] >= X_tol) continue; // held CO2 -> skip
+        // Old-time capacity -> lam constant in z during Newton -> EXACT diagonal Jac.
+        const double cap_i   = rho_n_phi_dof_old[i] * ML_n[i];    // phi*N_old*V_node [mol]
+        const double lam_abs = split_anchor_alpha * cap_i / dt;
+        const double zi      = u_dof_n.data()[i];
+        globalResidual.data()[offset_n + stride_n * i] += lam_abs * (zi - z_floor);
+        const int ii = comp1_offset(i, i);
+        if (ii >= 0) globalJacobian.data()[comp1_full_offsets.data()[ii]] += lam_abs;
       }
     }
     // DIAG: net gas-flux imbalance (Python prints + MPI-reduces). The T-asymmetry

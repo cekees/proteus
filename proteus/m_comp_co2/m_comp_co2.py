@@ -265,6 +265,16 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  split_z=0,        # 0 = continuous z (legacy); 1 = discontinuous z at facies interfaces
                  D_m=0.0,          # molecular diffusion of dissolved CO2 [m^2/s] (interior + interface Fickian)
                  split_materials=None,  # iterable of seal/fault material ids to split at; None = every multi-material node
+                 split_anchor_alpha=0.0,  # CO2-free anchor stiffness (fraction of the nodal accumulation
+                                          # capacity per step): lam = alpha*cap/dt pins z toward split_anchor_zfloor
+                                          # at nodes the flash says hold no CO2, killing the unbounded-z drift of
+                                          # an otherwise-uncoupled comp-1 DOF.  0 = off (byte-identical).
+                 split_anchor_Sg_tol=1.0e-3,  # anchor fires only where free-gas saturation S_g < this ...
+                 split_anchor_X_tol=2.0e-5,   # ...AND dissolved-CO2 mole fraction X < this.  Keep X_tol just
+                                              # above the CO2-free background z (~1e-5) so the dilute dissolution
+                                              # FRINGE is preserved -- a looser X_tol (e.g. 1e-4) non-conservatively
+                                              # trims real dissolved CO2 there (measured ~40% loss over 120 yr).
+                 split_anchor_zfloor=1.0e-8,  # z value a CO2-free node is pinned toward (~ the flash z clamp floor).
                  # FOR ARTIFICIAL COMPRESSION
                  cK=1.0,
                  # OUTPUT quantDOFs
@@ -560,6 +570,10 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.split_z = split_z
         self.D_m = D_m
         self.split_materials = split_materials
+        self.split_anchor_alpha = float(split_anchor_alpha)
+        self.split_anchor_Sg_tol = float(split_anchor_Sg_tol)
+        self.split_anchor_X_tol = float(split_anchor_X_tol)
+        self.split_anchor_zfloor = float(split_anchor_zfloor)
         self.outputQuantDOFs = outputQuantDOFs
         #For seepage anb
         self.model = None 
@@ -3850,6 +3864,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["D_m"]     = self.coefficients.D_m
         argsDict["interface_pairs"]   = self.interface_pairs
         argsDict["n_interface_pairs"] = self.n_interface_pairs
+        # CO2-free anchor strength (kernel pins z->floor per comp-1 DOF where the
+        # flash says no CO2; cap is computed kernel-side).  alpha=0 -> byte-identical.
+        argsDict["split_anchor_alpha"]   = float(getattr(self.coefficients, 'split_anchor_alpha', 0.0))
+        argsDict["split_anchor_Sg_tol"]  = float(getattr(self.coefficients, 'split_anchor_Sg_tol', 1.0e-3))
+        argsDict["split_anchor_X_tol"]   = float(getattr(self.coefficients, 'split_anchor_X_tol', 2.0e-5))
+        argsDict["split_anchor_zfloor"]  = float(getattr(self.coefficients, 'split_anchor_zfloor', 1.0e-8))
         argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["degree_polynomial"] = degree_polynomial
@@ -4526,6 +4546,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["D_m"]     = self.coefficients.D_m
         argsDict["interface_pairs"]   = self.interface_pairs
         argsDict["n_interface_pairs"] = self.n_interface_pairs
+        # CO2-free anchor strength (kernel pins z->floor per comp-1 DOF where the
+        # flash says no CO2; cap is computed kernel-side).  alpha=0 -> byte-identical.
+        argsDict["split_anchor_alpha"]   = float(getattr(self.coefficients, 'split_anchor_alpha', 0.0))
+        argsDict["split_anchor_Sg_tol"]  = float(getattr(self.coefficients, 'split_anchor_Sg_tol', 1.0e-3))
+        argsDict["split_anchor_X_tol"]   = float(getattr(self.coefficients, 'split_anchor_X_tol', 2.0e-5))
+        argsDict["split_anchor_zfloor"]  = float(getattr(self.coefficients, 'split_anchor_zfloor', 1.0e-8))
         argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["degree_polynomial"] = degree_polynomial
@@ -4680,6 +4706,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["D_m"]     = self.coefficients.D_m
         argsDict["interface_pairs"]   = self.interface_pairs
         argsDict["n_interface_pairs"] = self.n_interface_pairs
+        # CO2-free anchor strength (kernel pins z->floor per comp-1 DOF where the
+        # flash says no CO2; cap is computed kernel-side).  alpha=0 -> byte-identical.
+        argsDict["split_anchor_alpha"]   = float(getattr(self.coefficients, 'split_anchor_alpha', 0.0))
+        argsDict["split_anchor_Sg_tol"]  = float(getattr(self.coefficients, 'split_anchor_Sg_tol', 1.0e-3))
+        argsDict["split_anchor_X_tol"]   = float(getattr(self.coefficients, 'split_anchor_X_tol', 2.0e-5))
+        argsDict["split_anchor_zfloor"]  = float(getattr(self.coefficients, 'split_anchor_zfloor', 1.0e-8))
         argsDict["r_l2g"] = self.l2g[0]['freeGlobal']
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["degree_polynomial"] = degree_polynomial
