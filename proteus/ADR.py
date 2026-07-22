@@ -124,8 +124,10 @@ class Coefficients(TC_base):
                  immersedBoundary_ghost_penalty=0.1,
                  immersedBoundary_sdf=None,
                  immersedBoundary_u=None,
+                 analyticalSolution=None,
                  test=1.0):
         self.test = test
+        self.analyticalSolution = analyticalSolution
         self.embeddedBoundary=embeddedBoundary
         self.embeddedBoundary_penalty=embeddedBoundary_penalty
         self.embeddedBoundary_ghost_penalty=embeddedBoundary_ghost_penalty
@@ -218,6 +220,25 @@ class Coefficients(TC_base):
                 for k in range(cq['immersedBoundary_sdf'].shape[1]):
                     cq['immersedBoundary_sdf'][eN,k],cq['immersedBoundary_normal'][eN,k] = self.immersedBoundary_sdf(t=0.0,x=cq['x'][eN,k])
                     cq['immersedBoundary_u'][eN,k] = self.immersedBoundary_u(t=0.0,x=cq['x'][eN,k])
+        # Exact solution at quadrature points, reused from the analyticalSolution
+        # supplied by the physics (p) file instead of being redefined in C++.
+        # Cut elements need both the "inner"/"outer" branch values at the same
+        # physical point, so uOfX_inner/uOfX_outer (raw branch formulas) are
+        # queried directly when the analytical solution class provides them.
+        cq[('u_exact_inner',0)] = np.zeros_like(cq[('u',0)])
+        cq[('u_exact_outer',0)] = np.zeros_like(cq[('u',0)])
+        if self.analyticalSolution is not None and self.analyticalSolution.get(0) is not None:
+            ans0 = self.analyticalSolution[0]
+            has_split = hasattr(ans0,'uOfX_inner') and hasattr(ans0,'uOfX_outer')
+            for eN in range(cq['x'].shape[0]):
+                for k in range(cq['x'].shape[1]):
+                    xk = cq['x'][eN,k]
+                    if has_split:
+                        cq[('u_exact_inner',0)][eN,k] = ans0.uOfX_inner(xk)
+                        cq[('u_exact_outer',0)][eN,k] = ans0.uOfX_outer(xk)
+                    else:
+                        cq[('u_exact_inner',0)][eN,k] = ans0.uOfX(xk)
+                        cq[('u_exact_outer',0)][eN,k] = cq[('u_exact_inner',0)][eN,k]
 
     def initializeElementBoundaryQuadrature(self,t,cebq,cebq_global):
         nd = self.nd
@@ -708,6 +729,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["mua"] = self.coefficients.mua
         argsDict["mub"] = self.coefficients.mub
         argsDict["jf"] = self.coefficients.jf
+        argsDict["q_u_exact_inner"] = self.q[('u_exact_inner',0)]
+        argsDict["q_u_exact_outer"] = self.q[('u_exact_outer',0)]
         self.L2_error = np.array((0.0,),'d')
         argsDict["L2_error"] = self.L2_error
         self.Linfty_error = np.array((0.0,),'d')

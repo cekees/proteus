@@ -15,87 +15,6 @@ namespace py = pybind11;
 
 namespace proteus
 {
-	double sol_inner(double test, double x, double y, double b)
-	{
-		double sol = 0.0;
-		if (test == 1.0) // Leveque & Li 1994, Example 1
-			sol = 1.0;
-		else if (test == 2.0 || test == 2.1)
-			sol = x * x + y * y;
-		else if (test == 3.0) // Leveque & Li 1994, Example 3
-			sol = exp(x) * cos(y);
-		else if (test == 4.0) // Leveque & Li 1994, Example 4
-			sol = x * x - y * y;
-		else if (test == 4.1) // Leveque & Li 1994, Example 4l
-			sol = x - y;
-		else if (test == 5.0) //
-			sol = 1.0;
-		else if (test == 6.0) //
-			sol = x + y + 1.0;
-		else if (test == 7.0) //
-			sol = x * x + y * y + 1.0;
-		else if (test == 8.0) // Ji et al 2016, Example 1
-			sol = pow(x * x + y * y, 3.0 / 2.0);
-		else if (test == 9.0) // PWCubic
-			sol = x * x * x + y * y * y + 1.0;
-		else if (test == 10.0) // trig solution
-			sol = sin(M_PI * x) * sin(M_PI * y);
-		else if (test == 11.0) // PWLStraight
-			sol = -(x - 0.35);
-		else if (test == 12.0) // Adjerid et al. 2016, Example 5.1 (Omega-)
-		{
-			const double psi = y * y - x * x - (4.0 / 3.0) * y + 4.0 / 9.0;
-			const double eta = 2.0 / 3.0 - x - y;
-			const double p1 = 6.0 * x * x + 6.0 * x * y - 4.0 * x + 3.0;
-			const double p2 = 2.0 + 3.0 * x - 3.0 * y;
-			const double jumpTerm = (1.0 / b - 1.0) * (3.0 - 8.0 * x + 12.0 * x * y);
-			sol = (jumpTerm + p1 * cos(psi) + p2 * sin(eta)) / 3.0;
-		}
-		else
-			assert(false && "Unknown test case in sol_inner");
-		return sol;
-	}
-
-	double sol_outer(double test, double x, double y, double b, double C)
-	{
-		double sol = 0.0;
-		double r = sqrt(x * x + y * y);
-		if (test == 1.0) // Leveque & Li 1994, Example 1
-			sol = 1.0 + log(2 * r);
-		else if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
-			sol = (1.0 - 1.0 / (8.0 * b) - 1.0 / b) / 4.0 + ((r * r * r * r) / 2.0 + r * r) / b + C * log(2 * r) / b;
-		else if (test == 3.0)
-			sol = 0.0;
-		else if (test == 4.0)
-			sol = 0.0;
-		else if (test == 4.1)
-			sol = 0.0;
-		else if (test == 5.0)
-			sol = 0.0;
-		else if (test == 6.0)
-			sol = x + y;
-		else if (test == 7.0)
-			sol = x * x + y * y;
-		else if (test == 8.0) // Ji et al 2016, Example 1
-			sol = pow(r, 3.0) / b + (1.0 - 1.0 / b) * pow(0.5, 3.0);
-		else if (test == 9.0) // PWCubic
-			sol = x * x * x + y * y * y;
-		else if (test == 10.0) // trig solution
-			sol = sin(M_PI * x) * sin(M_PI * y);
-		else if (test == 11.0) // PWLStraight
-			sol = -(x - 0.35) / b;
-		else if (test == 12.0) // Adjerid et al. 2016, Example 5.1 (Omega+)
-		{
-			const double psi = y * y - x * x - (4.0 / 3.0) * y + 4.0 / 9.0;
-			const double eta = 2.0 / 3.0 - x - y;
-			const double p1 = 6.0 * x * x + 6.0 * x * y - 4.0 * x + 3.0;
-			const double p2 = 2.0 + 3.0 * x - 3.0 * y;
-			sol = (p1 * cos(psi) + p2 * sin(eta)) / (3.0 * b);
-		}
-		else
-			assert(false && "Unknown test case in sol_outer");
-		return sol;
-	}
 	template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
 	using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP_ifem, nP, nQ, nEBQ>;
 
@@ -507,7 +426,9 @@ namespace proteus
 											 double &Linfty_error,
 											 double test,
 											 double mua,
-											 double mub)
+											 double mub,
+											 xt::pyarray<double> &q_u_exact_inner,
+											 xt::pyarray<double> &q_u_exact_outer)
 		{
 			for (int i = 0; i < nDOF_test_element; i++)
 			{
@@ -902,10 +823,10 @@ namespace proteus
 				double L2_contrib = 0.0;
 				if (icase_f == 0)
 				{
-					double sol_in = sol_inner(test, x, y, mub);
+					double sol_in = q_u_exact_inner.data()[eN_k];
 					double err_in = fabs(ua + uja - sol_in);
 					L2_contrib += ImH_f * err_in * err_in * dV;
-					double sol_out = sol_outer(test, x, y, mub, 0.2);
+					double sol_out = q_u_exact_outer.data()[eN_k];
 					double err_out = fabs(ub + ujb - sol_out);
 					L2_contrib += H_f * err_out * err_out * dV;
 					if (ImH_f >= H_f)
@@ -917,14 +838,14 @@ namespace proteus
 				{
 					if (icase_f == -1)
 					{
-						double sol = sol_inner(test, x, y, mub);
+						double sol = q_u_exact_inner.data()[eN_k];
 						double err = fabs(u - sol);
 						L2_contrib += err * err * dV;
 						Linfty_error = std::max(Linfty_error, err);
 					}
 					if (icase_f == 1)
 					{
-						double sol = sol_outer(test, x, y, mub, 0.2);
+						double sol = q_u_exact_outer.data()[eN_k];
 						double err = fabs(u - sol);
 						L2_contrib += err * err * dV;
 						Linfty_error = std::max(Linfty_error, err);
@@ -1016,6 +937,8 @@ namespace proteus
 			const double mua = args.scalar<double>("mua");
 			const double mub = args.scalar<double>("mub");
 			const double jf = args.scalar<double>("jf");
+			xt::pyarray<double> &q_u_exact_inner = args.array<double>("q_u_exact_inner");
+			xt::pyarray<double> &q_u_exact_outer = args.array<double>("q_u_exact_outer");
 			gf_f.useExact = true;
 			gf_s.useExact = true;
 			ifem_boundaries.clear();
@@ -1229,7 +1152,9 @@ namespace proteus
 										 Linfty_error.data()[0],
 											 test,
 											 mua,
-											 mub);
+											 mub,
+											 q_u_exact_inner,
+											 q_u_exact_outer);
 				//
 				// load element into global residual and save element residual
 				//

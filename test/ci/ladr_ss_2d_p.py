@@ -61,124 +61,176 @@ M0_1c={0:0.0}
 class LevequeLiExample1(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(LevequeLiExample1, self).__init__()
+    def uOfX_inner(self, x):
+        return 1.0
+    def uOfX_outer(self, x):
+        r = (x[0]**2 + x[1]**2)**0.5
+        return 1.0 + math.log(2*r)
     def uOfX(self, x):
         r = (x[0]**2 + x[1]**2)**0.5
         if r <= 0.5:
-            return 1.0
+            return self.uOfX_inner(x)
         else:
-            return 1.0 + math.log(2*r)
-        
+            return self.uOfX_outer(x)
+
 class LevequeLiExample2(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(LevequeLiExample2, self).__init__()
-    def uOfX(self, x):
+    def uOfX_inner(self, x):
+        r = (x[0]**2 + x[1]**2)**0.5
+        return r**2
+    def uOfX_outer(self, x):
         b=a0
         C=0.2
         r = (x[0]**2 + x[1]**2)**0.5
+        return (1 - 1/(8*b) - 1/b)/4 + ((r**4)/2 + r**2)/b + C*math.log(2*r)/b
+    def uOfX(self, x):
+        r = (x[0]**2 + x[1]**2)**0.5
         if r <= 0.5:
-            return r**2
+            return self.uOfX_inner(x)
         else:
-            return (1 - 1/(8*b) - 1/b)/4 + ((r**4)/2 + r**2)/b + C*math.log(2*r)/b
-        
+            return self.uOfX_outer(x)
+
 class LevequeLiExample3(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(LevequeLiExample3, self).__init__()
-    def uOfX(self, x):
+    def uOfX_inner(self, x):
         import math
+        return math.exp(x[0])*math.cos(x[1])
+    def uOfX_outer(self, x):
+        return 0.0
+    def uOfX(self, x):
         r = (x[0]**2 + x[1]**2)**0.5
         if r <= 0.5:
-            return math.exp(x[0])*math.cos(x[1])
+            return self.uOfX_inner(x)
         else:
-            return 0.0
-        
+            return self.uOfX_outer(x)
+
 class LevequeLiExample4(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(LevequeLiExample4, self).__init__()
+    def uOfX_inner(self, x):
+        return x[0]**2 - x[1]**2
+    def uOfX_outer(self, x):
+        return 0.0
     def uOfX(self, x):
-        import math
         r = (x[0]**2 + x[1]**2)**0.5
         if r <= 0.5:
-            return x[0]**2 - x[1]**2
+            return self.uOfX_inner(x)
         else:
-            return 0.0
+            return self.uOfX_outer(x)
 
 class LevequeLiExample4l(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(LevequeLiExample4l, self).__init__()
+    def uOfX_inner(self, x):
+        return x[0] - x[1]
+    def uOfX_outer(self, x):
+        return 0.0
     def uOfX(self, x):
         r = (x[0]**2 + x[1]**2)**0.5
         if r <= 0.5:
-            return x[0] - x[1]
+            return self.uOfX_inner(x)
         else:
-            return 0.0
+            return self.uOfX_outer(x)
 
 class PWC(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(PWC, self).__init__()
+    def uOfX_inner(self, x):
+        return 1.0
+    def uOfX_outer(self, x):
+        return 0.0
     def uOfX(self, x):
         r = (x[0]**2 + x[1]**2)**0.5
         if r <= 0.5:
-            return 1.0
+            return self.uOfX_inner(x)
         else:
-            return 0.0
-        
+            return self.uOfX_outer(x)
+
 class PWL(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(PWL, self).__init__()
+    def uOfX_inner(self, x):
+        return x[0] + x[1] + 1.0
+    def uOfX_outer(self, x):
+        return x[0] + x[1]
     def uOfX(self, x):
         r = (x[0]**2 + x[1]**2)**0.5
         if r <= 0.5:
-            return x[0] + x[1] + 1.0
+            return self.uOfX_inner(x)
         else:
-            return x[0] + x[1]
-        
+            return self.uOfX_outer(x)
+
 class PWQ(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(PWQ, self).__init__()
+    def uOfX_inner(self, x):
+        return x[0]**2 + x[1]**2 + 1.0
+    def uOfX_outer(self, x):
+        return x[0]**2 + x[1]**2
     def uOfX(self, x):
         r = (x[0]**2 + x[1]**2)**0.5
         if r <= 0.5:
-            return x[0]**2 + x[1]**2 + 1.0
+            return self.uOfX_inner(x)
         else:
-            return x[0]**2 + x[1]**2
+            return self.uOfX_outer(x)
 
 class PWCubic(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(PWCubic, self).__init__()
+    def uOfX_inner(self, x):
+        return x[0]**3 + x[1]**3 + 1.0
+    def uOfX_outer(self, x):
+        return x[0]**3 + x[1]**3
     def uOfX(self, x):
         r = (x[0]**2 + x[1]**2)**0.5
         if r <= 0.5:
-            return x[0]**3 + x[1]**3 + 1.0
+            return self.uOfX_inner(x)
         else:
-            return x[0]**3 + x[1]**3
+            return self.uOfX_outer(x)
 
 class PWLStraight(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(PWLStraight, self).__init__()
         self.jump_x = 0.35#0.001
+    def uOfX_inner(self, x):
+        return -(x[0]-self.jump_x)
+    def uOfX_outer(self, x):
+        return -(x[0]-self.jump_x)/1000.0
     def uOfX(self, x):
         if x[0] <=self.jump_x:
-            return -(x[0]-self.jump_x)
+            return self.uOfX_inner(x)
         else:
-            return -(x[0]-self.jump_x)/1000.0
+            return self.uOfX_outer(x)
 
 class JiEtal14Example1(AnalyticalSolutions.SteadyState):
     def __init__(self, betaMinus=1.0, betaPlus=1000.0):
         self.betaMinus = betaMinus
         self.betaPlus = betaPlus
         super(JiEtal14Example1, self).__init__()
+    def uOfX_inner(self, x):
+        r = (x[0]**2 + x[1]**2)**0.5
+        return r**3/self.betaMinus
+    def uOfX_outer(self, x):
+        r = (x[0]**2 + x[1]**2)**0.5
+        return r**3/self.betaPlus + (1.0/self.betaMinus-1.0/self.betaPlus)*0.5**3
     def uOfX(self, x):
         r = (x[0]**2 + x[1]**2)**0.5
         if r <= 0.5:
-            return r**3/self.betaMinus
+            return self.uOfX_inner(x)
         else:
-            return r**3/self.betaPlus + (1.0/self.betaMinus-1.0/self.betaPlus)*0.5**3
+            return self.uOfX_outer(x)
 
 class trigSolution(AnalyticalSolutions.SteadyState):
     def __init__(self):
         super(trigSolution, self).__init__()
-    def uOfX(self, x):
+    def uOfX_inner(self, x):
         return math.sin(math.pi*x[0])*math.sin(math.pi*x[1])
+    def uOfX_outer(self, x):
+        return self.uOfX_inner(x)
+    def uOfX(self, x):
+        return self.uOfX_inner(x)
 
 class AdjeridEtal16Example5p1(AnalyticalSolutions.SteadyState):
     def __init__(self, betaMinus=1.0, betaPlus=1000.0):
@@ -186,20 +238,30 @@ class AdjeridEtal16Example5p1(AnalyticalSolutions.SteadyState):
         self.betaPlus = betaPlus
         super(AdjeridEtal16Example5p1, self).__init__()
 
-    def uOfX(self, x):
+    def _common(self, x):
         xx = x[0]
         yy = x[1]
         psi = yy**2 - xx**2 - (4.0/3.0)*yy + 4.0/9.0
         eta = 2.0/3.0 - xx - yy
         p1 = 6.0*xx**2 + 6.0*xx*yy - 4.0*xx + 3.0
         p2 = 2.0 + 3.0*xx - 3.0*yy
-        common = p1*math.cos(psi) + p2*math.sin(eta)
-        phi = yy - xx - 2.0/3.0
+        return p1*math.cos(psi) + p2*math.sin(eta)
+
+    def uOfX_outer(self, x):  # Omega+
+        return self._common(x)/(3.0*self.betaPlus)
+
+    def uOfX_inner(self, x):  # Omega-
+        xx = x[0]
+        yy = x[1]
+        jump_term = (self.betaMinus/self.betaPlus - 1.0)*(3.0 - 8.0*xx + 12.0*xx*yy)
+        return (jump_term + self._common(x))/(3.0*self.betaMinus)
+
+    def uOfX(self, x):
+        phi = x[1] - x[0] - 2.0/3.0
         if phi >= 0.0:
-            return common/(3.0*self.betaPlus)
+            return self.uOfX_outer(x)
         else:
-            jump_term = (self.betaMinus/self.betaPlus - 1.0)*(3.0 - 8.0*xx + 12.0*xx*yy)
-            return (jump_term + common)/(3.0*self.betaMinus)
+            return self.uOfX_inner(x)
 
 if opts.test == 1.0:
     ans = LevequeLiExample1()
@@ -386,6 +448,7 @@ coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=B0_1c[0],nc=1,nd=nd
                                 immersedBoundary_u=embeddedBoundary_u,
                                 immersedBoundary_penalty=0.0,
                                 immersedBoundary_ghost_penalty=0.0,
+                                analyticalSolution=analyticalSolution,
                                 test = opts.test)
 
 def getDBC(x,flag):
