@@ -771,7 +771,6 @@ namespace proteus
 												f_f,
 												df_f,
 												test);
-				std::cout << "Updated immersed boundary terms at element " << eN << ", quadrature point " << k << "\t r_f = " << r_f <<std::endl;
 				}
 				//
 				// moving mesh
@@ -1111,17 +1110,25 @@ namespace proteus
 							ifem_boundaries.insert(ebN);
 						}
 					}
-					double jump = 0.0; // Leveque & Li 1994, Example 1, 2; Ji et. al. 2014
-					if (test == 3.0)   // Leveque and Li 1994, Example 3
-						jump = -exp(gf_f.exact.cut_barycenter[0]) * cos(gf_f.exact.cut_barycenter[1]);
-					else if (test == 4.0) // Leveque and Li 1994, Example 4
-						jump = -(gf_f.exact.cut_barycenter[0] * gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1] * gf_f.exact.cut_barycenter[1]);
-					else if (test == 4.1) // Leveque and Li 1994, Example 4l
-						jump = -(gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1]);
-					else if (test == 5.0 || test == 6.0 || test == 7.0 || test == 9.0) // PWC,PWL,PWQ
-						jump = -1;
+					// Leveque & Li 1994, Example 1, 2, 3, 4; Ji et. al. 2014
+					// The jump function is, in general, not constant over the cut element, so it
+					// must be evaluated at each node's own coordinates (not once at the cut
+					// barycenter) -- otherwise JA/JB are constant over the element and their
+					// interpolated gradients (grad_uja, grad_ujb) vanish identically.
+					auto jump_at = [&](double xx, double yy) -> double {
+						if (test == 3.0)   // Leveque and Li 1994, Example 3
+							return -exp(xx) * cos(yy);
+						else if (test == 4.0) // Leveque and Li 1994, Example 4
+							return -(xx * xx - yy * yy);
+						else if (test == 4.1) // Leveque and Li 1994, Example 4l
+							return -(xx - yy);
+						else if (test == 5.0 || test == 6.0 || test == 7.0 || test == 9.0) // PWC,PWL,PWQ
+							return -1.0;
+						else
+							return 0.0;
+					};
 					const double eps_phi = 1.0e-12;
-					auto assign_jump_side = [&](int i, bool isOuter) {
+					auto assign_jump_side = [&](int i, bool isOuter, double jump) {
 						if (isOuter)
 						{
 							JA[i] = -jump;
@@ -1135,15 +1142,16 @@ namespace proteus
 					};
 						for (int i = 0; i < nDOF_trial_element; i++)
 						{
-							
+
 							int eN_i = eN * nDOF_trial_element + i;
-							if (element_phi_f[i] > 0.0) 
+							const double jump_i = jump_at(element_nodes[i * 3 + 0], element_nodes[i * 3 + 1]);
+							if (element_phi_f[i] > 0.0)
 							{
-								assign_jump_side(i, true);
+								assign_jump_side(i, true, jump_i);
 							}
 							else if (element_phi_f[i] <= 0.0)
 							{
-								assign_jump_side(i, false);
+								assign_jump_side(i, false, jump_i);
 							}
 						}
 				}
@@ -1578,7 +1586,7 @@ namespace proteus
 					ck.calculateG(jacInv_ext, G, G_dd_G, tr_G);
 					// compute shape and solution information
 					// shape
-					std::cout << "Calculating gradTrialFromRef from calculateResidual() 3" << std::endl;
+					// std::cout << "Calculating gradTrialFromRef from calculateResidual() 3" << std::endl;
 					ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace * nDOF_trial_element], jacInv_ext, u_grad_trial_trace);
 					// solution and gradients
 					ck.valFromDOF(u_dof.data(), &u_l2g.data()[eN_nDOF_trial_element], &u_trial_trace_ref.data()[ebN_local_kb * nDOF_test_element], u_ext);
