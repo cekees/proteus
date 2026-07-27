@@ -5,6 +5,7 @@
 #include <set>
 #include <map>
 #include <valarray>
+#include <vector>
 #include "CompKernel.h"
 #include "ModelFactory.h"
 #include "equivalent_polynomials.h"
@@ -41,10 +42,41 @@ namespace proteus
 		std::valarray<bool> elementIsActive;
 		const int nDOF_test_X_trial_element;
 		CompKernelType ck;
-		GeneralizedFunctions<nSpace, nDOF_trial_element, 4, nQuadraturePoints_element, nQuadraturePoints_elementBoundary> gf_f;
-		GeneralizedFunctions<nSpace, nDOF_trial_element, 4, nQuadraturePoints_element, nQuadraturePoints_elementBoundary> gf_s;
+		using GfType = GeneralizedFunctions<nSpace, nDOF_trial_element, 4, nQuadraturePoints_element, nQuadraturePoints_elementBoundary>;
+		// Per-element cache of the equivalent-polynomial/IFEM reconstruction
+		// (gf_s.calculate()/gf_f.calculate()): permutation, cut classification,
+		// the IFEM basis coefficient solve, and the H/ImH/D + VA/VB (+
+		// gradients) evaluated at every quadrature point. None of this depends
+		// on the current solution u -- only on the level-set geometry
+		// (element_phi_s/element_phi_f) and mua/mub/jf -- so it is only
+		// recomputed when ifemGeometryGeneration advances (see
+		// recomputeIFEMGeometry / markIFEMGeometryDirty on the Python side).
+		// Interior (isBoundary=false) and boundary (isBoundary=true) evaluations
+		// populate different internal storage within the same GfType object, so
+		// they are tracked with separate generation/icase arrays.
+		std::vector<GfType> gf_f_cache, gf_s_cache;
+		std::vector<int> gf_s_interior_gen, gf_f_interior_gen, gf_f_boundary_gen;
+		std::vector<int> gf_s_interior_icase, gf_f_interior_icase, gf_f_boundary_icase;
+		int ifemGeometryGeneration = 0;
 		cADR() : nDOF_test_X_trial_element(nDOF_test_element * nDOF_trial_element), ck()
 		{
+		}
+		inline void ensureIFEMCacheSized(int nElements_global)
+		{
+			if ((int)gf_f_cache.size() == nElements_global)
+				return;
+			gf_f_cache.assign(nElements_global, GfType());
+			gf_s_cache.assign(nElements_global, GfType());
+			gf_s_interior_gen.assign(nElements_global, -1);
+			gf_f_interior_gen.assign(nElements_global, -1);
+			gf_f_boundary_gen.assign(nElements_global, -1);
+			gf_s_interior_icase.assign(nElements_global, 0);
+			gf_f_interior_icase.assign(nElements_global, 0);
+			gf_f_boundary_icase.assign(nElements_global, 0);
+			for (auto &gf : gf_f_cache)
+				gf.useExact = true;
+			for (auto &gf : gf_s_cache)
+				gf.useExact = true;
 		}
 
 		inline void exteriorNumericalDiffusiveFlux(int *rowptr,
@@ -267,14 +299,13 @@ namespace proteus
 												double &ham,
 												double *dham,
 												double *f,
-												double *df)
+												double *df,
+												const double D_s)
 		{
 			// todo this doesn't look 1d/3d
 			double outward_normal[nSpace];
 			for (int I = 0; I < nSpace; I++)
 				outward_normal[I] = -embeddedBoundary_normal[I];
-
-			double D_s = gf_s.D(0., 0.);
 
 			// diffusive flux
 			for (int I = 0; I < nSpace; I++)
@@ -308,7 +339,8 @@ namespace proteus
 												double *dham,
 												double *f,
 												double *df,
-												double test)
+												double test,
+												const double D_f)
 		{
 			// todo this doesn't look 1d/3d
 			/*       double outward_normal[nSpace];
@@ -330,7 +362,6 @@ namespace proteus
 				  //Nitsche Dirichlet penalty
 				  r  += D_f*a*immersedBoundary_penalty * (u - u_s);
 				  dr += D_f*a*immersedBoundary_penalty; */
-			double D_f = gf_f.D(0., 0.);
 			// std::cout << "D_f = " << D_f << std::endl;
 			if (test == 1.0) // Leveque & Li 1994, Example 1
 				r += 2.0*D_f;
@@ -430,6 +461,10 @@ namespace proteus
 											 xt::pyarray<double> &q_u_exact_inner,
 											 xt::pyarray<double> &q_u_exact_outer)
 		{
+			// per-element cached equivalent-polynomial/IFEM reconstruction
+			// (see ensureIFEMCacheSized / ifemGeometryGeneration)
+			GfType &gf_f = gf_f_cache[eN];
+			GfType &gf_s = gf_s_cache[eN];
 			for (int i = 0; i < nDOF_test_element; i++)
 			{
 				elementResidual_u.data()[i] = 0.0;
@@ -647,7 +682,8 @@ namespace proteus
 												ham_s,
 												dham_s,
 												f_s,
-												df_s);
+												df_s,
+												D_s);
 				}
 				const double ImH_f = gf_f.ImH(0., 0.);
 				const double H_f = gf_f.H(0., 0.);
@@ -691,7 +727,8 @@ namespace proteus
 												dham_f,
 												f_f,
 												df_f,
-												test);
+												test,
+												D_f);
 				}
 				//
 				// moving mesh
@@ -939,8 +976,10 @@ namespace proteus
 			const double jf = args.scalar<double>("jf");
 			xt::pyarray<double> &q_u_exact_inner = args.array<double>("q_u_exact_inner");
 			xt::pyarray<double> &q_u_exact_outer = args.array<double>("q_u_exact_outer");
-			gf_f.useExact = true;
-			gf_s.useExact = true;
+			const bool recomputeIFEMGeometry = args.scalar<int>("recomputeIFEMGeometry");
+			ensureIFEMCacheSized(nElements_global); // also (re)asserts useExact = true on (re)allocation
+			if (recomputeIFEMGeometry)
+				ifemGeometryGeneration++;
 			ifem_boundaries.clear();
 			ifem_boundary_elements.clear();
 			cutfem_boundaries.clear();
@@ -996,7 +1035,12 @@ namespace proteus
 					// std::cout << "element node[" << i << "]:" << element_nodes[i * 3 + 0] << " " << element_nodes[i * 3 + 1] << " " << element_nodes[i * 3 + 2] << std::endl;
 					// std::cout << "element phi_f[" << i << "]:" << element_phi_f[i] << std::endl << std::endl;
 				} // i
-				int icase_s = gf_s.calculate(element_phi_s, element_nodes, x_ref.data(), false);
+				if (gf_s_interior_gen[eN] != ifemGeometryGeneration)
+				{
+					gf_s_interior_icase[eN] = gf_s_cache[eN].calculate(element_phi_s, element_nodes, x_ref.data(), false);
+					gf_s_interior_gen[eN] = ifemGeometryGeneration;
+				}
+				int icase_s = gf_s_interior_icase[eN];
 				if (icase_s == 0)
 				{
 					// only works for simplices
@@ -1008,7 +1052,12 @@ namespace proteus
 							cutfem_boundaries.insert(ebN);
 					}
 				}
-				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mua, mub, jf, false, false);
+				if (gf_f_interior_gen[eN] != ifemGeometryGeneration)
+				{
+					gf_f_interior_icase[eN] = gf_f_cache[eN].calculate(element_phi_f, element_nodes, x_ref.data(), mua, mub, jf, false, false);
+					gf_f_interior_gen[eN] = ifemGeometryGeneration;
+				}
+				int icase_f = gf_f_interior_icase[eN];
 				double JA[nDOF_trial_element];
 				double JB[nDOF_trial_element];
 				std::fill(JA, JA + nDOF_trial_element, 0.0);
@@ -1346,7 +1395,13 @@ namespace proteus
 								// std::cout << "element node[" << i << "]:" << element_nodes[i * 3 + 0] << " " << element_nodes[i * 3 + 1] << " " << element_nodes[i * 3 + 2] << std::endl;
 								// std::cout << "element phi_f[" << i << "]:" << element_phi_f[i] << std::endl << std::endl;
 							} // i
-							int icase_f = gf_f.calculate(element_phi_f, element_nodes, xB_ref.data(), mua, mub, jf, true, false);
+							if (gf_f_boundary_gen[eN] != ifemGeometryGeneration)
+							{
+								gf_f_boundary_icase[eN] = gf_f_cache[eN].calculate(element_phi_f, element_nodes, xB_ref.data(), mua, mub, jf, true, false);
+								gf_f_boundary_gen[eN] = ifemGeometryGeneration;
+							}
+							int icase_f = gf_f_boundary_icase[eN];
+							GfType &gf_f = gf_f_cache[eN];
 							gf_f.set_boundary_quad(kb);
 							// compute shape and solution information
 							// shape
@@ -1683,6 +1738,10 @@ namespace proteus
 											 double mua,
 											 double mub)
 		{
+			// per-element cached equivalent-polynomial/IFEM reconstruction
+			// (see ensureIFEMCacheSized / ifemGeometryGeneration)
+			GfType &gf_f = gf_f_cache[eN];
+			GfType &gf_s = gf_s_cache[eN];
 			// std::cout << "Calculating element Jacobian for element " << eN << std::endl;
 			for (int i = 0; i < nDOF_test_element; i++)
 				for (int j = 0; j < nDOF_trial_element; j++)
@@ -1858,7 +1917,8 @@ namespace proteus
 												ham_s,
 												dham_s,
 												f_s,
-												df_s);
+												df_s,
+												D_s);
 				}
 				const double ImH_f = gf_f.ImH(0., 0.);
 				const double H_f = gf_f.H(0., 0.);
@@ -1896,7 +1956,8 @@ namespace proteus
 												dham_f,
 												f_f,
 												df_f,
-												test);
+												test,
+												D_f);
 				}
 				//
 				// calculate subgrid error contribution to the Jacobian (strong residual, adjoint, jacobian of strong residual)
@@ -2015,8 +2076,6 @@ namespace proteus
 
 		void calculateJacobian(arguments_dict &args)
 		{
-			gf_f.useExact = true;
-			gf_s.useExact = true;
 			xt::pyarray<double> &mesh_trial_ref = args.array<double>("mesh_trial_ref");
 			xt::pyarray<double> &mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
 			xt::pyarray<double> &mesh_dof = args.array<double>("mesh_dof");
@@ -2096,6 +2155,10 @@ namespace proteus
 			const double mua = args.scalar<double>("mua");
 			const double mub = args.scalar<double>("mub");
 			const double jf = args.scalar<double>("jf");
+			const bool recomputeIFEMGeometry = args.scalar<int>("recomputeIFEMGeometry");
+			ensureIFEMCacheSized(nElements_global); // also (re)asserts useExact = true on (re)allocation
+			if (recomputeIFEMGeometry)
+				ifemGeometryGeneration++;
 			//
 			// loop over elements to compute volume integrals and load them into the element Jacobians and global Jacobian
 			//
@@ -2132,8 +2195,18 @@ namespace proteus
 						element_nodes[i * 3 + I] = mesh_dof.data()[u_l2g.data()[eN_i] * 3 + I];
 					// std::cout << "element_nodes[" << i << "] = (" << element_nodes[i * 3 + 0] << ", " << element_nodes[i * 3 + 1] << ", " << element_nodes[i * 3 + 2] << ")\n";
 				} // i
-				int icase_s = gf_s.calculate(element_phi_s, element_nodes, x_ref.data(), false);
-				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mua, mub, jf, false, false);
+				if (gf_s_interior_gen[eN] != ifemGeometryGeneration)
+				{
+					gf_s_interior_icase[eN] = gf_s_cache[eN].calculate(element_phi_s, element_nodes, x_ref.data(), false);
+					gf_s_interior_gen[eN] = ifemGeometryGeneration;
+				}
+				int icase_s = gf_s_interior_icase[eN];
+				if (gf_f_interior_gen[eN] != ifemGeometryGeneration)
+				{
+					gf_f_interior_icase[eN] = gf_f_cache[eN].calculate(element_phi_f, element_nodes, x_ref.data(), mua, mub, jf, false, false);
+					gf_f_interior_gen[eN] = ifemGeometryGeneration;
+				}
+				int icase_f = gf_f_interior_icase[eN];
 				calculateElementJacobian(icase_f,
 										 mesh_trial_ref,
 										 mesh_grad_trial_ref,

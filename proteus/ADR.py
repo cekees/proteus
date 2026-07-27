@@ -316,6 +316,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                  movingDomain=False):
         if coefficients.embeddedBoundary or coefficients.immersedBoundary:
             self.hasCutCells=True
+        # Tells the C++ layer to (re)build its per-element cache of the
+        # equivalent-polynomial/IFEM reconstruction (cut classification, basis
+        # coefficients, H/ImH/D, VA/VB) on the next residual/Jacobian call, then
+        # reuse it until this is set True again. Starts True so the cache is
+        # built on first use. For a steady problem with a fixed interface this
+        # never needs to be set again. For a future moving-interface/unsteady
+        # problem, call invalidateIFEMGeometry() whenever the embedded/immersed
+        # sdf is re-evaluated (e.g. at the start of each new time step).
+        self.recompute_ifem_geometry = True
         from proteus import Comm
         #
         #set the objects describing the method and boundary conditions
@@ -731,6 +740,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["jf"] = self.coefficients.jf
         argsDict["q_u_exact_inner"] = self.q[('u_exact_inner',0)]
         argsDict["q_u_exact_outer"] = self.q[('u_exact_outer',0)]
+        argsDict["recomputeIFEMGeometry"] = int(self.recompute_ifem_geometry)
+        self.recompute_ifem_geometry = False
         self.L2_error = np.array((0.0,),'d')
         argsDict["L2_error"] = self.L2_error
         self.Linfty_error = np.array((0.0,),'d')
@@ -836,6 +847,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["mua"] = self.coefficients.mua
         argsDict["mub"] = self.coefficients.mub
         argsDict["jf"] = self.coefficients.jf
+        argsDict["recomputeIFEMGeometry"] = int(self.recompute_ifem_geometry)
+        self.recompute_ifem_geometry = False
         self.adr.calculateJacobian(argsDict)
         if self.forceStrongConditions:
             for dofN in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.keys()):
@@ -857,6 +870,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 else:
                     self.nzval[i] = 0.0
         return jacobian
+    def invalidateIFEMGeometry(self):
+        """
+        Call whenever the embedded/immersed interface geometry (sdf) changes -
+        e.g. mesh adaptation, or a new time step for a moving interface - so
+        the C++ layer recomputes and refreshes its per-element equivalent-
+        polynomial/IFEM cache on the next residual/Jacobian call instead of
+        reusing stale cut-cell data.
+        """
+        self.recompute_ifem_geometry = True
     def calculateElementQuadrature(self):
         """
         Calculate the physical location and weights of the quadrature rules
@@ -876,6 +898,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.stabilization.initializeTimeIntegration(self.timeIntegration)
         if self.shockCapturing is not None:
             self.shockCapturing.initializeElementQuadrature(self.mesh,self.timeIntegration.t,self.q)
+        self.invalidateIFEMGeometry()
     def calculateElementBoundaryQuadrature(self):
         pass
     def calculateExteriorElementBoundaryQuadrature(self):
