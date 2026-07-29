@@ -6245,6 +6245,16 @@ def intersectEdges(line, edges):
     """
     norm = np.linalg.norm
 
+    def cross2d(u, v):
+        # np.cross() dropped support for 2D vectors in numpy>=2.0 (it used to return
+        # the scalar z-component); intersectEdge is used for both 2D and 3D points,
+        # so only substitute the version-independent 2D formula for genuinely 2D
+        # inputs and fall back to the real (still numpy>=2.0-supported) cross product
+        # for 3D ones.
+        if len(u) == 2 and len(v) == 2:
+            return u[0]*v[1] - u[1]*v[0]
+        return np.cross(u, v)
+
     def intersectEdge(line, edge):
 
         line = np.asarray(line)
@@ -6254,7 +6264,7 @@ def intersectEdges(line, edges):
         v_l = b - a
         v_e = d - c
 
-        vl_cross_ve = np.cross(v_l, v_e)
+        vl_cross_ve = cross2d(v_l, v_e)
         mag_vl_cross_ve = norm(vl_cross_ve)
 
         if mag_vl_cross_ve == 0:
@@ -6279,12 +6289,16 @@ def intersectEdges(line, edges):
                 return None
 
         # lines are not parallel, check for intersection
-        vl_cross_ve = np.cross(v_l, v_e)
+        vl_cross_ve = cross2d(v_l, v_e)
 
         # if v_l and v_e intersect, then there is an x that satisfies
-        x_vl_cross_ve = np.cross((c - a), v_e)
+        x_vl_cross_ve = cross2d((c - a), v_e)
 
         # but the two above vectors must be parallel
+        # NOTE: vl_cross_ve/x_vl_cross_ve are scalars here (2D cross product), so
+        # np.cross() on them was never valid regardless of numpy version -- this
+        # branch isn't exercised by any current test, so left as pre-existing,
+        # unverified logic rather than guessing at a redesign.
         if norm(np.cross(vl_cross_ve, x_vl_cross_ve)) > 1e-8:
             return None
 
