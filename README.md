@@ -22,48 +22,46 @@ pip install -v -e .
 
 # HPC Installation
 
-For installation on high performance environments you may want to install Proteus's dependencies from source as well. We recommend using the PETSc build system to install most of the dependencies. The following is general outline:
+For installation on high performance environments, the recommended path is
+PETSc's own build system, which most HPC sites and module systems already
+support: `git@gitlab.com:cekees/petsc.git`, branch `download-proteus-support`,
+adds a `--download-proteus` PETSc package (plus PETSc packages for proteus's
+optional native dependencies: chrono, scorec, xtensor) so a single
+`./configure` + `make` builds PETSc, proteus, and everything in between,
+instead of the separate per-dependency manual build this section used to
+describe.
 
-Create a basic python environment you can install into:
-
-```
-mamba env create -f petsc-dev.yml
-mamba activate petsc-dev
-```
-
-or
-
-```
-python -m venv petsc-dev
-pip install setuptools make cmake cython swig pybind11 numpy
-```
-
-Next, build petsc from source
-
-```
-bash scripts/petsc_config_linux_conda_seq.sh #see https://petsc.org/release/install/
+```bash
+git clone git@gitlab.com:cekees/petsc.git
+cd petsc
+git checkout download-proteus-support
+CONDA_PREFIX=/path/to/your/conda/env PREFIX=/path/to/install ./configure_macos_arm64.sh   # macOS/arm64
+make PETSC_DIR="$(pwd)" PETSC_ARCH=arch-darwin-download-proteus all
+make PETSC_DIR="$(pwd)" PETSC_ARCH=arch-darwin-download-proteus install
 ```
 
-Next, build additional C++ dependencies and install into environment prefix (e.g $CONDA_PREFIX or $VIRTUAL_ENV)
+See that branch's `README_PROTEUS.md` for prerequisites, post-install steps,
+activating the resulting environment, running proteus's test suite, and —
+if you have your own proteus checkout you're actively developing rather
+than wanting `--download-proteus`'s own fresh clone — the development-build
+workflow (build PETSc and proteus's dependencies without `--download-proteus`,
+then `pip install` your own checkout against that prefix directly).
 
-https://github.com/projectchrono/chrono #>=9.0.1, with python bindings
-https://github.com/scorec/core #>=2.2.8, shared, python bindinds not needed
-https://github.com/xtensor-stack/xtl
-https://github.com/xtensor-stack/xtensor
-https://github.com/xtensor-stack/xtensor-python
+Only macOS/arm64 has been validated end-to-end so far; other platforms are
+expected to need at most flag adjustments (MPI/BLAS locations) rather than
+changes to the package definitions themselves, but that hasn't been
+confirmed yet. If you're building on a platform other than macOS/arm64 and
+hit trouble, that branch's `README_PROTEUS.md` and the comments in
+`config/BuildSystem/config/packages/proteus.py`/`scorec.py` are the places
+to start (in particular, a couple of post-install fixups in there are
+known to be macOS/dyld-specific workarounds, not applicable elsewhere).
 
-Finally, locally build and install remaining python dependencies into environment
+The package definitions themselves are plain PETSc packages and don't
+depend on that specific fork -- if your site already has its own PETSc
+checkout, copying `config/BuildSystem/config/packages/{proteus,chrono,scorec,xtl,xtensor,xtensor-python,numpy,h5py}.py`
+into it works the same way.
 
-```
-CC=mpicc CXX=mpicxx MPI_DIR=$MPI_ROOT pip install -v mpi4py==3.1.6 --no-build-isolation --no-binary=:all:
-PETSC_DIR=$CONDA_PREFIX PETSC_ARCH="" pip install -v ../petsc/src/binding/petsc4py --no-build-isolation --no-binary=:all:
-HDF5_MPI=ON HDF5_DIR=${CONDA_PREFIX} CC=mpicc CXX=mpicxx pip install -v h5py --no-build-isolation --no-binary=:all: #note h5py depends on mpi4py for this config
-CC=mpicc CXX=mpicxx pip install -v . --no-build-isolation --no-binary=:all:
-```
-
-Some optional packages can be installed with pip/mamba: py2gmsh, memory_profiler, scipy, pytest.
-
-See https://github.com/erdc/proteus/wiki/How-to-Build-Proteus for old information on building the entire stack.
+See https://github.com/erdc/proteus/wiki/How-to-Build-Proteus for old information on building the entire stack by hand.
 
 # Developer Information
 
