@@ -6448,8 +6448,8 @@ def runTetgen(polyfile,
     """
     from subprocess import run
     tetcmd = "tetgen - %s %s.poly" % (baseFlags, polyfile)
-    
-    logEvent(run(tetcmd,shell=True,capture_output=True).stdout)
+
+    logEvent(run(tetcmd,shell=True,capture_output=True,text=True).stdout)
     
     logEvent("Done running tetgen")
     elefile = "%s.1.ele" % polyfile
@@ -6943,7 +6943,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                             gc.collect()
                             logEvent("Writing tetgen edge files to {0:s}.edge".format(fileprefix))
                             run("rm -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
-                            logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True).stdout)
+                            logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
                             run("mv -f {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
                             run("mv -f {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
                             run("mv -f {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
@@ -7109,7 +7109,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
             run("rm -f {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
             run("rm -f {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
             run("rm -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
-            logEvent(run("tetgen -Vfeen %s.ele" % ("mesh",), shell=True,capture_output=True).stdout)
+            logEvent(run("tetgen -Vfeen %s.ele" % ("mesh",), shell=True,capture_output=True,text=True).stdout)
             run("mv %s.1.ele %s.ele" % ("mesh", "mesh"), shell=True)
             run("mv %s.1.node %s.node" % ("mesh", "mesh"), shell=True)
             run("mv %s.1.face %s.face" % ("mesh", "mesh"), shell=True)
@@ -7225,7 +7225,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                 else:
                     logEvent("Using "+domain.geofile+".msh to convert to tetgen")
                 msh2simplex(fileprefix=fileprefix, nd=3)
-                logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True).stdout)
+                logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
             else:
                 logEvent("Running tetgen to generate 3D mesh for "+name, level=1)
                 run("rm -f {0:s}.ele".format(fileprefix), shell=True)
