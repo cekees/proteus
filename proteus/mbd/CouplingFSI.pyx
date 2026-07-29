@@ -954,7 +954,7 @@ cdef class ProtChBody:
         self.position[:] = pyvec2array(self.ChBody.GetPos())
         # check if IBM and set index if not set previously by user
         if self.useIBM:
-            if not self.boundaryFlags:
+            if self.boundaryFlags.size == 0:
                 self.setBoundaryFlags([self.ProtChSystem.nBodiesIBM])
             self.ProtChSystem.nBodiesIBM += 1
         # get the initial values for F and M
