@@ -1649,7 +1649,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   for (int nN=0;nN<nNodes_subdomain_old;nN++)
     max_nElements_node=max(max_nElements_node,static_cast<int>(nodeElements[nN].size()));
   int send[1]={max_nElements_node}, recv[1]={0};
-  MPI_Allreduce(send, recv,4,MPI_INT,MPI_MAX,MPI_COMM_WORLD);
+  MPI_Allreduce(send, recv,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);
   max_nElements_node = recv[0];
   //build connectivity data structures for PETSc
   PetscBool isInitialized;
