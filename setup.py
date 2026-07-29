@@ -1,4 +1,5 @@
 import sys, os
+import platform
 import setuptools
 from distutils import sysconfig
 cfg_vars = sysconfig.get_config_vars()
@@ -92,6 +93,11 @@ class get_numpy_include(object):
     def __str__(self):
         import numpy as np
         return np.get_include()
+
+# -mavx is x86-only; unconditionally requesting it fails outright on arm64
+# ("unsupported option '-mavx' for target ...") rather than just being a
+# missed optimization, so only request it on architectures that support it.
+PROTEUS_AVX_FLAGS = [] if platform.machine() in ('arm64', 'aarch64') else ['-mavx']
 
 EXTENSIONS_TO_BUILD = [
     Extension("MeshAdaptPUMI.MeshAdapt",
@@ -270,13 +276,13 @@ EXTENSIONS_TO_BUILD = [
               language='c++',
               include_dirs=[numpy.get_include(),'proteus',PROTEUS_INCLUDE_DIR],
               libraries=['stdc++','m'],
-              extra_compile_args=["-std=c++20","-mavx"]+PROTEUS_OPT),
+              extra_compile_args=["-std=c++20"]+PROTEUS_AVX_FLAGS+PROTEUS_OPT),
     Extension("mprans.cMoveMeshMonitor",
               sources=['proteus/mprans/cMoveMeshMonitor.pyx'],
               language='c++',
               include_dirs=[numpy.get_include(),'proteus',PROTEUS_INCLUDE_DIR],
               libraries=['stdc++','m'],
-              extra_compile_args=["-std=c++20","-mavx"]+PROTEUS_OPT),
+              extra_compile_args=["-std=c++20"]+PROTEUS_AVX_FLAGS+PROTEUS_OPT),
     Extension("mbd.CouplingFSI",
               sources=['proteus/mbd/CouplingFSI.pyx',
                        'proteus/mbd/ChVariablesBodyAddedMass.cpp',
