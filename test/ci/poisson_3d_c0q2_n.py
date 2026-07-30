@@ -17,9 +17,9 @@ elementQuadrature = CubeGaussQuadrature(nd,5)
 elementBoundaryQuadrature = CubeGaussQuadrature(nd-1,5)
 
 #number of nodes in x,y,z
-nnx = 11
-nny = 11
-nnz = 11
+nnx = 6
+nny = 6
+nnz = 6
 #if unstructured would need triangleOptions flag to be set
 
 
