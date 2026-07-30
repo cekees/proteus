@@ -79,15 +79,18 @@ if not os.path.isfile(chrono_cmake_file_path):
     chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','ChronoConfig.cmake')
     if not os.path.isfile(chrono_cmake_file_path):
         chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','Chrono','chrono-config.cmake') 
-with open(chrono_cmake_file_path,'r') as f:
-    for l in f:
-        if 'set(CHRONO_CXX_FLAGS' in l:
-            args = l.split()
-            for arg in args:
-                if arg[0] == '-':
-                    arg = arg.replace('"', '')
-                    arg = arg.replace(')', '')
-                    PROTEUS_CHRONO_CXX_FLAGS += [arg]
+try:
+    with open(chrono_cmake_file_path,'r') as f:
+        for l in f:
+            if 'set(CHRONO_CXX_FLAGS' in l:
+                args = l.split()
+                for arg in args:
+                    if arg[0] == '-':
+                        arg = arg.replace('"', '')
+                        arg = arg.replace(')', '')
+                        PROTEUS_CHRONO_CXX_FLAGS += [arg]
+except FileNotFoundError:
+    pass  # chrono not installed; mbd.CouplingFSI extension will be skipped
 
 PROTEUS_EXTRA_FC_COMPILE_ARGS= ['-Wall']
 PROTEUS_EXTRA_FC_LINK_ARGS=platform_extra_link_args

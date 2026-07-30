@@ -15,7 +15,7 @@ from .LinearAlgebraTools import ParVec_petsc4py
 from .Profiling import logEvent,memory, memHardLimit
 from . import Domain
 from . import Comm
-from subprocess import run
+from subprocess import run, check_output
 
 class Node(object):
     """A numbered point in 3D Euclidean space
@@ -6446,7 +6446,7 @@ def runTetgen(polyfile,
         
 
     """
-    from subprocess import run
+    from subprocess import run, check_output
     tetcmd = "tetgen - %s %s.poly" % (baseFlags, polyfile)
 
     logEvent(run(tetcmd,shell=True,capture_output=True,text=True).stdout)

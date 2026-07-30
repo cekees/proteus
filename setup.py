@@ -801,6 +801,11 @@ EXTENSIONS_TO_BUILD = [
         language='c++'),
 ]
 
+import os as _os
+if _os.environ.get("PROTEUS_SKIP_PUMI_CHRONO"):
+    _skip = {"MeshAdaptPUMI.MeshAdapt", "mbd.CouplingFSI"}
+    EXTENSIONS_TO_BUILD = [e for e in EXTENSIONS_TO_BUILD if e.name not in _skip]
+
 def setup_given_extensions(extensions):
     setup(name='proteus',
           version='1.8.3.dev',

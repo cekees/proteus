@@ -8,7 +8,10 @@ import sys
 import numpy as np
 from proteus.Profiling import logEvent
 from proteus import MeshTools
-from proteus.MeshAdaptPUMI import MeshAdapt
+try:
+    from proteus.MeshAdaptPUMI import MeshAdapt
+except ImportError:
+    MeshAdapt = None  # PUMI/scorec not built in this environment
 
 class D_base(object):
     """
@@ -969,7 +972,8 @@ class PUMIDomain(D_base):
   faceList -- defines face classification in simmetrix  mesh
   PUMIMesh -- the MeshAdapt object
   """
-  def __init__(self, name="PUMIDomain", dim=3,manager=MeshAdapt.AdaptManager()):
+  def __init__(self, name="PUMIDomain", dim=3, manager=None):
+      manager = manager if manager is not None else (MeshAdapt.AdaptManager() if MeshAdapt is not None else None)
       D_base.__init__(self,dim,name)
       self.faceList=[]
       self.regList=[]
