@@ -3123,7 +3123,7 @@ cdef class ProtChMoorings:
             elem.this.disown()
             swig_obj = <SwigPyObject*> elem.this
             if self.beam_type == b"BeamEuler":
-                swig_obj.ptr = <shared_ptr[ch.ChElementBeamEuler]*> &self.thisptr.elemsCableANCF.at(elemN)
+                swig_obj.ptr = <shared_ptr[ch.ChElementBeamEuler]*> &self.thisptr.elemsBeamEuler.at(elemN)
             elif self.beam_type == b"CableANCF":
                 swig_obj.ptr = <shared_ptr[ch.ChElementCableANCF]*> &self.thisptr.elemsCableANCF.at(elemN)
             self.elements += [elem]

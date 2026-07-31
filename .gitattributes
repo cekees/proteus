@@ -218,3 +218,8 @@ test/TwoPhaseFlow/comparison_files/comparison_risingBubble_velocity_t2.csv filte
 test/hex_cube_3x3.h5 filter=lfs diff=lfs merge=lfs -text
 test/hex_cube_3x3.xmf filter=lfs diff=lfs merge=lfs -text
 test/post_processing/comparison_files/trig_velocity_rep.npy filter=lfs diff=lfs merge=lfs -text
+test/STLBlocks.stl filter=lfs diff=lfs merge=lfs -text
+test/CLSVOF/with_RANS2P/comparison_files/multiphase_2D_falling_bubble.h5 filter=lfs diff=lfs merge=lfs -text
+test/LS_with_edgeBased_EV/MCorr/comparison_files/cons_ls_level_0_edge_based_EV.h5 filter=lfs diff=lfs merge=lfs -text
+test/ci/comparison_files/floating_bar.h5 filter=lfs diff=lfs merge=lfs -text
+test/ci/comparison_files/phi_t_0.000000_000.tgz filter=lfs diff=lfs merge=lfs -text

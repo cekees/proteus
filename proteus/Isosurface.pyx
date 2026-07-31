@@ -131,21 +131,20 @@ class Isosurface(AV_base):
 
     def attachHDF5(self, h5, step, cam=None):
         """
-        Attach this isosurface to and HDF5 archive
+        Attach this isosurface to and HDF5 archive (an h5py.File)
         """
         from collections import namedtuple
         self.fieldNames = [isosurface[0] for isosurface in self.isosurfaces]
         print("ATTACHING TO HDF5 !!", self.fieldNames)
-        self.elementNodesArray = h5.get_node("/elementsSpatial_Domain" +
-                                            repr(step))[:]
-        self.nodeArray = h5.get_node("/nodesSpatial_Domain" + repr(step))[:]
+        self.elementNodesArray = h5["/elementsSpatial_Domain" + repr(step)][:]
+        self.nodeArray = h5["/nodesSpatial_Domain" + repr(step)][:]
         self.num_owned_elements = len(self.elementNodesArray)
         self.u = {}
         FemField = namedtuple('FemField', ['dof'])
         for field_i, field in enumerate(self.fieldNames):
-            self.u[field_i] = FemField(dof=h5.get_node("/" +
-                                                      self.isosurfaces[0][0] +
-                                                      repr(step))[:])
+            self.u[field_i] = FemField(dof=h5["/" +
+                                             self.isosurfaces[0][0] +
+                                             repr(step)][:])
         self.nFrames = step
         self.next_output = 0
         if step == 0:
