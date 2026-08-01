@@ -1043,7 +1043,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             cond = 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == ExplicitLumpedMassMatrix
             assert cond, "Use levelNonlinearSolver=ExplicitLumpedMassMatrix when the mass matrix is lumped"
         if self.coefficients.FCT == True:
-            cond = self.coefficients.STABILIZATION_TYPE > 0, "Use FCT just with STABILIZATION_TYPE>0; i.e., edge based stabilization"
+            cond = self.coefficients.STABILIZATION_TYPE > 0
+            assert cond, "Use FCT just with STABILIZATION_TYPE>0; i.e., edge based stabilization"
         # END OF ASSERTS
 
         # cek adding empty data member for low order numerical viscosity structures here for now

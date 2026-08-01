@@ -1,6 +1,7 @@
 import proteus
 from proteus import Profiling
 import numpy as np
+import math
 from proteus.Transport import OneLevelTransport
 import os
 from proteus import cfemIntegrals, Quadrature, Norms, Comm
