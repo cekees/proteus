@@ -58,6 +58,48 @@ def get_flags(package):
         lib_dir = PROTEUS_LIB_DIR
     return include_dir, lib_dir
 
+def get_petsc_flags():
+    """ Like get_flags('petsc'), but with the extra fallbacks PETSc's own
+    build layout needs.
+
+    A PETSc source checkout only has real (configured) headers under
+    $PETSC_DIR/$PETSC_ARCH/include, not $PETSC_DIR/include directly -- and
+    anything PETSc downloaded on your behalf (SuperLU, SuperLU_DIST, ...)
+    only ever lands in a separate --prefix install (PROTEUS_INCLUDE_DIR
+    below), never under $PETSC_DIR itself, arch subdirectory included.
+    get_flags('petsc') alone picks $PETSC_DIR/include whenever $PETSC_DIR is
+    set (the common case for any PETSc-based build), silently resolving to
+    headers that don't exist. Caught via proteus/superluWrappers.c failing
+    to find slu_ddefs.h in a from-scratch sdist build: that extension's
+    include path comes straight from this value, unlike most others, which
+    also pick up PROTEUS_INCLUDE_DIR and so don't visibly break even when
+    this resolves wrong.
+
+    PROTEUS_INCLUDE_DIR (PROTEUS_PREFIX, or sys.exec_prefix if that isn't
+    set) is checked first, ahead of $PETSC_DIR-based guesses, precisely
+    because it's the one location proven to hold everything a --prefix=
+    PETSc build installs, downloaded packages included -- unlike
+    $PETSC_DIR/$PETSC_ARCH/include, which can have PETSc's own configured
+    headers (petscconf.h) without also having what --download-x packages
+    contributed.
+    """
+    candidates = [(PROTEUS_INCLUDE_DIR, PROTEUS_LIB_DIR)]
+    petsc_dir_env = os.getenv('PETSC_DIR')
+    if petsc_dir_env:
+        candidates.append((pjoin(petsc_dir_env, 'include'), pjoin(petsc_dir_env, 'lib')))
+        petsc_arch_env = os.getenv('PETSC_ARCH')
+        if petsc_arch_env:
+            candidates.append((pjoin(petsc_dir_env, petsc_arch_env, 'include'),
+                                pjoin(petsc_dir_env, petsc_arch_env, 'lib')))
+    for include_dir, lib_dir in candidates:
+        if os.path.isfile(pjoin(include_dir, 'petscconf.h')):
+            return include_dir, lib_dir
+    # None of the candidates look like a real configured PETSc install;
+    # keep the historical behavior (first candidate) rather than guess
+    # further, so this fails the same way it always did if something about
+    # the environment is genuinely unusual.
+    return candidates[0]
+
 PROTEUS_BLAS_INCLUDE_DIR, PROTEUS_BLAS_LIB_DIR = get_flags('blas')
 PROTEUS_EXTRA_LINK_ARGS=[]
 
@@ -132,7 +174,7 @@ PROTEUS_MPI_INCLUDE_DIRS = [PROTEUS_MPI_INCLUDE_DIR, PROTEUS_MPI_LIB_DIR, os.pat
 PROTEUS_MPI_LIB_DIRS = [PROTEUS_MPI_LIB_DIR]
 PROTEUS_MPI_LIBS =['mpi']
 
-PROTEUS_PETSC_INCLUDE_DIR, PROTEUS_PETSC_LIB_DIR = get_flags('petsc')
+PROTEUS_PETSC_INCLUDE_DIR, PROTEUS_PETSC_LIB_DIR = get_petsc_flags()
 PROTEUS_PETSC_LIB_DIRS = [PROTEUS_PETSC_LIB_DIR]
 PROTEUS_PETSC_LIBS = ['petsc']
 PROTEUS_PETSC_INCLUDE_DIRS = [PROTEUS_PETSC_INCLUDE_DIR,PROTEUS_PETSC_LIB_DIR]#, os.path.join(PROTEUS_PETSC_LIB_DIR,'petsc4py')]
