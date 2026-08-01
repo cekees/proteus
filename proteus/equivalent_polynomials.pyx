@@ -10,11 +10,17 @@ cdef extern from *:
     ctypedef int nSpace1T "1"
     ctypedef int nSpace2T "2"
     ctypedef int nSpace3T "3"
-    ctypedef int nP_ifem1T "1"
-    # ctypedef int nP_ifem2T "2"
+    # nP_ifem is the NUMBER of IFEM basis functions per element, matching how ADR.h
+    # instantiates it (nDOF_trial_element): 3 for P1 on a triangle, 6 for P2. The tests below
+    # exercise only the H/ImH/D moment fit, so pass the P1 nodal count for each dimension
+    # (nSpace+1) -- that is what sizes permutation/phi/nodes inside Simplex.
+    ctypedef int nDOF1T "2"
+    ctypedef int nDOF2T "3"
+    ctypedef int nDOF3T "4"
     ctypedef int nP1T "1"
     ctypedef int nP2T "2"
     ctypedef int nP3T "3"
+    ctypedef int nP4T "4"
     ctypedef int nQT "50"
     ctypedef int nEBQT "50"
 #nQ=50 will provide enough space for testing most quadrature rules
@@ -33,15 +39,15 @@ cdef class Simplex:
     cdef np.ndarray _ImH
     cdef np.ndarray _D
     #instatiate template classes for 1,2,3D and P1-P3
-    cdef eqp.cSimplex[nSpace1T,nP_ifem1T,nP1T,nQT,nEBQT] s11
-    cdef eqp.cSimplex[nSpace1T,nP_ifem1T,nP2T,nQT,nEBQT] s12
-    cdef eqp.cSimplex[nSpace1T,nP_ifem1T,nP3T,nQT,nEBQT] s13
-    cdef eqp.cSimplex[nSpace2T,nP_ifem1T,nP1T,nQT,nEBQT] s21
-    cdef eqp.cSimplex[nSpace2T,nP_ifem1T,nP2T,nQT,nEBQT] s22
-    cdef eqp.cSimplex[nSpace2T,nP_ifem1T,nP3T,nQT,nEBQT] s23
-    cdef eqp.cSimplex[nSpace3T,nP_ifem1T,nP1T,nQT,nEBQT] s31
-    cdef eqp.cSimplex[nSpace3T,nP_ifem1T,nP2T,nQT,nEBQT] s32
-    cdef eqp.cSimplex[nSpace3T,nP_ifem1T,nP3T,nQT,nEBQT] s33
+    cdef eqp.cSimplex[nSpace1T,nDOF1T,nP1T,nQT,nEBQT] s11
+    cdef eqp.cSimplex[nSpace1T,nDOF1T,nP2T,nQT,nEBQT] s12
+    cdef eqp.cSimplex[nSpace1T,nDOF1T,nP3T,nQT,nEBQT] s13
+    cdef eqp.cSimplex[nSpace2T,nDOF2T,nP1T,nQT,nEBQT] s21
+    cdef eqp.cSimplex[nSpace2T,nDOF2T,nP2T,nQT,nEBQT] s22
+    cdef eqp.cSimplex[nSpace2T,nDOF2T,nP3T,nQT,nEBQT] s23
+    cdef eqp.cSimplex[nSpace3T,nDOF3T,nP1T,nQT,nEBQT] s31
+    cdef eqp.cSimplex[nSpace3T,nDOF3T,nP2T,nQT,nEBQT] s32
+    cdef eqp.cSimplex[nSpace3T,nDOF3T,nP3T,nQT,nEBQT] s33
     def __cinit__(self, nSpace, nP, nQ):
         self.xiBuffer=np.zeros((50,3),'d')
         self.nSpace = nSpace
@@ -122,3 +128,22 @@ cdef class Simplex:
     @property
     def D(self):
         return self._D[self.q]
+
+def calc_edge_H(double phi0, double phi1, int nP):
+    """Edge-restricted moment-fit Heaviside on a cut edge (reference t in [0,1] from the edge's
+    node 0 to node 1). phi0, phi1 must have opposite signs. Returns the monomial coefficients
+    of H_hat in {1, t, ..., t**nP}, fitting the indicator of {phi > 0}."""
+    cdef np.ndarray C_H = np.zeros(nP+1)
+    if nP == 1:   eqp.calculate_edge_H[nP1T](phi0, phi1, <double*>C_H.data)
+    elif nP == 2: eqp.calculate_edge_H[nP2T](phi0, phi1, <double*>C_H.data)
+    elif nP == 3: eqp.calculate_edge_H[nP3T](phi0, phi1, <double*>C_H.data)
+    elif nP == 4: eqp.calculate_edge_H[nP4T](phi0, phi1, <double*>C_H.data)
+    else: raise ValueError("nP must be 1, 2, 3, or 4")
+    return C_H
+
+def eval_edge_poly(np.ndarray C, double t, int nP):
+    if nP == 1:   return eqp.evaluate_edge_poly[nP1T](<double*>C.data, t)
+    elif nP == 2: return eqp.evaluate_edge_poly[nP2T](<double*>C.data, t)
+    elif nP == 3: return eqp.evaluate_edge_poly[nP3T](<double*>C.data, t)
+    elif nP == 4: return eqp.evaluate_edge_poly[nP4T](<double*>C.data, t)
+    else: raise ValueError("nP must be 1, 2, 3, or 4")

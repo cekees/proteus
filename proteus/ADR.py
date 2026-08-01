@@ -121,7 +121,8 @@ class Coefficients(TC_base):
                  embeddedBoundary_u=None,
                  immersedBoundary=False,
                  immersedBoundary_penalty=100.0,
-                 immersedBoundary_ghost_penalty=0.1,
+                 immersedSCIFEM_switch=0.0,
+                 immersedSCIFEM_penalty=0.0,
                  immersedBoundary_sdf=None,
                  immersedBoundary_u=None,
                  analyticalSolution=None,
@@ -138,7 +139,8 @@ class Coefficients(TC_base):
             assert(self.embeddedBoundary_u is not None)
         self.immersedBoundary=immersedBoundary
         self.immersedBoundary_penalty=immersedBoundary_penalty
-        self.immersedBoundary_ghost_penalty=immersedBoundary_ghost_penalty
+        self.immersedSCIFEM_switch=immersedSCIFEM_switch
+        self.immersedSCIFEM_penalty=immersedSCIFEM_penalty
         self.immersedBoundary_sdf=immersedBoundary_sdf
         self.immersedBoundary_u=immersedBoundary_u
         if self.immersedBoundary:
@@ -728,7 +730,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["embeddedBoundary_u_q"] = self.q['embeddedBoundary_u']
         argsDict["immersedBoundary"] = self.coefficients.immersedBoundary
         argsDict["immersedBoundary_penalty"] = self.coefficients.immersedBoundary_penalty
-        argsDict["immersedBoundary_ghost_penalty"] = self.coefficients.immersedBoundary_ghost_penalty
+        argsDict["immersedSCIFEM_switch"] = self.coefficients.immersedSCIFEM_switch
+        argsDict["immersedSCIFEM_penalty"] = self.coefficients.immersedSCIFEM_penalty
         argsDict["immersedBoundary_sdf_nodes"] = self.coefficients.immersedBoundary_sdf_nodes
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
@@ -837,7 +840,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["embeddedBoundary_u_q"] = self.q['embeddedBoundary_u']
         argsDict["immersedBoundary"] = self.coefficients.immersedBoundary
         argsDict["immersedBoundary_penalty"] = self.coefficients.immersedBoundary_penalty
-        argsDict["immersedBoundary_ghost_penalty"] = self.coefficients.immersedBoundary_ghost_penalty
+        argsDict["immersedSCIFEM_switch"] = self.coefficients.immersedSCIFEM_switch
+        argsDict["immersedSCIFEM_penalty"] = self.coefficients.immersedSCIFEM_penalty
         argsDict["immersedBoundary_sdf_nodes"] = self.coefficients.immersedBoundary_sdf_nodes
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']

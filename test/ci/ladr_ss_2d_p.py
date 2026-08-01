@@ -28,6 +28,8 @@ opts = Context.Options([
     ("qOrder", 6, "order of quadrature (default is 6)"),
     ("usePetsc", False, "Use PETSc linear solvers"),
     ("name", "ladr_ss_2d", "name of the test (default is ladr_ss_2d)"),
+    ("immersedSCIFEM_switch", 0.0, "switch (0/1) for the SCIFEM interface consistency terms"),
+    ("immersedSCIFEM_penalty", 0.0, "coefficient gamma of the interior-penalty stabilization")
 ])
 
 name = opts.name
@@ -447,7 +449,8 @@ coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=B0_1c[0],nc=1,nd=nd
                                 immersedBoundary_sdf=embeddedBoundary_sdf,
                                 immersedBoundary_u=embeddedBoundary_u,
                                 immersedBoundary_penalty=0.0,
-                                immersedBoundary_ghost_penalty=0.0,
+                                immersedSCIFEM_switch=opts.immersedSCIFEM_switch,
+                                immersedSCIFEM_penalty=opts.immersedSCIFEM_penalty,
                                 analyticalSolution=analyticalSolution,
                                 test = opts.test)
 
