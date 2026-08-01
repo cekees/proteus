@@ -1,0 +1,42 @@
+name: sdist build + install
+
+on:
+  push:
+    branches: [torino_narwhal]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up conda environment with PETSc/MPI/HDF5
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-file: environment-dev.yml
+          activate-environment: proteus-dev
+
+      - name: Build sdist
+        shell: bash -l {0}
+        run: |
+          pip install build
+          python -m build --sdist
+
+      - name: Install sdist with default build isolation
+        shell: bash -l {0}
+        run: pip install dist/proteus-*.tar.gz
+
+      - name: Smoke test
+        shell: bash -l {0}
+        run: |
+          cd /tmp
+          python -c "import proteus; from proteus import Comm; Comm.init(); print(proteus.__file__)"
+
+      - name: Run test suite
+        shell: bash -l {0}
+        run: |
+          export MPLBACKEND="AGG"
+          mkdir test_output && cd test_output
+          python -m pytest -v --forked --import-mode=importlib ../test
