@@ -118,10 +118,13 @@ cdef void SparseMatrix_matvec(cSparseMatrix sm,
                               np.float64_t [:] yp):
     cdef np.float64_t tmp = 0.
     cdef int i, k
+    cdef int k_lo, k_hi
 
     for i in range(sm.dim[0]):
         tmp = 0.
-        for k in range(sm.A.rowptr[i], sm.A.rowptr[i+1]):
+        k_lo = sm.A.rowptr[i]
+        k_hi = sm.A.rowptr[i+1]
+        for k in range(k_lo, k_hi):
             tmp += sm.A.nzval[k] * xp[sm.A.colind[k]]
         yp[i] = tmp
 

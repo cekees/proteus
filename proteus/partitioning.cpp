@@ -1748,7 +1748,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //create the mappings file
   logEvent("Writing/reading node numberings to hdf5",5);
   hid_t mappings_plist_id = H5Pcreate(H5P_FILE_ACCESS);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_fapl_mpio(mappings_plist_id, PROTEUS_COMM_WORLD, MPI_INFO_NULL);
+#endif
   const char* H5FILE_NAME("mappings.h5");
   hid_t file_id = H5Fcreate(H5FILE_NAME, H5F_ACC_TRUNC, H5P_DEFAULT, mappings_plist_id);
   //leave file open until we are done with it
@@ -1769,7 +1771,11 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                       nodes_subdomain_offset, NULL, 
                       nodes_subdomain_count, NULL);
   hid_t nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   herr_t status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
+#else
+  herr_t status = 0;
+#endif
   status = H5Dwrite(nodes_old2new_dataset_id, H5T_NATIVE_INT, 
                     nodes_old2new_memspace_id, nodes_old2new_filespace_id,
 		                nodes_old2new_plist_id, nodes_subdomain_old2new_array);
@@ -1797,7 +1803,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Sselect_elements(nodes_new2old_filespace_id, H5S_SELECT_SET, 
                               nNodes_subdomain_old, &new_node_indices[0]);
   hid_t nodes_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   status = H5Pset_dxpl_mpio(nodes_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(nodes_new2old_dataset_id, H5T_NATIVE_INT, 
                     nodes_new2old_memspace_id, nodes_new2old_filespace_id, 
                     nodes_new2old_plist_id, &old_node_indices[0]);
@@ -1839,7 +1847,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     }
   status = H5Sselect_elements(nodeElements_filespace_id, H5S_SELECT_SET, nNodes_subdomain_old*max_nElements_node, &new_nodeElements_indices[0]);
   hid_t nodeElements_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   status = H5Pset_dxpl_mpio(nodeElements_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(nodeElements_dataset_id, H5T_NATIVE_INT, 
                     nodeElements_memspace_id, nodeElements_filespace_id, 
                     nodeElements_plist_id, nodeElements_subdomain_array);
@@ -1948,7 +1958,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 			       NULL);
   nodeElements_plist_id = H5Pcreate(H5P_DATASET_XFER);
   nodeElements_memspace_id = H5Screate_simple(MATRIX_RANK,nodeElements_count, NULL);
+#ifdef H5_HAVE_PARALLEL
   status = H5Pset_dxpl_mpio(nodeElements_plist_id, H5FD_MPIO_INDEPENDENT);
+#endif
   status = H5Dread(nodeElements_dataset_id, H5T_NATIVE_INT, 
 		   nodeElements_memspace_id, nodeElements_filespace_id, 
 		   nodeElements_plist_id, &newNodeElements[0]);
@@ -2031,7 +2043,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           hsize_t dims[] = {static_cast<hsize_t>(node_collection.size())};
           hid_t nodes_old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);
           nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
           status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_INDEPENDENT);
+#endif
           valarray<int> nodes_old2new_subset(node_collection.size());
           status = H5Dread(nodes_old2new_dataset_id, H5T_NATIVE_INT, 
                            nodes_old2new_subset_memspace_id, nodes_old2new_filespace_id, 
@@ -2231,7 +2245,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hid_t e_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, e_count, NULL);
   H5Sselect_hyperslab(e_new2old_filespace_id, H5S_SELECT_SET, e_offset, NULL, e_count, NULL);
   hid_t e_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(e_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(e_new2old_dataset_id, H5T_NATIVE_INT, 
                     e_new2old_memspace_id, e_new2old_filespace_id,
                     e_new2old_plist_id, &elementNumbering_subdomain_new2old[0]);
@@ -2255,7 +2271,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Sselect_elements(e_old2new_filespace_id, H5S_SELECT_SET, 
                               nElements_subdomain_new[rank], &old_element_indices[0]);
   hid_t e_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(e_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(e_old2new_dataset_id, H5T_NATIVE_INT, 
                     e_old2new_memspace_id, e_old2new_filespace_id, 
                     e_old2new_plist_id, &new_element_indices[0]);
@@ -2277,7 +2295,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t e_subdomain_count[]={static_cast<hsize_t>(elementNodesArrayMap.size())};
   hid_t e_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, e_subdomain_count, NULL);
   hid_t e_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   status = H5Pset_dxpl_mpio(e_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);
+#endif
   status = H5Dread(e_old2new_dataset_id, H5T_NATIVE_INT, 
                    e_old2new_subdomain_memspace_id, e_old2new_filespace_id, 
                    e_old2new_subdomain_plist_id, &new_element_indices_subdomain[0]);
@@ -2546,7 +2566,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hid_t eb_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, eb_count, NULL);
   H5Sselect_hyperslab(eb_new2old_filespace_id, H5S_SELECT_SET, eb_offset, NULL, eb_count, NULL);
   hid_t eb_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(eb_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(eb_new2old_dataset_id, H5T_NATIVE_INT, eb_new2old_memspace_id, eb_new2old_filespace_id,
                     eb_new2old_plist_id, &elementBoundaryNumbering_new2old[0]);
   H5Pclose(eb_new2old_plist_id);
@@ -2569,7 +2591,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Sselect_elements(eb_old2new_filespace_id, H5S_SELECT_SET, 
                               nElementBoundaries_subdomain_new[rank], &old_elementBoundary_indices[0]);
   hid_t eb_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(eb_old2new_plist_id, H5FD_MPIO_COLLECTIVE);  
+#endif
   status = H5Dwrite(eb_old2new_dataset_id, H5T_NATIVE_INT, 
                     eb_old2new_memspace_id, eb_old2new_filespace_id, 
                     eb_old2new_plist_id, &new_elementBoundary_indices[0]);
@@ -2592,7 +2616,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t eb_subdomain_count[]={static_cast<hsize_t>(elementBoundaries_subdomain.size())};
   hid_t eb_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, eb_subdomain_count, NULL);
   hid_t eb_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(eb_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);  
+#endif
   status = H5Dread(eb_old2new_dataset_id, H5T_NATIVE_INT, 
                    eb_old2new_subdomain_memspace_id, eb_old2new_filespace_id, 
                    eb_old2new_subdomain_plist_id, &new_elementBoundary_indices_subdomain[0]);
@@ -2840,7 +2866,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hid_t ed_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, ed_count, NULL);
   H5Sselect_hyperslab(ed_new2old_filespace_id, H5S_SELECT_SET, ed_offset, NULL, ed_count, NULL);
   hid_t ed_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(ed_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(ed_new2old_dataset_id, H5T_NATIVE_INT, 
                     ed_new2old_memspace_id, ed_new2old_filespace_id,
                     ed_new2old_plist_id, &edgeNumbering_new2old[0]);
@@ -2865,7 +2893,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Sselect_elements(ed_old2new_filespace_id, H5S_SELECT_SET, 
                               nEdges_subdomain_new[rank], &old_edge_indices[0]);
   hid_t ed_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(ed_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(ed_old2new_dataspace_id, H5T_NATIVE_INT, 
                     ed_old2new_memspace_id, ed_old2new_filespace_id, 
                     ed_old2new_plist_id, &new_edge_indices[0]);
@@ -2886,7 +2916,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t ed_subdomain_count[]={static_cast<hsize_t>(edgeNodesMap.size())};
   hid_t ed_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, ed_subdomain_count, NULL);
   hid_t ed_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(ed_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);
+#endif
   status = H5Dread(ed_old2new_dataspace_id, H5T_NATIVE_INT, ed_old2new_subdomain_memspace_id, 
                    ed_old2new_filespace_id, 
                    ed_old2new_subdomain_plist_id, &new_edge_indices_subdomain[0]);
@@ -3559,7 +3591,9 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
    * Set up file access property list with parallel I/O access
    */
   hid_t plist_id = H5Pcreate(H5P_FILE_ACCESS);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_fapl_mpio(plist_id, PROTEUS_COMM_WORLD, MPI_INFO_NULL);
+#endif
 
   /*
    * Create a new file collectively and release property list identifier.
@@ -3614,7 +3648,9 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
    * Create property list for collective dataset write.
    */
   plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
 
   herr_t status = H5Dwrite(dset_id, H5T_NATIVE_INT, memspace, filespace,
                            plist_id, data);
