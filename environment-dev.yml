@@ -35,7 +35,7 @@ dependencies:
   - tetgen =1.6.0
   - ncurses =6.5
   - python =3.12.5
-  - xtensor-python = 0.27.0
+  - xtensor-python = 0.29.0
   - git-lfs =3.5.1
   - eigen =3.4.0
   - zoltan =3.901

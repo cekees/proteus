@@ -84,15 +84,45 @@ private:
   };
 };
 
+// --- Chrono-agnostic access to ChElementBeamEuler::q_element_ref_rot ---
+// This data member is private in stock/upstream Chrono. ChElementBeamEulermod
+// below needs to WRITE it in its own SetupInitial() override -- an override
+// that exists in the first place because ChElementBeamEuler::SetupInitial()
+// is *itself* private, so it cannot be called by name from a subclass and
+// must be fully reimplemented; UpdateRotation()/ComputeInternalJacobians()/
+// etc (inherited unmodified, not overridden) then read *this exact* member,
+// so it has to be the real one, not a same-named shadow declared in the
+// subclass (that was the original bug here: a shadow left the base's own
+// copy stuck at its default/identity value).
+//
+// Rather than depend on a Chrono fork/patch promoting the member to
+// protected (which then only compiles against that patched Chrono, not
+// e.g. conda-forge's stock prebuilt pychrono package), use the standard
+// (legal, if obscure) C++ "steal a private member via explicit template
+// instantiation" idiom: forming a pointer-to-member as an explicit template
+// argument isn't access-checked the way a normal member-access expression
+// is, and dereferencing the resulting pointer-to-member isn't
+// access-checked at all -- so this compiles and works regardless of the
+// member's actual access specifier, with no Chrono source changes needed.
+// See e.g. https://bloglitb.blogspot.com/2010/07/access-to-private-members-thats-easy.html
+template <typename Tag, typename Tag::type Member>
+struct ChronoPrivateMemberThief {
+  friend typename Tag::type chronoPrivateMemberThief(Tag) { return Member; }
+};
+
+struct ChElementBeamEuler_q_element_ref_rot_tag {
+  using type = ChQuaternion<> chrono::fea::ChElementBeamEuler::*;
+  friend type chronoPrivateMemberThief(ChElementBeamEuler_q_element_ref_rot_tag);
+};
+template struct ChronoPrivateMemberThief<ChElementBeamEuler_q_element_ref_rot_tag,
+                                          &chrono::fea::ChElementBeamEuler::q_element_ref_rot>;
+
+inline ChQuaternion<>& q_element_ref_rot_of(chrono::fea::ChElementBeamEuler& el) {
+  return el.*chronoPrivateMemberThief(ChElementBeamEuler_q_element_ref_rot_tag());
+}
+
 class ChElementBeamEulermod : public ChElementBeamEuler {
 private:
-  // NOTE: q_element_ref_rot used to be re-declared here, which shadowed
-  // ChElementBeamEuler's own (now-protected) private member of the same
-  // name -- UpdateRotation() (inherited unmodified from the base class)
-  // always reads the base class's member, so this override's assignment
-  // was silently going to a useless local shadow copy instead, leaving
-  // the base's q_element_ref_rot stuck at its default (identity) value.
-  // See the comment on ChElementBeamEuler::q_element_ref_rot for the fix.
   virtual void SetupInitial(ChSystem* system) override {
     assert(GetSection());
 
@@ -113,7 +143,7 @@ private:
     ChVector3d myele = (node0->GetX0().GetRotMat().GetAxisY()
                          + node1->GetX0().GetRotMat().GetAxisY()).GetNormalized();
     A0.SetFromAxisX(mXele, myele);
-    q_element_ref_rot = A0.GetQuaternion();
+    q_element_ref_rot_of(*this) = A0.GetQuaternion();
 
     // Set each node's reference rotation relative to the element's own
     // frame (q_refrotA/q_refrotB, read by UpdateRotation() to remove the
@@ -125,8 +155,8 @@ private:
     // coincidence when a node's own initial rotation already matches the
     // element's. Matches ChBuilderBeamEuler::BuildBeam()'s own logic
     // exactly (chrono/fea/ChBuilderBeam.cpp).
-    SetNodeAreferenceRot(q_element_ref_rot.GetConjugate() * node0->GetX0().GetRot());
-    SetNodeBreferenceRot(q_element_ref_rot.GetConjugate() * node1->GetX0().GetRot());
+    SetNodeAreferenceRot(q_element_ref_rot_of(*this).GetConjugate() * node0->GetX0().GetRot());
+    SetNodeBreferenceRot(q_element_ref_rot_of(*this).GetConjugate() * node1->GetX0().GetRot());
 
     // Compute local stiffness matrix:
     ComputeStiffnessMatrix();

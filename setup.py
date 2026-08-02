@@ -31,7 +31,13 @@ import numpy
 #
 #  Set the DISTUTILS_DEBUG environment variable to print detailed information while setup.py is running.
 #
-sys.path.append(os.path.join(os.path.dirname(__file__)))#, '..', 'MyPackage'))
+
+# insert (not append): an already-installed proteus package earlier on
+# sys.path (e.g. via PYTHONPATH pointing at a previous --target install)
+# would otherwise shadow *this* checkout's own proteus/config, silently
+# building against a stale config.py instead of the one actually being
+# edited/rebuilt.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 from proteus import config
 from proteus.config import *
 ###to turn on debugging in c++
