@@ -1,7 +1,7 @@
 name: proteus-dev
 channels:
   - conda-forge
-  - defaults
+  - nodefaults
 dependencies:
   - pip =24.0
   - compilers =1.7.0
