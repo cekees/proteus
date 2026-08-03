@@ -6,7 +6,7 @@ rapidly developing computer models and numerical methods.
 
 # Installation
 
-
+## conda / mamba
 
 ```bash
 mamba install proteus -c conda-forge
@@ -19,6 +19,68 @@ mamba env create -f environment-dev.yml #environment-dev-up.yml to try unpinned 
 mamba activate proteus-dev
 pip install -v -e .
 ```
+
+`environment-dev.yml` pins conda-forge builds of everything proteus links
+against (PETSc, MPI, HDF5, SuperLU/SuperLU_DIST, METIS/ParMETIS, Chrono,
+SCOREC, Triangle/TetGen, xtensor, ...), so this is the path to use if you
+want the optional Chrono (multibody/FSI) and SCOREC (mesh adaptation)
+support built in. It intentionally excludes the `defaults` channel
+(`nodefaults`) -- conda-forge alone resolves everything here, and
+`defaults` pulls in `repo.anaconda.com`, a commercial channel with its own
+Terms of Service and registration-gated rate limits.
+
+## pip
+
+Proteus is not a pure-Python package: most of it is C/C++/Cython/Fortran
+extensions linking against PETSc, MPI, HDF5, SuperLU/SuperLU_DIST,
+METIS/ParMETIS, and BLAS/LAPACK. All of that can be provisioned with pip
+alone (no conda, no system package manager beyond a C/C++/Fortran compiler
+and `make`) using PETSc's own `--download-x` configure options, exposed to
+its PyPI package via the `PETSC_CONFIGURE_OPTIONS` environment variable.
+This builds everything from source, so expect it to take a while.
+
+Chrono and SCOREC (proteus's optional multibody/FSI and mesh-adaptation
+support) don't have a pip-installable path yet; the recipe below skips them
+via `PROTEUS_SKIP_PUMI_CHRONO=1`. Use the conda/mamba or HPC paths above if
+you need those.
+
+```bash
+python -m venv proteus-env && source proteus-env/bin/activate
+pip install cython pybind11 wheel numpy mpi4py "cmake>=3.29"
+
+# xtensor/xtl/xtensor-python aren't in upstream PETSc (proteus's plan is to
+# drop this dependency; until then, install from our fork instead of PyPI's
+# own `petsc` package, since only this fork's PETSc knows about them):
+export PETSC_CONFIGURE_OPTIONS="--download-fblaslapack --download-superlu --download-superlu_dist --download-metis --download-parmetis --download-hdf5 --download-triangle --download-triangle-build-exec=1 --download-tetgen --download-tetgen-build-exec=1 --download-xtl --download-xtensor --download-xtensor-python"
+pip install "petsc @ git+https://gitlab.com/cekees/petsc.git@download-proteus-support"
+pip install petsc4py
+
+# h5py's own PyPI wheels are serial-only; build against the parallel HDF5
+# PETSc just downloaded and compiled above instead:
+PETSC_DIR=$(python -c "import petsc; print(petsc.get_petsc_dir())")
+# Work around a packaging quirk in the `petsc` wheel: its libhdf5.so is a
+# linker script (`INPUT(libhdf5.so.NNN)`), not a real file, which trips up
+# h5py's own HDF5 version/config introspection at build time.
+real_hdf5=$(readlink -f "$PETSC_DIR"/lib/libhdf5.so.*.* 2>/dev/null | head -1)
+ln -sf "$(basename "$real_hdf5")" "$PETSC_DIR/lib/libhdf5.so"
+CC=mpicc HDF5_MPI=ON HDF5_DIR="$PETSC_DIR" pip install --no-binary h5py h5py
+
+export PETSC_ARCH=""
+export PROTEUS_PREFIX="$PETSC_DIR"
+export PROTEUS_SKIP_PUMI_CHRONO=1
+export PATH="$PETSC_DIR/bin:$PATH"
+pip install --no-build-isolation --no-deps .
+```
+
+If your PETSc is already built (e.g. by an HPC site, or you don't need
+xtensor and can use PyPI's own `petsc` package directly), skip straight to
+the `petsc4py`/`h5py`/proteus steps with `PETSC_DIR` (and `PETSC_ARCH`, if
+set) pointing at that install; `PETSC_CONFIGURE_OPTIONS` is only consulted
+when `petsc4py`'s own install triggers a fresh PETSc build.
+
+This path is new and less battle-tested than the conda/mamba and HPC
+`--download-proteus` routes above -- if something here breaks, those are
+the more mature fallbacks.
 
 # HPC Installation
 
