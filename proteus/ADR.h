@@ -347,7 +347,8 @@ namespace proteus
 												double *dham,
 												double *f,
 												double *df,
-												double test,
+												const double fluxJump,
+												const double *fluxJumpVector,
 												const double D_f)
 		{
 			// todo this doesn't look 1d/3d
@@ -371,18 +372,14 @@ namespace proteus
 				  r  += D_f*a*immersedBoundary_penalty * (u - u_s);
 				  dr += D_f*a*immersedBoundary_penalty; */
 			// std::cout << "D_f = " << D_f << std::endl;
-			if (test == 1.0) // Leveque & Li 1994, Example 1
-				r += 2.0*D_f;
-			else if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
-				r += 0.2* D_f;//note: paper has error, jump is 0.2 not 0.1
-			else if (test == 3.0) // Leveque & Li 1994, Example 3
-				r -= (exp(x) * cos(y) * immersedBoundary_normal[0] - exp(x) * sin(y) * immersedBoundary_normal[1]) * D_f;
-			else if (test == 4.0) // Leveque & Li 1994, Example 4
-				r -= (2 * x * immersedBoundary_normal[0] - 2 * y * immersedBoundary_normal[1]) * D_f;
-			else if (test == 4.1) // Leveque & Li 1994, Example 4l
-				r -= (immersedBoundary_normal[0] - immersedBoundary_normal[1]) * D_f;
-			// PWC,PWL,PWQ, PWCubic
-			// r-= 0.0;
+			// Prescribed flux jump across the interface, supplied by the physics file as
+			// [beta du/dn] = fluxJump(x) + fluxJumpVector(x) . n. The vector part carries
+			// the cases whose jump depends on the interface normal. Both default to zero,
+			// so a problem with no prescribed flux jump contributes nothing here.
+			double jump_flux = fluxJump;
+			for (int I = 0; I < nSpace; I++)
+				jump_flux += fluxJumpVector[I] * immersedBoundary_normal[I];
+			r += jump_flux * D_f;
 			dr = 0.0;
 			ham = 0.0;
 			dham[0] = 0.0;
@@ -456,6 +453,9 @@ namespace proteus
 											 xt::pyarray<double> &immersedBoundary_sdf_q,
 											 xt::pyarray<double> &immersedBoundary_normal_q,
 											 xt::pyarray<double> &immersedBoundary_u_q,
+											 xt::pyarray<double> &immersedBoundary_fluxJump_q,
+											 xt::pyarray<double> &immersedBoundary_fluxJumpVector_q,
+											 xt::pyarray<double> &immersedBoundary_solutionJump_nodes,
 											 double *element_phi_f,
 											 bool &element_active,
 											 std::valarray<bool> &elementIsActive,
@@ -463,7 +463,6 @@ namespace proteus
 											 double *JB,
 											 double &L2_error,
 											 double &Linfty_error,
-											 double test,
 											 double mua,
 											 double mub,
 											 xt::pyarray<double> &q_u_exact_inner,
@@ -735,7 +734,8 @@ namespace proteus
 												dham_f,
 												f_f,
 												df_f,
-												test,
+												immersedBoundary_fluxJump_q.data()[eN_k],
+												&immersedBoundary_fluxJumpVector_q.data()[eN_k_3d],
 												D_f);
 				}
 				//
@@ -969,6 +969,9 @@ namespace proteus
 			xt::pyarray<double> &immersedBoundary_sdf_q = args.array<double>("immersedBoundary_sdf_q");
 			xt::pyarray<double> &immersedBoundary_normal_q = args.array<double>("immersedBoundary_normal_q");
 			xt::pyarray<double> &immersedBoundary_u_q = args.array<double>("immersedBoundary_u_q");
+			xt::pyarray<double> &immersedBoundary_fluxJump_q = args.array<double>("immersedBoundary_fluxJump_q");
+			xt::pyarray<double> &immersedBoundary_fluxJumpVector_q = args.array<double>("immersedBoundary_fluxJumpVector_q");
+			xt::pyarray<double> &immersedBoundary_solutionJump_nodes = args.array<double>("immersedBoundary_solutionJump_nodes");
 			xt::pyarray<double> &isActiveDOF = args.array<double>("isActiveDOF");
 			const double eb_adjoint_sigma = args.scalar<double>("eb_adjoint_sigma");
 			xt::pyarray<double> &x_ref = args.array<double>("x_ref");
@@ -979,7 +982,6 @@ namespace proteus
 			xt::pyarray<double> &nodeDiametersArray = args.array<double>("nodeDiametersArray");
 			xt::pyarray<double> &L2_error = args.array<double>("L2_error");
 			xt::pyarray<double> &Linfty_error = args.array<double>("Linfty_error");
-			const double test = args.scalar<double>("test");
 			const double mua = args.scalar<double>("mua");
 			const double mub = args.scalar<double>("mub");
 			const double jf = args.scalar<double>("jf");
@@ -1096,18 +1098,6 @@ namespace proteus
 					// must be evaluated at each node's own coordinates (not once at the cut
 					// barycenter) -- otherwise JA/JB are constant over the element and their
 					// interpolated gradients (grad_uja, grad_ujb) vanish identically.
-					auto jump_at = [&](double xx, double yy) -> double {
-						if (test == 3.0)   // Leveque and Li 1994, Example 3
-							return -exp(xx) * cos(yy);
-						else if (test == 4.0) // Leveque and Li 1994, Example 4
-							return -(xx * xx - yy * yy);
-						else if (test == 4.1) // Leveque and Li 1994, Example 4l
-							return -(xx - yy);
-						else if (test == 5.0 || test == 6.0 || test == 7.0 || test == 9.0) // PWC,PWL,PWQ
-							return -1.0;
-						else
-							return 0.0;
-					};
 					const double eps_phi = 1.0e-12;
 					auto assign_jump_side = [&](int i, bool isOuter, double jump) {
 						if (isOuter)
@@ -1125,7 +1115,7 @@ namespace proteus
 						{
 
 							int eN_i = eN * nDOF_trial_element + i;
-							const double jump_i = jump_at(element_nodes[i * 3 + 0], element_nodes[i * 3 + 1]);
+							const double jump_i = immersedBoundary_solutionJump_nodes.data()[u_l2g.data()[eN_i]];
 							if (element_phi_f[i] > 0.0)
 							{
 								assign_jump_side(i, true, jump_i);
@@ -1201,6 +1191,9 @@ namespace proteus
 										 immersedBoundary_sdf_q,
 										 immersedBoundary_normal_q,
 										 immersedBoundary_u_q,
+										 immersedBoundary_fluxJump_q,
+										 immersedBoundary_fluxJumpVector_q,
+										 immersedBoundary_solutionJump_nodes,
 										 element_phi_f,
 										 element_active,
 										 elementIsActive,
@@ -1208,8 +1201,7 @@ namespace proteus
 										 JB,
 										 L2_error.data()[0],
 										 Linfty_error.data()[0],
-											 test,
-											 mua,
+												 mua,
 											 mub,
 											 q_u_exact_inner,
 											 q_u_exact_outer);
@@ -1827,8 +1819,10 @@ namespace proteus
 											 xt::pyarray<double> &immersedBoundary_sdf_q,
 											 xt::pyarray<double> &immersedBoundary_normal_q,
 											 xt::pyarray<double> &immersedBoundary_u_q,
+											 xt::pyarray<double> &immersedBoundary_fluxJump_q,
+											 xt::pyarray<double> &immersedBoundary_fluxJumpVector_q,
+											 xt::pyarray<double> &immersedBoundary_solutionJump_nodes,
 											 double *element_phi_f,
-											 double test,
 											 double mua,
 											 double mub)
 		{
@@ -2050,7 +2044,8 @@ namespace proteus
 												dham_f,
 												f_f,
 												df_f,
-												test,
+												immersedBoundary_fluxJump_q.data()[eN_k],
+												&immersedBoundary_fluxJumpVector_q.data()[eN_k_3d],
 												D_f);
 				}
 				//
@@ -2238,6 +2233,9 @@ namespace proteus
 			xt::pyarray<double> &immersedBoundary_sdf_q = args.array<double>("immersedBoundary_sdf_q");
 			xt::pyarray<double> &immersedBoundary_normal_q = args.array<double>("immersedBoundary_normal_q");
 			xt::pyarray<double> &immersedBoundary_u_q = args.array<double>("immersedBoundary_u_q");
+			xt::pyarray<double> &immersedBoundary_fluxJump_q = args.array<double>("immersedBoundary_fluxJump_q");
+			xt::pyarray<double> &immersedBoundary_fluxJumpVector_q = args.array<double>("immersedBoundary_fluxJumpVector_q");
+			xt::pyarray<double> &immersedBoundary_solutionJump_nodes = args.array<double>("immersedBoundary_solutionJump_nodes");
 			xt::pyarray<double> &isActiveDOF = args.array<double>("isActiveDOF");
 			const double eb_adjoint_sigma = args.scalar<double>("eb_adjoint_sigma");
 			xt::pyarray<double> &x_ref = args.array<double>("x_ref");
@@ -2246,7 +2244,6 @@ namespace proteus
 			const int nElementBoundaries_owned = args.scalar<int>("nElementBoundaries_owned");
 			xt::pyarray<double> &elementBoundaryDiameter = args.array<double>("elementBoundaryDiameter");
 			xt::pyarray<double> &nodeDiametersArray = args.array<double>("nodeDiametersArray");
-			const double test = args.scalar<double>("test");
 			const double mua = args.scalar<double>("mua");
 			const double mub = args.scalar<double>("mub");
 			const double jf = args.scalar<double>("jf");
@@ -2355,9 +2352,11 @@ namespace proteus
 										 immersedBoundary_sdf_q,
 										 immersedBoundary_normal_q,
 										 immersedBoundary_u_q,
+										 immersedBoundary_fluxJump_q,
+										 immersedBoundary_fluxJumpVector_q,
+										 immersedBoundary_solutionJump_nodes,
 										 element_phi_f,
-											 test,
-											 mua,
+												 mua,
 											 mub);
 				//
 				// load into element Jacobian into global Jacobian

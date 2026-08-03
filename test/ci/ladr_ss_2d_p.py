@@ -83,7 +83,7 @@ class LevequeLiExample2(AnalyticalSolutions.SteadyState):
         return r**2
     def uOfX_outer(self, x):
         b=a0
-        C=0.2
+        C=0.1
         r = (x[0]**2 + x[1]**2)**0.5
         return (1 - 1/(8*b) - 1/b)/4 + ((r**4)/2 + r**2)/b + C*math.log(2*r)/b
     def uOfX(self, x):
@@ -435,6 +435,37 @@ elif opts.test == 12.0:
 def embeddedBoundary_u(x,t):
     return ans.uOfX(x)
 
+# Prescribed interface jump data. These used to be hardcoded in ADR.h behind
+# `if (test == ...)` branches; they belong here with the rest of each test's
+# definition. The kernel forms
+#     [beta du/dn] = immersedBoundary_fluxJump + immersedBoundary_fluxJumpVector . n
+#     [u]          = immersedBoundary_solutionJump
+# and adds nothing when they are left as None.
+immersedBoundary_fluxJump = None
+immersedBoundary_fluxJumpVector = None
+immersedBoundary_solutionJump = None
+
+if opts.test == 1.0:
+    # Leveque & Li 1994, Example 1: [beta du/dn] = 2 at r = 1/2
+    immersedBoundary_fluxJump = lambda x,t: 2.0
+elif opts.test == 2.0 or opts.test == 2.1:
+    # Leveque & Li 1994, Example 2: singular interface source of intensity C = 0.1,
+    # giving [beta du/dn] = 2C = 0.2 (kept in sync with LevequeLiExample2's C).
+    immersedBoundary_fluxJump = lambda x,t: 0.2
+elif opts.test == 3.0:
+    immersedBoundary_fluxJumpVector = lambda x,t: (-math.exp(x[0])*math.cos(x[1]),
+                                                    math.exp(x[0])*math.sin(x[1]), 0.0)
+    immersedBoundary_solutionJump = lambda x,t: -math.exp(x[0])*math.cos(x[1])
+elif opts.test == 4.0:
+    immersedBoundary_fluxJumpVector = lambda x,t: (-2.0*x[0], 2.0*x[1], 0.0)
+    immersedBoundary_solutionJump = lambda x,t: -(x[0]**2 - x[1]**2)
+elif opts.test == 4.1:
+    immersedBoundary_fluxJumpVector = lambda x,t: (-1.0, 1.0, 0.0)
+    immersedBoundary_solutionJump = lambda x,t: -(x[0] - x[1])
+elif opts.test in [5.0, 6.0, 7.0, 9.0]:
+    # PWC, PWL, PWQ, PWCubic: constant unit jump in the solution
+    immersedBoundary_solutionJump = lambda x,t: -1.0
+
 """ coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=B0_1c[0],nc=1,nd=nd,forceStrongDirichlet=False,
                                 embeddedBoundary=True,
                                 embeddedBoundary_sdf=embeddedBoundary_sdf,
@@ -449,10 +480,12 @@ coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=B0_1c[0],nc=1,nd=nd
                                 immersedBoundary_sdf=embeddedBoundary_sdf,
                                 immersedBoundary_u=embeddedBoundary_u,
                                 immersedBoundary_penalty=0.0,
+                                immersedBoundary_fluxJump=immersedBoundary_fluxJump,
+                                immersedBoundary_fluxJumpVector=immersedBoundary_fluxJumpVector,
+                                immersedBoundary_solutionJump=immersedBoundary_solutionJump,
                                 immersedSCIFEM_switch=opts.immersedSCIFEM_switch,
                                 immersedSCIFEM_penalty=opts.immersedSCIFEM_penalty,
-                                analyticalSolution=analyticalSolution,
-                                test = opts.test)
+                                analyticalSolution=analyticalSolution)
 
 def getDBC(x,flag):
     if flag in [domain.boundaryTags['left'], domain.boundaryTags['right'], 

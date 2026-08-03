@@ -125,6 +125,9 @@ class Coefficients(TC_base):
                  immersedSCIFEM_penalty=0.0,
                  immersedBoundary_sdf=None,
                  immersedBoundary_u=None,
+                 immersedBoundary_fluxJump=None,
+                 immersedBoundary_fluxJumpVector=None,
+                 immersedBoundary_solutionJump=None,
                  analyticalSolution=None,
                  test=1.0):
         self.test = test
@@ -143,6 +146,15 @@ class Coefficients(TC_base):
         self.immersedSCIFEM_penalty=immersedSCIFEM_penalty
         self.immersedBoundary_sdf=immersedBoundary_sdf
         self.immersedBoundary_u=immersedBoundary_u
+        # Prescribed interface jump data, supplied by the physics file instead of
+        # being hardcoded per test number in ADR.h:
+        #   flux jump      [beta du/dn] = immersedBoundary_fluxJump(x,t)
+        #                                 + immersedBoundary_fluxJumpVector(x,t) . n
+        #   solution jump  [u]          = immersedBoundary_solutionJump(x,t)
+        # All default to zero, i.e. a continuous interface with continuous flux.
+        self.immersedBoundary_fluxJump=immersedBoundary_fluxJump
+        self.immersedBoundary_fluxJumpVector=immersedBoundary_fluxJumpVector
+        self.immersedBoundary_solutionJump=immersedBoundary_solutionJump
         if self.immersedBoundary:
             assert(self.immersedBoundary_sdf is not None)
             assert(self.immersedBoundary_u is not None)
@@ -195,6 +207,12 @@ class Coefficients(TC_base):
         if self.immersedBoundary:
             for nN in range(nodeArray.shape[0]):
                 self.immersedBoundary_sdf_nodes[nN], dummy_normal = self.immersedBoundary_sdf(t=0.0,x=nodeArray[nN])
+        # [u] at the DOF locations: the kernel builds JA/JB from per-node values, so the
+        # jump must be sampled where the DOFs live, not at quadrature points.
+        self.immersedBoundary_solutionJump_nodes = np.zeros((nodeArray.shape[0],),'d')
+        if self.immersedBoundary and self.immersedBoundary_solutionJump is not None:
+            for nN in range(nodeArray.shape[0]):
+                self.immersedBoundary_solutionJump_nodes[nN] = self.immersedBoundary_solutionJump(t=0.0,x=nodeArray[nN])
     def initializeElementQuadrature(self,t,cq):
         nd = self.nd
         for ci in range(self.nc):
@@ -227,6 +245,16 @@ class Coefficients(TC_base):
         # Cut elements need both the "inner"/"outer" branch values at the same
         # physical point, so uOfX_inner/uOfX_outer (raw branch formulas) are
         # queried directly when the analytical solution class provides them.
+        cq['immersedBoundary_fluxJump'] = np.zeros_like(cq[('u',0)])
+        cq['immersedBoundary_fluxJumpVector'] = np.zeros_like(cq['x'])
+        if self.immersedBoundary:
+            for eN in range(cq['x'].shape[0]):
+                for k in range(cq['x'].shape[1]):
+                    xk = cq['x'][eN,k]
+                    if self.immersedBoundary_fluxJump is not None:
+                        cq['immersedBoundary_fluxJump'][eN,k] = self.immersedBoundary_fluxJump(t=0.0,x=xk)
+                    if self.immersedBoundary_fluxJumpVector is not None:
+                        cq['immersedBoundary_fluxJumpVector'][eN,k] = self.immersedBoundary_fluxJumpVector(t=0.0,x=xk)
         cq[('u_exact_inner',0)] = np.zeros_like(cq[('u',0)])
         cq[('u_exact_outer',0)] = np.zeros_like(cq[('u',0)])
         if self.analyticalSolution is not None and self.analyticalSolution.get(0) is not None:
@@ -736,8 +764,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
         argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
+        argsDict["immersedBoundary_fluxJump_q"] = self.q['immersedBoundary_fluxJump']
+        argsDict["immersedBoundary_fluxJumpVector_q"] = self.q['immersedBoundary_fluxJumpVector']
+        argsDict["immersedBoundary_solutionJump_nodes"] = self.coefficients.immersedBoundary_solutionJump_nodes
         argsDict["isActiveDOF"] = self.isActiveDOF
-        argsDict["test"] = self.coefficients.test
         argsDict["mua"] = self.coefficients.mua
         argsDict["mub"] = self.coefficients.mub
         argsDict["jf"] = self.coefficients.jf
@@ -846,8 +876,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
         argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
+        argsDict["immersedBoundary_fluxJump_q"] = self.q['immersedBoundary_fluxJump']
+        argsDict["immersedBoundary_fluxJumpVector_q"] = self.q['immersedBoundary_fluxJumpVector']
+        argsDict["immersedBoundary_solutionJump_nodes"] = self.coefficients.immersedBoundary_solutionJump_nodes
         argsDict["isActiveDOF"] = self.isActiveDOF
-        argsDict["test"] = self.coefficients.test
         argsDict["mua"] = self.coefficients.mua
         argsDict["mub"] = self.coefficients.mub
         argsDict["jf"] = self.coefficients.jf
