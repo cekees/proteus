@@ -223,6 +223,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  gravity,
                  density,
                  beta,
+                 # PORE SIZE DISTRIBUTION (RETENTION / RELPERM) MODEL
+                 PSK_type='VG',
                  diagonal_conductivity=True,
                  getSeepageFace=None,
                  density_model=None,
@@ -269,6 +271,29 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.vgm_alpha_types = vgm_alpha_types
         self.thetaR_types    = thetaR_types
         self.thetaSR_types   = thetaSR_types
+        # Pore size distribution model used for the retention curve theta(psi)
+        # and the relative permeability kr(theta).  Default 'VG' reproduces the
+        # existing behaviour exactly: van Genuchten retention with the Mualem
+        # kr.  The integer code is handed to the kernel as "PSK_TYPE" and picks
+        # the closure in proteus/richards/psk_models.h.  Under 'BC' the second
+        # numeric parameter (vgm_n_types) is read as the pore-size index lambda
+        # and vgm_alpha_types as the inverse entry-pressure head 1/p_d.
+        #
+        # The two 'BC' codes share one retention curve and differ only in the
+        # exponent of kr = Se**eta, which lambda does not fix: Burdine gives
+        # (2+3*lambda)/lambda, Mualem 2.5+2/lambda.  At lambda=0.592 that is
+        # 6.378 against 5.878, a factor ~4 in kr by psiC = 7.5 m, so the choice
+        # has to follow whichever parameter set is being reproduced.  'BC' keeps
+        # Burdine, the historical behaviour.
+        psk_types = {"VG": 0,          # van Genuchten retention + Mualem  kr
+                     "BC": 1,          # Brooks-Corey  retention + Burdine kr
+                     "BC_MUALEM": 2}   # Brooks-Corey  retention + Mualem  kr
+        try:
+            if isinstance(PSK_type, int):
+                PSK_type = [key for key, value in psk_types.items() if value == PSK_type][0]
+            self.PSK_type = psk_types[PSK_type]
+        except:
+            raise ValueError("PSK_type must be one of "+str(list(psk_types.keys()))+" not "+str(PSK_type))
         self.elementMaterialTypes = None
         self.exteriorElementBoundaryTypes  = None
         self.materialTypes_q    = None
@@ -1432,6 +1457,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["thetaR"] = self.coefficients.thetaR_types
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
         argsDict["KWs"] = self.coefficients.Ksw_types
+        argsDict["PSK_TYPE"] = self.coefficients.PSK_type
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
         argsDict["lag_shockCapturing"] = 0
@@ -1692,6 +1718,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["thetaR"] = self.coefficients.thetaR_types
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
         argsDict["KWs"] = self.coefficients.Ksw_types
+        argsDict["PSK_TYPE"] = self.coefficients.PSK_type
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
         argsDict["lag_shockCapturing"] = 0
@@ -1818,6 +1845,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["thetaR"] = self.coefficients.thetaR_types
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
         argsDict["KWs"] = self.coefficients.Ksw_types
+        argsDict["PSK_TYPE"] = self.coefficients.PSK_type
         argsDict["useMetrics"] = 0.0
         argsDict["alphaBDF"] = self.timeIntegration.alpha_bdf
         argsDict["lag_shockCapturing"] = 0

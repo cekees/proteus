@@ -5,6 +5,7 @@
 #include <valarray>
 #include "CompKernel.h"
 #include "ModelFactory.h"
+#include "psk_models.h"
 #include "../mprans/ArgumentsDict.h"
 #include "xtensor-python/pyarray.hpp"
 #define nnz nSpace
@@ -71,71 +72,37 @@ public:
   // Reused by invert() so the m -> u inversion uses the same variable density
   // that built the forward mass.
   std::vector<double> rho_dof_member;
+  // Pore size distribution / relative permeability model selected from Python
+  // (Coefficients.PSK_type). 0 = van Genuchten-Mualem (default), 1 = Brooks-
+  // Corey-Burdine. Refreshed from args at the top of every kernel that
+  // evaluates the closure.
+  int PSK_TYPE_member = 0;
   Richards() : nDOF_test_X_trial_element(nDOF_test_element * nDOF_trial_element), ck() { }
   inline void evaluateCoefficients(const int rowptr[nSpace], const int colind[nnz], const double rho0, const double rho_transport, const double beta, const double gravity[nSpace], const double alpha, const double n_vg, const double thetaR, const double thetaSR, const double KWs[nnz], const double &u, double &m, double &dm, double f[nSpace], double df[nSpace], double a[nnz], double da[nnz], double as[nnz], double &kr, double &dkr, double &thetaW_out)
   {
-    const int nSpace2 = nSpace * nSpace;
-    double    psiC;
-    double    pcBar;
-    double    pcBar_n;
-    double    pcBar_nM1;
-    double    pcBar_nM2;
-    double    onePlus_pcBar_n;
-    double    sBar;
-    double    sqrt_sBar;
-    double    DsBar_DpsiC;
-    double    thetaW;
-    double    DthetaW_DpsiC;
-    double    vBar;
-    double    vBar2;
-    double    DvBar_DpsiC;
-    double    KWr;
-    double    DKWr_DpsiC;
-    double    thetaS;
-    double    rhom;
-    double    drhom;
-    double    m_vg;
-    double    pcBarStar;
-    double    sqrt_sBarStar;
-
-    psiC   = -u;
-    m_vg   = 1.0 - 1.0 / n_vg;
-    thetaS = thetaR + thetaSR;
-    if (psiC > 0.0) {
-      pcBar     = alpha * psiC;
-      pcBarStar = pcBar;
-      if (pcBar < 1.0e-8) pcBarStar = 1.0e-8;
-      pcBar_nM2       = pow(pcBarStar, n_vg - 2);
-      pcBar_nM1       = pcBar_nM2 * pcBar;
-      pcBar_n         = pcBar_nM1 * pcBar;
-      onePlus_pcBar_n = 1.0 + pcBar_n;
-
-      sBar = pow(onePlus_pcBar_n, -m_vg);
-      /* using -mn = 1-n */
-      DsBar_DpsiC = alpha * (1.0 - n_vg) * (sBar / onePlus_pcBar_n) * pcBar_nM1;
-
-      vBar        = 1.0 - pcBar_nM1 * sBar;
-      vBar2       = vBar * vBar;
-      DvBar_DpsiC = -alpha * (n_vg - 1.0) * pcBar_nM2 * sBar - pcBar_nM1 * DsBar_DpsiC;
-
-      thetaW        = thetaSR * sBar + thetaR; //thetaS;//
-      DthetaW_DpsiC = thetaSR * DsBar_DpsiC;   //0.0;//
-
-      sqrt_sBar     = sqrt(sBar);
-      sqrt_sBarStar = sqrt_sBar;
-      if (sqrt_sBar < 1.0e-8) sqrt_sBarStar = 1.0e-8;
-      KWr        = sqrt_sBar * vBar2;                                                                    
-      DKWr_DpsiC = ((0.5 / sqrt_sBarStar) * DsBar_DpsiC * vBar2 + 2.0 * sqrt_sBar * vBar * DvBar_DpsiC); 
+    // Constitutive closure: theta_w(psiC) and k_rw(psiC) come from the selected
+    // PSK model; everything below is the PDE coefficient assembly and is model
+    // independent. Derivatives returned are w.r.t. psiC = -u, so each use below
+    // carries the d(psiC)/du = -1 sign flip.
+    const double psiC = -u;
+    double thetaW, DthetaW_DpsiC, KWr, DKWr_DpsiC;
+    if (PSK_TYPE_member == 1 || PSK_TYPE_member == 2) {
+      // Same Brooks-Corey retention curve either way; PSK_TYPE only picks which
+      // k_rw closure supplies the exponent (see psk_models.h).
+      proteus::richards::psk::bc_wetting(
+          psiC, alpha, n_vg, thetaR, thetaSR,
+          thetaW, DthetaW_DpsiC, KWr, DKWr_DpsiC,
+          PSK_TYPE_member == 2 ? proteus::richards::psk::bc_kr::mualem
+                               : proteus::richards::psk::bc_kr::burdine);
     } else {
-      thetaW        = thetaS;
-      DthetaW_DpsiC = 0.0;
-      KWr           = 1.0;
-      DKWr_DpsiC    = 0.0;
+      proteus::richards::psk::vgm_wetting(
+          psiC, alpha, n_vg, thetaR, thetaSR,
+          thetaW, DthetaW_DpsiC, KWr, DKWr_DpsiC);
     }
     thetaW_out = thetaW;
     // Density uses transported salinity scaled by the compressibility factor.
-    rhom  = rho_transport * exp(beta * u);
-    drhom = beta * rhom;
+    const double rhom  = rho_transport * exp(beta * u);
+    const double drhom = beta * rhom;
     m     = rhom * thetaW;
     dm    = -rhom * DthetaW_DpsiC + drhom * thetaW;
     const double rho_ratio = rhom / rho0;
@@ -158,16 +125,15 @@ public:
 
   inline void evaluateInverseCoefficients(const int rowptr[nSpace], const int colind[nnz], const double rho, const double beta, const double gravity[nSpace], const double alpha, const double n_vg, const double thetaR, const double thetaSR, const double KWs[nnz], double &u, const double &m, const double &dm, const double f[nSpace], const double df[nSpace], const double a[nnz], const double da[nnz])
   {
-    double psiC, pcBar, pcBar_n, sBar, thetaW, thetaS, m_vg;
-    m_vg   = 1.0 - 1.0 / n_vg;
-    thetaS = thetaR + thetaSR;
-    thetaW = m / rho;
-    if (thetaW > 1.01*thetaR && thetaW < thetaS) {
-      sBar    = (thetaW - thetaR) / thetaSR;
-      pcBar_n = pow(sBar, -1.0 / m_vg) - 1.0;
-      pcBar   = pow(pcBar_n, 1.0 / n_vg);
-      psiC    = pcBar / alpha;
-      u       = -psiC;
+    (void)rowptr; (void)colind; (void)beta; (void)gravity; (void)KWs;
+    (void)dm; (void)f; (void)df; (void)a; (void)da;
+
+    // Both Brooks-Corey codes share one retention curve, so both invert with
+    // bc_*; PSK_TYPE 1 vs 2 differs only in k_rw, which plays no part here.
+    if (PSK_TYPE_member == 1 || PSK_TYPE_member == 2) {
+      proteus::richards::psk::bc_invert_analytic(m, rho, alpha, n_vg, thetaR, thetaSR, u);
+    } else {
+      proteus::richards::psk::vgm_invert_analytic(m, rho, alpha, n_vg, thetaR, thetaSR, u);
     }
   }
 
@@ -192,100 +158,14 @@ inline void evaluateInverseCoefficients_Newton(const int rowptr[nSpace],
   (void)rowptr; (void)colind; (void)gravity; (void)KWs;
   (void)dm; (void)f; (void)df; (void)a; (void)da;
 
-  const double u_prev = u;
-
-  const double thetaS = thetaR + thetaSR;
-  const double m_vg   = 1.0 - 1.0 / n_vg;
-
-  const double psiC0 = -u;
-  if (psiC0 <= 0.0) { return; } //saturated, no inversion
-  const double rhom0 = rho * std::exp(beta * u);//first guess
-  const double thetaW_imp = m / rhom0;
-  if (thetaW_imp < 1.01 * thetaR) { return; } //no inversion below residual saturation
-  const double thetaEps = 1e-12;
-  double m_target = m;
-  if (thetaW_imp > 0.99 * thetaS) {
-    const double thetaWc = std::min(thetaW_imp, thetaS - thetaEps);
-    m_target = rhom0 * thetaWc;
+  // Newton inversion of the full forward mass m = rho(u)*theta_w(u), so the
+  // exp(beta*u) factor the analytic inverse drops is included. The retention
+  // curve it solves against is the selected PSK model.
+  if (PSK_TYPE_member == 1 || PSK_TYPE_member == 2) {
+    proteus::richards::psk::bc_invert_newton(m, rho, beta, alpha, n_vg, thetaR, thetaSR, u);
+  } else {
+    proteus::richards::psk::vgm_invert_newton(m, rho, beta, alpha, n_vg, thetaR, thetaSR, u);
   }
-
-  // Use the analytic van Genuchten inverse as the initial guess for Newton.
-  {
-    const double thetaW_guess = std::min(m_target / rhom0, thetaS - thetaEps);
-    if (thetaW_guess > thetaR + thetaEps && thetaW_guess < thetaS - thetaEps) {
-      const double sBar = (thetaW_guess - thetaR) / thetaSR;
-      if (sBar > 0.0 && sBar < 1.0) {
-        const double pcBar_n = std::pow(sBar, -1.0 / m_vg) - 1.0;
-        if (pcBar_n > 0.0) {
-          const double pcBar = std::pow(pcBar_n, 1.0 / n_vg);
-          const double u_guess = -pcBar / alpha;
-          if (std::isfinite(u_guess) && u_guess < 0.0) {
-            u = u_guess;
-          }
-        }
-      }
-    }
-  }
-
-  /*----------------------------------------------------
-    4) Newton solve (UNSATURATED ONLY)
-  ----------------------------------------------------*/
-  const int    maxIts = 50;
-  const double tol    = 1e-7 * std::max(1.0, std::fabs(m));
-  const double duMax  = 5e-2;
-
-  auto theta_and_dtheta_du = [&](double u,
-                                 double &thetaW,
-                                 double &dtheta_du) -> bool
-  {
-    const double psiC = -u;
-
-    if (psiC <= 0.0) { return false; } //no inversion in saturation
-    //van Genuchten relations
-    const double pcBar     = alpha * psiC;
-    const double pcBarStar = (pcBar < 1e-12) ? 1e-12 : pcBar;
-    const double pcBar_nM2       = std::pow(pcBarStar, n_vg - 2.0);
-    const double pcBar_nM1       = pcBar_nM2 * pcBar;
-    const double pcBar_n         = pcBar_nM1 * pcBar;
-    const double onePlus_pcBar_n = 1.0 + pcBar_n;
-    const double sBar = std::pow(onePlus_pcBar_n, -m_vg);
-
-    const double DsBar_DpsiC =
-      alpha * (1.0 - n_vg) * (sBar / onePlus_pcBar_n) * pcBar_nM1;
-
-    thetaW    = thetaR + thetaSR * sBar;
-    dtheta_du = -thetaSR * DsBar_DpsiC;
-    if (thetaW <= thetaR + thetaEps) return false;
-    if (thetaW >= thetaS - thetaEps) return false;
-    return true;
-  };
-  for (int it = 0; it < maxIts; ++it)
-  {
-    if (-u <= 0.0) { u = u_prev; return; }            
-
-    double thetaW, dtheta_du;
-    if (!theta_and_dtheta_du(u, thetaW, dtheta_du)) {
-      u = u_prev; return;                             
-    }  
-
-    const double rhom = rho * std::exp(beta * u);
-    const double g  = rhom * thetaW - m_target;
-    if (std::fabs(g) < tol) return;
-
-    const double gp = rhom * (beta * thetaW + dtheta_du);
-    // guard against near-zero derivative
-    const double gpTol = 1e-14 * std::max(1.0, std::fabs(rhom * thetaW));
-    if (std::fabs(gp) < gpTol) { u = u_prev; return; } // CHANGE: revert if g' bad
-
-    double du = -g / gp;
-    if (du >  duMax) du =  duMax;
-    if (du < -duMax) du = -duMax;
-
-    u += du;
-    // CHANGE: after update, if we stepped into saturation, revert
-    if (-u <= 0.0) { u = u_prev; return; }
-  }
-  u = u_prev;
 }
 
   inline void calculateCFL(const double &elementDiameter, const double df[nSpace], double &cfl)
@@ -466,6 +346,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &n                                          = args.array<double>("n");
     xt::pyarray<double> &thetaR                                     = args.array<double>("thetaR");
     xt::pyarray<double> &thetaSR                                    = args.array<double>("thetaSR");
+    PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
     xt::pyarray<double> &KWs                                        = args.array<double>("KWs");
     double               useMetrics                                 = args.scalar<double>("useMetrics");
     double               alphaBDF                                   = args.scalar<double>("alphaBDF");
@@ -828,6 +709,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &n                         = args.array<double>("n");
     xt::pyarray<double> &thetaR                    = args.array<double>("thetaR");
     xt::pyarray<double> &thetaSR                   = args.array<double>("thetaSR");
+    PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
     xt::pyarray<double> &KWs                       = args.array<double>("KWs");
     double               useMetrics                = args.scalar<double>("useMetrics");
     double               alphaBDF                  = args.scalar<double>("alphaBDF");
@@ -1472,6 +1354,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &n                                          = args.array<double>("n");
     xt::pyarray<double> &thetaR                                     = args.array<double>("thetaR");
     xt::pyarray<double> &thetaSR                                    = args.array<double>("thetaSR");
+    PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
     xt::pyarray<double> &KWs                                        = args.array<double>("KWs");
     double               useMetrics                                 = args.scalar<double>("useMetrics");
     double               alphaBDF                                   = args.scalar<double>("alphaBDF");
@@ -2283,6 +2166,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &n                    = args.array<double>("n");
     xt::pyarray<double> &thetaR               = args.array<double>("thetaR");
     xt::pyarray<double> &thetaSR              = args.array<double>("thetaSR");
+    PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
     xt::pyarray<double> &KWs                  = args.array<double>("KWs");
     xt::pyarray<int>    &elementMaterialTypes = args.array<int>("elementMaterialTypes");
     xt::pyarray<int>    &freeDOFMaterialTypes = args.array<int>("freeDOFMaterialTypes");
@@ -2361,6 +2245,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &n                    = args.array<double>("n");
     xt::pyarray<double> &thetaR               = args.array<double>("thetaR");
     xt::pyarray<double> &thetaSR              = args.array<double>("thetaSR");
+    PSK_TYPE_member = args.scalar<int>("PSK_TYPE");
     xt::pyarray<double> &KWs                  = args.array<double>("KWs");
     //end new
     double               useMetrics                                 = args.scalar<double>("useMetrics");
