@@ -24,6 +24,7 @@ for i in range(len(sys.argv)):
 case = __import__(name)
 Context.setFromModule(case)
 ct = Context.get()
+
 # READ FROM myTpFlowProblem #
 assert hasattr(
     ct, 'mySWFlowProblem'), "Create mySWFlowProblem from SWFlowProblem"

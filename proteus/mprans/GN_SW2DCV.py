@@ -3,6 +3,7 @@ from proteus import FemTools
 from proteus import LinearAlgebraTools as LAT
 from proteus.mprans.cGN_SW2DCV import *
 import numpy as np
+import h5py
 from proteus.Transport import OneLevelTransport, TC_base, NonlinearEquation
 from proteus.Transport import Quadrature, logEvent, memory, BackwardEuler
 from proteus.Transport import FluxBoundaryConditions, Comm, DOFBoundaryConditions
@@ -19,12 +20,11 @@ class NumericalFlux(proteus.NumericalFlux.ShallowWater_2D):
                  h_eps=1.0e-8,
                  tol_u=1.0e-8):
         proteus.NumericalFlux.ShallowWater_2D.__init__(self, vt, getPointwiseBoundaryConditions,
-        getAdvectiveFluxBoundaryConditions,
-        getDiffusiveFluxBoundaryConditions,
-        getPeriodicBoundaryConditions,
-        h_eps,
-        tol_u)
-        #
+                                                       getAdvectiveFluxBoundaryConditions,
+                                                       getDiffusiveFluxBoundaryConditions,
+                                                       getPeriodicBoundaryConditions,
+                                                       h_eps,
+                                                       tol_u)
         self.penalty_constant = 2.0
         self.includeBoundaryAdjoint = True
         self.boundaryAdjoint_sigma = 1.0
@@ -66,14 +66,10 @@ class RKEV(proteus.TimeIntegration.SSP):
     def choose_dt(self):
         maxCFL = 1.0e-6
         # COMPUTE edge_based_cfl
-        rowptr_cMatrix, colind_cMatrix, Cx = self.transport.cterm_global[0].getCSRrepresentation(
-        )
-        rowptr_cMatrix, colind_cMatrix, Cy = self.transport.cterm_global[1].getCSRrepresentation(
-        )
-        rowptr_cMatrix, colind_cMatrix, CTx = self.transport.cterm_global_transpose[0].getCSRrepresentation(
-        )
-        rowptr_cMatrix, colind_cMatrix, CTy = self.transport.cterm_global_transpose[1].getCSRrepresentation(
-        )
+        rowptr_cMatrix, colind_cMatrix, Cx = self.transport.cterm_global[0].getCSRrepresentation()
+        rowptr_cMatrix, colind_cMatrix, Cy = self.transport.cterm_global[1].getCSRrepresentation()
+        rowptr_cMatrix, colind_cMatrix, CTx = self.transport.cterm_global_transpose[0].getCSRrepresentation()
+        rowptr_cMatrix, colind_cMatrix, CTy = self.transport.cterm_global_transpose[1].getCSRrepresentation()
         numDOFsPerEqn = self.transport.u[0].dof.size
 
         argsDict = cArgumentsDict.ArgumentsDict()
@@ -83,6 +79,7 @@ class RKEV(proteus.TimeIntegration.SSP):
         argsDict["h_dof_old"] = self.transport.u[0].dof
         argsDict["hu_dof_old"] = self.transport.u[1].dof
         argsDict["hv_dof_old"] = self.transport.u[2].dof
+        argsDict["b_dof"] = self.transport.coefficients.b.dof
         argsDict["heta_dof_old"] = self.transport.u[3].dof
         argsDict["csrRowIndeces_DofLoops"] = rowptr_cMatrix
         argsDict["csrColumnOffsets_DofLoops"] = colind_cMatrix
@@ -107,8 +104,7 @@ class RKEV(proteus.TimeIntegration.SSP):
         # Ignoring dif. time step levels
         self.substeps = [self.t for i in range(self.nStages)]
 
-        assert (self.dt > 1E-8), ("Time step is probably getting too small: ",
-                                  self.dt, adjusted_maxCFL)
+        assert (self.dt > 1E-8), ("Time step is probably getting too small: ", self.dt, adjusted_maxCFL)
 
     def initialize_dt(self, t0, tOut, q):
         """
@@ -291,6 +287,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  abs_length=0.,
                  abs_start=0.,
                  waveConditions=None):
+        
         self.forceStrongConditions = forceStrongConditions
         self.constrainedDOFs = constrainedDOFs
         self.bathymetry = bathymetry
@@ -394,17 +391,36 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
     def initializeMesh(self, mesh):
         x = mesh.nodeArray[:, 0]
         y = mesh.nodeArray[:, 1]
-        if self.bathymetry is None:             
-            self.b.dof = mesh.nodeArray[:, 2].copy()   # does this need to be a copy
+        comm=Comm.get()
+        if self.bathymetry is None:
+            self.b.dof = mesh.nodeArray[:, 2].copy()     
         elif type(self.bathymetry) is np.ndarray:
+            #if mpi, use mapping old2new to rearrange b.dof vector globally
             if self.bathymetry.ndim==1:
-                self.b.dof = self.bathymetry.copy()
+                b_global = self.bathymetry.copy() 
             elif self.bathymetry.shape[1]==1:
-                self.b.dof = self.bathymetry[:,0].copy()
+                b_global = self.bathymetry[:,0].copy()
             elif self.bathymetry.shape[1]==3:
-                self.b.dof=self.bathymetry[:,2].copy()
-        else:                                   
-            self.b.dof = self.bathymetry([x, y])
+                b_global = self.bathymetry[:,2].copy()
+            if comm.size() > 1: 
+                fname= 'mappings.h5'
+                with h5py.File(fname,'r') as f:
+                    vname=list(f.keys())[0]
+                    old2new=np.asarray(f[vname])       
+                sub2glob=mesh.nodeNumbering_subdomain2global                                   
+                indx=[]
+                for i in range (0, len(sub2glob)):  
+                    indx.append(np.where(old2new==sub2glob[i]))
+                self.b.dof = np.ravel(b_global[indx])
+                mesh.nodeArray[:,2] = self.b.dof
+            else:
+                self.b.dof = self.bathymetry
+                mesh.nodeArray[:,2] = self.b.dof           
+        else:
+            self.b.dof = self.bathymetry([x, y])          
+            mesh.nodeArray[:,2] = self.b.dof                #if bathy is a function no need to pass subdomain info here
+        
+        assert mesh.nodeArray.shape[1]==3
 
     def initializeElementQuadrature(self, t, cq):
         self.q_velocity_porous = np.zeros(cq[('velocity', 0)].shape, 'd')
@@ -542,6 +558,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #
         self.coefficients.initializeMesh(self.mesh)
         self.nc = self.coefficients.nc
+        for ci in range(self.nc):
+            self.u[ci].femSpace.updateInterpolationPoints()
         self.stabilization = stabilization
         self.shockCapturing = shockCapturing
         # no velocity post-processing for now
@@ -1276,8 +1294,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["heta_max"] = self.heta_max
         argsDict["kin_max"] = self.kin_max
         argsDict["x_values"] = self.dofsXCoord
-        argsDict["x_min"] = np.max(self.mesh.globalMesh.nodeArray[:, 0])
-        argsDict["x_max"] = np.min(self.mesh.globalMesh.nodeArray[:, 0])
+        argsDict["x_min"] = np.max(self.mesh.nodeArray[:, 0])
+        argsDict["x_max"] = np.min(self.mesh.nodeArray[:, 0])
         argsDict["inverse_mesh"] = self.inverse_mesh
         argsDict["h0_max"] = self.h0_max
         argsDict["RHS_high_h"] = self.RHS_high_h
@@ -1577,7 +1595,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
     def initDataStructures(self):
         comm = Comm.get()
 
-        self.size_of_domain = self.mesh.globalMesh.volume
+        self.size_of_domain = self.mesh.volume
 
         # old vectors
         self.h_dof_old = np.copy(self.u[0].dof)
@@ -1807,10 +1825,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         if self.forceStrongConditions:
             for cj in range(len(self.dirichletConditionsForceDOF)):
                 for dofN, g in list(self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.items()):
-                    self.u[cj].dof[dofN] = g(
-                        self.dirichletConditionsForceDOF[cj].DOFBoundaryPointDict[dofN], self.timeIntegration.t)
+                    
+                    self.u[cj].dof[dofN] = g(self.dirichletConditionsForceDOF[cj].DOFBoundaryPointDict[dofN], self.timeIntegration.t)
         #
-
         # CHECK POSITIVITY OF WATER HEIGHT
         if (self.check_positivity_water_height == True):
             assert self.u[0].dof.min(
@@ -1832,8 +1849,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # For waves
         if self.coefficients.waveConditions is not None:
             self.compute_waves()
-
-        # get bounds/higher RHS
+            # get bounds/higher RHS
         self.computeBoundsAndRhsHigh()
 
         ##### Then distribute ######################

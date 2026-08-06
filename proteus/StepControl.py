@@ -128,6 +128,7 @@ class SC_base(object):
         self.saveSolution()
         #self.dt_model = 1.0
         self.set_dt_allLevels()
+        self.setSubsteps([self.t_model])
         for m,u,r in zip(self.model.levelModelList,
                          self.model.uList,
                          self.model.rList):

@@ -594,7 +594,7 @@ void parametricMaps_getValues(int nElements_global,
         {
           j_global = l2g[eN*nDOF_element+
                          j];
-          for(I=0;I<nSpace_global;I++)
+          for(I=0;I<3;I++)
             xArray[eN*nQuadraturePoints_element*3+
                    k*3+
                    I]
@@ -626,7 +626,7 @@ void parametricMaps_getValuesTrace(int nElements_global,
           {
             j_global = l2g[eN*nDOF_element+
                            j];
-            for(I=0;I<nSpace_global;I++)
+            for(I=0;I<3;I++)
               xArray[eN*nElementBoundaries_element*nQuadraturePoints_element*3+
                      ebN*nQuadraturePoints_element*3+
                      k*3+
@@ -665,7 +665,7 @@ void parametricMaps_getValuesGlobalExteriorTrace(int nQuadraturePoints_elementBo
           {
             j_global = l2g[eN*nDOF_element+
                            j];
-            for(I=0;I<nSpace_global;I++)
+            for(I=0;I<3;I++)
               xArray[ebNE*nQuadraturePoints_elementBoundary*3+
                      k*3+
                      I]

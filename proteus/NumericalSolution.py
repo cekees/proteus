@@ -187,8 +187,9 @@ class NS_base(object):  # (HasTraits):
             mlMesh = self.pList[0].domain.mesh
         except:
             mlMesh = MeshTools.generateMesh(self.pList[0],self.nList[0],opts.generatePartitionedMeshFromFiles)
-        theMesh = mlMesh.meshList[0].subdomainMesh
 
+        theMesh = mlMesh.meshList[0].subdomainMesh
+        
         theDomain = self.pList[0].domain
 
         if(hasattr(theDomain,'AdaptManager')):
@@ -329,7 +330,6 @@ class NS_base(object):  # (HasTraits):
                 linTolList.append(n.linTolFac*fac)
 
             logEvent("Setting up MultilevelTransport for "+p.name)
-
             model \
                 = Transport.MultilevelTransport(p,
                                                 n,
