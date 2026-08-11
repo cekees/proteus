@@ -8,6 +8,48 @@ for key, value in cfg_vars.items():
         cfg_vars[key] = cfg_vars[key].replace("-Wstrict-prototypes", "")
         cfg_vars[key] = cfg_vars[key].replace("-Wall", "-w")
 
+# Some conda-forge Python builds (confirmed: the environment-dev.yml-pinned
+# python=3.12.5 osx-64 build) bake '-Wl,-rpath,<dir>' into their own
+# sysconfig LDSHARED/LDCXXSHARED *twice* already -- i.e. every C/C++
+# extension this interpreter links inherits a duplicate rpath before
+# anything in this setup.py adds a single flag of its own. On current
+# macOS, dyld refuses to even open a .so with a literal duplicate LC_RPATH
+# load command ("dlopen(...): tried: ... (duplicate LC_RPATH ...)"), so
+# every extension built with such an interpreter fails to import. Separately,
+# the conda-forge `compilers` package's own activation script sets $LDFLAGS
+# to the *same* '-Wl,-rpath,<dir>' -- and setuptools appends $LDFLAGS to
+# every link command in addition to LDSHARED/LDCXXSHARED, so even after
+# collapsing LDSHARED's own internal duplicate down to one copy, that one
+# copy plus LDFLAGS's copy still add up to two identical LC_RPATH entries.
+# dyld's duplicate check is on the *final linked binary*, not the source of
+# each flag, so both angles have to be deduped together: collapse repeats
+# within LDSHARED/LDCXXSHARED themselves, then drop any rpath token from
+# them that's already present in $LDFLAGS (leaving LDFLAGS's copy as the
+# single source of truth). Patched here, in the same place this file
+# already patches other sysconfig quirks above, rather than in every
+# individual Extension(). Python 3.12 removed distutils from the stdlib, so
+# setuptools' build_ext actually customizes the compiler via the *stdlib*
+# `sysconfig` module's own config cache, not `distutils.sysconfig`'s (they
+# are two distinct dicts on this setuptools/Python combination, confirmed
+# by identity check) -- patch both so this holds regardless of which one
+# the installed setuptools version ends up reading from.
+def _dedup_rpath_tokens(flags):
+    ldflags_env = os.environ.get('LDFLAGS', '')
+    seen = set()
+    out = []
+    for tok in flags.split():
+        if tok.startswith('-Wl,-rpath,'):
+            if tok in seen or tok in ldflags_env:
+                continue
+            seen.add(tok)
+        out.append(tok)
+    return ' '.join(out)
+import sysconfig as _stdlib_sysconfig
+for _cfg_vars in (cfg_vars, _stdlib_sysconfig.get_config_vars()):
+    for key in ('LDSHARED', 'LDCXXSHARED'):
+        if isinstance(_cfg_vars.get(key), str):
+            _cfg_vars[key] = _dedup_rpath_tokens(_cfg_vars[key])
+
 from distutils.core import setup
 from Cython.Build import cythonize
 from Cython.Distutils.extension import Extension
@@ -436,10 +478,12 @@ EXTENSIONS_TO_BUILD = [
                             PROTEUS_SUPERLU_INCLUDE_DIR],
               library_dirs=[PROTEUS_SUPERLU_LIB_DIR,
                             PROTEUS_LAPACK_LIB_DIR,
-                            PROTEUS_BLAS_LIB_DIR],
+                            PROTEUS_BLAS_LIB_DIR,
+                            PROTEUS_METIS_LIB_DIR],
               libraries=['m',
                          PROTEUS_SUPERLU_LIB,
-                         PROTEUS_LAPACK_LIB,PROTEUS_BLAS_LIB],
+                         PROTEUS_LAPACK_LIB,PROTEUS_BLAS_LIB,
+                         PROTEUS_METIS_LIB],
               extra_compile_args=PROTEUS_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS),
     Extension("csmoothers",
@@ -458,11 +502,13 @@ EXTENSIONS_TO_BUILD = [
               library_dirs=[PROTEUS_SUPERLU_INCLUDE_DIR,
                             PROTEUS_SUPERLU_LIB_DIR,
                             PROTEUS_LAPACK_LIB_DIR,
-                            PROTEUS_BLAS_LIB_DIR],
+                            PROTEUS_BLAS_LIB_DIR,
+                            PROTEUS_METIS_LIB_DIR],
               libraries=['m',
                          PROTEUS_SUPERLU_LIB,
                          PROTEUS_LAPACK_LIB,
-                         PROTEUS_BLAS_LIB],
+                         PROTEUS_BLAS_LIB,
+                         PROTEUS_METIS_LIB],
               extra_compile_args=PROTEUS_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS),
     Extension("canalyticalSolutions",
@@ -820,6 +866,23 @@ if _os.environ.get("PROTEUS_SKIP_PUMI_CHRONO") or _os.environ.get("PROTEUS_SKIP_
 EXTENSIONS_TO_BUILD = [e for e in EXTENSIONS_TO_BUILD if e.name not in _skip]
 
 def setup_given_extensions(extensions):
+    # Most Extensions above list several *_LIB_DIR constants (SUPERLU, LAPACK,
+    # BLAS, PETSC, HDF5, ...) in library_dirs -- in a conda/mamba dev install
+    # (environment-dev.yml) these all resolve to the same single conda env
+    # lib directory, so library_dirs ends up with that same path repeated
+    # several times. conda-forge's `compilers` package patches distutils to
+    # emit '-Wl,-rpath,<dir>' for every library_dirs entry (not just once per
+    # unique directory), and setuptools/distutils separately also appends the
+    # ambient $LDFLAGS (which itself already has that same rpath, courtesy of
+    # the same `compilers` activation script) -- together this produces a
+    # linked .so with a literal duplicate LC_RPATH load command, which dyld
+    # refuses to open at import time ("... (duplicate LC_RPATH ...)").
+    # Deduplicating library_dirs here (order-preserving) collapses the
+    # repeats back down to one -rpath per real directory. Confirmed via a
+    # real `pip install -e .` against environment-dev.yml.
+    for ext in extensions:
+        if getattr(ext, 'library_dirs', None):
+            ext.library_dirs = list(dict.fromkeys(ext.library_dirs))
     setup(name='proteus',
           version='1.8.3.dev',
           classifiers=[

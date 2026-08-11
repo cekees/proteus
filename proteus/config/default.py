@@ -22,16 +22,28 @@ platform_extra_link_args = []
 platform_blas_h = None
 platform_lapack_h = None
 platform_lapack_integer = None
+# distutils/setuptools appends $LDFLAGS to every link command in addition to
+# extra_link_args -- on a conda/mamba dev install (environment-dev.yml), the
+# activated `compilers` package's own activation script already sets LDFLAGS
+# to include '-Wl,-rpath,<env>/lib', and PROTEUS_LIB_DIR here resolves to that
+# same directory (PROTEUS_PREFIX unset -> sys.exec_prefix -> the conda env).
+# Appending the identical '-Wl,-rpath,...' flag again below then produces a
+# literal duplicate LC_RPATH load command, which dyld refuses to open
+# ("tried: ... (duplicate LC_RPATH ...)") -- confirmed via a real editable
+# install against environment-dev.yml. Skip our own copy when it's already
+# present in LDFLAGS instead of assuming we're the only contributor.
+_rpath_flag = '-Wl,-rpath,' + PROTEUS_LIB_DIR
+_rpath_already_in_ldflags = _rpath_flag in os.environ.get('LDFLAGS', '')
 if sys.platform == 'darwin':
     platform_extra_compile_args = ['-DPETSC_INCLUDE_AS_C', '-DPETSC_SKIP_COMPLEX']
-    platform_extra_link_args = ['-L'+PROTEUS_LIB_DIR,'-Wl,-rpath,' + PROTEUS_LIB_DIR]
+    platform_extra_link_args = ['-L'+PROTEUS_LIB_DIR] if _rpath_already_in_ldflags else ['-L'+PROTEUS_LIB_DIR, _rpath_flag]
     platform_blas_h = r'"proteus_blas.h"'
     platform_lapack_h = r'"proteus_lapack.h"'
     major,minor = platform.mac_ver()[0].split('.')[0:2]
     os.environ["MACOSX_DEPLOYMENT_TARGET"]= major+'.'+minor
 elif sys.platform.startswith('linux'):
     platform_extra_compile_args = ['-DPETSC_INCLUDE_AS_C', '-DPETSC_SKIP_COMPLEX']
-    platform_extra_link_args = ['-L'+PROTEUS_LIB_DIR,'-Wl,-rpath,' + PROTEUS_LIB_DIR]
+    platform_extra_link_args = ['-L'+PROTEUS_LIB_DIR] if _rpath_already_in_ldflags else ['-L'+PROTEUS_LIB_DIR, _rpath_flag]
     platform_blas_h = r'"proteus_blas.h"'
     platform_lapack_h = r'"proteus_lapack.h"'
 
@@ -225,6 +237,22 @@ PROTEUS_SUPERLU_LIB_DIR = pjoin(prefix, 'lib64')
 PROTEUS_SUPERLU_LIB_DIR = pjoin(prefix, 'lib')
 PROTEUS_SUPERLU_H   = r'"slu_ddefs.h"'
 PROTEUS_SUPERLU_LIB = 'superlu'
+
+# SuperLU's own fill-reducing ordering routines call into METIS
+# (METIS_NodeND) but don't always carry a self-contained, resolvable link to
+# it -- true of a Spack-built libsuperlu in particular (macOS's flat
+# namespace then leaves METIS_NodeND unresolved at import time: "symbol not
+# found in flat namespace '_METIS_NodeND'"). The --download-proteus/pip
+# paths get away without linking metis explicitly here only because METIS
+# happens to already be loaded into the same process via libpetsc (built
+# with --download-metis) or another extension by the time superluWrappers
+# imports -- incidental, not guaranteed. Every documented install path
+# already provides METIS one way or another (colonized prefixes and the
+# pip/HPC paths via --download-metis into the same prefix; environment-dev*
+# .yml via its own `metis` conda package in the same env), so linking it
+# explicitly wherever SuperLU is linked is safe everywhere and correct.
+PROTEUS_METIS_INCLUDE_DIR, PROTEUS_METIS_LIB_DIR = get_flags('metis')
+PROTEUS_METIS_LIB = 'metis'
 
 PROTEUS_HDF5_INCLUDE_DIR, PROTEUS_HDF5_LIB_DIR = get_flags('hdf5')
 PROTEUS_HDF5_LIB_DIRS = [PROTEUS_HDF5_LIB_DIR]
