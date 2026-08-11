@@ -12,6 +12,8 @@ rapidly developing computer models and numerical methods.
 mamba install proteus -c conda-forge
 ```
 
+## conda / mamba for proteus development
+
 For a development installation, you want to install Proteus's dependencies and compile Proteus from source:
 
 ```bash
@@ -19,6 +21,8 @@ mamba env create -f environment-dev.yml #environment-dev-up.yml to try unpinned 
 mamba activate proteus-dev
 pip install -v -e .
 ```
+
+## conda / mamba with updated/unpinned dependencies
 
 `environment-dev.yml` pins conda-forge builds of everything proteus links
 against (PETSc, MPI, HDF5, SuperLU/SuperLU_DIST, METIS/ParMETIS, Chrono,
@@ -78,8 +82,7 @@ the `petsc4py`/`h5py`/proteus steps with `PETSC_DIR` (and `PETSC_ARCH`, if
 set) pointing at that install; `PETSC_CONFIGURE_OPTIONS` is only consulted
 when `petsc4py`'s own install triggers a fresh PETSc build.
 
-This path is new and less battle-tested than the conda/mamba and HPC
-`--download-proteus` routes above -- if something here breaks, those are
+This path is new and less battle-tested than the conda/mamba route above and the PETSc BuildSystem/HPC routes below -- if something here breaks, those are
 the more mature fallbacks.
 
 ## Spack
@@ -107,7 +110,7 @@ Chrono has no upstream Spack package yet and stays disabled either way;
 the pip path above, this one is new -- fall back to conda/mamba or HPC
 `--download-proteus` if something here breaks.
 
-# HPC Installation
+## HPC (PETSc BuildSystem)
 
 For installation on high performance environments, the recommended path is
 PETSc's own build system, which most HPC sites and module systems already
@@ -115,8 +118,7 @@ support: `git@gitlab.com:cekees/petsc.git`, branch `download-proteus-support`,
 adds a `--download-proteus` PETSc package (plus PETSc packages for proteus's
 optional native dependencies: chrono, scorec, xtensor) so a single
 `./configure` + `make` builds PETSc, proteus, and everything in between,
-instead of the separate per-dependency manual build this section used to
-describe.
+instead of the separate per-dependency manual build this section used to describe. You will need a user-installable prefix directory, which below is assumed to be a conda environment, but a Python venv should also work.
 
 ```bash
 git clone git@gitlab.com:cekees/petsc.git
