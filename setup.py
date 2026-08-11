@@ -808,9 +808,16 @@ EXTENSIONS_TO_BUILD = [
 ]
 
 import os as _os
-if _os.environ.get("PROTEUS_SKIP_PUMI_CHRONO"):
-    _skip = {"MeshAdaptPUMI.MeshAdapt", "mbd.CouplingFSI"}
-    EXTENSIONS_TO_BUILD = [e for e in EXTENSIONS_TO_BUILD if e.name not in _skip]
+# PUMI/SCOREC (mesh adaptation) and Chrono (rigid-body/FSI coupling) are
+# unrelated optional dependencies; PROTEUS_SKIP_PUMI and PROTEUS_SKIP_CHRONO
+# let a build path enable one without the other. PROTEUS_SKIP_PUMI_CHRONO
+# is kept for backwards compatibility and skips both.
+_skip = set()
+if _os.environ.get("PROTEUS_SKIP_PUMI_CHRONO") or _os.environ.get("PROTEUS_SKIP_PUMI"):
+    _skip.add("MeshAdaptPUMI.MeshAdapt")
+if _os.environ.get("PROTEUS_SKIP_PUMI_CHRONO") or _os.environ.get("PROTEUS_SKIP_CHRONO"):
+    _skip.add("mbd.CouplingFSI")
+EXTENSIONS_TO_BUILD = [e for e in EXTENSIONS_TO_BUILD if e.name not in _skip]
 
 def setup_given_extensions(extensions):
     setup(name='proteus',
