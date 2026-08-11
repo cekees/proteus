@@ -82,6 +82,31 @@ This path is new and less battle-tested than the conda/mamba and HPC
 `--download-proteus` routes above -- if something here breaks, those are
 the more mature fallbacks.
 
+## Spack
+
+[Spack](https://spack.io) builds proteus and its native dependency chain
+(PETSc, MPI, HDF5, SuperLU, METIS/ParMETIS, xtensor, and optionally
+SCOREC/PUMI) from source, with no conda and no system package manager
+beyond a C/C++/Fortran compiler. `py-proteus` isn't in spack-packages
+`develop` yet; until it's merged, add it from the `py-proteus` branch of
+https://github.com/cekees/spack-packages:
+
+```bash
+git clone https://github.com/spack/spack.git
+. spack/share/spack/setup-env.sh
+git clone -b py-proteus https://github.com/cekees/spack-packages.git
+spack repo add spack-packages/repos/spack_repo/builtin
+
+spack install py-proteus            # Chrono and SCOREC both disabled
+spack install py-proteus+scorec     # adds PUMI/SCOREC mesh adaptation
+spack load py-proteus
+```
+
+Chrono has no upstream Spack package yet and stays disabled either way;
+`+scorec` adds `pumi`, `zoltan`, and `parmetis` for mesh adaptation. Like
+the pip path above, this one is new -- fall back to conda/mamba or HPC
+`--download-proteus` if something here breaks.
+
 # HPC Installation
 
 For installation on high performance environments, the recommended path is
