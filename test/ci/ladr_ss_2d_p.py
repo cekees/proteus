@@ -147,6 +147,16 @@ class JiEtal14Example1(AnalyticalSolutions.SteadyState):
         else:
             return r**3/self.betaPlus + (1.0/self.betaMinus-1.0/self.betaPlus)*0.5**3
 
+class PWLStraight(AnalyticalSolutions.SteadyState):
+    def __init__(self):
+        super(PWLStraight, self).__init__()
+        self.jump_x = 0.5#0.001
+    def uOfX(self, x):
+        if x[0] <=self.jump_x:
+            return -(x[0]-self.jump_x)
+        else:
+            return -(x[0]-self.jump_x)/1000.0
+
 if opts.test == 1.0:
     ans = LevequeLiExample1()
 elif opts.test == 2.0 or opts.test == 2.1:
@@ -165,11 +175,13 @@ elif opts.test == 7.0:
     ans = PWQ()
 elif opts.test == 8.0:
     ans = JiEtal14Example1(betaMinus=1.0, betaPlus=1000.0)
+elif opts.test == 9.0:
+    ans = PWLStraight()
 else:
     assert False, "Unknown test %s" % opts.test
 
 analyticalSolution = {0:ans}
-initialConditions = None
+initialConditions = {0:ans}
 
 if opts.test == 2.0 or opts.test == 2.1:
     # Leveque & Li 1994, Example 2
@@ -202,6 +214,14 @@ elif opts.test == 8.0:
             return numpy.array([[1000.0,0.0],[0.0,1000.0]])
     def f(x):
         return -9.0*(x[0]**2 + x[1]**2)**0.5
+elif opts.test == 9.0:
+    def a(x):
+        if x[0] <= ans.jump_x:
+            return numpy.array([[1.0,0.0],[0.0,1.0]])
+        else:
+            return numpy.array([[1000.0,0.0],[0.0,1000.0]])
+    def f(x):
+        return 0.0
 
 aOfX = {0:a}; fOfX = {0:f}
 
@@ -218,6 +238,12 @@ def embeddedBoundary_sdf(x,t):
         n = (1.0,0.0,0.0)
     sdf = r - radius
     return sdf,n
+
+def embeddedBoundary_sdf_straight(x,t):
+    return x[0]-ans.jump_x,(1.0,0.0,0.0)
+
+if opts.test == 9.0:
+    embeddedBoundary_sdf = embeddedBoundary_sdf_straight
 
 #n = (1.0/2.0**0.5,-1.0/2.0**0.5,0.0)
 #def embeddedBoundary_sdf(x,t):
@@ -246,13 +272,18 @@ def getDBC(x,flag):
     if flag in [domain.boundaryTags['left'], domain.boundaryTags['right'], 
                 domain.boundaryTags['bottom'], domain.boundaryTags['top']]:
         return lambda x,t: ans.uOfX(x) 
+#    if flag in [domain.boundaryTags['left'], domain.boundaryTags['right']]:
+#        return lambda x,t: ans.uOfX(x) 
     
 dirichletConditions = {0:getDBC}
 
 fluxBoundaryConditions = {0:'noFlow'}
 
 def getFlux(x,flag):
-    pass
+    return lambda x,t: 0.0
+#    pass
+#    if flag in [domain.boundaryTags['bottom'], domain.boundaryTags['top']]:
+#        return lambda x,t: ans.uOfX(x) 
 
 advectiveFluxBoundaryConditions =  {0:getFlux}
 

@@ -36,6 +36,8 @@ namespace proteus
 			sol = x * x + y * y + 1.0;
 		else if (test == 8.0) // Ji et al 2016, Example 1
 			sol = pow(x * x + y * y,3.0/2.0);
+		else if (test == 9.0) // PWL linear
+		  sol = -(x-0.5);
 		else
 			assert(false && "Unknown test case in sol_inner");
 		return sol;
@@ -62,8 +64,10 @@ namespace proteus
 			sol = x * x + y * y;
 		else if (test == 8.0) // Ji et al 2016, Example 1
 			sol = pow(x*x + y*y,3.0/2.0)/b + (1.0 - 1.0/b)*0.125;
+		else if (test == 9.0) // PWL linear
+		  sol = -(x-0.5)/1000.0;
 		else
-			assert(false && "Unknown test case in sol_outer");
+		  assert(false && "Unknown test case in sol_outer");
 		return sol;
 	}
 	template <int nSpace, int nP, int nQ, int nEBQ>
@@ -470,6 +474,7 @@ namespace proteus
 											 std::valarray<bool> &elementIsActive,
 											 double *JA,
 											 double *JB,
+											 double &Linfty_error,
 											 double &L2_error,
 											 double test)
 		{
@@ -477,6 +482,7 @@ namespace proteus
 			{
 				elementResidual_u.data()[i] = 0.0;
 			}
+			//std::cout<<"=========================================================="<<std::endl;
 			// loop over quadrature points and compute integrands
 			for (int k = 0; k < nQuadraturePoints_element; k++)
 			{
@@ -581,72 +587,196 @@ namespace proteus
 					for (int I = 0; I < nSpace; I++)
 					{
 						u_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//PGIFEM
+						//ua_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//ub_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
 					}
 				}
-				if (icase_f == 0 && gf_f.exact.corner == false)
+				if (icase_f == 0)
 				{
-					double va[nDOF_trial_element], va_grad_trial[nDOF_trial_element * nSpace], vb[nDOF_trial_element], vb_grad_trial[nDOF_trial_element * nSpace];
-					for (int i = 0; i < nDOF_trial_element; i++)
+				  double flux_jump=0.0;
+				  if (test == 1.0)
+				    flux_jump=2.0;
+				  if (fabs(flux_jump)>0.0 && !gf_f.exact.corner && !gf_f.exact.edge)
+				    {
+				      int method=1;
+				      if (method == 0)
 					{
-						va[i] = gf_f.VA(i);
-						//assert(fabs(va[i] - u_trial_ref.data()[k * nDOF_trial_element+i])< 1.0e-8);
-						va_grad_trial[i * nSpace + 0] = gf_f.VA_x(i);
-						//assert(fabs(va_grad_trial[i * nSpace + 0] - u_grad_trial[i * nSpace + 0]) < 1.0e-8);
-						va_grad_trial[i * nSpace + 1] = gf_f.VA_y(i);
-						//assert(fabs(va_grad_trial[i * nSpace + 1] - u_grad_trial[i * nSpace + 1]) < 1.0e-8);
-						vb[i] = gf_f.VB(i);
-						//assert(fabs(vb[i] - u_trial_ref.data()[k * nDOF_trial_element+i])< 1.0e-8);
-						vb_grad_trial[i * nSpace + 0] = gf_f.VB_x(i);
-						//assert(fabs(vb_grad_trial[i * nSpace + 0] - u_grad_trial[i * nSpace + 0]) < 1.0e-8);
-						vb_grad_trial[i * nSpace + 1] = gf_f.VB_y(i);
-						//assert(fabs(vb_grad_trial[i * nSpace + 0] - u_grad_trial[i * nSpace + 0]) < 1.0e-8);
+				      double dv[nDOF_mesh_trial_element];
+				      int j[2]={0,0};
+				      double dMax=0.0,dMin=0.0;
+				      assert(gf_f.get_normal()[0]*gf_f.get_normal()[0] + gf_f.get_normal()[1]*gf_f.get_normal()[1] - 1.0 < 1.0e-8); 
+				      for (int i=0; i<nDOF_mesh_trial_element;i++)
+					{
+					  dv[i] = 0.0;
+					  for (int I=0;I<nSpace;I++)
+					    dv[i] += u_grad_trial[i*nSpace+I]*gf_f.get_normal()[I]*gf_f.exact.normal_sign;
+					  if (dv[i] > dMax)
+					    {
+					      j[1] = i;
+					      dMax = dv[i];
+					    }
+					  else if (dv[i] < dMin)
+					    {
+					      j[0]=i;
+					      dMin = dv[i];
+					    }
 					}
-					ck.valFromElementDOF(element_u.data(), va, ua);
-					ck.gradFromElementDOF(element_u.data(), va_grad_trial, grad_ua);
-					ck.valFromElementDOF(element_u.data(), vb, ub);
-					ck.gradFromElementDOF(element_u.data(), vb_grad_trial, grad_ub);
-					ck.valFromElementDOF(JA, va, uja);
-					ck.gradFromElementDOF(JA, va_grad_trial, grad_uja);
-					ck.valFromElementDOF(JB, vb, ujb);
-					ck.gradFromElementDOF(JB, vb_grad_trial, grad_ujb);
-					for (int j = 0; j < nDOF_trial_element; j++)
+				      assert(j[0] != j[1]);
+				      int j_other;
+				      for (int i=0; i<nDOF_mesh_trial_element;i++)
+					if (i != j[0] && i !=j[1])
+					  j_other = i;
+				      //std::cout<<j[0]<<'\t'<<j[1]<<'\t'<<j_other<<std::endl;
+				      if(gf_f.exact.phi_dof_corrected[j[0]]*gf_f.exact.phi_dof_corrected[j[1]] >= 0.0);
+				      {
+					if(gf_f.exact.phi_dof_corrected[j[1]]*gf_f.exact.phi_dof_corrected[j_other] < 0.0)
+					  {
+					    int tmp=j[0];
+					    j[0] = j_other;
+					    j_other=tmp;
+					  }
+					else
+					  {
+					    int tmp=j[1];
+					    j[1] = j_other;
+					    j_other=tmp;
+					  }
+				      }
+				      if (gf_f.exact.phi_dof_corrected[j[0]] > 0.0)
 					{
-						ua_test_dV[j] = va[j] * dV;
-						ub_test_dV[j] = vb[j] * dV;
-						for (int I = 0; I < nSpace; I++)
+					  int tmp=j[0];
+					  j[0] = j[1];
+					  j[1] = tmp;
+					}
+				      //std::cout<<j[0]<<'\t'<<j[1]<<'\t'<<j_other<<std::endl;
+				      //std::cout<<"phi "<<gf_f.exact.phi_dof_corrected[j[0]]<<'\t'<<gf_f.exact.phi_dof_corrected[j[1]]<<'\t'<<gf_f.exact.phi_dof_corrected[j_other]<<std::endl;				      
+				      assert(gf_f.exact.phi_dof_corrected[j[0]]*gf_f.exact.phi_dof_corrected[j[1]] < 0.0);				      
+				      double xc = 0.5 - 0.5*(gf_f.exact.phi_dof_corrected[j[1]] + gf_f.exact.phi_dof_corrected[j[0]])/(gf_f.exact.phi_dof_corrected[j[1]]-gf_f.exact.phi_dof_corrected[j[0]]);
+				      double v[2] = {1.0-xc, xc};
+				      JA[j[1]] = flux_jump*v[0]/(dv[j[0]]*v[1] - dv[j[1]]*v[0]);
+				      JB[j[0]] = flux_jump*v[1]/(dv[j[0]]*v[1] - dv[j[1]]*v[0]);
+				      //std::cout<<"JA "<<JA[j[1]]<<'\t'<<JB[j[0]]<<std::endl;
+				      //std::cout<<"fluxes "<<JA[j[1]]*dv[j[1]]<<'\t'<<JB[j[0]]*dv[j[0]]<<std::endl;
+				      assert(fabs(JB[j[0]]*dv[j[0]] - JA[j[1]]*dv[j[1]] - flux_jump) < 1.0e-8);
+				      assert(fabs(JB[j[0]]*v[0] - JA[j[1]]*v[1]) < 1.0e-8);
+					}
+				      if (method == 1)
+					{
+					  double dv[nDOF_mesh_trial_element];
+					  int np=0;
+					  int pos[2]={-1,-1};
+					  int nn=0;
+					  int neg[2]={-1,-1};
+					  bool inside_out=false;
+					  for (int i=0; i<nDOF_mesh_trial_element;i++)
+					    {
+					      dv[i] = 0.0;
+					      for (int I=0;I<nSpace;I++)
+						dv[i] += u_grad_trial[i*nSpace+I]*gf_f.get_normal()[I]*gf_f.exact.normal_sign;
+					      if (gf_f.exact.phi_dof_corrected[i] >=0.0)
 						{
-							ua_grad_trial[j * nSpace + I] = va_grad_trial[j * nSpace + I];
-							ub_grad_trial[j * nSpace + I] = vb_grad_trial[j * nSpace + I];
-							ua_grad_test_dV[j * nSpace + I] = va_grad_trial[j * nSpace + I] * dV;
-							ub_grad_test_dV[j * nSpace + I] = vb_grad_trial[j * nSpace + I] * dV;
+						  pos[np] = i;
+						  np+=1;
 						}
-					}
-				}
-				if (icase_f == 0 && gf_f.exact.corner == true)
-				{
-					ua = u;
-					ub = u;
-					for (int I = 0; I < nSpace; I++)
-					{
-						grad_ua[I] = grad_u[I];
-						grad_ub[I] = grad_u[I];
-					}
-					ck.valFromElementDOF(JA, &u_trial_ref.data()[k * nDOF_trial_element], uja);
-					ck.gradFromElementDOF(JA, u_grad_trial, grad_uja);
-					ck.valFromElementDOF(JB, &u_trial_ref.data()[k * nDOF_trial_element], ujb);
-					ck.gradFromElementDOF(JB, u_grad_trial, grad_ujb);
-					for (int j = 0; j < nDOF_trial_element; j++)
-					{
-						ua_test_dV[j] = u_test_dV[j];
-						ub_test_dV[j] = u_test_dV[j];
-						for (int I = 0; I < nSpace; I++)
+					      else
 						{
-							ua_grad_trial[j * nSpace + I] = u_grad_trial[j * nSpace + I];
-							ub_grad_trial[j * nSpace + I] = u_grad_trial[j * nSpace + I];
-							ua_grad_test_dV[j * nSpace + I] = u_grad_test_dV[j * nSpace + I];
-							ub_grad_test_dV[j * nSpace + I] = u_grad_test_dV[j * nSpace + I];
+						  neg[nn] = i;
+						  nn+=1;
 						}
+					    }
+					  assert(nn+np==3);
+					  int base=0;
+					  int* tips;
+					  if (nn==2)
+					    {
+					      base=pos[0];
+					      tips=neg;
+					    }
+					  else
+					    {
+					      base=neg[0];
+					      tips=pos;
+					    }
+					  if (nn==2)
+					    inside_out=true;
+					  assert(gf_f.exact.phi_dof_corrected[base]*gf_f.exact.phi_dof_corrected[tips[0]] <= 0.0);				      
+					  assert(gf_f.exact.phi_dof_corrected[base]*gf_f.exact.phi_dof_corrected[tips[1]] <= 0.0);				      
+					  double xc[2] = {0.5 - 0.5*(gf_f.exact.phi_dof_corrected[tips[0]] + gf_f.exact.phi_dof_corrected[base])/(gf_f.exact.phi_dof_corrected[tips[0]]-gf_f.exact.phi_dof_corrected[base]),
+							  0.5 - 0.5*(gf_f.exact.phi_dof_corrected[tips[1]] + gf_f.exact.phi_dof_corrected[base])/(gf_f.exact.phi_dof_corrected[tips[1]]-gf_f.exact.phi_dof_corrected[base])};
+					  /*
+					    std::cout<<base<<'\t'<<tips[0]<<'\t'<<tips[1]<<std::endl;
+					  std::cout<<"phi "<<gf_f.exact.phi_dof_corrected[base]<<'\t'
+						   <<gf_f.exact.phi_dof_corrected[tips[0]]<<'\t'
+						   <<gf_f.exact.phi_dof_corrected[tips[1]]<<std::endl;
+					  std::cout<<"xc "<<xc[0]<<'\t'<<xc[1]<<std::endl;
+					  */
+					  double v[2][3];
+					  v[0][base]= 1.0-xc[0];
+					  v[0][tips[0]] = xc[0];
+					  v[0][tips[1]] = 0.0;
+					  
+					  v[1][base]= 1.0-xc[1];
+					  v[1][tips[0]] = 0.0;
+					  v[1][tips[1]] = xc[1];
+					  if (inside_out)
+					    {
+					      JB[base]    =  flux_jump*(v[0][tips[0]]*v[1][tips[1]] - v[0][tips[1]]*v[1][tips[0]])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					      JA[tips[0]] =  flux_jump*(v[0][base]*v[1][tips[1]] - v[0][tips[1]]*v[1][base])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					      JA[tips[1]] =   -flux_jump*(v[0][base]*v[1][tips[0]] - v[0][tips[0]]*v[1][base])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					    }
+					  else
+					    {
+					      JA[base]    =  -flux_jump*(v[0][tips[0]]*v[1][tips[1]] - v[0][tips[1]]*v[1][tips[0]])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					      JB[tips[0]] =  -flux_jump*(v[0][base]*v[1][tips[1]] - v[0][tips[1]]*v[1][base])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					      JB[tips[1]] =   flux_jump*(v[0][base]*v[1][tips[0]] - v[0][tips[0]]*v[1][base])/(dv[base]*v[0][tips[0]]*v[1][tips[1]] - dv[base]*v[0][tips[1]]*v[1][tips[0]] - dv[tips[0]]*v[0][base]*v[1][tips[1]] + dv[tips[0]]*v[0][tips[1]]*v[1][base] + dv[tips[1]]*v[0][base]*v[1][tips[0]] - dv[tips[1]]*v[0][tips[0]]*v[1][base]);
+					    }
+					  //std::cout<<"JA "<<JA[j[1]]<<'\t'<<JB[j[0]]<<std::endl;
+					  //std::cout<<"fluxes "<<JA[j[1]]*dv[j[1]]<<'\t'<<JB[j[0]]*dv[j[0]]<<std::endl;
+					  //std::cout<<"du/dn B "<<JB[0]*dv[0]+JB[1]*dv[1]+JB[2]*dv[2]<<std::endl;
+					  //std::cout<<"du/dn A "<<JA[0]*dv[0]+JA[1]*dv[1]+JA[2]*dv[2]<<std::endl;
+					  assert(fabs(JB[0]*dv[0]+JB[1]*dv[1]+JB[2]*dv[2]-(JA[0]*dv[0]+JA[1]*dv[1]+JA[2]*dv[2]) - flux_jump) < 1.0e-8);
+					  assert(fabs(JB[0]*v[0][0]+JB[1]*v[0][1]+JB[2]*v[0][2]-(JA[0]*v[0][0]+JA[1]*v[0][1]+JA[2]*v[0][2])) < 1.0e-8);
+					  assert(fabs(JB[0]*v[1][0]+JB[1]*v[1][1]+JB[2]*v[1][2]-(JA[0]*v[1][0]+JA[1]*v[1][1]+JA[2]*v[1][2])) < 1.0e-8);
+					} 
+				    }
+				  double va[nDOF_trial_element], va_grad_trial[nDOF_trial_element * nSpace], vb[nDOF_trial_element], vb_grad_trial[nDOF_trial_element * nSpace];
+				  for (int i = 0; i < nDOF_trial_element; i++)
+				    {
+				      va[i] = gf_f.VA(i);
+				      //assert(fabs(va[i] - u_trial_ref.data()[k * nDOF_trial_element+i])< 1.0e-8);
+				      va_grad_trial[i * nSpace + 0] = gf_f.VA_x(i);
+				      //assert(fabs(va_grad_trial[i * nSpace + 0] - u_grad_trial[i * nSpace + 0]) < 1.0e-8);
+				      va_grad_trial[i * nSpace + 1] = gf_f.VA_y(i);
+				      //assert(fabs(va_grad_trial[i * nSpace + 1] - u_grad_trial[i * nSpace + 1]) < 1.0e-8);
+				      vb[i] = gf_f.VB(i);
+				      //assert(fabs(vb[i] - u_trial_ref.data()[k * nDOF_trial_element+i])< 1.0e-8);
+				      vb_grad_trial[i * nSpace + 0] = gf_f.VB_x(i);
+				      //assert(fabs(vb_grad_trial[i * nSpace + 0] - u_grad_trial[i * nSpace + 0]) < 1.0e-8);
+				      vb_grad_trial[i * nSpace + 1] = gf_f.VB_y(i);
+				      //assert(fabs(vb_grad_trial[i * nSpace + 0] - u_grad_trial[i * nSpace + 0]) < 1.0e-8);
+				    }
+				  ck.valFromElementDOF(element_u.data(), va, ua);
+				  ck.gradFromElementDOF(element_u.data(), va_grad_trial, grad_ua);
+				  ck.valFromElementDOF(element_u.data(), vb, ub);
+				  ck.gradFromElementDOF(element_u.data(), vb_grad_trial, grad_ub);
+				  ck.valFromElementDOF(JA, va, uja);
+				  ck.gradFromElementDOF(JA, va_grad_trial, grad_uja);
+				  ck.valFromElementDOF(JB, vb, ujb);
+				  ck.gradFromElementDOF(JB, vb_grad_trial, grad_ujb);
+				  //std::cout<<"[[u]]"<<ub+ujb-ua-uja<<std::endl;
+				  for (int j = 0; j < nDOF_trial_element; j++)
+				    {
+				      ua_test_dV[j] = va[j] * dV;
+				      ub_test_dV[j] = vb[j] * dV;
+				      for (int I = 0; I < nSpace; I++)
+					{
+					  ua_grad_trial[j * nSpace + I] = va_grad_trial[j * nSpace + I];
+					  ub_grad_trial[j * nSpace + I] = vb_grad_trial[j * nSpace + I];
+					  ua_grad_test_dV[j * nSpace + I] = va_grad_trial[j * nSpace + I] * dV;
+					  ub_grad_test_dV[j * nSpace + I] = vb_grad_trial[j * nSpace + I] * dV;
 					}
+				    }
 				}
 				//
 				// calculate pde coefficients at quadrature points
@@ -677,8 +807,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,
@@ -717,8 +847,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateImmersedBoundaryTerms(immersedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,
@@ -792,57 +922,74 @@ namespace proteus
 				//
 				// update element residual
 				//
+				/*
+				if(icase_f == 0 && immersedBoundary_u_q.data()[eN_k] < 0)
+				  std::cout<<x<<'\t'<<y<<'\t'<<ua+uja<<std::endl;
+				else if (icase_f == 0 && immersedBoundary_u_q.data()[eN_k] >= 0)  
+				  std::cout<<x<<'\t'<<y<<'\t'<<ub+ujb<<std::endl;
+				else
+				  std::cout<<x<<'\t'<<y<<'\t'<<u<<std::endl;
+				*/
 				for (int i = 0; i < nDOF_test_element; i++)
 				{
 					int i_nSpace = i * nSpace;
 					if (icase_f == 0)
 					{
-						// Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
-						double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
-						if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = x * x + y * y + 1.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 8.0) // Ji et al 2014, Example 1
-						{
-							a_loc[0] = 1.0;
-							a_loc[3] = a_loc[0];
-						}
-						elementResidual_u.data()[i] += ImH_f * H_s * (ck.Advection_weak(f, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ua, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_uja, &ua_grad_test_dV[i_nSpace]) + 
-							ck.Reaction_weak(r, ua_test_dV[i]) + 
-							ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ua, &ua_grad_test_dV[i_nSpace]));
+					  // Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
+					  double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
+					  if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
+					    {
+					      a_loc[0] = x * x + y * y + 1.0;
+					      a_loc[3] = a_loc[0];
+					    }
+					  else if (test == 8.0 || test == 9.0) // Ji et al 2014, Example 1
+					    {
+					      a_loc[0] = 1.0;
+					      a_loc[3] = a_loc[0];
+					    }
+					  if(gf_f.exact.edge <= 0 && gf_f.exact.corner <=0)//full cut or cut on boundary of negative cell
+					    {
+					      elementResidual_u.data()[i] += ImH_f * H_s * (ck.Advection_weak(f, &ua_grad_test_dV[i_nSpace]) + 
+											    ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ua, &ua_grad_test_dV[i_nSpace]) + 
+											    ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_uja, &ua_grad_test_dV[i_nSpace]) + 
+											    ck.Reaction_weak(r, ua_test_dV[i]) + 
+											    ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ua, &ua_grad_test_dV[i_nSpace]));
+					    }
+					  double sol = sol_inner(test, x, y);
+					  L2_error += ImH_f * (ua + uja - sol) * (ua + uja - sol) * dV;	
+					  if (test == 2.0) // Leveque & Li 1994, Example 2
+					    {
+					      a_loc[0] = 10.0;
+					      a_loc[3] = a_loc[0];
+					    }
+					  else if (test == 2.1) // Leveque & Li 1994, Example 2
+					    {
+					      a_loc[0] = -3.0;
+					      a_loc[3] = a_loc[0];
+					    }
+					  else if (test == 8.0 || test==9.0) // Ji et al 2014, Example 1
+					    {
+					      a_loc[0] = 1000.0;
+					      a_loc[3] = a_loc[0];
+					    }
+					  if(gf_f.exact.edge >=  0 && gf_f.exact.corner >= 0)
+					    {
+					      elementResidual_u.data()[i] += H_f * H_s * (ck.Advection_weak(f, &ub_grad_test_dV[i_nSpace]) + 
+											  ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ub, &ub_grad_test_dV[i_nSpace]) + 
+											  ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ujb, &ub_grad_test_dV[i_nSpace]) + 
+											  ck.Reaction_weak(r, ub_test_dV[i]) + 
+											  ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
 
-						if (test == 2.0) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = 10.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 2.1) // Leveque & Li 1994, Example 2
-						{
-							a_loc[0] = -3.0;
-							a_loc[3] = a_loc[0];
-						}
-						else if (test == 8.0) // Ji et al 2014, Example 1
-						{
-							a_loc[0] = 1000.0;
-							a_loc[3] = a_loc[0];
-						}
-						elementResidual_u.data()[i] += H_f * H_s * (ck.Advection_weak(f, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ub, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ujb, &ub_grad_test_dV[i_nSpace]) + 
-						ck.Reaction_weak(r, ub_test_dV[i]) + 
-						ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
-
-						double sol = sol_inner(test, x, y);
-						L2_error += ImH_f * (ua + uja - sol) * (ua + uja - sol) * dV;	
-						sol = sol_outer(test, x, y, a_loc[0], 0.1);
-						L2_error += H_f * (ub  + ujb - sol) * (ub + ujb  - sol) * dV;
+					    }
+					  if(!gf_f.exact.corner && !gf_f.exact.edge)
+					    std::cout<<"[[du/dn]]"
+						     <<gf_f.exact.normal_sign*((grad_ub[0]+grad_ujb[0])*gf_f.exact.get_normal()[0]+(grad_ub[1]+grad_ujb[1])*gf_f.exact.get_normal()[1]-((grad_ua[0]+grad_uja[0])*gf_f.exact.get_normal()[0]+(grad_ua[1]+grad_uja[1])*gf_f.exact.get_normal()[1]))<<std::endl;
+					  sol = sol_outer(test, x, y, a_loc[0], 0.1);
+					  L2_error += H_f * (ub  + ujb - sol) * (ub + ujb  - sol) * dV;
 					}
 					else
 					{
+
 						elementResidual_u.data()[i] += H_s * (ck.Advection_weak(f, &u_grad_test_dV[i_nSpace]) +
 															  ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a, grad_u, &u_grad_test_dV[i_nSpace]) +
 															  ck.Reaction_weak(r, u_test_dV[i]) +
@@ -861,13 +1008,14 @@ namespace proteus
 					}
 					if (embeddedBoundary)
 					{
+					  if (gf_s.exact.edge >= 0 && !gf_s.exact.corner)
 						elementResidual_u.data()[i] += (ck.Advection_weak(f_s, &u_grad_test_dV[i_nSpace]) +
 														ck.Reaction_weak(r_s, u_test_dV[i]) +
 														ck.Hamiltonian_weak(ham_s, u_test_dV[i]));
 					}
 					if (immersedBoundary)
 					{
-						if (!gf_f.exact.bminus && !gf_f.exact.corner)
+						if (gf_f.exact.edge >= 0 && !gf_f.exact.corner)
 							elementResidual_u.data()[i] += (ck.Advection_weak(f_f, &u_grad_test_dV[i_nSpace]) +
 															ck.Reaction_weak(r_f, u_test_dV[i]) +
 															ck.Hamiltonian_weak(ham_f, u_test_dV[i]));
@@ -1018,7 +1166,13 @@ namespace proteus
 				}
 				// Leveque & Li 1994, Example 1, 3,4,4l, PWC, PWL, PWQ
 				double mua = 1.0, mub = 1.0, jf=0.0;
-				if (test == 2.0) // Leveque & Li 1994, Example 2a
+				if (test == 1.0)
+				  {
+				    jf = 0.0;//-2.0;
+				    //mua = 2.0;
+				    //mub = 1.0;
+				  }
+				else if (test == 2.0) // Leveque & Li 1994, Example 2a
 				{
 					//jf= -0.2;
 					mua = 1.25;
@@ -1030,13 +1184,13 @@ namespace proteus
 					mua = 1.25;
 					mub = -3.0;
 				}
-				else if (test == 8.0) // Ji et al 2014, Example 1
+				else if (test == 8.0 || test==9.0) // Ji et al 2014, Example 1
 				{
 					//jf= -0.2;
 					mua = 1.0;
 					mub = 1000.0;
 				}
-				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mub, mua, jf, false, false);
+				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mua, mub, jf, false, false);
 				double JA[3] = {0.0, 0.0, 0.0}, JB[3] = {0.0, 0.0, 0.0};
 				if (icase_f == 0)
 				{
@@ -1048,16 +1202,16 @@ namespace proteus
 						if (elementBoundaryElementsArray.data()[ebN * 2 + 1] != -1 && (ebN < nElementBoundaries_owned))
 							ifem_boundaries.insert(ebN);
 					}
-					double jump = 0.0; // Leveque & Li 1994, Example 1, 2
+					double jump = 0.0;// Leveque & Li 1994, Example 1, 2
 					if (test == 3.0)   // Leveque and Li 1994, Example 3
-						jump = -exp(gf_f.exact.cut_barycenter[0]) * cos(gf_f.exact.cut_barycenter[1]);
+					  jump = -exp(gf_f.exact.cut_barycenter[0]) * cos(gf_f.exact.cut_barycenter[1]);
 					else if (test == 4.0) // Leveque and Li 1994, Example 4
-						jump = -(gf_f.exact.cut_barycenter[0] * gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1] * gf_f.exact.cut_barycenter[1]);
+					  jump = -(gf_f.exact.cut_barycenter[0] * gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1] * gf_f.exact.cut_barycenter[1]);
 					else if (test == 4.1) // Leveque and Li 1994, Example 4l
-						jump = -(gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1]);
+					  jump = -(gf_f.exact.cut_barycenter[0] - gf_f.exact.cut_barycenter[1]);
 					else if (test == 5.0 || test == 6.0 || test == 7.0) // PWC,PWL,PWQ
-						jump = -1;
-					if (gf_f.exact.corner == false)
+					  jump = -1;
+					if (!gf_f.exact.corner)
 					{
 						for (int i = 0; i < nDOF_mesh_trial_element; i++)
 						{
@@ -1215,6 +1369,7 @@ namespace proteus
 										 elementIsActive,
 										 JA,
 										 JB,
+										 Linfty_error.data()[0],
 										 L2_error.data()[0],
 										 test);
 				//
@@ -1223,7 +1378,6 @@ namespace proteus
 				for (int i = 0; i < nDOF_test_element; i++)
 				{
 					int eN_i = eN * nDOF_test_element + i;
-
 					globalResidual.data()[offset_u + stride_u * u_l2g.data()[eN_i]] += elementResidual_u.data()[i];
 					if (element_active)
 						isActiveDOF.data()[offset_u + stride_u * u_l2g.data()[eN_i]] = 1.0;
@@ -1758,9 +1912,12 @@ namespace proteus
 					for (int I = 0; I < nSpace; I++)
 					{
 						u_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//PGIFEM
+						//ua_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//ub_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
 					}
 				}
-				if (icase_f == 0 and gf_f.exact.corner == false)
+				if (icase_f == 0)
 				{
 					double va[nDOF_trial_element], va_grad_trial[nDOF_trial_element * nSpace], 
 						vb[nDOF_trial_element], vb_grad_trial[nDOF_trial_element * nSpace];
@@ -1790,28 +1947,6 @@ namespace proteus
 						}
 					}
 				}
-				if (icase_f == 0 && gf_f.exact.corner == true)
-				{
-					ua = u;
-					ub = u;
-					for (int I = 0; I < nSpace; I++)
-					{
-						grad_ua[I] = grad_u[I];
-						grad_ub[I] = grad_u[I];
-					}
-					for (int j = 0; j < nDOF_trial_element; j++)
-					{
-						ua_test_dV[j] = u_test_dV[j];
-						ub_test_dV[j] = u_test_dV[j];
-						for (int I = 0; I < nSpace; I++)
-						{
-							ua_grad_trial[j * nSpace + I] = u_grad_trial[j * nSpace + I];
-							ub_grad_trial[j * nSpace + I] = u_grad_trial[j * nSpace + I];
-							ua_grad_test_dV[j * nSpace + I] = u_grad_test_dV[j * nSpace + I];
-							ub_grad_test_dV[j * nSpace + I] = u_grad_test_dV[j * nSpace + I];
-						}
-					}
-				}
 				//
 				// calculate pde coefficients and derivatives at quadrature points
 				//
@@ -1837,8 +1972,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,
@@ -1871,8 +2006,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateImmersedBoundaryTerms(immersedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,
@@ -1937,14 +2072,16 @@ namespace proteus
 						int j_nSpace = j * nSpace;
 						if (icase_f == 0)
 						{
+						  double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
+						  if(gf_f.exact.edge <= 0 && gf_f.exact.corner<= 0)
+						    {
 							// Leveque & Li 1994, Examples 1, 3, 4, PWC, PWL, PWQ
-							double a_loc[4] = {1.0, 0.0, 0.0, 1.0};
 							if (test == 2.0 || test == 2.1) // Leveque & Li 1994, Example 2
 							{
 								a_loc[0] = x * x + y * y + 1;
 								a_loc[3] = a_loc[0];
 							}
-							if (test == 8.0) // Ji etal 2014, Example 1
+							if (test == 8.0 || test==9.0) // Ji etal 2014, Example 1
 							{
 								a_loc[0] = 1.0;
 								a_loc[3] = a_loc[0];
@@ -1953,6 +2090,9 @@ namespace proteus
 								ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]) + 
 								ck.ReactionJacobian_weak(dr, ua_trial[j], ua_test_dV[i]) + 
 								ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]));
+						    }
+						  if(gf_f.exact.edge >= 0 && gf_f.exact.corner >=0)
+						    {
 							if (test == 2.0) // Leveque & Li 1994, Example 2
 							{
 								a_loc[0] = 10.0;
@@ -1963,7 +2103,7 @@ namespace proteus
 								a_loc[0] = -3.0;
 								a_loc[3] = a_loc[0];
 							}
-							else if (test == 8.0) // Ji et al 2014, Example 1
+							else if (test == 8.0 || test==9.0) // Ji et al 2014, Example 1
 							{
 								a_loc[0] = 1000.0;
 								a_loc[3] = a_loc[0];
@@ -1972,6 +2112,7 @@ namespace proteus
 							ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]) + 
 							ck.ReactionJacobian_weak(dr, ub_trial[j], ub_test_dV[i]) + 
 							ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]));
+						    }
 						}
 						else
 						{
@@ -1983,13 +2124,14 @@ namespace proteus
 						}
 						if (embeddedBoundary)
 						{
+						  if (gf_s.exact.edge >=0 && !gf_s.exact.corner)
 							elementJacobian_u_u.data()[i * nDOF_trial_element + j] += (ck.AdvectionJacobian_weak(df_s, u_trial_ref.data()[k * nDOF_trial_element + j], &u_grad_test_dV[i_nSpace]) +
 																					   ck.ReactionJacobian_weak(dr_s, u_trial_ref.data()[k * nDOF_trial_element + j], u_test_dV[i]) +
 																					   ck.HamiltonianJacobian_weak(dham_s, &u_grad_trial[j_nSpace], u_test_dV[i]));
 						}
 						if (immersedBoundary)
 						{
-							if (!gf_f.exact.bminus && !gf_f.exact.corner)
+							if (gf_f.exact.edge >=0 && !gf_f.exact.corner)
 								elementJacobian_u_u.data()[i * nDOF_trial_element + j] += (ck.AdvectionJacobian_weak(df_f, u_trial_ref.data()[k * nDOF_trial_element + j], &u_grad_test_dV[i_nSpace]) +
 																					   ck.ReactionJacobian_weak(dr_f, u_trial_ref.data()[k * nDOF_trial_element + j], u_test_dV[i]) +
 																					   ck.HamiltonianJacobian_weak(dham_f, &u_grad_trial[j_nSpace], u_test_dV[i]));
@@ -2114,7 +2256,13 @@ namespace proteus
 				// Leveque & Li 1994, Example 1, 3,4,4l
 				// PWC,PWL,PWQ
 				double mua = 1.0, mub = 1.0, jf = 0.0;
-				if (test == 2.0) // Leveque & Li 1994, Example 2
+				if (test == 1.0)
+				  {
+				    jf = 0.0;//-2.0;
+				    //mua = 2.0;
+				    //mub = 1.0;
+				  }
+				else if (test == 2.0) // Leveque & Li 1994, Example 2
 				{
 					//jf = -0.2;
 					mua = 1.25;
@@ -2126,13 +2274,13 @@ namespace proteus
 					mua = 1.25;
 					mub = -3.0;
 				}
-				else if (test == 8.0) // Ji et al 2014, Example 1
+				else if (test == 8.0 || test==9.0) // Ji et al 2014, Example 1
 				{
 					//jf = -0.2;
 					mua = 1.0;
 					mub = 1000.0;
 				}
-				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mub, mua, jf, false, false);
+				int icase_f = gf_f.calculate(element_phi_f, element_nodes, x_ref.data(), mua, mub, jf, false, false);
 				calculateElementJacobian(icase_f,
 										 mesh_trial_ref,
 										 mesh_grad_trial_ref,

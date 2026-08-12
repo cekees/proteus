@@ -713,6 +713,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 r[self.offset[0] + self.stride[0] * dofN] = self.u[0].dof[dofN] - g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN], self.timeIntegration.t)
         self.u[0].dof[:] = np.where(self.isActiveDOF == 1.0, self.u[0].dof,0.0)
         r*=self.isActiveDOF
+        log("2 error = {0}".format(self.L2_error**0.5),level=3)
+        log("infty error = {0}".format(self.Linfty_error),level=3)
         log("Global residual",level=9,data=r)
         #self.coefficients.massConservationError = fabs(globalSum(sum(r.flat[:self.mesh.nElements_owned])))
         #log("   Mass Conservation Error",level=3,data=self.coefficients.massConservationError)

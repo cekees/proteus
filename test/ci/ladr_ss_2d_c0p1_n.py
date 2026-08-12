@@ -53,7 +53,7 @@ elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,6)
 #elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,6)
 
 
-nnx=4*2**opts.refinement+1
+nnx=2*2**opts.refinement+1
 nny = nnx
 genMesh = True
 triangleOptions = "VApq30Dena%8.8f" % (((L[0]/(nnx-1))**2)/2.0,)
