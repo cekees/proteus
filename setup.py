@@ -1,4 +1,5 @@
 import sys, os
+import platform
 import setuptools
 from distutils import sysconfig
 cfg_vars = sysconfig.get_config_vars()
@@ -6,6 +7,48 @@ for key, value in cfg_vars.items():
     if type(value) == str:
         cfg_vars[key] = cfg_vars[key].replace("-Wstrict-prototypes", "")
         cfg_vars[key] = cfg_vars[key].replace("-Wall", "-w")
+
+# Some conda-forge Python builds (confirmed: the environment-dev.yml-pinned
+# python=3.12.5 osx-64 build) bake '-Wl,-rpath,<dir>' into their own
+# sysconfig LDSHARED/LDCXXSHARED *twice* already -- i.e. every C/C++
+# extension this interpreter links inherits a duplicate rpath before
+# anything in this setup.py adds a single flag of its own. On current
+# macOS, dyld refuses to even open a .so with a literal duplicate LC_RPATH
+# load command ("dlopen(...): tried: ... (duplicate LC_RPATH ...)"), so
+# every extension built with such an interpreter fails to import. Separately,
+# the conda-forge `compilers` package's own activation script sets $LDFLAGS
+# to the *same* '-Wl,-rpath,<dir>' -- and setuptools appends $LDFLAGS to
+# every link command in addition to LDSHARED/LDCXXSHARED, so even after
+# collapsing LDSHARED's own internal duplicate down to one copy, that one
+# copy plus LDFLAGS's copy still add up to two identical LC_RPATH entries.
+# dyld's duplicate check is on the *final linked binary*, not the source of
+# each flag, so both angles have to be deduped together: collapse repeats
+# within LDSHARED/LDCXXSHARED themselves, then drop any rpath token from
+# them that's already present in $LDFLAGS (leaving LDFLAGS's copy as the
+# single source of truth). Patched here, in the same place this file
+# already patches other sysconfig quirks above, rather than in every
+# individual Extension(). Python 3.12 removed distutils from the stdlib, so
+# setuptools' build_ext actually customizes the compiler via the *stdlib*
+# `sysconfig` module's own config cache, not `distutils.sysconfig`'s (they
+# are two distinct dicts on this setuptools/Python combination, confirmed
+# by identity check) -- patch both so this holds regardless of which one
+# the installed setuptools version ends up reading from.
+def _dedup_rpath_tokens(flags):
+    ldflags_env = os.environ.get('LDFLAGS', '')
+    seen = set()
+    out = []
+    for tok in flags.split():
+        if tok.startswith('-Wl,-rpath,'):
+            if tok in seen or tok in ldflags_env:
+                continue
+            seen.add(tok)
+        out.append(tok)
+    return ' '.join(out)
+import sysconfig as _stdlib_sysconfig
+for _cfg_vars in (cfg_vars, _stdlib_sysconfig.get_config_vars()):
+    for key in ('LDSHARED', 'LDCXXSHARED'):
+        if isinstance(_cfg_vars.get(key), str):
+            _cfg_vars[key] = _dedup_rpath_tokens(_cfg_vars[key])
 
 from distutils.core import setup
 from Cython.Build import cythonize
@@ -30,7 +73,13 @@ import numpy
 #
 #  Set the DISTUTILS_DEBUG environment variable to print detailed information while setup.py is running.
 #
-sys.path.append(os.path.join(os.path.dirname(__file__)))#, '..', 'MyPackage'))
+
+# insert (not append): an already-installed proteus package earlier on
+# sys.path (e.g. via PYTHONPATH pointing at a previous --target install)
+# would otherwise shadow *this* checkout's own proteus/config, silently
+# building against a stale config.py instead of the one actually being
+# edited/rebuilt.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 from proteus import config
 from proteus.config import *
 ###to turn on debugging in c++
@@ -93,6 +142,11 @@ class get_numpy_include(object):
         import numpy as np
         return np.get_include()
 
+# -mavx is x86-only; unconditionally requesting it fails outright on arm64
+# ("unsupported option '-mavx' for target ...") rather than just being a
+# missed optimization, so only request it on architectures that support it.
+PROTEUS_AVX_FLAGS = [] if platform.machine() in ('arm64', 'aarch64') else ['-mavx']
+
 EXTENSIONS_TO_BUILD = [
     Extension("MeshAdaptPUMI.MeshAdapt",
               sources = ['proteus/MeshAdaptPUMI/MeshAdapt.pyx', 'proteus/MeshAdaptPUMI/cMeshAdaptPUMI.cpp',
@@ -114,73 +168,73 @@ EXTENSIONS_TO_BUILD = [
               PROTEUS_SCOREC_INCLUDE_DIRS,
               library_dirs=PROTEUS_SCOREC_LIB_DIRS,
               libraries=PROTEUS_SCOREC_LIBS,
-              extra_compile_args=['-std=c++17']+PROTEUS_SCOREC_EXTRA_COMPILE_ARGS+PROTEUS_EXTRA_COMPILE_ARGS+PROTEUS_OPT+['-O1'],
+              extra_compile_args=['-std=c++20']+PROTEUS_SCOREC_EXTRA_COMPILE_ARGS+PROTEUS_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
               extra_link_args=PROTEUS_SCOREC_EXTRA_LINK_ARGS+PROTEUS_EXTRA_LINK_ARGS),
     Extension(
         'mprans.cArgumentsDict',
         sources = ['proteus/mprans/ArgumentsDict.cpp'],
         depends=['proteus/mprans/ArgumentsDict.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cPres',
         sources = ['proteus/mprans/Pres.cpp'],
         depends=['proteus/mprans/Pres.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cPresInit',
         sources = ['proteus/mprans/PresInit.cpp'],
         depends=['proteus/mprans/PresInit.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cPresInc',
         sources = ['proteus/mprans/PresInc.cpp'],
         depends = ['proteus/mprans/PresInc.h', 'proteus/mprans/PresInc.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension('mprans.cAddedMass',
               sources = ['proteus/mprans/AddedMass.cpp'],
               depends=['proteus/mprans/AddedMass.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
               language='c++',
               include_dirs=get_xtensor_include(),
-              extra_compile_args=PROTEUS_OPT+['-std=c++23']),
+              extra_compile_args=PROTEUS_OPT+['-std=c++20']),
     Extension('mprans.SedClosure',
               sources = ['proteus/mprans/SedClosure.cpp'],
               depends = ['proteus/mprans/SedClosure.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
               language='c++',
               include_dirs=get_xtensor_include(),
-              extra_compile_args=PROTEUS_OPT+['-std=c++23']),
+              extra_compile_args=PROTEUS_OPT+['-std=c++20']),
     Extension('mprans.cVOF3P',
               sources = ['proteus/mprans/VOF3P.cpp'],
               depends = ['proteus/mprans/VOF3P.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
               language='c++',
               include_dirs=get_xtensor_include(),
-              extra_compile_args=PROTEUS_OPT+['-std=c++23']),
+              extra_compile_args=PROTEUS_OPT+['-std=c++20']),
     Extension(
         'mprans.cVOS3P',
         sources = ['proteus/mprans/VOS3P.cpp'],
         depends = ['proteus/mprans/VOS3P.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension('mprans.cNCLS3P',
               sources=['proteus/mprans/NCLS3P.cpp'],
               depends=['proteus/mprans/NCLS3P.h', 'proteus/mprans/ArgumentsDict.h' , 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
               language='c++',
               include_dirs=get_xtensor_include(),
-              extra_compile_args=PROTEUS_OPT+['-std=c++23']),
+              extra_compile_args=PROTEUS_OPT+['-std=c++20']),
     Extension('mprans.cMCorr3P',
               sources=['proteus/mprans/MCorr3P.cpp'],
               depends=['proteus/mprans/MCorr3P.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
               language='c++',
               include_dirs=get_xtensor_include(),
-              extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+              extra_compile_args=PROTEUS_OPT+['-std=c++20'],
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS,
               define_macros=[('PROTEUS_LAPACK_H',
                               PROTEUS_LAPACK_H),
@@ -198,14 +252,14 @@ EXTENSIONS_TO_BUILD = [
         sources=['proteus/mprans/RANS3PSed.cpp'],
         depends=['proteus/mprans/RANS3PSed.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cRANS3PSed2D',
         sources=['proteus/mprans/RANS3PSed2D.cpp'],
         depends=['proteus/mprans/RANS3PSed2D.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'richards.cRichards',
@@ -213,7 +267,7 @@ EXTENSIONS_TO_BUILD = [
         depends=['proteus/richards/Richards.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
         language='c++',
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
     ),
     Extension(
         'elastoplastic.cElastoPlastic',
@@ -227,7 +281,7 @@ EXTENSIONS_TO_BUILD = [
         depends=['proteus/elastoplastic/ElastoPlastic.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
         language='c++',
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         library_dirs=[PROTEUS_LAPACK_LIB_DIR,
                       PROTEUS_BLAS_LIB_DIR],
         libraries=['m',PROTEUS_LAPACK_LIB,
@@ -238,14 +292,14 @@ EXTENSIONS_TO_BUILD = [
         sources=['proteus/mprans/RANS3PF.cpp'],
         depends=['proteus/mprans/RANS3PF.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cRANS3PF2D',
         sources=['proteus/mprans/RANS3PF2D.cpp'],
         depends=['proteus/mprans/RANS3PF2D.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension("Isosurface",
               sources=['proteus/Isosurface.pyx'],
@@ -270,13 +324,13 @@ EXTENSIONS_TO_BUILD = [
               language='c++',
               include_dirs=[numpy.get_include(),'proteus',PROTEUS_INCLUDE_DIR],
               libraries=['stdc++','m'],
-              extra_compile_args=["-std=c++23"]+PROTEUS_OPT),
+              extra_compile_args=["-std=c++20"]+PROTEUS_AVX_FLAGS+PROTEUS_OPT),
     Extension("mprans.cMoveMeshMonitor",
               sources=['proteus/mprans/cMoveMeshMonitor.pyx'],
               language='c++',
               include_dirs=[numpy.get_include(),'proteus',PROTEUS_INCLUDE_DIR],
               libraries=['stdc++','m'],
-              extra_compile_args=["-std=c++23"]+PROTEUS_OPT),
+              extra_compile_args=["-std=c++20"]+PROTEUS_AVX_FLAGS+PROTEUS_OPT),
     Extension("mbd.CouplingFSI",
               sources=['proteus/mbd/CouplingFSI.pyx',
                        'proteus/mbd/ChVariablesBodyAddedMass.cpp',
@@ -298,7 +352,7 @@ EXTENSIONS_TO_BUILD = [
               libraries=['Chrono_core',
                          'stdc++',
                          'm'],
-              extra_compile_args=["-std=c++17"]+PROTEUS_CHRONO_CXX_FLAGS+PROTEUS_OPT,
+              extra_compile_args=["-std=c++20"]+PROTEUS_CHRONO_CXX_FLAGS+PROTEUS_OPT,
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS),
     Extension("WaveTools",
               sources=['proteus/WaveTools.py'],
@@ -328,7 +382,7 @@ EXTENSIONS_TO_BUILD = [
         sources=['proteus/ADR.cpp'],
         depends=['proteus/ADR.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h','proteus/equivalent_polynomials.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'
     ),
     Extension("subsurfaceTransportFunctions",
@@ -424,10 +478,12 @@ EXTENSIONS_TO_BUILD = [
                             PROTEUS_SUPERLU_INCLUDE_DIR],
               library_dirs=[PROTEUS_SUPERLU_LIB_DIR,
                             PROTEUS_LAPACK_LIB_DIR,
-                            PROTEUS_BLAS_LIB_DIR],
+                            PROTEUS_BLAS_LIB_DIR,
+                            PROTEUS_METIS_LIB_DIR],
               libraries=['m',
                          PROTEUS_SUPERLU_LIB,
-                         PROTEUS_LAPACK_LIB,PROTEUS_BLAS_LIB],
+                         PROTEUS_LAPACK_LIB,PROTEUS_BLAS_LIB,
+                         PROTEUS_METIS_LIB],
               extra_compile_args=PROTEUS_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS),
     Extension("csmoothers",
@@ -446,11 +502,13 @@ EXTENSIONS_TO_BUILD = [
               library_dirs=[PROTEUS_SUPERLU_INCLUDE_DIR,
                             PROTEUS_SUPERLU_LIB_DIR,
                             PROTEUS_LAPACK_LIB_DIR,
-                            PROTEUS_BLAS_LIB_DIR],
+                            PROTEUS_BLAS_LIB_DIR,
+                            PROTEUS_METIS_LIB_DIR],
               libraries=['m',
                          PROTEUS_SUPERLU_LIB,
                          PROTEUS_LAPACK_LIB,
-                         PROTEUS_BLAS_LIB],
+                         PROTEUS_BLAS_LIB,
+                         PROTEUS_METIS_LIB],
               extra_compile_args=PROTEUS_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS),
     Extension("canalyticalSolutions",
@@ -602,7 +660,7 @@ EXTENSIONS_TO_BUILD = [
               language="c++",
               library_dirs=PROTEUS_PETSC_LIB_DIRS+PROTEUS_MPI_LIB_DIRS+PROTEUS_HDF5_LIB_DIRS,
               libraries=['hdf5','stdc++','m']+PROTEUS_PETSC_LIBS+PROTEUS_MPI_LIBS+PROTEUS_HDF5_LIBS,
-              extra_compile_args=['-std=c++23']+PROTEUS_EXTRA_COMPILE_ARGS + PROTEUS_PETSC_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
+              extra_compile_args=['-std=c++20']+PROTEUS_EXTRA_COMPILE_ARGS + PROTEUS_PETSC_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS + PROTEUS_PETSC_EXTRA_LINK_ARGS,
     ),
     # Extension("flcbdfWrappers",["proteus/flcbdfWrappers.pyx"],
@@ -633,14 +691,14 @@ EXTENSIONS_TO_BUILD = [
         sources=['proteus/mprans/CLSVOF.cpp'],
         depends=["proteus/mprans/CLSVOF.h", "proteus/mprans/CLSVOF.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cNCLS',
         sources=['proteus/mprans/NCLS.cpp'],
         depends=["proteus/mprans/NCLS.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cMCorr',
@@ -657,7 +715,7 @@ EXTENSIONS_TO_BUILD = [
         library_dirs=[PROTEUS_LAPACK_LIB_DIR,
                       PROTEUS_BLAS_LIB_DIR],
         libraries=['m',PROTEUS_LAPACK_LIB,PROTEUS_BLAS_LIB],
-        extra_compile_args=PROTEUS_EXTRA_COMPILE_ARGS+PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_EXTRA_COMPILE_ARGS+PROTEUS_OPT+['-std=c++20'],
         extra_link_args=PROTEUS_EXTRA_LINK_ARGS,
         language='c++'),
     Extension(
@@ -669,7 +727,7 @@ EXTENSIONS_TO_BUILD = [
             "proteus/equivalent_polynomials_coefficients.h",
             'proteus/equivalent_polynomials_coefficients_quad.h'],
         include_dirs=get_xtensor_include() + PROTEUS_MPI_INCLUDE_DIRS,
-        extra_compile_args=PROTEUS_OPT+PROTEUS_MPI_LIB_DIRS+['-std=c++23'],#,'-fopenmp'],#,'-DXTENSOR_USE_OPENMP'],
+        extra_compile_args=PROTEUS_OPT+PROTEUS_MPI_LIB_DIRS+['-std=c++20'],#,'-fopenmp'],#,'-DXTENSOR_USE_OPENMP'],
         library_dirs=PROTEUS_MPI_LIB_DIRS+[PROTEUS_LAPACK_LIB_DIR,
                       PROTEUS_BLAS_LIB_DIR],
         libraries=PROTEUS_MPI_LIBS+['m',
@@ -686,7 +744,7 @@ EXTENSIONS_TO_BUILD = [
             "proteus/equivalent_polynomials_coefficients.h",
             'proteus/equivalent_polynomials_coefficients_quad.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cRANS2P2D',
@@ -697,7 +755,7 @@ EXTENSIONS_TO_BUILD = [
             "proteus/equivalent_polynomials_coefficients.h",
             'proteus/equivalent_polynomials_coefficients_quad.h'],
         include_dirs=get_xtensor_include() + PROTEUS_MPI_INCLUDE_DIRS,
-        extra_compile_args=PROTEUS_OPT+PROTEUS_MPI_LIB_DIRS+['-std=c++23'],#,'-fopenmp'],#,'-DXTENSOR_USE_OPENMP'],
+        extra_compile_args=PROTEUS_OPT+PROTEUS_MPI_LIB_DIRS+['-std=c++20'],#,'-fopenmp'],#,'-DXTENSOR_USE_OPENMP'],
         library_dirs=PROTEUS_MPI_LIB_DIRS+[PROTEUS_LAPACK_LIB_DIR,
                       PROTEUS_BLAS_LIB_DIR],
         libraries=PROTEUS_MPI_LIBS+['m',
@@ -714,88 +772,117 @@ EXTENSIONS_TO_BUILD = [
             "proteus/equivalent_polynomials_coefficients.h",
             'proteus/equivalent_polynomials_coefficients_quad.h'],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cVOF',
         sources=['proteus/mprans/VOF.cpp'],
         depends=["proteus/mprans/VOF.h", "proteus/mprans/ArgumentsDict.h", "proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cTADR',
         sources=['proteus/mprans/TADR.cpp'],
         depends=["proteus/mprans/TADR.h", "proteus/mprans/ArgumentsDict.h", "proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cMoveMesh',
         ['proteus/mprans/MoveMesh.cpp'],
         depends=["proteus/mprans/MoveMesh.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cMoveMesh2D',
         sources=['proteus/mprans/MoveMesh2D.cpp'],
         depends=["proteus/mprans/MoveMesh2D.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cSW2D',
         sources=['proteus/mprans/SW2D.cpp'],
         depends=["proteus/mprans/SW2D.h", "proteus/mprans/SW2D.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cSW2DCV',
         sources=['proteus/mprans/SW2DCV.cpp'],
         depends=["proteus/mprans/SW2DCV.h", "proteus/mprans/ArgumentsDict.h", "proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cGN_SW2DCV',
         sources=['proteus/mprans/GN_SW2DCV.cpp'],
         depends=["proteus/mprans/GN_SW2DCV.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cKappa',
         sources=['proteus/mprans/Kappa.cpp'],
         depends=["proteus/mprans/Kappa.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cKappa2D',
         sources=['proteus/mprans/Kappa2D.cpp'],
         depends=["proteus/mprans/Kappa2D.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cDissipation',
         sources=['proteus/mprans/Dissipation.cpp'],
         depends=["proteus/mprans/Dissipation.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cDissipation2D',
         sources=['proteus/mprans/Dissipation2D.cpp'],
         depends=["proteus/mprans/Dissipation2D.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
         include_dirs=get_xtensor_include(),
-        extra_compile_args=PROTEUS_OPT+['-std=c++23'],
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
 ]
 
+import os as _os
+# PUMI/SCOREC (mesh adaptation) and Chrono (rigid-body/FSI coupling) are
+# unrelated optional dependencies; PROTEUS_SKIP_PUMI and PROTEUS_SKIP_CHRONO
+# let a build path enable one without the other. PROTEUS_SKIP_PUMI_CHRONO
+# is kept for backwards compatibility and skips both.
+_skip = set()
+if _os.environ.get("PROTEUS_SKIP_PUMI_CHRONO") or _os.environ.get("PROTEUS_SKIP_PUMI"):
+    _skip.add("MeshAdaptPUMI.MeshAdapt")
+if _os.environ.get("PROTEUS_SKIP_PUMI_CHRONO") or _os.environ.get("PROTEUS_SKIP_CHRONO"):
+    _skip.add("mbd.CouplingFSI")
+EXTENSIONS_TO_BUILD = [e for e in EXTENSIONS_TO_BUILD if e.name not in _skip]
+
 def setup_given_extensions(extensions):
+    # Most Extensions above list several *_LIB_DIR constants (SUPERLU, LAPACK,
+    # BLAS, PETSC, HDF5, ...) in library_dirs -- in a conda/mamba dev install
+    # (environment-dev.yml) these all resolve to the same single conda env
+    # lib directory, so library_dirs ends up with that same path repeated
+    # several times. conda-forge's `compilers` package patches distutils to
+    # emit '-Wl,-rpath,<dir>' for every library_dirs entry (not just once per
+    # unique directory), and setuptools/distutils separately also appends the
+    # ambient $LDFLAGS (which itself already has that same rpath, courtesy of
+    # the same `compilers` activation script) -- together this produces a
+    # linked .so with a literal duplicate LC_RPATH load command, which dyld
+    # refuses to open at import time ("... (duplicate LC_RPATH ...)").
+    # Deduplicating library_dirs here (order-preserving) collapses the
+    # repeats back down to one -rpath per real directory. Confirmed via a
+    # real `pip install -e .` against environment-dev.yml.
+    for ext in extensions:
+        if getattr(ext, 'library_dirs', None):
+            ext.library_dirs = list(dict.fromkeys(ext.library_dirs))
     setup(name='proteus',
           version='1.8.3.dev',
           classifiers=[
@@ -806,7 +893,7 @@ def setup_given_extensions(extensions):
               'Intended Audience :: Developers',
               'Intended Audience :: Science/Research',
               'License :: OSI Approved :: MIT License',
-              'Programming Language :: Python :: 3.7'
+              'Programming Language :: Python :: 3',
               'Programming Language :: Python :: 3 :: Only',
               'Programming Language :: Python :: Implementation :: CPython',
               'Topic :: Scientific/Engineering :: Mathematics',
@@ -818,6 +905,17 @@ def setup_given_extensions(extensions):
           author='The Proteus Developers',
           author_email='proteus-dev@googlegroups.com',
           url='http://proteustoolkit.org',
+          python_requires='>=3.9',
+          install_requires=[
+              'numpy',
+              'scipy',
+              'mpi4py',
+              'petsc4py',
+              'h5py',
+          ],
+          extras_require={
+              'test': ['pytest', 'pytest-cov', 'pytest-xdist', 'pytest-forked', 'matplotlib'],
+          },
           packages = ['proteus',
                       'proteus.fenton',
                       'proteus.mprans',
@@ -832,11 +930,11 @@ def setup_given_extensions(extensions):
                       'proteus.SWFlow.utils',
                       'proteus.SWFlow.models',
                       'proteus.MeshAdaptPUMI',
-                      'proteus.MeshAdaptPUMI',
           ],
           cmdclass = {'build_ext':custom_build_ext},
           ext_package='proteus',
           ext_modules=extensions,
+        #   ext_modules=cythonize(extensions, gdb_debug=True),
           data_files=[(proteus_install_path,
                        ['proteus/proteus_blas.h',
                         'proteus/proteus_lapack.h',

@@ -531,7 +531,7 @@ class VPP_PWL_RT0(VelocityPostProcessingAlgorithmBase):
 
     where :math:`p_i` is the vertex across from face i, :math:`|E|` is the volume of
     the element, and d is the space dimension the degrees of freedom
-    are :math:`V^i = \int_{e_i}\vec v\dot n_{i}\ds`
+    are :math:`V^i = \\int_{e_i}\vec v\\dot n_{i}\\ds`
 
     """
 #    TODO:
@@ -1274,7 +1274,7 @@ class VPP_PWL_BDM(VPP_PWL_RT0):
 
     .. math::
       
-      \vec N_i = \lambda_{i/d}\vec e_{i%d}
+      \vec N_i = \\lambda_{i/d}\vec e_{i%d}
     
     That is the dofs are locally (say in 2d) :math:`[v^x_0,v^y_0,v^x_1,v^y_1,v^x_2,v^y_2]`
 
@@ -1990,7 +1990,7 @@ class VPP_PWL_BDM_OPT(VPP_PWL_RT0_OPT):
 
     .. math::
 
-      \vec N_i = \lambda_{i%(d+1)} \vec e_{i/(d+1)}
+      \vec N_i = \\lambda_{i%(d+1)} \vec e_{i/(d+1)}
 
     Have to use BDM projection to get degrees of freedom
 
@@ -2121,7 +2121,7 @@ class VPP_PWC_RT0(VelocityPostProcessingAlgorithmBase):
     where :math:`p_i` is the vertex across from face :math:`i`,
     :math:`|E|` is the volume of the element, and :math:`d` is the
     space dimension the degrees of freedom are :math:`V^i =
-    \int_{e_i}\vec v\dot n_{i}\ds`
+    \\int_{e_i}\vec v\\dot n_{i}\\ds`
 
     """
 #    TOOD:
@@ -2338,7 +2338,7 @@ class VPP_SUN_RT0(VelocityPostProcessingAlgorithmBase):
 
     where :math:`p_i` is the vertex across from face i, :math:`|E|` is
     the volume of the element, and d is the space dimension the
-    degrees of freedom are :math:`V^i = \int_{e_i}\vec v\dot n_{i}\ds`
+    degrees of freedom are :math:`V^i = \\int_{e_i}\vec v\\dot n_{i}\\ds`
 
     """
 #    TOOD:
@@ -2599,7 +2599,7 @@ class VPP_SUN_GS_RT0(VelocityPostProcessingAlgorithmBase):
 
     where p_i is the vertex across from face i, :math:`|E|` is the
     volume of the element, and d is the space dimension the degrees of
-    freedom are :math:`V^i = \int_{e_i}\vec v\dot n_{i}\ds`
+    freedom are :math:`V^i = \\int_{e_i}\vec v\\dot n_{i}\\ds`
 
     """
     def __init__(self,vectorTransport=None,vtComponents=[0]):
@@ -2860,7 +2860,7 @@ class VPP_DG_BDM(VPP_DG_RT0):
 
     .. math::
 
-      \vec N_i = \lambda_{i%(d+1)} \vec e_{i/(d+1)}
+      \vec N_i = \\lambda_{i%(d+1)} \vec e_{i/(d+1)}
 
     Have to use BDM projection to get degrees of freedom
 
@@ -3023,7 +3023,7 @@ class VPP_POINT_EVAL(VelocityPostProcessingAlgorithmBase):
 
         .. math::
 
-          v = -\ten{a}_h\grad \phi_h + \vec f_h
+          v = -\ten{a}_h\\grad \\phi_h + \vec f_h
 
         """
 #         TODO
@@ -5002,7 +5002,7 @@ nCalls= %d ; totalTime= %12.5e ; pythonCPU = %12.5e ; simCPU= %12.5e """ % (nCal
 
         .. math::
 
-          v = -\ten{a}_h\grad \phi_h + \vec f_h
+          v = -\ten{a}_h\\grad \\phi_h + \vec f_h
 
         """
         self.q[('velocity'),ci][:]=0.0

@@ -2099,7 +2099,7 @@ def assembleAuxiliaryVariables(domain):
             body = shape.auxiliaryVariables['ChRigidBody']
             for boundcond in shape.BC_list:
                 boundcond.setChMoveMesh(body)
-            if not body.boundaryFlags:
+            if body.boundaryFlags.size == 0:
                 flags = []
                 for tag, flag in shape.boundaryTags.items():
                     flags += [start_flag+flag]

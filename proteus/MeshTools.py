@@ -15,7 +15,7 @@ from .LinearAlgebraTools import ParVec_petsc4py
 from .Profiling import logEvent,memory, memHardLimit
 from . import Domain
 from . import Comm
-from subprocess import run
+from subprocess import run, check_output
 
 class Node(object):
     """A numbered point in 3D Euclidean space
@@ -499,6 +499,8 @@ class Mesh(object):
     """
     #cek adding parallel support
     def __init__(self):
+        # check if plex is used
+        self.plexMesh = False
         #array interface
         self.nSubdomains_global=1
         self.sN = 0
@@ -1031,44 +1033,44 @@ class Mesh(object):
          self.sigmaMax,
          self.volume) = cmeshTools.buildPythonMeshInterface(self.cmesh)
         # print("from C")
-        # print  (self.nElements_global,
-        #  self.nNodes_global,
-        #  self.nNodes_element,
-        #  self.nNodes_elementBoundary,
-        #  self.nElementBoundaries_element,
-        #  self.nElementBoundaries_global,
-        #  self.nInteriorElementBoundaries_global,
-        #  self.nExteriorElementBoundaries_global,
-        #  self.max_nElements_node,
-        #  self.nEdges_global,
-        #  self.max_nNodeNeighbors_node,
-        #  self.elementNodesArray,
-        #  self.nodeElementsArray,
-        #  self.nodeElementOffsets,
-        #  self.elementNeighborsArray,
-        #  self.elementBoundariesArray,
-        #  self.elementBoundaryNodesArray,
-        #  self.elementBoundaryElementsArray,
-        #  self.elementBoundaryLocalElementBoundariesArray,
-        #  self.interiorElementBoundariesArray,
-        #  self.exteriorElementBoundariesArray,
-        #  self.edgeNodesArray,
-        #  self.nodeStarArray,
-        #  self.nodeStarOffsets,
-        #  self.elementMaterialTypes,
-        #  self.elementBoundaryMaterialTypes,
-        #  self.nodeMaterialTypes,
-        #  self.nodeArray,
-        #  self.elementDiametersArray,
-        #  self.elementInnerDiametersArray,
-        #  self.elementBoundaryDiametersArray,
-        #  self.elementBarycentersArray,
-        #  self.elementBoundaryBarycentersArray,
-        #  self.nodeDiametersArray,
-        #  self.nodeSupportArray,
-        #  self.h,
-        #  self.hMin,
-        #  self.volume)
+        # print("nElements_global = ", self.nElements_global),
+        # print("nNodes_global = ", self.nNodes_global),
+        # print("nNodes_element = ", self.nNodes_element),
+        # print("nNodes_elementBoundary = ", self.nNodes_elementBoundary),
+        # print("nElementBoundaries_element = ", self.nElementBoundaries_element),
+        # print("nElementBoundaries_global = ", self.nElementBoundaries_global),
+        # print("nInteriorElementBoundaries_global = ", self.nInteriorElementBoundaries_global),
+        # print("nExteriorElementBoundaries_global = ", self.nExteriorElementBoundaries_global),
+        # print("max_nElements_node = ", self.max_nElements_node),
+        # print("nEdges_global = ", self.nEdges_global),
+        # print("max_nNodeNeighbors_node = ", self.max_nNodeNeighbors_node),
+        # print("elementNodesArray = ", self.elementNodesArray),
+        # print("nodeElementsArray = ", self.nodeElementsArray),
+        # print("nodeElementOffsets = ", self.nodeElementOffsets),
+        # print("elementNeighborsArray = ", self.elementNeighborsArray),
+        # print("elementBoundariesArray = ", self.elementBoundariesArray),
+        # print("elementBoundaryNodesArray = ", self.elementBoundaryNodesArray),
+        # print("elementBoundaryElementsArray = ", self.elementBoundaryElementsArray),
+        # print("elementBoundaryLocalElementBoundariesArray = ", self.elementBoundaryLocalElementBoundariesArray),
+        # print("interiorElementBoundariesArray = ", self.interiorElementBoundariesArray),
+        # print("exteriorElementBoundariesArray = ", self.exteriorElementBoundariesArray),
+        # print("edgeNodesArray = ", self.edgeNodesArray),
+        # print("nodeStarArray = ", self.nodeStarArray),
+        # print("nodeStarOffsets = ", self.nodeStarOffsets),
+        # print("elementMaterialTypes = ", self.elementMaterialTypes),
+        # print("elementBoundaryMaterialTypes = ", self.elementBoundaryMaterialTypes),
+        # print("nodeMaterialTypes = ", self.nodeMaterialTypes),
+        # print("nodeArray = ", self.nodeArray),
+        # print("elementDiametersArray = ", self.elementDiametersArray),
+        # print("elementInnerDiametersArray = ", self.elementInnerDiametersArray),
+        # print("elementBoundaryDiametersArray = ", self.elementBoundaryDiametersArray),
+        # print("elementBarycentersArray = ", self.elementBarycentersArray),
+        # print("elementBoundaryBarycentersArray = ", self.elementBoundaryBarycentersArray),
+        # print("nodeDiametersArray = ", self.nodeDiametersArray),
+        # print("nodeSupportArray = ", self.nodeSupportArray),
+        # print("h = ", self.h),
+        # print("hMin = ", self.hMin),
+        # print("volume = ", self.volume)
         self.hasGeometricInfo = True
         #default to single processor
         self.nNodes_owned = self.nNodes_global
@@ -1076,6 +1078,18 @@ class Mesh(object):
         self.nElementBoundaries_owned = self.nElementBoundaries_global
         self.nEdges_owned = self.nEdges_global
         logEvent(memory("buildFromC","MeshTools"),level=4)
+    def buildCMeshFromPlex(self, cmesh):
+        from . import cmeshTools
+        logEvent("Passing DMPlex to cMeshTools to generate CMesh")
+        self.cmesh = cmesh
+        cmeshTools.generateCMeshFromDMPlex(self, self.cmesh)
+        self.hasGeometricInfo = True
+        #default to single processor
+        self.nNodes_owned = self.nNodes_global
+        self.nElements_owned = self.nElements_global
+        self.nElementBoundaries_owned = self.nElementBoundaries_global
+        self.nEdges_owned = self.nEdges_global
+        logEvent("Done generating CMesh from DMPlex")
     def buildFromCNoArrays(self,cmesh):
         from . import cmeshTools
         #
@@ -2224,6 +2238,7 @@ class MultilevelRectangularGrid(MultilevelMesh):
         childrenDict = self.meshList[-1].refine(self.meshList[-2])
         self.elementChildren.append(childrenDict)
 
+
 class TetrahedralMesh(Mesh):
     """A mesh of tetrahedra.
 
@@ -2257,6 +2272,10 @@ class TetrahedralMesh(Mesh):
         self.tetrahedronList=[]
         self.oldToNewNode=[]
         self.boundaryMesh=TriangularMesh()
+        self.nNodes_elementBoundary = 0
+        self.rank = 0
+        self.size = 1
+        self.max_nNodeNeighbors_node = 0
     def meshType(self):
         return 'simplex'
     def computeGeometricInfo(self):
@@ -2793,6 +2812,203 @@ class TetrahedralMesh(Mesh):
     def refine(self,oldMesh):
         return self.refineFreudenthalBey(oldMesh)
 
+    def generateFromPlex(self, plex, parallel=False):
+        # from petsc4py import PETSc
+        from . import Comm
+        comm = Comm.comm.mpi4py_comm
+        self.rank = comm.rank
+        self.size = comm.size
+        if self.rank == 0: 
+            self.plexMesh = True
+
+            # PETSc numbering convension in 3D : cells -> vertices -> faces -> edges
+            # But the point range can be accessed using HeightStratum; height 0 = cells, 1 = faces, 2 = edges, and 3 = vertices.
+            
+            # Proteus convension: 
+            # nNodes             = vertices
+            # nElements          = cells
+            # nelementBoundaries = faces
+            # nEdges             = edges
+            dim = plex.getDimension()
+            
+            # ToDo - conditions for 1D and 2D         
+            if dim == 3:
+                self.nNodes_element = 4 # num nodes per cell
+                self.nNodes_elementBoundary = 3 # num nodes per face
+                self.nElementBoundaries_element = 4 # num faces per cell
+            
+            cStart, cEnd = plex.getHeightStratum(0) # Total cells
+            fStart, fEnd = plex.getHeightStratum(1) # Total faces 
+            eStart, eEnd = plex.getHeightStratum(2) # Total edges
+            nStart, nEnd = plex.getHeightStratum(3) # Total nodes
+
+
+            self.nElements_global           = cEnd - cStart
+            self.nElementBoundaries_global  = fEnd - fStart
+            self.nEdges_global              = eEnd - eStart
+            self.nNodes_global              = nEnd - nStart
+            
+            # get coordinate array from PETSc Vec TODO - get this working for -dm_refine 0 and -dm_refine >0
+            # coordinatesVec = plex.getCoordinatesLocal() # Works with -dm_refine >0 only
+            coordinatesVec = plex.getCoordinates() # Works with -dm_refine 0 only
+            
+            self.nodeArray = coordinatesVec.array.reshape(self.nNodes_global, dim)
+
+            # All the entities have global numbering starting from 0
+            # So to convert PETSc numering to Proteus numbering we subtract the total number of entities below in DAG from the numbering of the required entity. For instance, In the cube with 6 tetrahedrons, we convert the node numering from plex [6,14) by subtracting total numer of enetities below, which is 6 cells (Recall DAG sequence mentioned above).
+            
+            
+            self.elementNodesArray = np.empty((self.nElements_global, self.nNodes_element), dtype=np.int32)
+            # for i in range(self.nElements_global):
+            #     self.elementNodesArray[i] = plex.getTransitiveClosure(i)[0][-self.nNodes_element:] - self.nElements_global
+            
+            # Loop over each node and get a transitive closure without cone and get the number of entries less than the number of total cells in the array to get the nodeElementOffsets and use those entry to populate  nodeElementsArray 
+            elementOffsetList = [0]
+            starOffsetList = [0]
+            self.nodeElementsArray = np.array([], dtype=np.int32)
+            self.nodeStarArray = np.array([], dtype=np.int32)
+            self.nodeMaterialTypes = np.array([], dtype=np.int32)
+            self.max_nNodeNeighbors_node = 0
+            elementOffset = 0
+            starOffset = 0
+            logEvent("Loop 1")
+            for i in np.arange(nStart, nEnd):
+                self.nodeMaterialTypes = np.append(self.nodeMaterialTypes, plex.getCellTypeLabel().getValue(i))
+                
+                nAdjacentElements = int(sum(plex.getAdjacency(i) < self.nElements_global))
+                nAdjacentNodes = int(sum((plex.getAdjacency(i)<nEnd) &  (plex.getAdjacency(i)>=nStart)) - 1)
+                
+                # Update nodeElements
+                self.nodeElementsArray = np.concatenate((self.nodeElementsArray, plex.getTransitiveClosure(i, useCone=False)[0][-nAdjacentElements:]))
+                # Update node Star
+                nodeAdjacencyBoolArray = (plex.getAdjacency(i)<nEnd) &  (plex.getAdjacency(i)>=nStart)
+                self.nodeStarArray = np.concatenate((self.nodeStarArray, plex.getAdjacency(i)[nodeAdjacencyBoolArray][1:] - nStart))
+                # Update max_nNodeNeighbors_node
+                self.max_nNodeNeighbors_node = nAdjacentNodes if nAdjacentNodes > self.max_nNodeNeighbors_node else self.max_nNodeNeighbors_node
+                
+                # Update offset
+                elementOffset += nAdjacentElements
+                starOffset += nAdjacentNodes
+                elementOffsetList.append(elementOffset)
+                starOffsetList.append(starOffset)        
+            self.nodeElementOffsets = np.array(elementOffsetList, dtype=np.int32)
+            self.nodeStarOffsets = np.array(starOffsetList, dtype=np.int32)
+
+            # Get the cone of each cell to get the faces
+            self.elementBoundariesArray = np.empty((self.nElements_global, self.nElementBoundaries_element), dtype=np.int32)
+            self.elementMaterialTypes = np.array([], dtype=np.int32)
+            logEvent("Loop 2")
+            for i in np.arange(cStart, cEnd):
+                elementNodesArrayUnsorted = np.array(plex.getTransitiveClosure(i)[0][-self.nNodes_element:] - self.nElements_global)
+                # self.elementNodesArray[i] = plex.getTransitiveClosure(i)[0][-self.nNodes_element:] - self.nElements_global
+                self.elementMaterialTypes = np.append(self.elementMaterialTypes, plex.getCellTypeLabel().getValue(i))
+                # Adjust the ordering of faces to match the Proteus convention. 
+                
+                # print("elementNodesArrayUnsorted", elementNodesArrayUnsorted)
+                self.elementBoundariesArray[i] = plex.getCone(i) - (self.nNodes_global + self.nElements_global)
+                elementNodeList = []
+                elementBoundaryNodesArrayTemp = np.empty((self.nElementBoundaries_element, self.nNodes_elementBoundary), dtype=np.int32)
+                j=0
+                for face in plex.getCone(i):
+                    elementBoundaryNodesArrayTemp[j] = plex.getTransitiveClosure(face)[0][- self.nNodes_elementBoundary:] - self.nElements_global
+                    # print(face, elementBoundaryNodesArrayTemp[j])
+                    mask = np.where(~np.isin(elementNodesArrayUnsorted, elementBoundaryNodesArrayTemp[j]))[0]
+                    index = int(elementNodesArrayUnsorted[mask])
+                    # print(mask, index)
+                    elementNodeList.append(index)
+                    j += 1
+                # print("elementNodeList", elementNodeList)
+                self.elementNodesArray[i] = np.array(elementNodeList, dtype=np.int32)
+                
+            
+            # Loop over each face to get the transitive closure and get the nodes
+            # self.elementBoundaryNodesArray = np.empty((self.nElementBoundaries_global, self.nNodes_elementBoundary), dtype=np.int32)
+            # self.elementBoundaryMaterialTypes = np.array([], dtype=np.int32)
+            # for i in np.arange(fStart, fEnd):
+                # self.elementBoundaryMaterialTypes = np.append(self.elementBoundaryMaterialTypes, plex.getCellTypeLabel().getValue(i))
+                # self.elementBoundaryNodesArray[i - fStart] = plex.getTransitiveClosure(i)[0][- self.nNodes_elementBoundary:]  - self.nElements_global
+            
+            # loop over faces to get the support. Add -1 as a second entry gfor the boundary faces.
+            self.elementBoundaryElementsArray = np.empty((self.nElementBoundaries_global, 2), dtype=np.int32)
+            self.interiorElementBoundariesArray = np.array([], dtype=np.int32)
+            self.exteriorElementBoundariesArray = np.array([], dtype=np.int32)
+            self.elementBoundaryMaterialTypes = np.array([], dtype=np.int32)
+            logEvent("Loop 3")
+            for i in np.arange(fStart, fEnd):
+                self.elementBoundaryMaterialTypes = np.append(self.elementBoundaryMaterialTypes, plex.getCellTypeLabel().getValue(i))
+                if np.size(plex.getSupport(i)) == 1:
+                    self.elementBoundaryElementsArray[i - fStart] = np.insert(plex.getSupport(i), 1, -1)
+                    self.exteriorElementBoundariesArray = np.concatenate((self.exteriorElementBoundariesArray, np.array([i - fStart])))
+                else:
+                    self.elementBoundaryElementsArray[i - fStart] = plex.getSupport(i)
+                    self.interiorElementBoundariesArray = np.concatenate((self.interiorElementBoundariesArray, np.array([i - fStart])))
+            
+            self.nInteriorElementBoundaries_global = np.size(self.interiorElementBoundariesArray)
+            self.nExteriorElementBoundaries_global = np.size(self.exteriorElementBoundariesArray)
+            
+            # Get the cone of each edge to get the list of nodes 
+            self.edgeNodesArray = np.empty((self.nEdges_global, 2), dtype=np.int32)
+            logEvent("Loop 4")
+            for i in np.arange(eStart, eEnd):
+                self.edgeNodesArray[i - eStart] = plex.getCone(i) - self.nElements_global
+            
+            
+            self.elementNeighborsArray = np.empty((self.nElements_global, self.nElementBoundaries_global), dtype=np.int32)
+            
+            logEvent("Done generating mesh from DMPlex")
+
+            # ToDo stuff
+            self.h = 0.0
+            self.hMin = 0.0
+            self.sigmaMax = 0.0
+            self.volume   = 0.0            
+        else:
+            pass
+        
+        # bcast data to all processes
+        self.nElements_global = comm.bcast(self.nElements_global, root=0)
+        self.nNodes_global = comm.bcast(self.nNodes_global, root=0)
+        self.nNodes_element = comm.bcast(self.nNodes_element, root=0)
+        self.elementNodesArray = comm.bcast(self.elementNodesArray, root=0)
+        self.nodeMaterialTypes = comm.bcast(self.nodeMaterialTypes, root=0)
+        self.nodeArray = comm.bcast(self.nodeArray, root=0)
+        
+        self.nNodes_elementBoundary = comm.bcast(self.nNodes_elementBoundary, root=0)
+        self.nEdges_global = comm.bcast(self.nEdges_global, root=0)
+        self.nElementBoundaries_element = comm.bcast(self.nElementBoundaries_element, root=0)
+        self.nElementBoundaries_global = comm.bcast(self.nElementBoundaries_global, root=0)
+        self.nInteriorElementBoundaries_global = comm.bcast(self.nInteriorElementBoundaries_global, root=0)
+        self.nExteriorElementBoundaries_global = comm.bcast(self.nExteriorElementBoundaries_global, root=0)
+        self.max_nNodeNeighbors_node = comm.bcast(self.max_nNodeNeighbors_node, root=0)
+        # self.max_nElements_node = comm.bcast(self.max_nElements_node, root=0)
+        
+        self.nodeElementsArray = comm.bcast(self.nodeElementsArray, root=0)
+        self.nodeElementOffsets = comm.bcast(self.nodeElementOffsets, root=0)
+        self.elementBoundariesArray = comm.bcast(self.elementBoundariesArray, root=0)
+        self.elementBoundaryNodesArray = comm.bcast(self.elementBoundaryNodesArray, root=0)
+        self.elementBoundaryElementsArray = comm.bcast(self.elementBoundaryElementsArray, root=0)
+        self.interiorElementBoundariesArray = comm.bcast(self.interiorElementBoundariesArray, root=0)
+        self.exteriorElementBoundariesArray = comm.bcast(self.exteriorElementBoundariesArray, root=0)
+        self.edgeNodesArray = comm.bcast(self.edgeNodesArray, root=0)
+        self.nodeStarArray = comm.bcast(self.nodeStarArray, root=0)
+        self.nodeStarOffsets = comm.bcast(self.nodeStarOffsets, root=0)
+        
+        
+        self.elementMaterialTypes = comm.bcast(self.elementMaterialTypes, root=0)
+        self.elementBoundaryMaterialTypes = comm.bcast(self.elementBoundaryMaterialTypes, root=0)
+        
+        # self.h = comm.bcast(self.h, root=0)
+        # self.hMin = comm.bcast(self.hMin, root=0)
+        # self.sigmaMax = comm.bcast(self.sigmaMax, root=0)
+        # self.volume = comm.bcast(self.volume, root=0)
+        comm.barrier()
+        logEvent("Passing DMPlex to cMeshTools to generate CMesh")
+        from . import cmeshTools
+        self.cmesh = cmeshTools.CMesh()
+        self.buildCMeshFromPlex(self.cmesh)
+    
+        
+        
     def generateFromTetgenFiles(self,filebase,base,skipGeometricInit=False,parallel=False):
         from . import cmeshTools
         logEvent(memory("declaring CMesh"),level=4)
@@ -3724,6 +3940,7 @@ class MultilevelTetrahedralMesh(MultilevelMesh):
             self.meshList.append(mesh0)
             logEvent("cmeshTools.CMultilevelMesh")
             self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
+            # if not mesh0.plexMesh:
             logEvent("buildFromC")
             self.buildFromC(self.cmultilevelMesh)
             logEvent("partitionMesh")
@@ -4428,8 +4645,8 @@ real Ly=%(Ly)f;
 real offset=0.0125Lx;
 real x=%(x)f;
 real y=%(y)f;
-string strx="$%(Lx)2.2f\mbox{%(units)s}$";
-string stry="$%(Ly)2.2f\mbox{%(units)s}$";
+string strx="$%(Lx)2.2f\\mbox{%(units)s}$";
+string stry="$%(Ly)2.2f\\mbox{%(units)s}$";
 draw(strx,(x,y-offset)--(x+Lx,y-offset),S,black,Bars,Arrows,PenMargins);
 draw(stry,(x-offset,y)--(x-offset,y+Ly),W,black,Bars,Arrows,PenMargins);
 import graph;
@@ -6245,6 +6462,16 @@ def intersectEdges(line, edges):
     """
     norm = np.linalg.norm
 
+    def cross2d(u, v):
+        # np.cross() dropped support for 2D vectors in numpy>=2.0 (it used to return
+        # the scalar z-component); intersectEdge is used for both 2D and 3D points,
+        # so only substitute the version-independent 2D formula for genuinely 2D
+        # inputs and fall back to the real (still numpy>=2.0-supported) cross product
+        # for 3D ones.
+        if len(u) == 2 and len(v) == 2:
+            return u[0]*v[1] - u[1]*v[0]
+        return np.cross(u, v)
+
     def intersectEdge(line, edge):
 
         line = np.asarray(line)
@@ -6254,7 +6481,7 @@ def intersectEdges(line, edges):
         v_l = b - a
         v_e = d - c
 
-        vl_cross_ve = np.cross(v_l, v_e)
+        vl_cross_ve = cross2d(v_l, v_e)
         mag_vl_cross_ve = norm(vl_cross_ve)
 
         if mag_vl_cross_ve == 0:
@@ -6279,12 +6506,16 @@ def intersectEdges(line, edges):
                 return None
 
         # lines are not parallel, check for intersection
-        vl_cross_ve = np.cross(v_l, v_e)
+        vl_cross_ve = cross2d(v_l, v_e)
 
         # if v_l and v_e intersect, then there is an x that satisfies
-        x_vl_cross_ve = np.cross((c - a), v_e)
+        x_vl_cross_ve = cross2d((c - a), v_e)
 
         # but the two above vectors must be parallel
+        # NOTE: vl_cross_ve/x_vl_cross_ve are scalars here (2D cross product), so
+        # np.cross() on them was never valid regardless of numpy version -- this
+        # branch isn't exercised by any current test, so left as pre-existing,
+        # unverified logic rather than guessing at a redesign.
         if norm(np.cross(vl_cross_ve, x_vl_cross_ve)) > 1e-8:
             return None
 
@@ -6432,10 +6663,10 @@ def runTetgen(polyfile,
         
 
     """
-    from subprocess import run
+    from subprocess import run, check_output
     tetcmd = "tetgen - %s %s.poly" % (baseFlags, polyfile)
-    
-    logEvent(run(tetcmd,shell=True,capture_output=True).stdout)
+
+    logEvent(run(tetcmd,shell=True,capture_output=True,text=True).stdout)
     
     logEvent("Done running tetgen")
     elefile = "%s.1.ele" % polyfile
@@ -6785,7 +7016,8 @@ def generateMesh(physics,numerics,generatePartitionedMeshFromFiles=False):
                     meshOptions.nnx  == None and
                     meshOptions.nny == None and
                     meshOptions.nnz == None and
-                    meshOptions.triangleOptions == None))
+                    meshOptions.triangleOptions == None and
+                    meshOptions.use_plex == False))
         mlMesh = _generateMesh(physics.domain, meshOptions, generatePartitionedMeshFromFiles)
     except:
         meshOptions = numerics
@@ -6929,7 +7161,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                             gc.collect()
                             logEvent("Writing tetgen edge files to {0:s}.edge".format(fileprefix))
                             run("rm -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
-                            logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True).stdout)
+                            logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
                             run("mv -f {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
                             run("mv -f {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
                             run("mv -f {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
@@ -7095,7 +7327,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
             run("rm -f {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
             run("rm -f {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
             run("rm -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
-            logEvent(run("tetgen -Vfeen %s.ele" % ("mesh",), shell=True,capture_output=True).stdout)
+            logEvent(run("tetgen -Vfeen %s.ele" % ("mesh",), shell=True,capture_output=True,text=True).stdout)
             run("mv %s.1.ele %s.ele" % ("mesh", "mesh"), shell=True)
             run("mv %s.1.node %s.node" % ("mesh", "mesh"), shell=True)
             run("mv %s.1.face %s.face" % ("mesh", "mesh"), shell=True)
@@ -7210,7 +7442,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                 else:
                     logEvent("Using "+domain.geofile+".msh to convert to tetgen")
                 msh2simplex(fileprefix=fileprefix, nd=3)
-                logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True).stdout)
+                logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
             else:
                 logEvent("Running tetgen to generate 3D mesh for "+name, level=1)
                 run("rm -f {0:s}.ele".format(fileprefix), shell=True)
@@ -7253,6 +7485,35 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
             logEvent("Generating coarse global mesh from Tetgen files")
             mesh.generateFromTetgenFiles(fileprefix, nbase,parallel = comm.size() > 1)
             logEvent("Generating partitioned %i-level mesh from coarse global Tetgen mesh" % (meshOptions.nLevels,))
+            mlMesh.generateFromExistingCoarseMesh(mesh, meshOptions.nLevels,
+                                                  nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
+                                                  parallelPartitioningType=meshOptions.parallelPartitioningType)
+
+    elif isinstance(domain, Domain.DMPlexDomain):
+        import sys
+        
+        # Here we want to create a mesh using DMPlex. 
+        logEvent("Initializing plex mesh")
+        nbase = 1
+        mesh = TetrahedralMesh()
+        mlMesh = MultilevelTetrahedralMesh(0, 0,0,skipInit=True,
+                                           nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
+                                           parallelPartitioningType=meshOptions.parallelPartitioningType)
+        if generatePartitionedMeshFromFiles:
+            logEvent("Generating partitioned mesh from Tetgen files")
+            if("f" not in meshOptions.triangleOptions or "ee" not in meshOptions.triangleOptions):
+                sys.exit("ERROR: Remake the mesh with the `f` flag and `ee` flags in triangleOptions.")
+            mlMesh.generatePartitionedMeshFromTetgenFiles(fileprefix, nbase,mesh,meshOptions.nLevels,
+                                                          nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
+                                                          parallelPartitioningType=meshOptions.parallelPartitioningType)
+        else:
+            logEvent("Generating coarse global mesh from Plex")
+            # mesh.generateFromTetgenFiles(fileprefix, nbase,parallel = comm.size() > 1)
+            # generate using Plex
+            mesh.generateFromPlex(domain.plex)
+            logEvent("Generating partitioned %i-level mesh from Plex mesh" % (meshOptions.nLevels,))
+            # generate from Existing plex and ask DM to do refinement process? or ask CMesh to do it? 
+            # mlMesh.generatePartitionedMeshFromPlex(mesh, meshOptions.nLevels)
             mlMesh.generateFromExistingCoarseMesh(mesh, meshOptions.nLevels,
                                                   nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
                                                   parallelPartitioningType=meshOptions.parallelPartitioningType)

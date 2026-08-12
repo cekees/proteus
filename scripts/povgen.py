@@ -3,7 +3,7 @@
 A script for generating povray frames of zero level set
 """
 import argparse
-import tables
+import h5py
 import numpy as np
 from proteus import Comm, Domain, Isosurface
 
@@ -19,7 +19,7 @@ parser.add_argument("-s", "--steps", type=int, default=0,
 args = parser.parse_args()
 domain = Domain.RectangularDomain(L=args.L, x=args.x)
 comm = Comm.init()
-h5 = tables.open_file(args.prefix + ".h5", "r")
+h5 = h5py.File(args.prefix + ".h5", "r")
 isosurface = Isosurface.Isosurface((('phi_t', (0.0,)),),
                                    domain,
                                    writeBoundary=False)

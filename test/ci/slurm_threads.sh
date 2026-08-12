@@ -7,10 +7,10 @@ i=0
 while [ $i -lt ${#num_nodes[*]} ]; do
     	
     # Replace the placeholders in the template with the current values"
-    sed -e "s/NUM_NODES/${num_nodes[$i]}/g" -e "s/TASKS_PER_NODE/${num_procs[$i]}/g" -e "s/NUM_REFINEMENT/$(($i+5))/g" -e "s/PARTITION_NAME/${part_name[$i]}/g" poisson.sh > poisson_slurm.sh 
-        
+    sed -e "s/NUM_NODES/${num_nodes[$i]}/g" -e "s/NUM_REFINEMENT/$(($i+2))/g" -e "s/QUEUE_NAME/${queue_name[$i]}/g" poisson.sh > poisson_slurm.sh 
+    cat poisson_slurm.sh
     # Submit the Slurm script
-    printf "Submitting job with nodes = ${num_nodes[$i]} and cores = ${num_procs[$i]} \n"
+    printf "Submitting job with nodes = ${num_nodes[$i]}" # and cores = ${num_procs[$i]} \n"
     
     sbatch poisson_slurm.sh
 

@@ -9790,8 +9790,8 @@ void calculateVelocityQuadrature_MixedForm2_Jacobian(int nElements_global,
                   }
               }
           info=0;
-          dgetrf_(&dim,&dim,&A_inv[I],&dim,ipiv,&info);
-          dgetri_(&dim,&A_inv[I],&dim,ipiv,work,&lwork,&info);
+          dgetrf_(&dim,&dim,A_inv[I],&dim,ipiv,&info);
+          dgetri_(&dim,A_inv[I],&dim,ipiv,work,&lwork,&info);
           /* get derivatives of velocity DOF w.r.t. u DOF*/
           for(jj=0;jj<nDOF_element;jj++)
             for(i=0;i<nDOF_element;i++)

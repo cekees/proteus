@@ -441,7 +441,12 @@ void MeshAdaptPUMIDrvr::computeDiffusiveFlux(apf::Mesh*m,apf::Field* voff, apf::
           bflux = tempbflux*normal;
         } //end if boundary
         bflux = bflux*weight*Jdet;
-        bflux.toArray(&(tempflux[l*nsd]));
+        // bflux.toArray() always writes all 3 components of an apf::Vector3,
+        // regardless of nsd -- tempflux is only sized/strided for nsd components
+        // per quadrature point, so using toArray() here overflows it by one
+        // component per point when nsd==2 (harmless no-op when nsd==3, since the
+        // stride then matches the 3 components written).
+        for(int d = 0; d < nsd; d++) tempflux[l*nsd+d] = bflux[d];
       }
       flux = (double*) calloc(numbqpt*nsd*2,sizeof(double));
       m->getDoubleTag(bent,diffFlux,flux);

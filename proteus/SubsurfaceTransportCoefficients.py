@@ -50,7 +50,7 @@ class BlockHeterogeneousCoefficients(object):
 #Single-phase flow
 ##################################################
 class SinglePhaseDarcyCoefficients(TC_base):
-    """:math:`S_s h_t -\deld ( K_i(x,t) \grad h_i ) + r(x,t) = 0 i=1,nc`
+    """:math:`S_s h_t -\\deld ( K_i(x,t) \\grad h_i ) + r(x,t) = 0 i=1,nc`
 
     """
     def __init__(self,K_types,source_types,S_s_types=None,
@@ -1213,8 +1213,8 @@ class TwophaseDarcy_fc(TwophaseDarcyFlow_base):
 
     .. math::
 
-        \pd{m_w}{t} - \deld (\ten{a}_w \grad \phi_w) + r_w = 0
-        \pd{m_n}{t} - \deld (\ten{a}_n \grad \phi_n) + r_n = 0
+        \\pd{m_w}{t} - \\deld (\ten{a}_w \\grad \\phi_w) + r_w = 0
+        \\pd{m_n}{t} - \\deld (\ten{a}_n \\grad \\phi_n) + r_n = 0
 
     """
     # (normalized) mass for each phase
@@ -1591,8 +1591,8 @@ class TwophaseDarcy_fc_pp(TwophaseDarcyFlow_base):
 
     .. math::
 
-      \pd{m_w}{t} - \deld (\ten{a}_w \grad \phi_w) + r_w = 0
-      \pd{m_n}{t} - \deld (\ten{a}_n \grad \phi_n) + r_n = 0
+      \\pd{m_w}{t} - \\deld (\ten{a}_w \\grad \\phi_w) + r_w = 0
+      \\pd{m_n}{t} - \\deld (\ten{a}_n \\grad \\phi_n) + r_n = 0
     
     """
     
@@ -2006,7 +2006,7 @@ class TwophaseDarcy_split_pressure_base(TwophaseDarcyFlow_base):
     fractional flow formulations. This
 
     The primary functionality of the base class is to handle synchronization with a 'saturation' model to
-    get the saturation, S_w, and capillary pressure (head), \psi_c, variables
+    get the saturation, S_w, and capillary pressure (head), \\psi_c, variables
 
     """
     def __init__(self,
@@ -3242,7 +3242,7 @@ class TwophaseDarcy_split_pp_pressure_base(TwophaseDarcyFlow_base):
 
     The primary functionality of the base class is to handle
     synchronization with a 'saturation' model to get the saturation,
-    :math:`S_w`, and capillary pressure (head), :math:`\psi_c`, variables
+    :math:`S_w`, and capillary pressure (head), :math:`\\psi_c`, variables
 
     This version would allow for capillary pressure to be unknown for
     saturation equation

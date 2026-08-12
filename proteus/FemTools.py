@@ -731,30 +731,30 @@ class QuadraticOnSimplexWithNodalBasis(LocalFunctionSpace):
 
     .. math::
 
-    \psi &= \lambda_i(2\lambda_i-1)  0<= i<= d
-    \psi &= 4\lambda_j\lambda_k       0<= j < k <= d
+    \\psi &= \\lambda_i(2\\lambda_i-1)  0<= i<= d
+    \\psi &= 4\\lambda_j\\lambda_k       0<= j < k <= d
 
-    where :math:`\lambda_i` is the barycentric coordinate associated
+    where :math:`\\lambda_i` is the barycentric coordinate associated
     with node i (i.e., it's 1 at node i and zero elsewhere)
 
     Gradients of shape functions are
 
     .. math::
 
-     \nabla \psi_i &= (4\lambda_i-1)\nabla\lambda_i   0<= i <= d
-     \nabla \psi_i &= 4\lambda_k\nabla\lambda_j + 4\lambda_j\nabla\lambda_k \mbox{for} 0 <= j < k <= d
+     \nabla \\psi_i &= (4\\lambda_i-1)\nabla\\lambda_i   0<= i <= d
+     \nabla \\psi_i &= 4\\lambda_k\nabla\\lambda_j + 4\\lambda_j\nabla\\lambda_k \\mbox{for} 0 <= j < k <= d
 
     In 2d we have
 
     .. math::
 
-    \psi_i &= \lambda_i(2\lambda_i-1)  0<= i<= 2
-    \psi_3 &= 4\lambda_0\lambda_1
-    \psi_4 &= 4\lambda_1\lambda_2
-    \psi_5 &= 4\lambda_0\lambda_2
+    \\psi_i &= \\lambda_i(2\\lambda_i-1)  0<= i<= 2
+    \\psi_3 &= 4\\lambda_0\\lambda_1
+    \\psi_4 &= 4\\lambda_1\\lambda_2
+    \\psi_5 &= 4\\lambda_0\\lambda_2
 
 
-    2d numberings for :math:`\psi`
+    2d numberings for :math:`\\psi`
 
       2
       |\
@@ -773,13 +773,13 @@ class QuadraticOnSimplexWithNodalBasis(LocalFunctionSpace):
 
     .. math::
 
-    \psi_i &= \lambda_i(2\lambda_i-1)  0<= i<= 3
-    \psi_4 &= 4\lambda_0\lambda_1
-    \psi_5 &= 4\lambda_1\lambda_2
-    \psi_6 &= 4\lambda_2\lambda_3
-    \psi_7 &= 4\lambda_0\lambda_2
-    \psi_8 &= 4\lambda_1\lambda_3
-    \psi_9 &= 4\lambda_0\lambda_3
+    \\psi_i &= \\lambda_i(2\\lambda_i-1)  0<= i<= 3
+    \\psi_4 &= 4\\lambda_0\\lambda_1
+    \\psi_5 &= 4\\lambda_1\\lambda_2
+    \\psi_6 &= 4\\lambda_2\\lambda_3
+    \\psi_7 &= 4\\lambda_0\\lambda_2
+    \\psi_8 &= 4\\lambda_1\\lambda_3
+    \\psi_9 &= 4\\lambda_0\\lambda_3
     """
     def __init__(self,nd=3):
         from .RefUtils import baryCoords
@@ -1013,21 +1013,21 @@ class BernsteinOnSimplex(LocalFunctionSpace):
 
     .. math::
 
-    \psi &= \lambda_i^2               0<= i<= d
-    \psi &= 2\lambda_j\lambda_k       0<= j < k <= d
+    \\psi &= \\lambda_i^2               0<= i<= d
+    \\psi &= 2\\lambda_j\\lambda_k       0<= j < k <= d
 
-    where :math:`\lambda_i` is the barycentric coordinate associated
+    where :math:`\\lambda_i` is the barycentric coordinate associated
     with node i (i.e., it's 1 at node i and zero elsewhere). 
     These can be generalized to:
 
-    \psi &= p!/(i!j!k!)\lambda_0^i\lambda_1^j\lambda_2^k, 0<=i,j,k<=order, i+j+k=order
+    \\psi &= p!/(i!j!k!)\\lambda_0^i\\lambda_1^j\\lambda_2^k, 0<=i,j,k<=order, i+j+k=order
 
     Gradients of shape functions are
 
     .. math::
 
-     \nabla \psi_i &= 2\lambda_i\nabla\lambda_i   0<= i <= d
-     \nabla \psi_i &= 2\lambda_k\nabla\lambda_j + 2\lambda_j\nabla\lambda_k \mbox{for} 0 <= j < k <= d
+     \nabla \\psi_i &= 2\\lambda_i\nabla\\lambda_i   0<= i <= d
+     \nabla \\psi_i &= 2\\lambda_k\nabla\\lambda_j + 2\\lambda_j\nabla\\lambda_k \\mbox{for} 0 <= j < k <= d
 
     which again can be generalized via the general formula above.
 
@@ -1035,12 +1035,12 @@ class BernsteinOnSimplex(LocalFunctionSpace):
 
     .. math::
 
-    \psi_i &= \lambda_i^2  0<= i<= 2
-    \psi_3 &= 2\lambda_0\lambda_1
-    \psi_4 &= 2\lambda_1\lambda_2
-    \psi_5 &= 2\lambda_0\lambda_2
+    \\psi_i &= \\lambda_i^2  0<= i<= 2
+    \\psi_3 &= 2\\lambda_0\\lambda_1
+    \\psi_4 &= 2\\lambda_1\\lambda_2
+    \\psi_5 &= 2\\lambda_0\\lambda_2
 
-    2d numberings for :math:`\psi`
+    2d numberings for :math:`\\psi`
 
       2
       |\
@@ -1059,13 +1059,13 @@ class BernsteinOnSimplex(LocalFunctionSpace):
 
     .. math::
 
-    \psi_i &= \lambda_i^2  0<= i<= 3
-    \psi_4 &= 2\lambda_0\lambda_1
-    \psi_5 &= 2\lambda_1\lambda_2
-    \psi_6 &= 2\lambda_2\lambda_3
-    \psi_7 &= 2\lambda_0\lambda_2
-    \psi_8 &= 2\lambda_1\lambda_3
-    \psi_9 &= 2\lambda_0\lambda_3
+    \\psi_i &= \\lambda_i^2  0<= i<= 3
+    \\psi_4 &= 2\\lambda_0\\lambda_1
+    \\psi_5 &= 2\\lambda_1\\lambda_2
+    \\psi_6 &= 2\\lambda_2\\lambda_3
+    \\psi_7 &= 2\\lambda_0\\lambda_2
+    \\psi_8 &= 2\\lambda_1\\lambda_3
+    \\psi_9 &= 2\\lambda_0\\lambda_3
     """
     def __init__(self,nd=3):
         from .RefUtils import baryCoords
@@ -1458,7 +1458,7 @@ class P1BubblesWithNodalBasis(LocalFunctionSpace):
 
     .. math::
 
-    b = (n_d+1)^{n_d+1} \Pi_{i=0}^{n_d} \lambda_i
+    b = (n_d+1)^{n_d+1} \\Pi_{i=0}^{n_d} \\lambda_i
 
     First nd+1 basis functions are nodal ones on the reference nd-simplex  (nd <=3) with
     coordinates xi[0],xi[1],and xi[2]. The basis functions are numbered according to
@@ -1629,7 +1629,7 @@ class P1P0BubblesWithNodalBasis(LocalFunctionSpace):
 
     .. math::
 
-    b_e = 1 for x in \Omega_e
+    b_e = 1 for x in \\Omega_e
 
     First nd+1 basis functions are nodal ones on the reference nd-simplex  (nd <=3) with
     coordinates xi[0],xi[1],and xi[2]. The basis functions are numbered according to

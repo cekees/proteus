@@ -37,7 +37,7 @@ class TI_base(object):
     method and results in the steady state scalar
     transport equation:
 
-    \deld ( f - a \grad phi) + r = 0
+    \\deld ( f - a \\grad phi) + r = 0
 
     NoIntegration is an alias for this class.
     """
@@ -1617,33 +1617,33 @@ class ExplicitRK_base(TI_base):
     the Shu Osher 88 (Cockburn Shu 89) style generic formula
 
     u^0 = u^n
-    u^l = \sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \Delta t L(u^{k},t^n + d_{k} \Delta t^n)
+    u^l = \\sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \\Delta t L(u^{k},t^n + d_{k} \\Delta t^n)
     u^{n+1} = u^{m}
 
     We will try to include these schemes in a Rothe framework rather than MOL
 
     so in calculate element coefficients, at stage number l, u_t will be replaced with
 
-      u_t --> (u - \sum_{k=0}^{l-1} \alpha_{l,k} u^k)/\Delta t
+      u_t --> (u - \\sum_{k=0}^{l-1} \alpha_{l,k} u^k)/\\Delta t
 
     or
 
-      u_t -->  (u - \sum_{k=0}^{l-1} \alpha_{l,k} u^k)
+      u_t -->  (u - \\sum_{k=0}^{l-1} \alpha_{l,k} u^k)
 
-    depending on whether \Delta t is assumed to be in the mass matrix or not
+    depending on whether \\Delta t is assumed to be in the mass matrix or not
 
     The spatial residual at stage l will be replaced with (in calculateElementSpatialResidual)
 
-      r --> \sum_{k=0,l-1} \beta_{l,k} r_k
+      r --> \\sum_{k=0,l-1} \beta_{l,k} r_k
 
     or
 
-      r --> \Delta t \sum_{k=0,l-1} \beta_{l,k} r_k
+      r --> \\Delta t \\sum_{k=0,l-1} \beta_{l,k} r_k
 
-    depending on whether \Delta t is assumed to be in the mass matrix or not
+    depending on whether \\Delta t is assumed to be in the mass matrix or not
     Here r_k corresponds to
 
-       L(u^{k},t^n + d_{k} \Delta t^n)
+       L(u^{k},t^n + d_{k} \\Delta t^n)
 
 
     Substeps in NumericalSolution framework correspond to stage values
@@ -1784,7 +1784,7 @@ class ExplicitRK_base(TI_base):
         .. math::
 
             u^0 = u^n
-            u^l = \sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \Delta t L(u^{k},t^n + d_{k} \Delta t^n)
+            u^l = \\sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \\Delta t L(u^{k},t^n + d_{k} \\Delta t^n)
             u^{n+1} = u^{m}
 
         must be implemented in derived class
@@ -1797,7 +1797,7 @@ class ExplicitRK_base(TI_base):
             beta[l,k]  -->  beta_{l+1,k}
             dcoefs[k]  -->  d_{k+1} 
 
-        because of the whole caching\delayed eval deal second index
+        because of the whole caching\\delayed eval deal second index
         (k) is actual level
 
         """
@@ -1819,7 +1819,7 @@ class ExplicitRK_base(TI_base):
         """
         set m_t as
 
-              m_t --> (m - \sum_{k=0}^{l-1} \alpha_{l,k} m^k)/\Delta t
+              m_t --> (m - \\sum_{k=0}^{l-1} \alpha_{l,k} m^k)/\\Delta t
 
         """
         if self.dt <= 1.0e-24:
@@ -1856,7 +1856,7 @@ class ExplicitRK_base(TI_base):
         """
         set m_t as
 
-              m_t --> (m - \sum_{k=0}^{l-1} \alpha_{l,k} m^k)
+              m_t --> (m - \\sum_{k=0}^{l-1} \alpha_{l,k} m^k)
 
         """
         assert self.dt > 1.0e-24,"dt = %d too small in calculateElementCoefficients" % self.dt
@@ -1881,7 +1881,7 @@ class ExplicitRK_base(TI_base):
         """
         The spatial residual at stage l will be replaced with (in calculateElementSpatialResidual)
 
-           r --> \sum_{k=0,l-1} \beta_{l,k} r_k
+           r --> \\sum_{k=0,l-1} \beta_{l,k} r_k
 
 
         """
@@ -1901,7 +1901,7 @@ class ExplicitRK_base(TI_base):
         """
         The spatial residual at stage l will be replaced with (in calculateElementSpatialResidual)
 
-          r --> \Delta t \sum_{k=0,l-1} \beta_{l,k} r_k
+          r --> \\Delta t \\sum_{k=0,l-1} \beta_{l,k} r_k
 
 
         """
@@ -2116,7 +2116,7 @@ class LinearSSPRKintegration(ExplicitRK_base):
 
     .. math::
 
-        \od{\vec y}{t} = \mat{L}\vec y
+        \\od{\vec y}{t} = \\mat{L}\vec y
 
     See Gottlieb, Shu, Tadmor siam review article and notes
 
@@ -2125,9 +2125,9 @@ class LinearSSPRKintegration(ExplicitRK_base):
     .. math::
 
         u^0 = u^n
-        u^l = u^{l-1} + \Delta t L(u^{l-1}) l = 1,...,m-1
-        u^m = \sum_{k=0}^{l-1}\alpha_{m,k}u^k +
-              \alpha_{m,m-1} \Delta t L(u^{m-1})
+        u^l = u^{l-1} + \\Delta t L(u^{l-1}) l = 1,...,m-1
+        u^m = \\sum_{k=0}^{l-1}\alpha_{m,k}u^k +
+              \alpha_{m,m-1} \\Delta t L(u^{m-1})
         u^{n+1} = u^m
 
         so \alpha_{l,l-1} = 1, \beta_{l,l-1} = 1.0  l < m,
@@ -2136,7 +2136,7 @@ class LinearSSPRKintegration(ExplicitRK_base):
     Apparently,
 
     .. math::
-         d_{l} = l \Delta t l < m,
+         d_{l} = l \\Delta t l < m,
          d_m = 1.0
       
     which doesn't make a lot of sense for time dependent problems
@@ -2151,12 +2151,12 @@ class LinearSSPRKintegration(ExplicitRK_base):
         """
         alpha matrix in Gottlieb, Shu, Tadmor review paper
 
-          u^{l} = \sum_{k=0}^{l-1}\alpha_{l,k}u^k
+          u^{l} = \\sum_{k=0}^{l-1}\alpha_{l,k}u^k
 
         so \alpha_{l,l-1} = 1  for l < m
 
         beta matrix multiplies
-          \beta_{l,k} \Delta t L(u^{k},t^n + d_{k} \Delta t^n)
+          \beta_{l,k} \\Delta t L(u^{k},t^n + d_{k} \\Delta t^n)
 
         so
           \beta_{l,l-1} = 1.0 for l < m
@@ -2165,7 +2165,7 @@ class LinearSSPRKintegration(ExplicitRK_base):
         Note that
           alpha[l,k] -->  alpha_{l+1,k}
           beta[l,k]  -->  beta_{l+1,k}
-          dcoefs[k]  -->  d_{k+1} because of the whole caching\ delayed eval deal
+          dcoefs[k]  -->  d_{k+1} because of the whole caching\\ delayed eval deal
         second index (k) is actual level
 
         """
@@ -2219,22 +2219,22 @@ class SSPRKPIintegration(ExplicitRK_base):
     2nd order
 
     .. math::
-        u^1 = u^n + \Delta t L(u^n)
-        u^2 = 0.5(u^n + u^1) + 0.5\Delta t L(u^1,t^n + \Delta t^n), same stage values etc linear SSPRK
+        u^1 = u^n + \\Delta t L(u^n)
+        u^2 = 0.5(u^n + u^1) + 0.5\\Delta t L(u^1,t^n + \\Delta t^n), same stage values etc linear SSPRK
 
     3rd order
 
     .. math::
-        u^1 =  u^n + \Delta t L(u^n,t^n)
-        u^2 = 0.75 u^n + 0.25u^1  + 0.25\Delta t L(u^1,t^n + \Delta t^n),
-        u^3 = 1/3 u^n + 2/3 u^2 + 2/3 \Delta t L(u^2,t^n + 0.5\Delta t^n)
+        u^1 =  u^n + \\Delta t L(u^n,t^n)
+        u^2 = 0.75 u^n + 0.25u^1  + 0.25\\Delta t L(u^1,t^n + \\Delta t^n),
+        u^3 = 1/3 u^n + 2/3 u^2 + 2/3 \\Delta t L(u^2,t^n + 0.5\\Delta t^n)
 
     generic formula is
 
     .. math::
 
         u^0 = u^n
-        u^l = \sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_l \Delta t L(u^{l-1},t^n + d_{l-1} \Delta t^n)
+        u^l = \\sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_l \\Delta t L(u^{l-1},t^n + d_{l-1} \\Delta t^n)
         u^{n+1} = u^{m}
 
     so :math:`beta_l --> beta_{l,k-1}` in our basic framework
@@ -2244,7 +2244,7 @@ class SSPRKPIintegration(ExplicitRK_base):
     
     .. math::
 
-        m_t \approx \frac{u^l - \sum_{k=0}^{l-1}\alpha_{l,k}u^k}{\Delta t}
+        m_t \approx \frac{u^l - \\sum_{k=0}^{l-1}\alpha_{l,k}u^k}{\\Delta t}
 
     spatial residual --> spatial residual * beta_l
 
@@ -2277,7 +2277,7 @@ class SSPRKPIintegration(ExplicitRK_base):
           
         alpha[l,k] -->  alpha_{l+1,k}
         beta[l,k]  -->  beta_{l+1,k}
-        dcoefs[k]  -->  d_{k+1} because of the whole caching\ delayed eval deal
+        dcoefs[k]  -->  d_{k+1} because of the whole caching\\ delayed eval deal
 
         """
         order = self.timeOrder; stages = self.nStages
@@ -2837,7 +2837,7 @@ class CockburnNotesLimiter2d_base(UnstructuredLimiter_base):
         for face midpoint using triangles formed by neighboring barycenters
         accept first nonnegative pair of coordinates
 
-        write \lambda_i = 1 + (x-x_i).grad \lambda_i
+        write \\lambda_i = 1 + (x-x_i).grad \\lambda_i
         """
         self.alphas = numpy.ones((self.mesh.nElements_global,self.mesh.nElementBoundaries_element,
                                   self.nSpace),'d')

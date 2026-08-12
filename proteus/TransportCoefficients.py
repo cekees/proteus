@@ -4125,7 +4125,7 @@ class LevelSetCurvatureCoefficients(TC_base):
     def initializeMesh(self,mesh):
         self.eps = self.epsFact*mesh.h
     def attachModels(self,modelList):
-        logEvent("Attaching \grad \phi in curvature model")
+        logEvent("Attaching \\grad \\phi in curvature model")
         self.q_grad_phi    = modelList[self.levelSetModelIndex].q[('grad(u)',0)]
         self.ebqe_grad_phi = modelList[self.levelSetModelIndex].ebqe[('grad(u)',0)]
         if ('grad(u)',0) in modelList[self.levelSetModelIndex].ebq:
@@ -7993,13 +7993,13 @@ class BuckleyLeverettLiuExample(TC_base):
     """
     5 spot example from Liu 93 Siam paper.
 
-    S_t + \deld (\vec a f(S)) = 0
+    S_t + \\deld (\vec a f(S)) = 0
 
     f(S) = S^2 / (0.2 - 0.4 S + 1.2 S^2)
 
-    \vec a = (\pd{\phi}{x},\pd{phi}{y})
+    \vec a = (\\pd{\\phi}{x},\\pd{phi}{y})
 
-    \phi = 0.01 \log(\sqrt{x^2 + y^2})
+    \\phi = 0.01 \\log(\\sqrt{x^2 + y^2})
 
     However, note that his example is for
     S=0 injecting into S=1 background saturation using his definition of f

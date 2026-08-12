@@ -39,6 +39,33 @@ private:
   virtual void SetupInitial(ChSystem* system) override {
     assert(GetSection());
 
+    // ChElementANCF (a base of ChElementCableANCF) tracks each element's
+    // active-DOF count in m_element_dof (default-constructed to 0) plus
+    // m_full_dof/m_mapping_dof for the case where some node DOFs are fixed.
+    // ChElementCableANCF::SetupInitial() computes these, but it's private
+    // in the base class so it can't be called directly from here -- this
+    // override replaces it entirely rather than extending it, and without
+    // this block m_element_dof silently stays 0. Chrono's system assembly
+    // sizes this element's contribution off GetNumCoordsPosLevelActive()
+    // (== m_element_dof), so leaving it at 0 while ComputeInternalForces()
+    // below still writes a full 12-entry result is a real size mismatch --
+    // confirmed via gdb to segfault inside Eigen's dense assignment kernel,
+    // called from here by way of ComputeInternalForces_Impl.
+    m_element_dof = 0;
+    for (int i = 0; i < 2; i++) {
+      m_element_dof += (i == 0 ? GetNodeA() : GetNodeB())->GetNumCoordsPosLevel();
+    }
+    m_full_dof = (m_element_dof == 2 * 6);
+    if (!m_full_dof) {
+      m_mapping_dof.resize(m_element_dof);
+      int dof = 0;
+      for (int i = 0; i < 2; i++) {
+        auto node = (i == 0 ? GetNodeA() : GetNodeB());
+        for (unsigned int j = 0; j < node->GetNumCoordsPosLevel(); j++)
+          m_mapping_dof(dof++) = i * 6 + j;
+      }
+    }
+
     // Compute rest length, mass:
     //double length2 = (nodes[1]->GetX0() - nodes[0]->GetX0()).Length();
     //this->mass = this->length * GetSection()->Area * GetSection()->density;
@@ -57,9 +84,45 @@ private:
   };
 };
 
+// --- Chrono-agnostic access to ChElementBeamEuler::q_element_ref_rot ---
+// This data member is private in stock/upstream Chrono. ChElementBeamEulermod
+// below needs to WRITE it in its own SetupInitial() override -- an override
+// that exists in the first place because ChElementBeamEuler::SetupInitial()
+// is *itself* private, so it cannot be called by name from a subclass and
+// must be fully reimplemented; UpdateRotation()/ComputeInternalJacobians()/
+// etc (inherited unmodified, not overridden) then read *this exact* member,
+// so it has to be the real one, not a same-named shadow declared in the
+// subclass (that was the original bug here: a shadow left the base's own
+// copy stuck at its default/identity value).
+//
+// Rather than depend on a Chrono fork/patch promoting the member to
+// protected (which then only compiles against that patched Chrono, not
+// e.g. conda-forge's stock prebuilt pychrono package), use the standard
+// (legal, if obscure) C++ "steal a private member via explicit template
+// instantiation" idiom: forming a pointer-to-member as an explicit template
+// argument isn't access-checked the way a normal member-access expression
+// is, and dereferencing the resulting pointer-to-member isn't
+// access-checked at all -- so this compiles and works regardless of the
+// member's actual access specifier, with no Chrono source changes needed.
+// See e.g. https://bloglitb.blogspot.com/2010/07/access-to-private-members-thats-easy.html
+template <typename Tag, typename Tag::type Member>
+struct ChronoPrivateMemberThief {
+  friend typename Tag::type chronoPrivateMemberThief(Tag) { return Member; }
+};
+
+struct ChElementBeamEuler_q_element_ref_rot_tag {
+  using type = ChQuaternion<> chrono::fea::ChElementBeamEuler::*;
+  friend type chronoPrivateMemberThief(ChElementBeamEuler_q_element_ref_rot_tag);
+};
+template struct ChronoPrivateMemberThief<ChElementBeamEuler_q_element_ref_rot_tag,
+                                          &chrono::fea::ChElementBeamEuler::q_element_ref_rot>;
+
+inline ChQuaternion<>& q_element_ref_rot_of(chrono::fea::ChElementBeamEuler& el) {
+  return el.*chronoPrivateMemberThief(ChElementBeamEuler_q_element_ref_rot_tag());
+}
+
 class ChElementBeamEulermod : public ChElementBeamEuler {
 private:
-  ChQuaternion<> q_element_ref_rot;
   virtual void SetupInitial(ChSystem* system) override {
     assert(GetSection());
 
@@ -73,12 +136,38 @@ private:
     auto node0 = GetNodeA();
     auto node1 = GetNodeB();
     ChVector3d mXele = node1->GetX0().GetPos() - node0->GetX0().GetPos();
-    ChVector3d myele = node0->GetX0().GetRotMat().GetAxisY();
+    // Matches the base class's own average-of-both-nodes computation
+    // (ChElementBeamEuler::SetupInitial): using only node0's Y-axis here
+    // instead is only equivalent when both nodes already share the same
+    // reference rotation.
+    ChVector3d myele = (node0->GetX0().GetRotMat().GetAxisY()
+                         + node1->GetX0().GetRotMat().GetAxisY()).GetNormalized();
     A0.SetFromAxisX(mXele, myele);
-    q_element_ref_rot = A0.GetQuaternion();
+    q_element_ref_rot_of(*this) = A0.GetQuaternion();
+
+    // Set each node's reference rotation relative to the element's own
+    // frame (q_refrotA/q_refrotB, read by UpdateRotation() to remove the
+    // effect of each node's own reference-to-current rotation offset when
+    // computing the corotational frame). This override previously never
+    // called these -- unlike ChBuilderBeamEuler::BuildBeam(), the official
+    // way to build these elements -- leaving q_refrotA/q_refrotB stuck at
+    // their default-constructed identity, which is only correct by
+    // coincidence when a node's own initial rotation already matches the
+    // element's. Matches ChBuilderBeamEuler::BuildBeam()'s own logic
+    // exactly (chrono/fea/ChBuilderBeam.cpp).
+    SetNodeAreferenceRot(q_element_ref_rot_of(*this).GetConjugate() * node0->GetX0().GetRot());
+    SetNodeBreferenceRot(q_element_ref_rot_of(*this).GetConjugate() * node1->GetX0().GetRot());
 
     // Compute local stiffness matrix:
     ComputeStiffnessMatrix();
+
+    // Compute local geometric stiffness matrix normalized by pull force P: Kg/P
+    // (this override previously skipped this entirely -- ChElementBeamEuler::
+    // ComputeInternalJacobians() reads the resulting Kg matrix, and leaving it
+    // at its default-constructed size/contents is the same class of bug fixed
+    // above for ChElementCableANCFmod: a Chrono-expected setup step silently
+    // skipped by this override.)
+    ComputeGeometricStiffnessMatrix();
   };
 };
 
@@ -606,7 +695,14 @@ cppCable::cppCable(std::shared_ptr<ChSystem> system, // system in which the cabl
   else if (beam_type == "BeamEuler") {
     msection_advanced = chrono_types::make_shared<ChBeamSectionAdvanced>();
     msection_advanced->SetYoungModulus(E);
-    msection_advanced->SetShearModulus(1e-6);
+    // NOTE: this was hardcoded to 1e-6 -- with E often ~1e10, that's a
+    // stiffness ratio of ~1e16 between axial/bending and shear/torsional
+    // rigidity, which is numerically catastrophic for the solver (drove a
+    // clean simulation to explode to ~1e163 within a handful of Newton
+    // iterations on the very first timestep). Derive G from E via a
+    // plausible Poisson's ratio instead, using Chrono's own convenience
+    // method (same one its default constructor uses).
+    msection_advanced->SetShearModulusFromPoisson(0.3);
     msection_advanced->SetDensity(rho);
     msection_advanced->SetAsCircularSection(d);
     /* msection_advanced->SetIyy(Iyy); */
@@ -644,6 +740,7 @@ void cppCable::buildNodesBeamEuler(bool last_node) {
     dir.Normalize();
     double ang = acos(dir^ref);  // inner product
     auto axis = ref%dir; // cross product
+    axis.Normalize();
     frame_quat.SetFromAngleAxis(ang, axis);
     node = chrono_types::make_shared<ChNodeFEAxyzrot>(ChFrame<>(mvecs[i],
 								frame_quat));
@@ -656,8 +753,23 @@ void cppCable::buildNodesBeamEuler(bool last_node) {
   if (last_node == true) {
     dir = mvecs_tangents[mvecs.size()-1];
     dir.Normalize();
-    double ang = -acos(dir^ref);  // inner product
+    // NOTE: this used to be `-acos(dir^ref)` (opposite sign from every
+    // other node's angle above), which pointed this node's local X-axis
+    // backward (antiparallel to the tangent) instead of forward like all
+    // the other nodes -- the ANCF equivalent (buildNodesCableANCF above)
+    // treats its last node identically to every other node, with no such
+    // flip, confirming this was a bug rather than a deliberate convention.
+    // It went unnoticed because nothing read a node's reference rotation
+    // until ChElementBeamEulermod::SetupInitial() started calling
+    // SetNodeAreferenceRot/SetNodeBreferenceRot: with the flipped sign,
+    // the last element's q_refrotA/q_refrotB pointed opposite directions,
+    // so UpdateRotation()'s (myele_wA + myele_wB) nearly canceled to a
+    // near-zero vector, sending SetFromAxisX/GetDirectionAxesAsX a
+    // degenerate input and crashing (SIGBUS) in Chrono's unbounded search
+    // loop for a non-parallel suggested axis.
+    double ang = acos(dir^ref);  // inner product
     auto axis = ref%dir; // cross product
+    axis.Normalize();
     frame_quat.SetFromAngleAxis(ang, axis);
     node = chrono_types::make_shared<ChNodeFEAxyzrot>(ChFrame<>(mvecs[mvecs.size()-1],
 								frame_quat));
@@ -722,6 +834,7 @@ void cppCable::buildElements(bool set_lastnodes=true) {
 void cppCable::buildElementsCableANCF(bool set_lastnodes) {
   auto loadcontainer = chrono_types::make_shared<ChLoadContainer>();
   system->Add(loadcontainer);
+  mesh->SetAutomaticGravity(false);  // proteus already applies gravity manually below via ChLoaderGravity
   // build elements
   elemsCableANCF.clear();
   /* elems_loads_distributed.clear(); */
@@ -738,7 +851,12 @@ void cppCable::buildElementsCableANCF(bool set_lastnodes) {
     auto load_volumetric = chrono_types::make_shared<ChLoad>(gravity);
     /* loadcontainer->Add(load_distributed); */
     /* loadcontainer->Add(load); */
-    loadcontainer->Add(loadtri);  // do not forget to add the load to the load container.
+    // NOTE: loadtri and load_volumetric both wrap the same `gravity`
+    // ChLoaderGravity instance; adding both to the loadcontainer applied
+    // gravity twice. Only load_volumetric is added now; loadtri is left
+    // constructed (and still pushed to elems_loads_triangular below) in
+    // case other code expects a valid object there, but it no longer
+    // contributes force.
     loadcontainer->Add(load_volumetric);
     elemsCableANCF.push_back(element);
     /* elems_loads_distributed.push_back(load_distributed); */
@@ -761,6 +879,7 @@ void cppCable::buildElementsCableANCF(bool set_lastnodes) {
 void cppCable::buildElementsBeamEuler(bool set_lastnodes) {
   auto loadcontainer = chrono_types::make_shared<ChLoadContainer>();
   system->Add(loadcontainer);
+  mesh->SetAutomaticGravity(false);  // proteus already applies gravity manually below via ChLoaderGravity
   // build elements
   elemsBeamEuler.clear();
   /* elems_loads_distributed.clear(); */
@@ -776,7 +895,12 @@ void cppCable::buildElementsBeamEuler(bool set_lastnodes) {
     auto load_volumetric = chrono_types::make_shared<ChLoad>(gravity);
     /* loadcontainer->Add(load_distributed); */
     /* loadcontainer->Add(load); */
-    loadcontainer->Add(loadtri);  // do not forget to add the load to the load container.
+    // NOTE: loadtri and load_volumetric both wrap the same `gravity`
+    // ChLoaderGravity instance; adding both to the loadcontainer applied
+    // gravity twice. Only load_volumetric is added now; loadtri is left
+    // constructed (and still pushed to elems_loads_triangular below) in
+    // case other code expects a valid object there, but it no longer
+    // contributes force.
     loadcontainer->Add(load_volumetric);
     elemsBeamEuler.push_back(element);
     /* elems_loads_distributed.push_back(load_distributed); */
