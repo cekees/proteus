@@ -285,7 +285,8 @@ EXTENSIONS_TO_BUILD = [
         library_dirs=[PROTEUS_LAPACK_LIB_DIR,
                       PROTEUS_BLAS_LIB_DIR],
         libraries=['m',PROTEUS_LAPACK_LIB,
-                   PROTEUS_BLAS_LIB]
+                   PROTEUS_BLAS_LIB],
+        extra_link_args=PROTEUS_EXTRA_LINK_ARGS
     ),
     Extension(
         'mprans.cRANS3PF',
