@@ -69,7 +69,7 @@ class ShockCapturing(ShockCapturing_base):
             self.numDiff_last=[]
             for ci in range(self.nc):
                 self.numDiff_last.append(self.numDiff[ci].copy())
-        log("VOF: max numDiff %e" % (globalMax(self.numDiff_last[0].max()),))
+        #log("VOF: max numDiff %e" % (globalMax(self.numDiff_last[0].max()),))
 
 class NumericalFlux_IIPG(proteus.NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG_exterior):
     def __init__(self,vt,getPointwiseBoundaryConditions,
@@ -115,7 +115,14 @@ class Coefficients(TC_base):
                  embeddedBoundary_penalty=100.0,
                  embeddedBoundary_ghost_penalty=0.1,
                  embeddedBoundary_sdf=None,
-                 embeddedBoundary_u=None):
+                 embeddedBoundary_u=None,
+                 immersedBoundary=False,
+                 immersedBoundary_penalty=100.0,
+                 immersedBoundary_ghost_penalty=0.1,
+                 immersedBoundary_sdf=None,
+                 immersedBoundary_u=None,
+                 test=1.0):
+        self.test = test
         self.embeddedBoundary=embeddedBoundary
         self.embeddedBoundary_penalty=embeddedBoundary_penalty
         self.embeddedBoundary_ghost_penalty=embeddedBoundary_ghost_penalty
@@ -124,6 +131,14 @@ class Coefficients(TC_base):
         if self.embeddedBoundary:
             assert(self.embeddedBoundary_sdf is not None)
             assert(self.embeddedBoundary_u is not None)
+        self.immersedBoundary=immersedBoundary
+        self.immersedBoundary_penalty=immersedBoundary_penalty
+        self.immersedBoundary_ghost_penalty=immersedBoundary_ghost_penalty
+        self.immersedBoundary_sdf=immersedBoundary_sdf
+        self.immersedBoundary_u=immersedBoundary_u
+        if self.immersedBoundary:
+            assert(self.immersedBoundary_sdf is not None)
+            assert(self.immersedBoundary_u is not None)
         self.useMetrics = useMetrics
         self.forceStrongDirichlet=forceStrongDirichlet
         self.aOfX = aOfX
@@ -160,11 +175,15 @@ class Coefficients(TC_base):
                          sparseDiffusionTensors=sdInfo,
                          useSparseDiffusion=True,
                          movingDomain=False)
-    def initializeMesh(self,mesh): 
-        self.embeddedBoundary_sdf_nodes = np.ones((mesh.nodeArray.shape[0],),'d')
+    def initializeMesh(self,mesh):
+        self.embeddedBoundary_sdf_nodes = 100*np.ones((mesh.nodeArray.shape[0],),'d')
         if self.embeddedBoundary:
             for nN in range(mesh.nodeArray.shape[0]):
                 self.embeddedBoundary_sdf_nodes[nN], dummy_normal = self.embeddedBoundary_sdf(t=0.0,x=mesh.nodeArray[nN])
+        self.immersedBoundary_sdf_nodes = -100*np.ones((mesh.nodeArray.shape[0],),'d')
+        if self.immersedBoundary:
+            for nN in range(mesh.nodeArray.shape[0]):
+                self.immersedBoundary_sdf_nodes[nN], dummy_normal = self.immersedBoundary_sdf(t=0.0,x=mesh.nodeArray[nN])
     def initializeElementQuadrature(self,t,cq):
         nd = self.nd
         for ci in range(self.nc):
@@ -176,7 +195,7 @@ class Coefficients(TC_base):
             for i in range(len(cq[('r',ci)].flat)):
                 cq[('r',ci)].flat[i] = -self.fOfX[ci](cq['x'].flat[3*i:3*(i+1)])
                 cq[('a',ci,ci)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[ci](cq['x'].flat[3*i:3*(i+1)]).flat
-        cq['embeddedBoundary_sdf'] = np.ones_like(cq[('u',0)])
+        cq['embeddedBoundary_sdf'] = 100*np.ones_like(cq[('u',0)])
         cq['embeddedBoundary_normal'] = np.ones_like(cq['x'])
         cq['embeddedBoundary_u'] = np.ones_like(cq[('u',0)])
         if self.embeddedBoundary:
@@ -184,6 +203,14 @@ class Coefficients(TC_base):
                 for k in range(cq['embeddedBoundary_sdf'].shape[1]):
                     cq['embeddedBoundary_sdf'][eN,k],cq['embeddedBoundary_normal'][eN,k] = self.embeddedBoundary_sdf(t=0.0,x=cq['x'][eN,k])
                     cq['embeddedBoundary_u'][eN,k] = self.embeddedBoundary_u(t=0.0,x=cq['x'][eN,k])
+        cq['immersedBoundary_sdf'] = -100*np.ones_like(cq[('u',0)])
+        cq['immersedBoundary_normal'] = -np.ones_like(cq['x'])
+        cq['immersedBoundary_u'] = np.ones_like(cq[('u',0)])
+        if self.immersedBoundary:
+            for eN in range(cq['immersedBoundary_sdf'].shape[0]):
+                for k in range(cq['immersedBoundary_sdf'].shape[1]):
+                    cq['immersedBoundary_sdf'][eN,k],cq['immersedBoundary_normal'][eN,k] = self.immersedBoundary_sdf(t=0.0,x=cq['x'][eN,k])
+                    cq['immersedBoundary_u'][eN,k] = self.immersedBoundary_u(t=0.0,x=cq['x'][eN,k])
 
     def initializeElementBoundaryQuadrature(self,t,cebq,cebq_global):
         nd = self.nd
@@ -258,7 +285,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                  name='defaultName',
                  reuse_trial_and_test_quadrature=True,
                  sd = True,
-                 movingDomain=False):#,
+                 movingDomain=False):
+        if coefficients.embeddedBoundary or coefficients.immersedBoundary:
+            self.hasCutCells=True
         from proteus import Comm
         #
         #set the objects describing the method and boundary conditions
@@ -564,10 +593,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.mesh.nodeVelocityArray = np.zeros(self.mesh.nodeArray.shape,'d')
         #cek/ido todo replace python loops in modules with optimized code if possible/necessary
         self.forceStrongConditions=coefficients.forceStrongDirichlet
-        self.dirichletConditionsForceDOF = {}
-        if self.forceStrongConditions:
-            for cj in range(self.nc):
-                self.dirichletConditionsForceDOF[cj] = DOFBoundaryConditions(self.u[cj].femSpace,dofBoundaryConditionsSetterDict[cj],weakDirichletConditions=False)
+        self.dirichletConditionsForceDOF = DOFBoundaryConditions(self.u[0].femSpace,dofBoundaryConditionsSetterDict[0],weakDirichletConditions=False)
         compKernelFlag = 0
         self.adr = cADR_base(self.nSpace_global,
                                self.nQuadraturePoints_element,
@@ -599,12 +625,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
         argsDict["mesh_dof"] = self.mesh.nodeArray
         argsDict["mesh_l2g"] = self.mesh.elementNodesArray
+        argsDict["x_ref"] = self.elementQuadraturePoints
         argsDict["dV_ref"] = self.elementQuadratureWeights[('u',0)]
         argsDict["u_trial_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_trial_ref"] = self.u[0].femSpace.grad_psi
         argsDict["u_test_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_test_ref"] = self.u[0].femSpace.grad_psi
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
+        argsDict["elementBoundaryDiameter"] = self.mesh.elementBoundaryDiametersArray
+        argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["cfl"] = self.q[('cfl',0)]
         argsDict["Ct_sge"] = self.shockCapturing.shockCapturingFactor
         argsDict["sc_uref"] = self.coefficients.sc_uref
@@ -620,6 +649,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["nElements_global"] = self.mesh.nElements_global
+        argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
         argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
         argsDict["u_dof"] = self.u[0].dof
         argsDict["sd_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
@@ -637,6 +667,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
+        argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
         argsDict["ebqe_a"] = self.ebqe[('a',0,0)]
         argsDict["ebqe_v"] = self.ebqe[('df',0,0)]
@@ -660,13 +691,33 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
         argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
+        argsDict["immersedBoundary"] = self.coefficients.immersedBoundary
+        argsDict["immersedBoundary_penalty"] = self.coefficients.immersedBoundary_penalty
+        argsDict["immersedBoundary_ghost_penalty"] = self.coefficients.immersedBoundary_ghost_penalty
+        argsDict["immersedBoundary_sdf_nodes"] = self.coefficients.immersedBoundary_sdf_nodes
+        argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
+        argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
+        argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
         argsDict["isActiveDOF"] = self.isActiveDOF
+        argsDict["test"] = self.coefficients.test
+        self.L2_error = np.array((0.0,),'d')
+        argsDict["L2_error"] = self.L2_error
+        self.Linfty_error = np.array((0.0,),'d')
+        argsDict["Linfty_error"] = self.Linfty_error
+        if self.forceStrongConditions:
+            for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
+                self.u[0].dof[dofN] = g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN], self.timeIntegration.t)
         self.adr.calculateResidual(argsDict)
+        if self.forceStrongConditions:
+            for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
+                r[self.offset[0] + self.stride[0] * dofN] = self.u[0].dof[dofN] - g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN], self.timeIntegration.t)
         self.u[0].dof[:] = np.where(self.isActiveDOF == 1.0, self.u[0].dof,0.0)
         r*=self.isActiveDOF
+        log("2 error = {0}".format(self.L2_error**0.5),level=3)
+        log("infty error = {0}".format(self.Linfty_error),level=3)
         log("Global residual",level=9,data=r)
-        self.coefficients.massConservationError = fabs(globalSum(sum(r.flat[:self.mesh.nElements_owned])))
-        log("   Mass Conservation Error",level=3,data=self.coefficients.massConservationError)
+        #self.coefficients.massConservationError = fabs(globalSum(sum(r.flat[:self.mesh.nElements_owned])))
+        #log("   Mass Conservation Error",level=3,data=self.coefficients.massConservationError)
         self.nonlinear_function_evaluations += 1
     def getJacobian(self,jacobian):
         #import superluWrappers
@@ -678,12 +729,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
         argsDict["mesh_dof"] = self.mesh.nodeArray
         argsDict["mesh_l2g"] = self.mesh.elementNodesArray
+        argsDict["x_ref"] = self.elementQuadraturePoints
         argsDict["dV_ref"] = self.elementQuadratureWeights[('u',0)]
         argsDict["u_trial_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_trial_ref"] = self.u[0].femSpace.grad_psi
         argsDict["u_test_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_test_ref"] = self.u[0].femSpace.grad_psi
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
+        argsDict["elementBoundaryDiameter"] = self.mesh.elementBoundaryDiametersArray
+        argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["cfl"] = self.q[('cfl',0)]
         argsDict["Ct_sge"] = self.shockCapturing.shockCapturingFactor
         argsDict["sc_uref"] = self.coefficients.sc_uref
@@ -699,6 +753,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["nElements_global"] = self.mesh.nElements_global
+        argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
         argsDict["u_l2g"] = self.u[0].femSpace.dofMap.l2g
         argsDict["u_dof"] = self.u[0].dof
         argsDict["sd_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
@@ -716,6 +771,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
+        argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
         argsDict["ebqe_a"] = self.ebqe[('a',0,0)]
         argsDict["ebqe_v"] = self.ebqe[('df',0,0)]
@@ -740,8 +796,24 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
         argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
+        argsDict["immersedBoundary"] = self.coefficients.immersedBoundary
+        argsDict["immersedBoundary_penalty"] = self.coefficients.immersedBoundary_penalty
+        argsDict["immersedBoundary_ghost_penalty"] = self.coefficients.immersedBoundary_ghost_penalty
+        argsDict["immersedBoundary_sdf_nodes"] = self.coefficients.immersedBoundary_sdf_nodes
+        argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
+        argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
+        argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
         argsDict["isActiveDOF"] = self.isActiveDOF
+        argsDict["test"] = self.coefficients.test
         self.adr.calculateJacobian(argsDict)
+        if self.forceStrongConditions:
+            for dofN in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.keys()):
+                global_dofN = self.offset[0] + self.stride[0] * dofN
+                for i in range(self.rowptr[global_dofN], self.rowptr[global_dofN + 1]):
+                    if (self.colind[i] == global_dofN):
+                        self.nzval[i] = 1.0
+                    else:
+                        self.nzval[i] = 0.0
         log("Jacobian ",level=10,data=jacobian)
         self.nonlinear_function_jacobian_evaluations += 1
         for global_dofN_a in np.argwhere(self.isActiveDOF==0.0):
@@ -792,6 +864,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
     def estimate_mt(self):
         pass
     def calculateAuxiliaryQuantitiesAfterStep(self):
+        log("L2 error = {0}".format(self.L2_error**0.5),level=3)
+        log("Linfty error = {0}".format(self.Linfty_error),level=3)
         pass
     def calculateSolutionAtQuadrature(self):
         pass

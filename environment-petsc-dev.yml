@@ -3,13 +3,12 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - pip
-  - setuptools
-  - make
+  - pip =24.0
+  - setuptools =73.0.1
+  - make =4.4.1
   - cmake
-  - cython
-  - swig
-  - numpy
-  - pybind11
-  - openblas
-  - tetgen
+  - cython =3.0.11
+  - swig 
+  - numpy =2.1.1
+  - pybind11 
+  - openblas =0.3.28
