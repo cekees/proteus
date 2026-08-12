@@ -55,6 +55,8 @@ class D_base(object):
         # use_gmsh hack
         self.use_gmsh = False
         self.MeshOptions = MeshTools.MeshOptions(self.nd)
+        # use plex hack
+        self.use_plex = False
         # for PUMI compatibility
         self.faceList=[] #list of the boundary IDs that have corresponding BCs, might be the same as self.facets[]
         self.regList=[] # list of regions in the domain, this might be the same as self.regions[]
@@ -1362,6 +1364,22 @@ class ExtrudedTriangulation(PiecewiseLinearComplexDomain):
                  facetHoles=None, holes=None, regions=None, vertexFlags=vertexFlags, facetFlags=facetFlags,
                  regionFlags=None, regionConstraints=None, bc=None, name="extruded", units="m")
 
+class DMPlexDomain(D_base):
+    """
+    2D/3D domains desribed by closed surfaces made up of general polygonal facets.
+    """
+    def __init__(self, plex, name="DMPlexDomain", units="m"):
+        """
+        Read the basic domain info from the lists. Then pass those arguments to PETSc DMPlex object to create a domain and a mesh.
+        """
+        
+        if plex:
+            self.plex = plex
+        else:
+            raise RuntimeError("You must provide a valid DMPlex object")
+                
+        nd = plex.getDimension()
+        D_base.__init__(self, nd, name, units)
 
 
 if __name__ == "__main__":

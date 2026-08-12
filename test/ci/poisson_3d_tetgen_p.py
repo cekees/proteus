@@ -24,8 +24,9 @@ opts = Context.Options([
     ("Refinement", 0, "Refine the mesh this many times"),
 ])
 
-name = "poisson_"+str(opts.Refinement)
+name = "poisson_tetgen_"+str(opts.Refinement)
 nd = 3
+# print("Running %s" % name)
 
 hull_length = 0.5
 hull_beam   = 0.5

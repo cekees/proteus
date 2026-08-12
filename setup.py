@@ -935,6 +935,7 @@ def setup_given_extensions(extensions):
           cmdclass = {'build_ext':custom_build_ext},
           ext_package='proteus',
           ext_modules=extensions,
+        #   ext_modules=cythonize(extensions, gdb_debug=True),
           data_files=[(proteus_install_path,
                        ['proteus/proteus_blas.h',
                         'proteus/proteus_lapack.h',
