@@ -42,14 +42,6 @@ class Test_ibm(object):
 #         self.compare_name = "T8P2"
 #         self.example_setting("T=8.0 vspaceOrder=2 onlySaveFinalSolution=True")
 
-    # NOTE: fixed a bad importlib.import_module anchor this session
-    # ("proteus.tests.cylinder2D.ibm_method" -> "test.cylinder2D.ibm_method",
-    # matching what pytest's --import-mode=importlib actually resolves this
-    # test module's package to) -- simulation now runs and compares against
-    # the real baseline, but 252/462 elements differ (up to ~15% relative on
-    # the worst ones). Modest enough it could be legitimate cross-version
-    # numerical drift (compiler/mesh-generator/library versions), but needs
-    # review before trusting.
     def test_ex2(self):
         self.compare_name = "T1_rans3p"
         self.example_setting("T=0.01 onlySaveFinalSolution=True")
@@ -68,11 +60,9 @@ class Test_ibm(object):
         sList=[]
         for (pModule,nModule) in my_so.pnList:
             pList.append(
-                importlib.import_module("."+pModule,
-                                        "test.cylinder2D.ibm_method"))
+                importlib.import_module("."+pModule, __package__))
             nList.append(
-                importlib.import_module("."+nModule,
-                                        "test.cylinder2D.ibm_method"))
+                importlib.import_module("."+nModule, __package__))
             if pList[-1].name == None:
                 pList[-1].name = pModule
             reload(pList[-1])  # Serious error
