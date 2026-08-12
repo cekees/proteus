@@ -681,7 +681,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["eb_adjoint_sigma"] = self.numericalFlux.boundaryAdjoint_sigma
         argsDict["embeddedBoundary"] = self.coefficients.embeddedBoundary
         argsDict["embeddedBoundary_penalty"] = self.coefficients.embeddedBoundary_penalty
-        argsDict["embeddedBoundary_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
+        argsDict["embedded_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
         argsDict["embeddedBoundary_sdf_nodes"] = self.coefficients.embeddedBoundary_sdf_nodes
         argsDict["embeddedBoundary_sdf_q"] = self.q['embeddedBoundary_sdf']
         argsDict["embeddedBoundary_normal_q"] = self.q['embeddedBoundary_normal']
@@ -693,6 +693,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
         argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
+        argsDict["x_ref"] = self.elementQuadraturePoints
+        argsDict["elementBoundaryDiameter"] = self.mesh.elementBoundaryDiametersArray
+        argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
+        argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
+        argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["isActiveDOF"] = self.isActiveDOF
         argsDict["test"] = self.coefficients.test
         self.L2_error = np.array((0.0,),'d')
@@ -779,7 +784,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["eb_adjoint_sigma"] = self.numericalFlux.boundaryAdjoint_sigma
         argsDict["embeddedBoundary"] = self.coefficients.embeddedBoundary
         argsDict["embeddedBoundary_penalty"] = self.coefficients.embeddedBoundary_penalty
-        argsDict["embeddedBoundary_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
+        argsDict["embedded_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
         argsDict["embeddedBoundary_sdf_nodes"] = self.coefficients.embeddedBoundary_sdf_nodes
         argsDict["embeddedBoundary_sdf_q"] = self.q['embeddedBoundary_sdf']
         argsDict["embeddedBoundary_normal_q"] = self.q['embeddedBoundary_normal']
@@ -791,6 +796,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
         argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
+        argsDict["x_ref"] = self.elementQuadraturePoints
+        argsDict["elementBoundaryDiameter"] = self.mesh.elementBoundaryDiametersArray
+        argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
+        argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
+        argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["isActiveDOF"] = self.isActiveDOF
         argsDict["test"] = self.coefficients.test
         self.adr.calculateJacobian(argsDict)

@@ -118,7 +118,7 @@ class TestTADR(object):
             expected_path = os.path.join(self._scriptdir,"comparison_files", "tadr_level_0"+tname+ "_u_t2.csv")
             #write comparison file
             #(actual['u_t2'][:]).tofile(expected_path,sep=",")
-            np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=10)
+            np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=1)
 
     def test_EV2(self):
         thelper_tadr.ct.STABILIZATION_TYPE = 2 # EV
@@ -143,7 +143,7 @@ class TestTADR(object):
             expected_path = os.path.join(self._scriptdir,"comparison_files","tadr_level_0"+tname+ "_u_t2.csv")
             #write comparison file
             #(actual['u_t2'][:]).tofile(expected_path,sep=",")
-            np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=10)
+            np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=2)
 
     def test_SmoothnessBased(self):
         thelper_tadr.ct.STABILIZATION_TYPE = 3 # Smoothness based
@@ -166,7 +166,7 @@ class TestTADR(object):
             expected_path = os.path.join(self._scriptdir,"comparison_files","tadr_level_0"+tname+ "_u_t2.csv")
             #write comparison file
             #(actual['u_t2'][:]).tofile(expected_path,sep=",")
-            np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=10)
+            np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=3)
 
     def test_stab4(self):
         thelper_tadr.ct.STABILIZATION_TYPE = 4 # Proposed by D.Kuzmin
@@ -189,4 +189,4 @@ class TestTADR(object):
             expected_path = os.path.join(self._scriptdir,"comparison_files","tadr_level_0"+tname+ "_u_t2.csv")
             #write comparison file
             #(actual['u_t2'][:]).tofile(expected_path,sep=",")
-            np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=10)
+            np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=8)

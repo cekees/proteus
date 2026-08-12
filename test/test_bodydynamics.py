@@ -256,7 +256,7 @@ class TestRigidBody(unittest.TestCase):
         c3d.It = It
         c3d.coords_system = coords_system
         I = c3d.getInertia(vec=axis)
-        npt.assert_equal(I, inertia)
+        npt.assert_almost_equal(I, inertia, decimal=10)
 
 
     def testGetAcceleration(self):

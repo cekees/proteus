@@ -145,4 +145,4 @@ def Archive_time_step(Beam_x,
             + '\t\t</Grid>\n'
             + '\t</Domain>\n'
             + '</Xdmf>\n')
-    f.close(
+    f.close()

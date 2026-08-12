@@ -954,7 +954,7 @@ cdef class ProtChBody:
         self.position[:] = pyvec2array(self.ChBody.GetPos())
         # check if IBM and set index if not set previously by user
         if self.useIBM:
-            if not self.boundaryFlags:
+            if self.boundaryFlags.size == 0:
                 self.setBoundaryFlags([self.ProtChSystem.nBodiesIBM])
             self.ProtChSystem.nBodiesIBM += 1
         # get the initial values for F and M
@@ -3123,7 +3123,7 @@ cdef class ProtChMoorings:
             elem.this.disown()
             swig_obj = <SwigPyObject*> elem.this
             if self.beam_type == b"BeamEuler":
-                swig_obj.ptr = <shared_ptr[ch.ChElementBeamEuler]*> &self.thisptr.elemsCableANCF.at(elemN)
+                swig_obj.ptr = <shared_ptr[ch.ChElementBeamEuler]*> &self.thisptr.elemsBeamEuler.at(elemN)
             elif self.beam_type == b"CableANCF":
                 swig_obj.ptr = <shared_ptr[ch.ChElementCableANCF]*> &self.thisptr.elemsCableANCF.at(elemN)
             self.elements += [elem]

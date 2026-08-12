@@ -6,6 +6,7 @@ from proteus.mbd import CouplingFSI as fsi
 import pychrono
 import os
 import proteus.TwoPhaseFlow.TwoPhaseFlowProblem as TpFlow
+import proteus.TwoPhaseFlow.utils.Parameters as Parameters
 
 addedMass = False
 
@@ -109,17 +110,17 @@ g = np.array(opts.gravity)
 
 # System
 system = fsi.ProtChSystem()
-system.ChSystem.Set_G_acc(pychrono.ChVectorD(g[0], g[1], g[2]))
+system.ChSystem.SetGravitationalAcceleration(pychrono.ChVector3d(g[0], g[1], g[2]))
 system.setTimeStep(1e-5)
 # Body
 body = fsi.ProtChBody(system=system)
 body.setBoundaryFlags([0])  # index of particle
 #
 chbod = body.ChBody
-pos = pychrono.ChVectorD(0.5*tank_x, 0.7*tank_y, 0.)
-rot = pychrono.ChQuaternionD(1., 0., 0., 0.)
+pos = pychrono.ChVector3d(0.5*tank_x, 0.7*tank_y, 0.)
+rot = pychrono.ChQuaterniond(1., 0., 0., 0.)
 mass = 2000.0#3.14*rho_0*1.5
-inertia = pychrono.ChVectorD(1., 1., 1.)
+inertia = pychrono.ChVector3d(1., 1., 1.)
 chbod.SetPos(pos)
 chbod.SetRot(rot)
 chbod.SetMass(mass)
@@ -166,6 +167,11 @@ class V_IC:
         return 0.0
 class W_IC:
     def uOfXT(self, x, t):
+        return 0.0
+class AtRest:
+    def __init__(self):
+        pass
+    def uOfXT(self,x,t):
         return 0.0
 
 #  __  __           _        ___        _   _
@@ -227,8 +233,8 @@ params = myTpFlowProblem.SystemPhysics
 myTpFlowProblem.SystemPhysics.modelDict['flow'].p.initialConditions['p']=P_IC()
 myTpFlowProblem.SystemPhysics.modelDict['flow'].p.initialConditions['u']=U_IC()
 myTpFlowProblem.SystemPhysics.modelDict['flow'].p.initialConditions['v']=V_IC()
-myTpFlowProblem.SystemPhysics.modelDict['flow'].p.initialConditions['w']=W_IC()
-myTpFlowProblem.SystemPhysics.modelDict['addedMass'].p.initialConditions['addedMass']=AtRest()
+if addedMass is True:
+    myTpFlowProblem.SystemPhysics.modelDict['addedMass'].p.initialConditions['addedMass']=AtRest()
 
 
 # PHYSICAL PARAMETERS

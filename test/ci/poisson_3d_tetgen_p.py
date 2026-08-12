@@ -46,8 +46,7 @@ hull_center = (0.5*hull_length,
 
 nLevels = 1
 
-# he = L[0]/1.0
-he =  L[0] / ( ( 20.0 * 1.26**opts.Refinement) )
+he =  0.45*L[0] / ( ( 5 * 1.26**opts.Refinement) )
 #he = hull_draft/1.0
 #he = hull_draft/6.0
 genMesh=opts.genMesh

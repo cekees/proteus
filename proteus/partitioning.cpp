@@ -1603,13 +1603,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     }
   //read elements
   int nNodesPerSimplex(simplexDim),hasElementMarkers = 0,nElements_global;
+  long double elementId_double;
   elementFile >> eatcomments >> nElements_global >> nNodesPerSimplex >> hasElementMarkers >> eatline;
   assert(nElements_global > 0);
   assert(nNodesPerSimplex == simplexDim);
   newMesh.nElements_global = nElements_global;
   valarray<int> element_nodes_old(4);
   vector<set<int>> nodeStar(nNodes_subdomain_old);
-  map<int,valarray<int>> elements_old;
+  vector<set<int>> nodeElements(nNodes_subdomain_old);
+  //map<int,double> elementIds_old;
   for (int ie = 0; ie < nElements_global; ie++)
     {
       int ne, nv;
@@ -1623,6 +1625,8 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           assert(0 <= nv && nv < nNodes_global);
           element_nodes_old[iv] = nv;
         }
+      if (hasElementMarkers > 0)
+	elementFile >> elementId_double;
       //for each node on the element
       for (int iv = 0; iv < simplexDim; iv++)
         {
@@ -1632,17 +1636,23 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           if (nN_star >= nodeOffsets_old[rank] && nN_star < nodeOffsets_old[rank+1])
             {
               inSubdomain = true;
+	      int nN_star_subdomain = nN_star-nodeOffsets_old[rank];
               for (int jv = 0; jv < simplexDim; jv++)
                 {
                   if (iv != jv)
                     {
-                      int nN_star_subdomain = nN_star-nodeOffsets_old[rank];
                       nodeStar[nN_star_subdomain].insert(element_nodes_old[jv]);
                     }
                 }
+	      nodeElements[nN_star_subdomain].insert(ie);
             }
-          if (inSubdomain)
-            elements_old[ie] = element_nodes_old;
+	  /*          if (inSubdomain)//we don't know if these elements are owned
+			  //or not, could use element ownership scheme
+			  //used later, since we only need it to write to H5
+            {
+	      elementIds_old[ie] = elementId_double;
+	    }
+	  */
         }
       elementFile >> eatline;
     }//end ie
@@ -1659,16 +1669,22 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   int max_nNodeNeighbors_node=0;
   for (int nN=0;nN<nNodes_subdomain_old;nN++)
     max_nNodeNeighbors_node=max(max_nNodeNeighbors_node,static_cast<int>(nodeStar[nN].size()));
+  int max_nElements_node=0;
+  for (int nN=0;nN<nNodes_subdomain_old;nN++)
+    max_nElements_node=max(max_nElements_node,static_cast<int>(nodeElements[nN].size()));
+  int send[1]={max_nElements_node}, recv[1]={0};
+  MPI_Allreduce(send, recv,1,MPI_INT,MPI_MAX,MPI_COMM_WORLD);
+  max_nElements_node = recv[0];
   //build connectivity data structures for PETSc
   PetscBool isInitialized;
   PetscInitialized(&isInitialized);
   PetscInt *nodeNeighborsOffsets_subdomain,*nodeNeighbors_subdomain,*weights_subdomain,*vertex_weights_subdomain;
   PetscReal *partition_weights;
-  PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old+1),&nodeNeighborsOffsets_subdomain);
-  PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old*max_nNodeNeighbors_node),&nodeNeighbors_subdomain);
-  PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old*max_nNodeNeighbors_node),&weights_subdomain);
-  PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old),&vertex_weights_subdomain);
-  PetscMalloc(sizeof(PetscReal)*(size),&partition_weights);
+  ierr = PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old+1),&nodeNeighborsOffsets_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old*max_nNodeNeighbors_node),&nodeNeighbors_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old*max_nNodeNeighbors_node),&weights_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old),&vertex_weights_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscMalloc(sizeof(PetscReal)*(size),&partition_weights);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   for (int sd=0;sd<size;sd++)
     partition_weights[sd] = 1.0/double(size);
   nodeNeighborsOffsets_subdomain[0] = 0;
@@ -1719,7 +1735,16 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //get petsc index set that has the new subdomain number for each node
   IS nodePartitioningIS_new;
   ierr = MatPartitioningApply(petscPartition,&nodePartitioningIS_new);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-  ierr = MatPartitioningDestroy(&petscPartition);CHKERRABORT(PROTEUS_COMM_WORLD, ierr); //gets petscAdjacency too I believe
+  //ierr = MatDestroy(&petscAdjacency);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = MatPartitioningDestroy(&petscPartition);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  /*
+  //appears all of the below are destroyed by the above two calls
+  ierr = PetscFree(partition_weights);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscFree(vertex_weights_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscFree(weights_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscFree(nodeNeighbors_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  ierr = PetscFree(nodeNeighborsOffsets_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);*/
+
   ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done applying partition");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 
   //determine the number of nodes per subdomain in new partitioning
@@ -1748,7 +1773,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //create the mappings file
   logEvent("Writing/reading node numberings to hdf5",5);
   hid_t mappings_plist_id = H5Pcreate(H5P_FILE_ACCESS);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_fapl_mpio(mappings_plist_id, PROTEUS_COMM_WORLD, MPI_INFO_NULL);
+#endif
   const char* H5FILE_NAME("mappings.h5");
   hid_t file_id = H5Fcreate(H5FILE_NAME, H5F_ACC_TRUNC, H5P_DEFAULT, mappings_plist_id);
   assert(file_id != H5I_INVALID_HID);
@@ -1769,7 +1796,11 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                       nodes_subdomain_offset, NULL, 
                       nodes_subdomain_count, NULL);
   hid_t nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   herr_t status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
+#else
+  herr_t status = 0;
+#endif
   status = H5Dwrite(nodes_old2new_dataset_id, H5T_NATIVE_INT, 
                     nodes_old2new_memspace_id, nodes_old2new_filespace_id,
 		                nodes_old2new_plist_id, nodes_subdomain_old2new_array);
@@ -1797,7 +1828,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Sselect_elements(nodes_new2old_filespace_id, H5S_SELECT_SET, 
                               nNodes_subdomain_old, &new_node_indices[0]);
   hid_t nodes_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   status = H5Pset_dxpl_mpio(nodes_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(nodes_new2old_dataset_id, H5T_NATIVE_INT, 
                     nodes_new2old_memspace_id, nodes_new2old_filespace_id, 
                     nodes_new2old_plist_id, &old_node_indices[0]);
@@ -1805,7 +1838,51 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   H5Dclose(nodes_new2old_dataset_id);
   H5Sclose(nodes_new2old_memspace_id);
   H5Sclose(nodes_new2old_filespace_id);
-  H5Fclose(file_id);
+  ISRestoreIndices(nodeNumberingIS_subdomain_old2new, &nodes_subdomain_old2new_array);
+  //write new nodeElements
+  const hsize_t MATRIX_RANK(2);
+  hsize_t nodes_global_count_by_max_nElements_node[]={static_cast<hsize_t>(nNodes_global),static_cast<hsize_t>(max_nElements_node)};
+  hsize_t nodes_subdomain_count_by_max_nElements_node[]={static_cast<hsize_t>(nNodes_subdomain_old),static_cast<hsize_t>(max_nElements_node)};
+  hid_t nodeElements_memspace_id = H5Screate_simple(MATRIX_RANK, nodes_subdomain_count_by_max_nElements_node, NULL);
+  hid_t nodeElements_filespace_id = H5Screate_simple(MATRIX_RANK, nodes_global_count_by_max_nElements_node, NULL);
+  hid_t nodeElements_dataset_id = H5Dcreate(file_id, "nodeElements", H5T_NATIVE_INT, 
+					    nodeElements_filespace_id,
+					    H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+  PetscInt *nodeElements_subdomain_array;
+  ierr = PetscMalloc(sizeof(PetscInt)*(nNodes_subdomain_old*max_nElements_node),&nodeElements_subdomain_array);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);//cek replace with valarray
+  valarray<hsize_t> new_nodeElements_indices(nNodes_subdomain_old*max_nElements_node*2);
+  int offset=0;
+  for (int nN = 0; nN < nNodes_subdomain_old; nN++)
+    {
+      int eN_star = 0;
+      for (auto eN=nodeElements[nN].begin(); eN!=nodeElements[nN].end(); eN++, eN_star++,offset++)
+        {
+	  new_nodeElements_indices[offset*2 + 0] = static_cast<hsize_t>(nodes_subdomain_old2new_array[nN]);
+	  new_nodeElements_indices[offset*2 + 1] = eN_star;
+          nodeElements_subdomain_array[offset] = *eN;
+        }
+      while (eN_star < max_nElements_node)
+	{
+	  new_nodeElements_indices[offset*2 + 0] = static_cast<hsize_t>(nodes_subdomain_old2new_array[nN]);
+	  new_nodeElements_indices[offset*2 + 1] = eN_star;
+	  nodeElements_subdomain_array[offset]=-1;
+	  eN_star++;
+	  offset++;
+	}
+    }
+  status = H5Sselect_elements(nodeElements_filespace_id, H5S_SELECT_SET, nNodes_subdomain_old*max_nElements_node, &new_nodeElements_indices[0]);
+  hid_t nodeElements_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
+  status = H5Pset_dxpl_mpio(nodeElements_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
+  status = H5Dwrite(nodeElements_dataset_id, H5T_NATIVE_INT, 
+                    nodeElements_memspace_id, nodeElements_filespace_id, 
+                    nodeElements_plist_id, nodeElements_subdomain_array);
+  H5Pclose(nodeElements_plist_id);
+  H5Dclose(nodeElements_dataset_id);
+  H5Sclose(nodeElements_memspace_id);
+  H5Sclose(nodeElements_filespace_id);
+  ierr = PetscFree(nodeElements_subdomain_array);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   //
   //test out of core
   //
@@ -1929,8 +2006,53 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   vector<double> elementId_collection;
   map<int, int> nodes_old2new_subdomain_map;
   //note any element index containers are in the old element numbering
-  int eN_c_start = 0;//start of the collection of elements we are currently processing  
+  int eN_c_start = 0;//start of the collection of elements we are currently processing
+  const int nNodes_collection_max=10000;//nNodes_subdomain_max
+  //get nodeElements for the new nodes (but their old elements)
+  valarray<int> newNodeElements(nNodes_subdomain_new[rank]*max_nElements_node);
+  nodeElements_dataset_id = H5Dopen1(file_id,"/nodeElements");
+  nodeElements_filespace_id = H5Dget_space(nodeElements_dataset_id);
+  hsize_t nodeElements_start[2] = {static_cast<hsize_t>(nodeOffsets_new[rank]),static_cast<hsize_t>(0)},
+    nodeElements_count[2]={static_cast<hsize_t>(nNodes_subdomain_new[rank]), static_cast<hsize_t>(max_nElements_node)};
+  status = H5Sselect_hyperslab(nodeElements_filespace_id,
+			       H5S_SELECT_SET,
+			       nodeElements_start,
+			       NULL,
+			       nodeElements_count,
+			       NULL);
+  nodeElements_plist_id = H5Pcreate(H5P_DATASET_XFER);
+  nodeElements_memspace_id = H5Screate_simple(MATRIX_RANK,nodeElements_count, NULL);
+#ifdef H5_HAVE_PARALLEL
+  status = H5Pset_dxpl_mpio(nodeElements_plist_id, H5FD_MPIO_INDEPENDENT);
+#endif
+  status = H5Dread(nodeElements_dataset_id, H5T_NATIVE_INT, 
+		   nodeElements_memspace_id, nodeElements_filespace_id, 
+		   nodeElements_plist_id, &newNodeElements[0]);
+  H5Pclose(nodeElements_plist_id);
+  H5Sclose(nodeElements_memspace_id);
+  H5Sclose(nodeElements_filespace_id);
+  H5Dclose(nodeElements_dataset_id);
+  set<int> elements_subdomain;
+  for (int nN=0;nN<nNodes_subdomain_new[rank];nN++)
+    for (int eN_node=0;eN_node<max_nElements_node;eN_node++)
+      {
+	int eN = newNodeElements[nN*max_nElements_node+eN_node];
+	if (eN >= 0)
+	  elements_subdomain.insert(eN);
+      }
+  //now generate set of elements to read
+  auto eN = elements_subdomain.begin();
   for (int ie = 0; ie < nElements_global; ie++)
+    //instead of doing this, just loop over the new nodes on this
+    //subdomain and read their element support (in the old element
+    //numbering), from H5, to build this element collection, then read
+    //the old element nodes for those elements from H5, which builds
+    //the node collection here, which is in the old numbering. You'd
+    //need to get the elementIds (material types) too.
+    //So read nodeElements for all the local nodes
+    // read elementNodes for all the resulting elements
+    // read elementIds for all the rsulting elements
+    // then get new nodes.
     {
       //
       //Accumulate a collection of elements in the old numbering of sufficient length, 
@@ -1940,142 +2062,86 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       //doing with hdf5 for now, but could do with scatter
       //
       int ne, nv, elementId(0);
-      long double elementId_double;
       elementFile2 >> eatcomments >> ne;
       ne -= indexBase;
       assert(0 <= ne && ne < nElements_global && elementFile.good());
-      elements_collection.push_back(ne);
-      for (int iv = 0; iv < simplexDim; iv++)
+      if (ne == *eN)
+	{
+	  elements_collection.push_back(ne);
+	  for (int iv = 0; iv < simplexDim; iv++)
+	    {
+	      elementFile2 >> nv ;
+	      nv -= indexBase;
+	      assert(0 <= nv && nv < nNodes_global);
+	      node_collection.insert(nv);
+	      element_nodes_old[iv] = nv;
+	    }
+	  if (hasElementMarkers > 0)
+	    {
+	      elementFile2 >> elementId_double;
+	      elementId_collection.push_back(elementId_double);
+	    }
+	  else
+	    elementId_collection.push_back(-1);
+	  element_old_nodes_collection.push_back(element_nodes_old);
+	  eN++;
+	}
+      if (node_collection.size() >= nNodes_collection_max || ie == nElements_global-1)
         {
-          elementFile2 >> nv ;
-          nv -= indexBase;
-          assert(0 <= nv && nv < nNodes_global);
-          node_collection.insert(nv);
-          element_nodes_old[iv] = nv;
-        }
-      if (hasElementMarkers > 0)
-        {
-          elementFile2 >> elementId_double;
-          elementId_collection.push_back(elementId_double);
-        }
-      element_old_nodes_collection.push_back(element_nodes_old);
-      if (elements_collection.size() == nElements_global/size || ie == nElements_global-1)
-        {
+	  int process_node_collection_event;
+	  PetscLogEventRegister("Process node collection",0,&process_node_collection_event);
+	  PetscLogEventBegin(process_node_collection_event,0,0,0,0);
+	  
           //create a node list to read from old2new mapping
-	        valarray<int> nodes_old2new_subset(node_collection.size());
-          map<int,int> nodes_old2new_subset_map;
-	        bool test_scatter=false;
-	        if (test_scatter)
-	        {
-	          Vec node_old2new_collection_petsc;
-	          ierr = VecCreateMPI(PROTEUS_COMM_WORLD, node_collection.size(), PETSC_DETERMINE,&node_old2new_collection_petsc);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          PetscInt collection_low, collection_high;
-	          ierr = VecGetOwnershipRange(node_old2new_collection_petsc, &collection_low, &collection_high);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          valarray<PetscInt> node_collection_array(node_collection.size());
-	          valarray<PetscInt> iy_collection(node_collection.size());
-            int i_nc=0;
-	          for (auto nv=node_collection.begin();nv!=node_collection.end();nv++,i_nc++)
-		        {
-		          node_collection_array[i_nc] = static_cast<PetscInt>(*nv);
-		          iy_collection[i_nc] = i_nc + collection_low;
-		        }
-	          IS old_ix,iy;
-	          ierr = ISCreateGeneral(PROTEUS_COMM_WORLD, node_collection.size(), &node_collection_array[0],
-				    PETSC_USE_POINTER, &old_ix);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          ierr = ISCreateGeneral(PROTEUS_COMM_WORLD, node_collection.size(), &iy_collection[0],
-				                           PETSC_USE_POINTER, &iy);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          VecScatter old2new_collection_scatter;
-	          ierr = VecScatterCreate(nodeNumbering_old2new_petsc, old_ix,
-				                            node_old2new_collection_petsc, iy,
-				                            &old2new_collection_scatter);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          ierr = VecScatterBegin(old2new_collection_scatter,
-				                           nodeNumbering_old2new_petsc, node_old2new_collection_petsc,
-				                           INSERT_VALUES, SCATTER_FORWARD);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-
-	          ierr = VecScatterEnd(old2new_collection_scatter,
-				                         nodeNumbering_old2new_petsc, node_old2new_collection_petsc,
-				                         INSERT_VALUES, SCATTER_FORWARD);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          PetscScalar* nodes_old2new_subset_array;
-	          ierr = VecGetArray(node_old2new_collection_petsc, &nodes_old2new_subset_array);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          for (int i=0;i<node_collection.size();i++)
-		        {
-		          nodes_old2new_subset[i] = nodes_old2new_subset_array[i];
-		        }
-	          ierr = VecRestoreArray(node_old2new_collection_petsc, &nodes_old2new_subset_array);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          ierr = VecDestroy(&node_old2new_collection_petsc);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          ierr = VecScatterDestroy(&old2new_collection_scatter);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          ierr = ISDestroy(&old_ix);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          ierr = ISDestroy(&iy);
-	          CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
-	          for (int i=0;i<node_collection.size();i++)
-		        {
-		          nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
-		        }
-	          if (test)
-		        {
-		          for (int i=0;i<node_collection.size();i++)
-		            {
-		              assert(nodes_old2new_subset_map[node_collection_array[i]] == nodeNumbering_global_old2new[node_collection_array[i]]);
-		            }
-		        }
-	        }
-	      else
-	        {
-	          herr_t status;
-	          valarray<hsize_t> node_collection_array(node_collection.size());
-	          int i_nc=0;
-	          for (auto nv=node_collection.begin();nv!=node_collection.end();nv++,i_nc++)
-		        {
-		          node_collection_array[i_nc] = static_cast<hsize_t>(*nv);
-		        }
-            file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
-            assert(file_id != H5I_INVALID_HID);
-	          nodes_old2new_dataset_id = H5Dopen1(file_id,"/nodeNumbering_old2new");
-	          nodes_old2new_filespace_id = H5Dget_space(nodes_old2new_dataset_id);
-	          status = H5Sselect_elements(nodes_old2new_filespace_id, H5S_SELECT_SET, 
-					  node_collection.size(), &node_collection_array[0]);
-	          hsize_t dims[] = {static_cast<hsize_t>(node_collection.size())};
-	          hid_t nodes_old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);
-	          nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
-	          status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
-	          status = H5Dread(nodes_old2new_dataset_id, H5T_NATIVE_INT, 
-			                       nodes_old2new_subset_memspace_id, nodes_old2new_filespace_id, 
-			                       H5P_DEFAULT, &nodes_old2new_subset[0]);
-	          H5Pclose(nodes_old2new_plist_id);
-	          H5Sclose(nodes_old2new_subset_memspace_id);
-	          H5Sclose(nodes_old2new_filespace_id);
-	          H5Dclose(nodes_old2new_dataset_id);
-            H5Fclose(file_id);
-	          for (int i=0;i<node_collection.size();i++)
-		        {
-		          nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
-		        }
-	          if (test)
-		        {
-		          for (int i=0;i<node_collection.size();i++)
-		            {
-		              assert(nodes_old2new_subset_map[node_collection_array[i]] == nodeNumbering_global_old2new[node_collection_array[i]]);
-		            }
-		        }
-	        }
-          for (int eN_c = eN_c_start; eN_c < ie+1;eN_c++)
+          herr_t status;
+          valarray<hsize_t> node_collection_array(node_collection.size());
+	  int i_nc=0;
+          for (auto nv=node_collection.begin();nv!=node_collection.end();nv++,i_nc++)
             {
-              ne = elements_collection[eN_c-eN_c_start];
+              node_collection_array[i_nc] = static_cast<hsize_t>(*nv);
+            }
+          nodes_old2new_dataset_id = H5Dopen1(file_id,"/nodeNumbering_old2new");
+          nodes_old2new_filespace_id = H5Dget_space(nodes_old2new_dataset_id);
+          status = H5Sselect_elements(nodes_old2new_filespace_id, H5S_SELECT_SET, 
+                                      node_collection.size(), &node_collection_array[0]);
+          hsize_t dims[] = {static_cast<hsize_t>(node_collection.size())};
+          hid_t nodes_old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);
+          nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
+          status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_INDEPENDENT);
+#endif
+          valarray<int> nodes_old2new_subset(node_collection.size());
+          status = H5Dread(nodes_old2new_dataset_id, H5T_NATIVE_INT, 
+                           nodes_old2new_subset_memspace_id, nodes_old2new_filespace_id, 
+                           nodes_old2new_plist_id, &nodes_old2new_subset[0]);
+          H5Pclose(nodes_old2new_plist_id);
+          H5Sclose(nodes_old2new_subset_memspace_id);
+          H5Sclose(nodes_old2new_filespace_id);
+          H5Dclose(nodes_old2new_dataset_id);
+          map<int,int> nodes_old2new_subset_map;
+          for (int i=0;i<node_collection.size();i++)
+	    {
+	      nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
+	    }
+	  if (test)
+	    {
+	      for (int i=0;i<node_collection.size();i++)
+		{
+		  assert(nodes_old2new_subset_map[node_collection_array[i]] == nodeNumbering_global_old2new[node_collection_array[i]]);
+		}
+	    }
+          //for (int eN_c = eN_c_start; eN_c < ie+1;eN_c++)
+	  auto eN_c = elements_collection.begin();
+	  auto element_old_nodes_c =  element_old_nodes_collection.begin();
+	  auto elementId_c = elementId_collection.begin();
+	  for (eN_c = elements_collection.begin(), element_old_nodes_c =  element_old_nodes_collection.begin(), elementId_c = elementId_collection.begin();
+	       eN_c < elements_collection.end();
+	       ++eN_c, ++element_old_nodes_c, ++elementId_c)
+            {
+              ne = *eN_c;//elements_collection[eN_c-eN_c_start];
               for (int iv = 0; iv < simplexDim; iv++)
                 {
-                  element_nodes_old[iv] = element_old_nodes_collection[eN_c-eN_c_start][iv];
+                  element_nodes_old[iv] = (*element_old_nodes_c)[iv]; //element_old_nodes_collection[eN_c-eN_c_start][iv];
                   element_nodes_new[iv] = nodes_old2new_subset_map[element_nodes_old[iv]];
                 }
               NodeTuple<4> nodeTuple(&element_nodes_new[0]);
@@ -2141,16 +2207,17 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                     elements_subdomain_owned.insert(ne);
                   if (hasElementMarkers > 0)
                     {
-                      elementId = static_cast<long int>(elementId_collection[eN_c-eN_c_start]);
+                      elementId = static_cast<long int>(*elementId_c);//elementId_collection[eN_c-eN_c_start]);
                       elementMaterialTypesMap[ne] = elementId;
                     }
                 }
             }
-          eN_c_start = ie+1;
+          //eN_c_start = ie+1;
           node_collection.clear();
           elements_collection.clear();
           elementId_collection.clear();
           element_old_nodes_collection.clear();
+	  PetscLogEventEnd(process_node_collection_event,0,0,0,0);
         }
       elementFile2 >> eatline;
     }
@@ -2254,7 +2321,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hid_t e_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, e_count, NULL);
   H5Sselect_hyperslab(e_new2old_filespace_id, H5S_SELECT_SET, e_offset, NULL, e_count, NULL);
   hid_t e_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(e_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(e_new2old_dataset_id, H5T_NATIVE_INT, 
                     e_new2old_memspace_id, e_new2old_filespace_id,
                     e_new2old_plist_id, &elementNumbering_subdomain_new2old[0]);
@@ -2281,7 +2350,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Sselect_elements(e_old2new_filespace_id, H5S_SELECT_SET, 
                               nElements_subdomain_new[rank], &old_element_indices[0]);
   hid_t e_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(e_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(e_old2new_dataset_id, H5T_NATIVE_INT, 
                     e_old2new_memspace_id, e_old2new_filespace_id, 
                     e_old2new_plist_id, &new_element_indices[0]);
@@ -2311,7 +2382,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t e_subdomain_count[]={static_cast<hsize_t>(elementNodesArrayMap.size())};
   hid_t e_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, e_subdomain_count, NULL);
   hid_t e_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  status = H5Pset_dxpl_mpio(e_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);
+#ifdef H5_HAVE_PARALLEL
+  status = H5Pset_dxpl_mpio(e_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);
+#endif
   status = H5Dread(e_old2new_dataset_id, H5T_NATIVE_INT, 
                    e_old2new_subdomain_memspace_id, e_old2new_filespace_id, 
                    H5P_DEFAULT, &new_element_indices_subdomain[0]);
@@ -2590,7 +2663,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hid_t eb_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, eb_count, NULL);
   H5Sselect_hyperslab(eb_new2old_filespace_id, H5S_SELECT_SET, eb_offset, NULL, eb_count, NULL);
   hid_t eb_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(eb_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(eb_new2old_dataset_id, H5T_NATIVE_INT, eb_new2old_memspace_id, eb_new2old_filespace_id,
                     eb_new2old_plist_id, &elementBoundaryNumbering_new2old[0]);
   H5Pclose(eb_new2old_plist_id);
@@ -2613,7 +2688,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Sselect_elements(eb_old2new_filespace_id, H5S_SELECT_SET, 
                               nElementBoundaries_subdomain_new[rank], &old_elementBoundary_indices[0]);
   hid_t eb_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(eb_old2new_plist_id, H5FD_MPIO_COLLECTIVE);  
+#endif
   status = H5Dwrite(eb_old2new_dataset_id, H5T_NATIVE_INT, 
                     eb_old2new_memspace_id, eb_old2new_filespace_id, 
                     eb_old2new_plist_id, &new_elementBoundary_indices[0]);
@@ -2642,7 +2719,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t eb_subdomain_count[]={static_cast<hsize_t>(elementBoundaries_subdomain.size())};
   hid_t eb_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, eb_subdomain_count, NULL);
   hid_t eb_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  H5Pset_dxpl_mpio(eb_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);  
+#ifdef H5_HAVE_PARALLEL
+  H5Pset_dxpl_mpio(eb_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);  
+#endif
   status = H5Dread(eb_old2new_dataset_id, H5T_NATIVE_INT, 
                    eb_old2new_subdomain_memspace_id, eb_old2new_filespace_id, 
                    H5P_DEFAULT, &new_elementBoundary_indices_subdomain[0]);
@@ -2896,7 +2975,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hid_t ed_new2old_memspace_id = H5Screate_simple(ARRAY_RANK, ed_count, NULL);
   H5Sselect_hyperslab(ed_new2old_filespace_id, H5S_SELECT_SET, ed_offset, NULL, ed_count, NULL);
   hid_t ed_new2old_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(ed_new2old_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(ed_new2old_dataset_id, H5T_NATIVE_INT, 
                     ed_new2old_memspace_id, ed_new2old_filespace_id,
                     ed_new2old_plist_id, &edgeNumbering_new2old[0]);
@@ -2921,7 +3002,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Sselect_elements(ed_old2new_filespace_id, H5S_SELECT_SET, 
                               nEdges_subdomain_new[rank], &old_edge_indices[0]);
   hid_t ed_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(ed_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
   status = H5Dwrite(ed_old2new_dataspace_id, H5T_NATIVE_INT, 
                     ed_old2new_memspace_id, ed_old2new_filespace_id, 
                     ed_old2new_plist_id, &new_edge_indices[0]);
@@ -2947,7 +3030,8 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t ed_subdomain_count[]={static_cast<hsize_t>(edgeNodesMap.size())};
   hid_t ed_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, ed_subdomain_count, NULL);
   hid_t ed_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  H5Pset_dxpl_mpio(ed_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);
+#ifdef H5_HAVE_PARALLEL
+  H5Pset_dxpl_mpio(ed_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);
   status = H5Dread(ed_old2new_dataspace_id, H5T_NATIVE_INT, ed_old2new_subdomain_memspace_id, 
                    ed_old2new_filespace_id, 
                    H5P_DEFAULT, &new_edge_indices_subdomain[0]);
@@ -3620,7 +3704,9 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
    * Set up file access property list with parallel I/O access
    */
   hid_t plist_id = H5Pcreate(H5P_FILE_ACCESS);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_fapl_mpio(plist_id, PROTEUS_COMM_WORLD, MPI_INFO_NULL);
+#endif
 
   /*
    * Create a new file collectively and release property list identifier.
@@ -3675,7 +3761,9 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
    * Create property list for collective dataset write.
    */
   plist_id = H5Pcreate(H5P_DATASET_XFER);
+#ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(plist_id, H5FD_MPIO_COLLECTIVE);
+#endif
 
   herr_t status = H5Dwrite(dset_id, H5T_NATIVE_INT, memspace, filespace,
                            plist_id, data);
@@ -3770,6 +3858,7 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
   map<int,long int> elementMaterialTypesMap;
   map<NodeTuple<2>,ElementNeighbors> elementBoundaryElementsMap;
   map<NodeTuple<2>,set<pair<int,int> > > edgeElementsMap;
+
   //note any element index containers are in the old element numbering
   for (int ie = 0; ie < nElements_global; ie++)
     {

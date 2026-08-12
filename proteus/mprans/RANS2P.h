@@ -11,8 +11,6 @@
 #include "equivalent_polynomials.h"
 #include "ArgumentsDict.h"
 #include "xtensor/containers/xarray.hpp"
-#include "xtensor/views/xview.hpp"
-#include "xtensor/containers/xfixed.hpp"
 #include "xtensor-python/pyarray.hpp"
 #include "mpi.h"
 #include "proteus_lapack.h"

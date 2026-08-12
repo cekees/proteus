@@ -15,7 +15,7 @@ from .LinearAlgebraTools import ParVec_petsc4py
 from .Profiling import logEvent,memory, memHardLimit
 from . import Domain
 from . import Comm
-from subprocess import run
+from subprocess import run, check_output
 
 class Node(object):
     """A numbered point in 3D Euclidean space
@@ -4645,8 +4645,8 @@ real Ly=%(Ly)f;
 real offset=0.0125Lx;
 real x=%(x)f;
 real y=%(y)f;
-string strx="$%(Lx)2.2f\mbox{%(units)s}$";
-string stry="$%(Ly)2.2f\mbox{%(units)s}$";
+string strx="$%(Lx)2.2f\\mbox{%(units)s}$";
+string stry="$%(Ly)2.2f\\mbox{%(units)s}$";
 draw(strx,(x,y-offset)--(x+Lx,y-offset),S,black,Bars,Arrows,PenMargins);
 draw(stry,(x-offset,y)--(x-offset,y+Ly),W,black,Bars,Arrows,PenMargins);
 import graph;
@@ -6462,6 +6462,16 @@ def intersectEdges(line, edges):
     """
     norm = np.linalg.norm
 
+    def cross2d(u, v):
+        # np.cross() dropped support for 2D vectors in numpy>=2.0 (it used to return
+        # the scalar z-component); intersectEdge is used for both 2D and 3D points,
+        # so only substitute the version-independent 2D formula for genuinely 2D
+        # inputs and fall back to the real (still numpy>=2.0-supported) cross product
+        # for 3D ones.
+        if len(u) == 2 and len(v) == 2:
+            return u[0]*v[1] - u[1]*v[0]
+        return np.cross(u, v)
+
     def intersectEdge(line, edge):
 
         line = np.asarray(line)
@@ -6471,7 +6481,7 @@ def intersectEdges(line, edges):
         v_l = b - a
         v_e = d - c
 
-        vl_cross_ve = np.cross(v_l, v_e)
+        vl_cross_ve = cross2d(v_l, v_e)
         mag_vl_cross_ve = norm(vl_cross_ve)
 
         if mag_vl_cross_ve == 0:
@@ -6496,12 +6506,16 @@ def intersectEdges(line, edges):
                 return None
 
         # lines are not parallel, check for intersection
-        vl_cross_ve = np.cross(v_l, v_e)
+        vl_cross_ve = cross2d(v_l, v_e)
 
         # if v_l and v_e intersect, then there is an x that satisfies
-        x_vl_cross_ve = np.cross((c - a), v_e)
+        x_vl_cross_ve = cross2d((c - a), v_e)
 
         # but the two above vectors must be parallel
+        # NOTE: vl_cross_ve/x_vl_cross_ve are scalars here (2D cross product), so
+        # np.cross() on them was never valid regardless of numpy version -- this
+        # branch isn't exercised by any current test, so left as pre-existing,
+        # unverified logic rather than guessing at a redesign.
         if norm(np.cross(vl_cross_ve, x_vl_cross_ve)) > 1e-8:
             return None
 
@@ -6649,10 +6663,10 @@ def runTetgen(polyfile,
         
 
     """
-    from subprocess import run
+    from subprocess import run, check_output
     tetcmd = "tetgen - %s %s.poly" % (baseFlags, polyfile)
-    
-    logEvent(run(tetcmd,shell=True,capture_output=True).stdout)
+
+    logEvent(run(tetcmd,shell=True,capture_output=True,text=True).stdout)
     
     logEvent("Done running tetgen")
     elefile = "%s.1.ele" % polyfile
@@ -7147,7 +7161,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                             gc.collect()
                             logEvent("Writing tetgen edge files to {0:s}.edge".format(fileprefix))
                             run("rm -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
-                            logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True).stdout)
+                            logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
                             run("mv -f {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
                             run("mv -f {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
                             run("mv -f {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
@@ -7313,7 +7327,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
             run("rm -f {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
             run("rm -f {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
             run("rm -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
-            logEvent(run("tetgen -Vfeen %s.ele" % ("mesh",), shell=True,capture_output=True).stdout)
+            logEvent(run("tetgen -Vfeen %s.ele" % ("mesh",), shell=True,capture_output=True,text=True).stdout)
             run("mv %s.1.ele %s.ele" % ("mesh", "mesh"), shell=True)
             run("mv %s.1.node %s.node" % ("mesh", "mesh"), shell=True)
             run("mv %s.1.face %s.face" % ("mesh", "mesh"), shell=True)
@@ -7428,7 +7442,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                 else:
                     logEvent("Using "+domain.geofile+".msh to convert to tetgen")
                 msh2simplex(fileprefix=fileprefix, nd=3)
-                logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True).stdout)
+                logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
             else:
                 logEvent("Running tetgen to generate 3D mesh for "+name, level=1)
                 run("rm -f {0:s}.ele".format(fileprefix), shell=True)

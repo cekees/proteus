@@ -83,7 +83,6 @@ class TestPoisson(object):
         del ns
         assert(True)
 
-    @pytest.mark.slowTest
     def test_c0p2(self):
         pList = [load_physics('poisson_3d_p',
                               modulepath)]
@@ -145,7 +144,6 @@ class TestPoisson(object):
         MeshTools.writeHexMesh(mesh_info,hex_meshfile_base,index_base=1)
         self.check_c0q1(test_hexMesh_3x3=False,use_petsc=True, name="_hexMesh_")
 
-    @pytest.mark.slowTest
     def test_c0q2(self):
         pList = [load_physics('poisson_3d_p',
                               modulepath)]
