@@ -25,6 +25,8 @@ PYBIND11_MODULE(cTADR, m)
     py::class_<TADR_base>(m, "cTADR_base")
         .def(py::init(&proteus::newTADR))
         .def("calculateResidual", &TADR_base::calculateResidual)
+        .def("calculateResidualElementBased"    , &TADR_base::calculateResidualElementBased  )
+        .def("calculateResidualEdgeBased"       , &TADR_base::calculateResidualEdgeBased     )
         .def("calculateJacobian", &TADR_base::calculateJacobian)
         .def("FCTStep", &TADR_base::FCTStep);
 }
