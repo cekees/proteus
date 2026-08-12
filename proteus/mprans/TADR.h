@@ -1949,7 +1949,7 @@ namespace proteus
                 double porosityj = porosity_dof.data()[j];
                 double dLowij, dLij, dEVij, dHij;
 
-                ith_flux_term += (TransportMatrix[ij]+physicalDiffusion*DiffusionMatrix[i,j])*solnj;
+                ith_flux_term += (TransportMatrix[ij]+physicalDiffusion*DiffusionMatrix[offset])*solnj;
                 if (i != j) //NOTE: there is really no need to check for i!=j (see formula for ith_dissipative_term)
                   {
                     // artificial compression
