@@ -1184,6 +1184,10 @@ def unique_rows(arr):
     arr = np.array(arr)
     ca = np.ascontiguousarray(arr).view([('', arr.dtype)] * arr.shape[1])
     unique, indices, inverse = np.unique(ca, return_index=True, return_inverse=True)
+    # NumPy >=2.0 shapes `inverse` like the (N, 1) structured-dtype view `ca`
+    # instead of the flat (N,) array older NumPy returned; flatten it back so
+    # downstream fancy-indexing (e.g. inverse[facets]) keeps its expected rank.
+    inverse = inverse.reshape(-1)
     # counts = np.bincount(inverse)
     # sort_indices = np.argsort(counts)[::-1]
     # sorted_arr = arr[indices[sort_indices]]

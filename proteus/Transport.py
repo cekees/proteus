@@ -3622,12 +3622,16 @@ class OneLevelTransport(NonlinearEquation):
 
 
     def calculateQuadrature(self):
+        logEvent(memory("ElementQuadrature","OneLevelTransport"),level=4)
         logEvent("Element Quadrature",level=3)
         self.calculateElementQuadrature()
+        logEvent(memory("ElementBoundaryQuadrature","OneLevelTransport"),level=4)
         logEvent("Element Boundary Quadrature",level=3)
         self.calculateElementBoundaryQuadrature()
+        logEvent(memory("Global ExteriorElementBoundaryQuadrature","OneLevelTransport"),level=4)
         logEvent("Global Exterior Element Boundary Quadrature",level=3)
         self.calculateExteriorElementBoundaryQuadrature()
+        logEvent(memory("exiting calcualteQuadrature","OneLevelTransport"),level=4)
     def updateAfterMeshMotion(self):
         self.calculateQuadrature()#not always the right thing to do (e.g. for optimized models)
     def calculateElementQuadrature(self):

@@ -22,16 +22,28 @@ platform_extra_link_args = []
 platform_blas_h = None
 platform_lapack_h = None
 platform_lapack_integer = None
+# distutils/setuptools appends $LDFLAGS to every link command in addition to
+# extra_link_args -- on a conda/mamba dev install (environment-dev.yml), the
+# activated `compilers` package's own activation script already sets LDFLAGS
+# to include '-Wl,-rpath,<env>/lib', and PROTEUS_LIB_DIR here resolves to that
+# same directory (PROTEUS_PREFIX unset -> sys.exec_prefix -> the conda env).
+# Appending the identical '-Wl,-rpath,...' flag again below then produces a
+# literal duplicate LC_RPATH load command, which dyld refuses to open
+# ("tried: ... (duplicate LC_RPATH ...)") -- confirmed via a real editable
+# install against environment-dev.yml. Skip our own copy when it's already
+# present in LDFLAGS instead of assuming we're the only contributor.
+_rpath_flag = '-Wl,-rpath,' + PROTEUS_LIB_DIR
+_rpath_already_in_ldflags = _rpath_flag in os.environ.get('LDFLAGS', '')
 if sys.platform == 'darwin':
     platform_extra_compile_args = ['-DPETSC_INCLUDE_AS_C', '-DPETSC_SKIP_COMPLEX']
-    platform_extra_link_args = ['-L'+PROTEUS_LIB_DIR,'-Wl,-rpath,' + PROTEUS_LIB_DIR]
+    platform_extra_link_args = ['-L'+PROTEUS_LIB_DIR] if _rpath_already_in_ldflags else ['-L'+PROTEUS_LIB_DIR, _rpath_flag]
     platform_blas_h = r'"proteus_blas.h"'
     platform_lapack_h = r'"proteus_lapack.h"'
     major,minor = platform.mac_ver()[0].split('.')[0:2]
     os.environ["MACOSX_DEPLOYMENT_TARGET"]= major+'.'+minor
 elif sys.platform.startswith('linux'):
     platform_extra_compile_args = ['-DPETSC_INCLUDE_AS_C', '-DPETSC_SKIP_COMPLEX']
-    platform_extra_link_args = ['-L'+PROTEUS_LIB_DIR,'-Wl,-rpath,' + PROTEUS_LIB_DIR]
+    platform_extra_link_args = ['-L'+PROTEUS_LIB_DIR] if _rpath_already_in_ldflags else ['-L'+PROTEUS_LIB_DIR, _rpath_flag]
     platform_blas_h = r'"proteus_blas.h"'
     platform_lapack_h = r'"proteus_lapack.h"'
 
@@ -58,6 +70,48 @@ def get_flags(package):
         lib_dir = PROTEUS_LIB_DIR
     return include_dir, lib_dir
 
+def get_petsc_flags():
+    """ Like get_flags('petsc'), but with the extra fallbacks PETSc's own
+    build layout needs.
+
+    A PETSc source checkout only has real (configured) headers under
+    $PETSC_DIR/$PETSC_ARCH/include, not $PETSC_DIR/include directly -- and
+    anything PETSc downloaded on your behalf (SuperLU, SuperLU_DIST, ...)
+    only ever lands in a separate --prefix install (PROTEUS_INCLUDE_DIR
+    below), never under $PETSC_DIR itself, arch subdirectory included.
+    get_flags('petsc') alone picks $PETSC_DIR/include whenever $PETSC_DIR is
+    set (the common case for any PETSc-based build), silently resolving to
+    headers that don't exist. Caught via proteus/superluWrappers.c failing
+    to find slu_ddefs.h in a from-scratch sdist build: that extension's
+    include path comes straight from this value, unlike most others, which
+    also pick up PROTEUS_INCLUDE_DIR and so don't visibly break even when
+    this resolves wrong.
+
+    PROTEUS_INCLUDE_DIR (PROTEUS_PREFIX, or sys.exec_prefix if that isn't
+    set) is checked first, ahead of $PETSC_DIR-based guesses, precisely
+    because it's the one location proven to hold everything a --prefix=
+    PETSc build installs, downloaded packages included -- unlike
+    $PETSC_DIR/$PETSC_ARCH/include, which can have PETSc's own configured
+    headers (petscconf.h) without also having what --download-x packages
+    contributed.
+    """
+    candidates = [(PROTEUS_INCLUDE_DIR, PROTEUS_LIB_DIR)]
+    petsc_dir_env = os.getenv('PETSC_DIR')
+    if petsc_dir_env:
+        candidates.append((pjoin(petsc_dir_env, 'include'), pjoin(petsc_dir_env, 'lib')))
+        petsc_arch_env = os.getenv('PETSC_ARCH')
+        if petsc_arch_env:
+            candidates.append((pjoin(petsc_dir_env, petsc_arch_env, 'include'),
+                                pjoin(petsc_dir_env, petsc_arch_env, 'lib')))
+    for include_dir, lib_dir in candidates:
+        if os.path.isfile(pjoin(include_dir, 'petscconf.h')):
+            return include_dir, lib_dir
+    # None of the candidates look like a real configured PETSc install;
+    # keep the historical behavior (first candidate) rather than guess
+    # further, so this fails the same way it always did if something about
+    # the environment is genuinely unusual.
+    return candidates[0]
+
 PROTEUS_BLAS_INCLUDE_DIR, PROTEUS_BLAS_LIB_DIR = get_flags('blas')
 PROTEUS_EXTRA_LINK_ARGS=[]
 
@@ -79,15 +133,18 @@ if not os.path.isfile(chrono_cmake_file_path):
     chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','ChronoConfig.cmake')
     if not os.path.isfile(chrono_cmake_file_path):
         chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','Chrono','chrono-config.cmake') 
-with open(chrono_cmake_file_path,'r') as f:
-    for l in f:
-        if 'set(CHRONO_CXX_FLAGS' in l:
-            args = l.split()
-            for arg in args:
-                if arg[0] == '-':
-                    arg = arg.replace('"', '')
-                    arg = arg.replace(')', '')
-                    PROTEUS_CHRONO_CXX_FLAGS += [arg]
+try:
+    with open(chrono_cmake_file_path,'r') as f:
+        for l in f:
+            if 'set(CHRONO_CXX_FLAGS' in l:
+                args = l.split()
+                for arg in args:
+                    if arg[0] == '-':
+                        arg = arg.replace('"', '')
+                        arg = arg.replace(')', '')
+                        PROTEUS_CHRONO_CXX_FLAGS += [arg]
+except FileNotFoundError:
+    pass  # chrono not installed; mbd.CouplingFSI extension will be skipped
 
 PROTEUS_EXTRA_FC_COMPILE_ARGS= ['-Wall']
 PROTEUS_EXTRA_FC_LINK_ARGS=platform_extra_link_args
@@ -129,7 +186,7 @@ PROTEUS_MPI_INCLUDE_DIRS = [PROTEUS_MPI_INCLUDE_DIR, PROTEUS_MPI_LIB_DIR, os.pat
 PROTEUS_MPI_LIB_DIRS = [PROTEUS_MPI_LIB_DIR]
 PROTEUS_MPI_LIBS =['mpi']
 
-PROTEUS_PETSC_INCLUDE_DIR, PROTEUS_PETSC_LIB_DIR = get_flags('petsc')
+PROTEUS_PETSC_INCLUDE_DIR, PROTEUS_PETSC_LIB_DIR = get_petsc_flags()
 PROTEUS_PETSC_LIB_DIRS = [PROTEUS_PETSC_LIB_DIR]
 PROTEUS_PETSC_LIBS = ['petsc']
 PROTEUS_PETSC_INCLUDE_DIRS = [PROTEUS_PETSC_INCLUDE_DIR,PROTEUS_PETSC_LIB_DIR]#, os.path.join(PROTEUS_PETSC_LIB_DIR,'petsc4py')]
@@ -180,6 +237,22 @@ PROTEUS_SUPERLU_LIB_DIR = pjoin(prefix, 'lib64')
 PROTEUS_SUPERLU_LIB_DIR = pjoin(prefix, 'lib')
 PROTEUS_SUPERLU_H   = r'"slu_ddefs.h"'
 PROTEUS_SUPERLU_LIB = 'superlu'
+
+# SuperLU's own fill-reducing ordering routines call into METIS
+# (METIS_NodeND) but don't always carry a self-contained, resolvable link to
+# it -- true of a Spack-built libsuperlu in particular (macOS's flat
+# namespace then leaves METIS_NodeND unresolved at import time: "symbol not
+# found in flat namespace '_METIS_NodeND'"). The --download-proteus/pip
+# paths get away without linking metis explicitly here only because METIS
+# happens to already be loaded into the same process via libpetsc (built
+# with --download-metis) or another extension by the time superluWrappers
+# imports -- incidental, not guaranteed. Every documented install path
+# already provides METIS one way or another (colonized prefixes and the
+# pip/HPC paths via --download-metis into the same prefix; environment-dev*
+# .yml via its own `metis` conda package in the same env), so linking it
+# explicitly wherever SuperLU is linked is safe everywhere and correct.
+PROTEUS_METIS_INCLUDE_DIR, PROTEUS_METIS_LIB_DIR = get_flags('metis')
+PROTEUS_METIS_LIB = 'metis'
 
 PROTEUS_HDF5_INCLUDE_DIR, PROTEUS_HDF5_LIB_DIR = get_flags('hdf5')
 PROTEUS_HDF5_LIB_DIRS = [PROTEUS_HDF5_LIB_DIR]

@@ -1038,8 +1038,8 @@ class LSCInv_shell(InvOperatorShell):
 
     This class creates a shell for the least-squares commutator (LSC)
     preconditioner, where
-    :math:`M_{s}= (B \hat{Q^{-1}_{v}} B^{'}) (B \hat{Q^{-1}_{v}} F
-    \hat{Q^{-1}_{v}} B^{'})^{-1} (B \hat{Q^{-1}_{v}} B^{'})`
+    :math:`M_{s}= (B \\hat{Q^{-1}_{v}} B^{'}) (B \\hat{Q^{-1}_{v}} F
+    \\hat{Q^{-1}_{v}} B^{'})^{-1} (B \\hat{Q^{-1}_{v}} B^{'})`
     is used to approximate the Schur complement.
     """
     def __init__(self, Qv, B, Bt, F):
@@ -1458,12 +1458,12 @@ def l1Norm(x):
     """
     Compute the parallel :math:`l_1` norm
 
-    The :math:`l_1` norm of a vector :math:`\mathbf{x} \in
-    \mathbb{R}^n` is
+    The :math:`l_1` norm of a vector :math:`\\mathbf{x} \\in
+    \\mathbb{R}^n` is
 
     .. math::
 
-       \| \mathbf{x} \|_{1} = \sum_{i=0} |x_i|
+       \\| \\mathbf{x} \\|_{1} = \\sum_{i=0} |x_i|
 
     If Python is running in parallel, then the sum is over all
     dimensions on all processors so that the input must not contain
@@ -1480,14 +1480,14 @@ def l1Norm(x):
 
 def lInfNorm(x):
     """
-    Compute the parallel :math:`l_{\infty}` norm
+    Compute the parallel :math:`l_{\\infty}` norm
 
-    The :math:`l_{\infty}` norm of a vector :math:`\mathbf{x} \in
-    \mathbb{R}^n` is
+    The :math:`l_{\\infty}` norm of a vector :math:`\\mathbf{x} \\in
+    \\mathbb{R}^n` is
 
     .. math::
 
-       \|x\|_{\infty} = \max_i |x_i|
+       \\|x\\|_{\\infty} = \\max_i |x_i|
 
     This implemtation works for a distributed array with no ghost
     components (each component must be on a single processor).
@@ -1504,11 +1504,11 @@ def wDot(x,y,h):
     weight vector h.
 
     The weighted dot product is defined for a weight vector
-    :math:`\mathbf{h}` as
+    :math:`\\mathbf{h}` as
 
     .. math::
 
-       (\mathbf{x},\mathbf{y})_h = \sum_{i} h_{i} x_{i} y_{i}
+       (\\mathbf{x},\\mathbf{y})_h = \\sum_{i} h_{i} x_{i} y_{i}
 
     All weight vector components should be positive.
 
@@ -1533,7 +1533,7 @@ def wl1Norm(x,h):
 
 def wlInfNorm(x,h):
     """
-    Compute the parallel weighted l_{\infty} norm with weight h
+    Compute the parallel weighted l_{\\infty} norm with weight h
     """
     return globalMax(numpy.linalg.norm(h*x,numpy.inf))
 

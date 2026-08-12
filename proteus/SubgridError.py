@@ -56,7 +56,7 @@ class SGE_base(object):
     def accumulateSubgridMassHistory(self,q):
         """
         incorporate subgrid scale mass accumulation
-        \delta m^{n}/\delta t^{n+1}
+        \\delta m^{n}/\\delta t^{n+1}
         """
         pass
 class Advection_ASGS(SGE_base):
@@ -1682,13 +1682,13 @@ class AdvectionDiffusionReactionTransientSubscales_ASGS(AdvectionDiffusionReacti
     """
     track subgrid scales in time with Backward Euler
 
-    \delta u^{n+1} = -\tau_t\tilde{R}_h
+    \\delta u^{n+1} = -\tau_t\tilde{R}_h
 
-    \tilde{R}_h = R_h - m^{\prime,k}\frac{\delta u^{n}}{\Delta t^{n+1}}
+    \tilde{R}_h = R_h - m^{\\prime,k}\frac{\\delta u^{n}}{\\Delta t^{n+1}}
 
-    \tau_t = \frac{\Delta t^{n+1}\tau_s}{m^{prime,n+1}\tau_s + \Delta t^{n+1}}
+    \tau_t = \frac{\\Delta t^{n+1}\tau_s}{m^{prime,n+1}\tau_s + \\Delta t^{n+1}}
 
-    \tau_s = normal spatial tau, supposed to have \tau_s \approx \mathcal{L}^{-1}_{s}
+    \tau_s = normal spatial tau, supposed to have \tau_s \approx \\mathcal{L}^{-1}_{s}
 
     for now m^{prime} evaluated at k=n for subgrid error but not sure if this is right or not
 
@@ -1835,7 +1835,7 @@ class AdvectionDiffusionReactionTransientSubscales_ASGS(AdvectionDiffusionReacti
     def accumulateSubgridMassHistory(self,q):
         """
         incorporate subgrid scale mass accumulation
-        \delta m^{n}/\delta t^{n+1}
+        \\delta m^{n}/\\delta t^{n+1}
         """
         if self.trackSubScales:
             for ci in range(self.nc):
@@ -2347,7 +2347,7 @@ class AdvectionDiffusionReactionHaukeSangalliInterpolantWithTransientSubScales_A
     def accumulateSubgridMassHistory(self,q):
         """
         incorporate subgrid scale mass accumulation
-        \delta m^{n}/\delta t^{n+1}
+        \\delta m^{n}/\\delta t^{n+1}
         """
         if self.trackSubScales:
             for ci in range(self.nc):
@@ -2438,7 +2438,7 @@ class NavierStokesTransientSubScalesASGS_velocity_pressure(NavierStokesASGS_velo
     def accumulateSubgridMassHistory(self,q):
         """
         incorporate subgrid scale mass accumulation
-        \delta m^{n}/\delta t^{n+1}
+        \\delta m^{n}/\\delta t^{n+1}
         """
         if self.trackSubScales:
             for ci in range(1,self.nc):

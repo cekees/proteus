@@ -476,6 +476,7 @@ class Newton(NonlinearSolver):
         par_r : :class:`proteus.LinearAlgebraTools.ParVec_petsc4py`
            Parallel residual vector, :math:`r = b - F(u)`
         """
+        logEvent(memory("Entering Newton.solve","NonlinearSolvers"),level=4)
         from . import Viewers
         if self.linearSolver.computeEigenvalues:
             self.u0[:]=u
@@ -669,6 +670,7 @@ class Newton(NonlinearSolver):
                 logEvent("FCT Step After Newton")
                 self.F.FCTStep()
                 u[:] = self.F.u[0].dof
+            logEvent(memory("Exiting Newton.solve","NonlinearSolvers"),level=4)
             return self.failedFlag
         logEvent("  NumericalAnalytics NewtonIteration: %d, NewtonNorm: %12.5e"
                  %(self.its-1, self.norm_r), level=7)

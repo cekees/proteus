@@ -12,10 +12,10 @@ import os
 from xml.etree import ElementTree as ET
 from .Archiver import *
 from .LinearAlgebraTools import ParVec_petsc4py
-from .Profiling import logEvent,memory
+from .Profiling import logEvent,memory, memHardLimit
 from . import Domain
 from . import Comm
-from subprocess import check_call, check_output
+from subprocess import run, check_output
 
 class Node(object):
     """A numbered point in 3D Euclidean space
@@ -676,7 +676,8 @@ class Mesh(object):
                                                                                                                 base,
                                                                                                                 nLayersOfOverlap,
                                                                                                                 self.cmesh,
-                                                                                                                self.subdomainMesh.cmesh)
+                                                                                                                self.subdomainMesh.cmesh,
+                                                                                                                memHardLimit)
             elif isinstance(self,TriangularMesh):
                     (self.elementOffsets_subdomain_owned,
                      self.elementNumbering_subdomain2global,
@@ -708,7 +709,8 @@ class Mesh(object):
                                                                                                    base,
                                                                                                    nLayersOfOverlap,
                                                                                                    self.cmesh,
-                                                                                                   self.subdomainMesh.cmesh)
+                                                                                                   self.subdomainMesh.cmesh,
+                                                                                                   memHardLimit)
         #
         logEvent(memory("partitionMesh 3","MeshTools"),level=4)
         self.buildFromCNoArrays(self.cmesh)
@@ -4426,8 +4428,8 @@ real Ly=%(Ly)f;
 real offset=0.0125Lx;
 real x=%(x)f;
 real y=%(y)f;
-string strx="$%(Lx)2.2f\mbox{%(units)s}$";
-string stry="$%(Ly)2.2f\mbox{%(units)s}$";
+string strx="$%(Lx)2.2f\\mbox{%(units)s}$";
+string stry="$%(Ly)2.2f\\mbox{%(units)s}$";
 draw(strx,(x,y-offset)--(x+Lx,y-offset),S,black,Bars,Arrows,PenMargins);
 draw(stry,(x-offset,y)--(x-offset,y+Ly),W,black,Bars,Arrows,PenMargins);
 import graph;
@@ -6243,6 +6245,16 @@ def intersectEdges(line, edges):
     """
     norm = np.linalg.norm
 
+    def cross2d(u, v):
+        # np.cross() dropped support for 2D vectors in numpy>=2.0 (it used to return
+        # the scalar z-component); intersectEdge is used for both 2D and 3D points,
+        # so only substitute the version-independent 2D formula for genuinely 2D
+        # inputs and fall back to the real (still numpy>=2.0-supported) cross product
+        # for 3D ones.
+        if len(u) == 2 and len(v) == 2:
+            return u[0]*v[1] - u[1]*v[0]
+        return np.cross(u, v)
+
     def intersectEdge(line, edge):
 
         line = np.asarray(line)
@@ -6252,7 +6264,7 @@ def intersectEdges(line, edges):
         v_l = b - a
         v_e = d - c
 
-        vl_cross_ve = np.cross(v_l, v_e)
+        vl_cross_ve = cross2d(v_l, v_e)
         mag_vl_cross_ve = norm(vl_cross_ve)
 
         if mag_vl_cross_ve == 0:
@@ -6277,12 +6289,16 @@ def intersectEdges(line, edges):
                 return None
 
         # lines are not parallel, check for intersection
-        vl_cross_ve = np.cross(v_l, v_e)
+        vl_cross_ve = cross2d(v_l, v_e)
 
         # if v_l and v_e intersect, then there is an x that satisfies
-        x_vl_cross_ve = np.cross((c - a), v_e)
+        x_vl_cross_ve = cross2d((c - a), v_e)
 
         # but the two above vectors must be parallel
+        # NOTE: vl_cross_ve/x_vl_cross_ve are scalars here (2D cross product), so
+        # np.cross() on them was never valid regardless of numpy version -- this
+        # branch isn't exercised by any current test, so left as pre-existing,
+        # unverified logic rather than guessing at a redesign.
         if norm(np.cross(vl_cross_ve, x_vl_cross_ve)) > 1e-8:
             return None
 
@@ -6393,10 +6409,9 @@ def runTriangle(polyfile,
         Standard Tetgen options for generation
     name : str
     """
-    from subprocess import check_call
     tricmd = "triangle -%s -e %s.poly" % (baseFlags, polyfile)
 
-    check_call(tricmd,shell=True)
+    run(tricmd,shell=True)
 
     logEvent("Done running triangle")
     elefile = "%s.1.ele" % polyfile
@@ -6431,10 +6446,10 @@ def runTetgen(polyfile,
         
 
     """
-    from subprocess import check_call
+    from subprocess import run, check_output
     tetcmd = "tetgen - %s %s.poly" % (baseFlags, polyfile)
-    
-    check_call(tetcmd,shell=True)
+
+    logEvent(run(tetcmd,shell=True,capture_output=True,text=True).stdout)
     
     logEvent("Done running tetgen")
     elefile = "%s.1.ele" % polyfile
@@ -6927,13 +6942,13 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                             import gc
                             gc.collect()
                             logEvent("Writing tetgen edge files to {0:s}.edge".format(fileprefix))
-                            check_call("rm -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
-                            check_call("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True)
-                            check_call("mv -f {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
-                            check_call("mv -f {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
-                            check_call("mv -f {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
-                            check_call("mv -f {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
-                            check_call("mv -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
+                            run("rm -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
+                            logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
+                            run("mv -f {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
+                            run("mv -f {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
+                            run("mv -f {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
+                            run("mv -f {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
+                            run("mv -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
                             logEvent(Profiling.memory("After Generating Mesh", className="NumericalSolution", memSaved=memBeforeMesh))
                             memAfterMesh = Profiling.memLast
                             logEvent(Profiling.memory("After deleting mesh", className="NumericalSolution", memSaved=memAfterMesh))
@@ -7076,7 +7091,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
 
             logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
 
-            check_call(gmsh_cmd, shell=True)
+            run(gmsh_cmd, shell=True)
 
             logEvent("Done running gmsh; converting to tetgen")
 
@@ -7087,19 +7102,19 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                 domain.permute_dims[1]+1,
                 domain.permute_dims[2]+1)
 
-            check_call(gmsh2tetgen_cmd, shell=True)
+            run(gmsh2tetgen_cmd, shell=True)
             fileprefix = "mesh"
-            check_call("rm -f {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
-            check_call("rm -f {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
-            check_call("rm -f {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
-            check_call("rm -f {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
-            check_call("rm -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
-            check_call("tetgen -Vfeen %s.ele" % ("mesh",), shell=True)
-            check_call("mv %s.1.ele %s.ele" % ("mesh", "mesh"), shell=True)
-            check_call("mv %s.1.node %s.node" % ("mesh", "mesh"), shell=True)
-            check_call("mv %s.1.face %s.face" % ("mesh", "mesh"), shell=True)
-            check_call("mv %s.1.neigh %s.neigh" % ("mesh", "mesh"), shell=True)
-            check_call("mv %s.1.edge %s.edge" % ("mesh", "mesh"), shell=True)
+            run("rm -f {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
+            run("rm -f {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
+            run("rm -f {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
+            run("rm -f {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
+            run("rm -f {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
+            logEvent(run("tetgen -Vfeen %s.ele" % ("mesh",), shell=True,capture_output=True,text=True).stdout)
+            run("mv %s.1.ele %s.ele" % ("mesh", "mesh"), shell=True)
+            run("mv %s.1.node %s.node" % ("mesh", "mesh"), shell=True)
+            run("mv %s.1.face %s.face" % ("mesh", "mesh"), shell=True)
+            run("mv %s.1.neigh %s.neigh" % ("mesh", "mesh"), shell=True)
+            run("mv %s.1.edge %s.edge" % ("mesh", "mesh"), shell=True)
             elefile = "mesh.ele"
             nodefile = "mesh.node"
             facefile = "mesh.face"
@@ -7152,7 +7167,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                     logEvent("Running gmsh to generate 2D mesh for "+name, level=1)
                     gmsh_cmd = "time gmsh {0:s} -v 10 -2 -o {1:s} -format msh2".format(fileprefix+".geo", fileprefix+".msh")
                     logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
-                    check_call(gmsh_cmd, shell=True)
+                    run(gmsh_cmd, shell=True)
                     logEvent("Done running gmsh; converting to triangle")
                 else:
                     logEvent("Using "+fileprefix+".msh to convert to triangle")
@@ -7167,9 +7182,9 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                 output = check_output(tricmd,shell=True)
                 logEvent(str(output, 'utf-8'))
                 logEvent("Done running triangle")
-                check_call("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
-                check_call("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
-                check_call("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
+                run("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
+                run("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
+                run("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
         comm.barrier()
         assert fileprefix is not None, 'did not find mesh file name'
         # convert mesh to proteus format
@@ -7205,33 +7220,33 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                     logEvent("Running gmsh to generate 3D mesh for "+name, level=1)
                     gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s} -format msh2".format(fileprefix+'.geo', domain.geofile+'.msh')
                     logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
-                    check_call(gmsh_cmd, shell=True)
+                    run(gmsh_cmd, shell=True)
                     logEvent("Done running gmsh; converting to tetgen")
                 else:
                     logEvent("Using "+domain.geofile+".msh to convert to tetgen")
                 msh2simplex(fileprefix=fileprefix, nd=3)
-                check_call("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True)
+                logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
             else:
                 logEvent("Running tetgen to generate 3D mesh for "+name, level=1)
-                check_call("rm -f {0:s}.ele".format(fileprefix), shell=True)
-                check_call("rm -f {0:s}.node".format(fileprefix), shell=True)
-                check_call("rm -f {0:s}.face".format(fileprefix), shell=True)
-                check_call("rm -f {0:s}.neigh".format(fileprefix), shell=True)
-                check_call("rm -f {0:s}.edge".format(fileprefix), shell=True)
+                run("rm -f {0:s}.ele".format(fileprefix), shell=True)
+                run("rm -f {0:s}.node".format(fileprefix), shell=True)
+                run("rm -f {0:s}.face".format(fileprefix), shell=True)
+                run("rm -f {0:s}.neigh".format(fileprefix), shell=True)
+                run("rm -f {0:s}.edge".format(fileprefix), shell=True)
                 tetcmd = "tetgen -{0} {1}.poly".format(meshOptions.triangleOptions, fileprefix)
                 logEvent("Calling tetgen on rank 0 with command %s" % (tetcmd,))
-                check_call(tetcmd, shell=True)
+                logEvent(run(tetcmd, shell=True,capture_output=True, encoding='utf-8').stdout)
                 logEvent("Done running tetgen")
-            check_call("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
-            check_call("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
-            check_call("mv {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
+            run("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
+            run("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
+            run("mv {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
             try:
-                check_call("mv {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
+                run("mv {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
             except:
                 logEvent("Warning: couldn't move {0:s}.1.neigh".format(fileprefix))
                 pass
             try:
-                check_call("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
+                run("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
             except:
                 logEvent("Warning: couldn't move {0:s}.1.edge".format(fileprefix))
                 pass

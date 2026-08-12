@@ -98,7 +98,10 @@ def create_stl3D(domain,stlfile):
 
 class TestShapeDomainBuilding(unittest.TestCase):
 
-    @pytest.mark.skip(reason="need to redo after history revision")                         
+    # NOTE: need thorough evaluation -- unskipped this session after finding
+    # test/STLBlocks.stl (an input fixture ShapeSTL reads, not a comparison
+    # baseline) was simply missing from this checkout; real fixture was
+    # supplied and no further code changes were needed for this test.
     def test_create_shapes(self):
         """
         Testing if shapes can be created
@@ -118,7 +121,13 @@ class TestShapeDomainBuilding(unittest.TestCase):
         path1 = getpath()
         stl = create_stl3D(domain3D,os.path.join(path1,"STLBlocks.stl"))
         
-    @pytest.mark.skip(reason="need to redo after history revision")                         
+    # NOTE: need thorough evaluation -- unskipped this session after finding
+    # test/STLBlocks.stl was simply missing from this checkout (supplied
+    # real fixture), and fixing a real NumPy>=2.0 incompatibility in
+    # proteus/SpatialTools.py's unique_rows(): np.unique(return_inverse=True)
+    # now shapes `inverse` like the (N,1) structured-dtype view instead of
+    # flat (N,), which broke inverse[facets] indexing for any ShapeSTL-based
+    # domain, not just this test's data.
     def test_assemble_domain(self):
         """
         Testing the assembleDomain() for different domains with multiple shapes
@@ -201,7 +210,11 @@ class TestShapeDomainBuilding(unittest.TestCase):
         npt.assert_equal(nSTLs,max(domainSTL.vertexFlags))
         npt.assert_equal(nSTLs,max(domainSTL.facetFlags))
 
-    @pytest.mark.skip(reason="need to redo after history revision")                         
+    # NOTE: need thorough evaluation -- unskipped this session after finding
+    # test/STLBlocks.stl was simply missing from this checkout (supplied
+    # real fixture), and fixing a real NumPy>=2.0 incompatibility in
+    # proteus/SpatialTools.py's unique_rows() (see test_assemble_domain
+    # above for details).
     def test_BC_flags(self):
         """
         Testing the flags of shapes and their in their domain
