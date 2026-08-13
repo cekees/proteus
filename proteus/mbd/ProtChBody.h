@@ -4,7 +4,6 @@
 #include "chrono/physics/ChSystem.h"
 #include "chrono/timestepper/ChTimestepper.h"
 #include "chrono/timestepper/ChTimestepperHHT.h"
-#include "chrono/solver/ChSolverPMINRES.h"
 #include "chrono/core/ChFrame.h"
 #include "chrono/physics/ChLinkTSDA.h"
 #include "chrono/geometry/ChTriangleMeshConnected.h"

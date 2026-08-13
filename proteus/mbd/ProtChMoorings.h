@@ -23,7 +23,6 @@
 #include "chrono/fea/ChLoadsBeam.h"
 #include "chrono/fea/ChContactSurfaceNodeCloud.h"
 #include "chrono/timestepper/ChTimestepper.h"
-#include "chrono/solver/ChSolverPMINRES.h"
 
 
 //using namespace std;
