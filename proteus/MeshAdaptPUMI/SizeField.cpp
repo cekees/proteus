@@ -14,8 +14,8 @@
 #include <algorithm> 
 
 static void SmoothField(apf::Field *f);
-void gradeAnisoMesh(apf::Mesh* m,double gradingFactor);
-void gradeAspectRatio(apf::Mesh* m, int idx, double gradingFactor);
+void gradeAnisoMesh(apf::Mesh* m,double gradingFactor,PCU_t PCUObj);
+void gradeAspectRatio(apf::Mesh* m, int idx, double gradingFactor,PCU_t PCUObj);
 
 /* Based on the distance from the interface epsilon can be controlled to determine
    thickness of refinement near the interface */
@@ -30,7 +30,7 @@ static double isotropicFormula(double phi, double dphi, double verr, double hmin
     return hmax;
 }
 
-static void setSizeField(apf::Mesh2 *m,apf::MeshEntity *vertex,double h,apf::MeshTag *marker,apf::Field* sizeField)
+static void setSizeField(apf::Mesh2 *m,apf::MeshEntity *vertex,double h,apf::MeshTag *marker,apf::Field* sizeField,PCU_t PCUObj)
 //helper function for banded interface to facilitate with setting the proper mesh size and parallel communication
 {
   int isMarked=0;
@@ -53,8 +53,8 @@ static void setSizeField(apf::Mesh2 *m,apf::MeshEntity *vertex,double h,apf::Mes
     apf::Copies remotes;
     m->getRemotes(vertex,remotes);
     int owningPart=m->getOwner(vertex);
-    PCU_COMM_PACK(owningPart, remotes[owningPart]);
-    PCU_COMM_PACK(owningPart, h_new);
+    PCU_COMM_PACK(PCUObj, owningPart, remotes[owningPart]);
+    PCU_COMM_PACK(PCUObj, owningPart, h_new);
   }
 }
 
@@ -98,7 +98,7 @@ int MeshAdaptPUMIDrvr::calculateSizeField(double L_band)
 
   //double L_band = (numAdaptSteps+N_interface_band)*hPhi;
 
-  PCU_Comm_Begin();
+  PCU_Comm_Begin(PCUObj);
   while ((edge = m->iterate(it)))
   {
     apf::Adjacent edge_adjVerts;
@@ -115,35 +115,35 @@ int MeshAdaptPUMIDrvr::calculateSizeField(double L_band)
 
     if(caseNumber==1 || caseNumber == 2)
     {
-      setSizeField(m,vertex1,hPhi,vertexMarker,interfaceBand);
-      setSizeField(m,vertex2,hPhi,vertexMarker,interfaceBand);
+      setSizeField(m,vertex1,hPhi,vertexMarker,interfaceBand,PCUObj);
+      setSizeField(m,vertex2,hPhi,vertexMarker,interfaceBand,PCUObj);
     }
     else
     {
       if (phi1*phi2 <0)
       {
-        setSizeField(m,vertex1,hPhi,vertexMarker,interfaceBand);
-        setSizeField(m,vertex2,hPhi,vertexMarker,interfaceBand);
+        setSizeField(m,vertex1,hPhi,vertexMarker,interfaceBand,PCUObj);
+        setSizeField(m,vertex2,hPhi,vertexMarker,interfaceBand,PCUObj);
       }
       else
       {
-        setSizeField(m,vertex1,hmax,vertexMarker,interfaceBand);
-        setSizeField(m,vertex2,hmax,vertexMarker,interfaceBand);
+        setSizeField(m,vertex1,hmax,vertexMarker,interfaceBand,PCUObj);
+        setSizeField(m,vertex2,hmax,vertexMarker,interfaceBand,PCUObj);
       }
     }
 
   }//end while
 
-  PCU_Comm_Send();
+  PCU_Comm_Send(PCUObj);
 
   //Take minimum between received value and current value
   apf::MeshEntity *ent;
   double h_received;
-  while(PCU_Comm_Receive())
+  while(PCU_Comm_Receive(PCUObj))
   {
     //Note: the only receiving entities should be owning copies
-    PCU_COMM_UNPACK(ent);
-    PCU_COMM_UNPACK(h_received);
+    PCU_COMM_UNPACK(PCUObj, ent);
+    PCU_COMM_UNPACK(PCUObj, h_received);
     //take minimum of received values
     double h_current = apf::getScalar(interfaceBand,ent,0);
     double h_final = std::min(h_current,h_received);
@@ -221,7 +221,7 @@ int checkForPropagation(apf::Mesh* m, edgeWalkerInfo inputObject)
         return 1;
 }
 
-int BFS_propagation(apf::Mesh* m, std::queue<edgeWalkerInfo> &markedVertices)
+int BFS_propagation(apf::Mesh* m, std::queue<edgeWalkerInfo> &markedVertices, PCU_t PCUObj)
 {   
 //objects in the queue are assumed to be checked and needing to be modified
 //the adjacencies are checked before adding into the queue
@@ -271,19 +271,19 @@ int BFS_propagation(apf::Mesh* m, std::queue<edgeWalkerInfo> &markedVertices)
 
             if(m->isShared(newVert))
             {
-                int initialRank = PCU_Comm_Self();
+                int initialRank = PCU_Comm_Self(PCUObj);
                 double desiredSize = apf::getScalar(predictInterfaceBand,vert,0);
                 apf::Copies remotes;
                 m->getRemotes(newVert,remotes);
                 for(apf::Copies::iterator iter=remotes.begin(); iter!=remotes.end();++iter)
                 {
-                    PCU_COMM_PACK(iter->first, iter->second);
-                    PCU_COMM_PACK(iter->first, L_local);
-                    PCU_COMM_PACK(iter->first, actualPosition);
-                    PCU_COMM_PACK(iter->first, direction);
-                    PCU_COMM_PACK(iter->first, initialRank);
-                    PCU_COMM_PACK(iter->first, inputObject.edgeID);
-                    PCU_COMM_PACK(iter->first, desiredSize);
+                    PCU_COMM_PACK(PCUObj, iter->first, iter->second);
+                    PCU_COMM_PACK(PCUObj, iter->first, L_local);
+                    PCU_COMM_PACK(PCUObj, iter->first, actualPosition);
+                    PCU_COMM_PACK(PCUObj, iter->first, direction);
+                    PCU_COMM_PACK(PCUObj, iter->first, initialRank);
+                    PCU_COMM_PACK(PCUObj, iter->first, inputObject.edgeID);
+                    PCU_COMM_PACK(PCUObj, iter->first, desiredSize);
                 }
                 needsParallel++;
             }
@@ -316,7 +316,7 @@ void MeshAdaptPUMIDrvr::predictiveInterfacePropagation()
     
     std::queue <edgeWalkerInfo> markedVertices;
 
-    PCU_Comm_Begin();
+    PCU_Comm_Begin(PCUObj);
     while( (edge = m->iterate(it)) )
     {
         if( intersectsInterface(edge,levelSet))
@@ -366,7 +366,7 @@ void MeshAdaptPUMIDrvr::predictiveInterfacePropagation()
                 inputObject.direction = signValue;
                 inputObject.L_local = L_local;
                 inputObject.edgeID = localNumber(edge);
-                inputObject.initialRank = PCU_Comm_Self();
+                inputObject.initialRank = PCU_Comm_Self(PCUObj);
                 if(checkForPropagation(m,inputObject))
                 {
                     markedVertices.push(inputObject);
@@ -374,19 +374,19 @@ void MeshAdaptPUMIDrvr::predictiveInterfacePropagation()
                     //check for parallel
                     if(m->isShared(inputObject.vertex))
                     {
-                        int initialRank = PCU_Comm_Self();
+                        int initialRank = PCU_Comm_Self(PCUObj);
                         double desiredSize = apf::getScalar(predictInterfaceBand,inputObject.vertex,0);
                         apf::Copies remotes;
                         m->getRemotes(inputObject.vertex,remotes);
                         for(apf::Copies::iterator iter=remotes.begin(); iter!=remotes.end();++iter)
                         {
-                            PCU_COMM_PACK(iter->first, iter->second);
-                            PCU_COMM_PACK(iter->first, L_local);
-                            PCU_COMM_PACK(iter->first, actualPosition);
-                            PCU_COMM_PACK(iter->first, inputObject.direction);
-                            PCU_COMM_PACK(iter->first, initialRank);
-                            PCU_COMM_PACK(iter->first, inputObject.edgeID);
-                            PCU_COMM_PACK(iter->first, desiredSize);
+                            PCU_COMM_PACK(PCUObj, iter->first, iter->second);
+                            PCU_COMM_PACK(PCUObj, iter->first, L_local);
+                            PCU_COMM_PACK(PCUObj, iter->first, actualPosition);
+                            PCU_COMM_PACK(PCUObj, iter->first, inputObject.direction);
+                            PCU_COMM_PACK(PCUObj, iter->first, initialRank);
+                            PCU_COMM_PACK(PCUObj, iter->first, inputObject.edgeID);
+                            PCU_COMM_PACK(PCUObj, iter->first, desiredSize);
                         }
                     }
 
@@ -398,8 +398,8 @@ void MeshAdaptPUMIDrvr::predictiveInterfacePropagation()
 
     //The following parallel code is just for the initialization step
     //There might be a way to put all of this under a function as this is repeated code later on
-    PCU_Comm_Send();
-    while(PCU_Comm_Receive())
+    PCU_Comm_Send(PCUObj);
+    while(PCU_Comm_Receive(PCUObj))
     {
         apf::MeshEntity* vertex;
         double L_local;
@@ -408,13 +408,13 @@ void MeshAdaptPUMIDrvr::predictiveInterfacePropagation()
         int initialRank;
         int edgeID;
         double desiredSize;
-        PCU_COMM_UNPACK(vertex);
-        PCU_COMM_UNPACK(L_local);
-        PCU_COMM_UNPACK(actualPosition);
-        PCU_COMM_UNPACK(direction);
-        PCU_COMM_UNPACK(initialRank);
-        PCU_COMM_UNPACK(edgeID);
-        PCU_COMM_UNPACK(desiredSize);
+        PCU_COMM_UNPACK(PCUObj, vertex);
+        PCU_COMM_UNPACK(PCUObj, L_local);
+        PCU_COMM_UNPACK(PCUObj, actualPosition);
+        PCU_COMM_UNPACK(PCUObj, direction);
+        PCU_COMM_UNPACK(PCUObj, initialRank);
+        PCU_COMM_UNPACK(PCUObj, edgeID);
+        PCU_COMM_UNPACK(PCUObj, desiredSize);
             
         edgeWalkerInfo inputObject;
         inputObject.vertex = vertex;
@@ -448,17 +448,17 @@ void MeshAdaptPUMIDrvr::predictiveInterfacePropagation()
     {
         needsParallel=0;
 
-        PCU_Comm_Begin();
+        PCU_Comm_Begin(PCUObj);
 
         //Handle the queue
         while(!markedVertices.empty())
         {
-            needsParallel+=BFS_propagation(m,markedVertices);
+            needsParallel+=BFS_propagation(m,markedVertices,PCUObj);
         }
-        PCU_Add_Ints(&needsParallel,1);
+        PCU_Add_Ints(PCUObj, &needsParallel,1);
 
-        PCU_Comm_Send();
-        while( PCU_Comm_Receive() )
+        PCU_Comm_Send(PCUObj);
+        while( PCU_Comm_Receive(PCUObj) )
         {
             apf::MeshEntity* vertex;
             double L_local;
@@ -467,13 +467,13 @@ void MeshAdaptPUMIDrvr::predictiveInterfacePropagation()
             int initialRank;
             int edgeID;
             double desiredSize;
-            PCU_COMM_UNPACK(vertex);
-            PCU_COMM_UNPACK(L_local);
-            PCU_COMM_UNPACK(actualPosition);
-            PCU_COMM_UNPACK(direction);
-            PCU_COMM_UNPACK(initialRank);
-            PCU_COMM_UNPACK(edgeID);
-            PCU_COMM_UNPACK(desiredSize);
+            PCU_COMM_UNPACK(PCUObj, vertex);
+            PCU_COMM_UNPACK(PCUObj, L_local);
+            PCU_COMM_UNPACK(PCUObj, actualPosition);
+            PCU_COMM_UNPACK(PCUObj, direction);
+            PCU_COMM_UNPACK(PCUObj, initialRank);
+            PCU_COMM_UNPACK(PCUObj, edgeID);
+            PCU_COMM_UNPACK(PCUObj, desiredSize);
             
 
             edgeWalkerInfo inputObject;
@@ -1136,13 +1136,13 @@ static void SmoothField(apf::Field *f)
   op.applyToDimension(0);
 }
 
-void getTargetError(apf::Mesh* m, apf::Field* errField, double &target_error,double totalError){
+void getTargetError(apf::Mesh* m, apf::Field* errField, double &target_error,double totalError, PCU_t PCUObj){
   //Implemented for 3D and for serial case only so far
   //Need to communicate target error in parallel
   logEvent("WARNING/ERROR:Parallel implementation is not completed yet",4);
   if(m->getDimension()==2){
     target_error = totalError/sqrt(m->count(m->getDimension()));
-    if(PCU_Comm_Self()==0)
+    if(PCU_Comm_Self(PCUObj)==0)
       std::cout<<"The estimated target error is "<<target_error<<std::endl;
     return;
   }
@@ -1187,7 +1187,7 @@ void getTargetError(apf::Mesh* m, apf::Field* errField, double &target_error,dou
     else
       target_error = errVect[(vectorSize-1)/2];
   }
-  if(PCU_Comm_Self()==0)
+  if(PCU_Comm_Self(PCUObj)==0)
     std::cout<<"The estimated target error is "<<target_error<<std::endl;
   //std::abort();
 }
@@ -1230,12 +1230,12 @@ int MeshAdaptPUMIDrvr::getERMSizeField(double err_total)
   int numel = 0;
   int nsd = m->getDimension();
   numel = m->count(nsd);
-  PCU_Add_Ints(&numel, 1);
+  PCU_Add_Ints(PCUObj, &numel, 1);
 
   //if target error is not specified, choose one based on interface or based on equidistribution assumption
   if(target_error==0){
     if(m->findField("vof")!=NULL)
-      getTargetError(m,errField,target_error,err_total);
+      getTargetError(m,errField,target_error,err_total,PCUObj);
     else
       target_error = err_total/sqrt(m->count(nsd));
   }
@@ -1250,7 +1250,7 @@ int MeshAdaptPUMIDrvr::getERMSizeField(double err_total)
     {
       volTotal += apf::measure(m, reg);
     }
-    PCU_Add_Doubles(&volTotal, 1);
+    PCU_Add_Doubles(PCUObj, &volTotal, 1);
     domainVolume = volTotal;
     assert(domainVolume > 0);
   }
@@ -1301,7 +1301,7 @@ int MeshAdaptPUMIDrvr::getERMSizeField(double err_total)
   m->end(it);
 
   //Transfer size field from elements to vertices through averaging
-  PCU_Comm_Begin();
+  PCU_Comm_Begin(PCUObj);
   it = m->begin(0);
   while ((v = m->iterate(it)))
   {
@@ -1314,20 +1314,20 @@ int MeshAdaptPUMIDrvr::getERMSizeField(double err_total)
         apf::Copies remotes;
         m->getRemotes(v,remotes);
         int owningPart=m->getOwner(v);
-        PCU_COMM_PACK(owningPart, remotes[owningPart]);
+        PCU_COMM_PACK(PCUObj, owningPart, remotes[owningPart]);
         double currentSize = apf::getScalar(errorSize,v,0);
-        PCU_COMM_PACK(owningPart,currentSize);
+        PCU_COMM_PACK(PCUObj, owningPart,currentSize);
     }
 
   }
   m->end(it);
-  PCU_Comm_Send();
-  while(PCU_Comm_Receive())
+  PCU_Comm_Send(PCUObj);
+  while(PCU_Comm_Receive(PCUObj))
   {
     apf::MeshEntity* receivedEnt;
     double receivedSize;
-    PCU_COMM_UNPACK(receivedEnt);
-    PCU_COMM_UNPACK(receivedSize);
+    PCU_COMM_UNPACK(PCUObj, receivedEnt);
+    PCU_COMM_UNPACK(PCUObj, receivedSize);
 
     double currentSize = apf::getScalar(errorSize,receivedEnt,0);
 
@@ -1427,13 +1427,13 @@ int MeshAdaptPUMIDrvr::getERMSizeField(double err_total)
     m->end(it);
 
     //Do simple size and aspect ratio grading
-    gradeAnisoMesh(m,gradingFactor);
+    gradeAnisoMesh(m,gradingFactor,PCUObj);
     if(comm_rank==0)
       std::cout<<"Finished grading size 0\n";
-    gradeAspectRatio(m,1,gradingFactor);
+    gradeAspectRatio(m,1,gradingFactor,PCUObj);
     if(comm_rank==0)
       std::cout<<"Finished grading size 1\n";
-    gradeAspectRatio(m,2,gradingFactor);
+    gradeAspectRatio(m,2,gradingFactor,PCUObj);
     if(comm_rank==0)
       std::cout<<"Finished grading size 2\n";
 
@@ -1516,7 +1516,8 @@ int gradeSizeModify(apf::Mesh* m, double gradingFactor,
     apf::MeshTag* isMarked,
     int fieldType,
     int vecPos, //which idx of sizeVec to modify
-    int idxFlag)
+    int idxFlag,
+    PCU_t PCUObj)
 
 //General function to actually modify sizes
 {
@@ -1561,8 +1562,8 @@ int gradeSizeModify(apf::Mesh* m, double gradingFactor,
           m->getRemotes(edgAdjVert[idx1],remotes);
           double newSize = gradingFactor*size[idx2];
           int owningPart=m->getOwner(edgAdjVert[idx1]);
-          PCU_COMM_PACK(owningPart, remotes[owningPart]);
-          PCU_COMM_PACK(owningPart,newSize);
+          PCU_COMM_PACK(PCUObj, owningPart, remotes[owningPart]);
+          PCU_COMM_PACK(PCUObj, owningPart,newSize);
         }
       }
 
@@ -1624,7 +1625,7 @@ void markEdgesInitial(apf::Mesh* m, std::queue<apf::MeshEntity*> &markedEdges,do
   m->end(it); 
 }
 
-int serialGradation(apf::Mesh* m, std::queue<apf::MeshEntity*> &markedEdges,double gradingFactor)
+int serialGradation(apf::Mesh* m, std::queue<apf::MeshEntity*> &markedEdges,double gradingFactor, PCU_t PCUObj)
 //Function used loop over the mesh edge queue for gradation and modify the sizes
 {
   double size[2];
@@ -1647,9 +1648,9 @@ int serialGradation(apf::Mesh* m, std::queue<apf::MeshEntity*> &markedEdges,doub
     }
 
     needsParallel+=gradeSizeModify(m, gradingFactor, size, edgAdjVert, 
-      vertAdjEdg, markedEdges, isMarked, apf::SCALAR,0, 0);
+      vertAdjEdg, markedEdges, isMarked, apf::SCALAR,0, 0, PCUObj);
     needsParallel+=gradeSizeModify(m, gradingFactor, size, edgAdjVert, 
-      vertAdjEdg, markedEdges, isMarked, apf::SCALAR,0, 1);
+      vertAdjEdg, markedEdges, isMarked, apf::SCALAR,0, 1, PCUObj);
 
     m->setIntTag(edge,isMarked,&marker[0]);
     markedEdges.pop();
@@ -1685,13 +1686,13 @@ int MeshAdaptPUMIDrvr::gradeMesh(double gradationFactor)
   int nCount=1;
   while(needsParallel)
   {
-    PCU_Comm_Begin();
-    needsParallel = serialGradation(m,markedEdges,gradingFactor);
+    PCU_Comm_Begin(PCUObj);
+    needsParallel = serialGradation(m,markedEdges,gradingFactor,PCUObj);
 
-    PCU_Add_Ints(&needsParallel,1);
+    PCU_Add_Ints(PCUObj, &needsParallel,1);
     if(comm_rank==0)
       std::cerr<<"Sending size info for gradation"<<std::endl;
-    PCU_Comm_Send(); 
+    PCU_Comm_Send(PCUObj); 
 
     apf::MeshEntity* ent;
     double receivedSize;
@@ -1703,10 +1704,10 @@ int MeshAdaptPUMIDrvr::gradeMesh(double gradationFactor)
 
     apf::Copies remotes;
     //owning copies are receiving
-    while(PCU_Comm_Receive())
+    while(PCU_Comm_Receive(PCUObj))
     {
-      PCU_COMM_UNPACK(ent);
-      PCU_COMM_UNPACK(receivedSize);
+      PCU_COMM_UNPACK(PCUObj, ent);
+      PCU_COMM_UNPACK(PCUObj, receivedSize);
 
       if(!m->isOwned(ent)){
         logEvent("THERE WAS AN ERROR",4);
@@ -1733,7 +1734,7 @@ int MeshAdaptPUMIDrvr::gradeMesh(double gradationFactor)
       updateRemoteVertices.push(ent);
     }
 
-    PCU_Comm_Begin();
+    PCU_Comm_Begin(PCUObj);
 
     while(!updateRemoteVertices.empty())
     { 
@@ -1743,18 +1744,18 @@ int MeshAdaptPUMIDrvr::gradeMesh(double gradationFactor)
       currentSize = apf::getScalar(size_iso,ent,0);
       for(apf::Copies::iterator iter=remotes.begin(); iter!=remotes.end();++iter)
       {
-        PCU_COMM_PACK(iter->first, iter->second);
+        PCU_COMM_PACK(PCUObj, iter->first, iter->second);
       }
       updateRemoteVertices.pop();
     }
 
-    PCU_Comm_Send();
+    PCU_Comm_Send(PCUObj);
     //while remote copies are receiving
-    while(PCU_Comm_Receive())
+    while(PCU_Comm_Receive(PCUObj))
     {
       //unpack
-      PCU_COMM_UNPACK(ent);
-      //PCU_COMM_UNPACK(receivedSize);
+      PCU_COMM_UNPACK(PCUObj, ent);
+      //PCU_COMM_UNPACK(PCUObj, receivedSize);
       assert(!m->isOwned(ent));
 
       if(m->isOwned(ent)){
@@ -1793,7 +1794,7 @@ int MeshAdaptPUMIDrvr::gradeMesh(double gradationFactor)
   return needsParallel;
 }
 
-void gradeAnisoMesh(apf::Mesh* m)
+void gradeAnisoMesh(apf::Mesh* m, PCU_t PCUObj)
 //Function to grade anisotropic mesh through comparison of edge vertex aspect ratios and minimum sizes
 //For simplicity, we do not bother with accounting for entities across partitions
 {
@@ -1840,9 +1841,9 @@ void gradeAnisoMesh(apf::Mesh* m)
       size[i]=sizeVec[0];
     }
     gradeSizeModify(m, gradingFactor, size, edgAdjVert, 
-      vertAdjEdg, markedEdges, isMarked, apf::VECTOR,0, 0);
+      vertAdjEdg, markedEdges, isMarked, apf::VECTOR,0, 0, PCUObj);
     gradeSizeModify(m, gradingFactor, size, edgAdjVert, 
-      vertAdjEdg, markedEdges, isMarked, apf::VECTOR,0, 1);
+      vertAdjEdg, markedEdges, isMarked, apf::VECTOR,0, 1, PCUObj);
 
 /*
     if(size[0]>gradingFactor*size[1]){
@@ -1890,7 +1891,7 @@ void gradeAnisoMesh(apf::Mesh* m)
   //  std::cout<<"Completed minimum size grading\n";
 }
 
-void gradeAspectRatio(apf::Mesh* m,int idx)
+void gradeAspectRatio(apf::Mesh* m,int idx, PCU_t PCUObj)
 //Function to grade anisotropic mesh through comparison of edge vertex aspect ratios and minimum sizes
 //For simplicity, we do not bother with accounting for entities across partitions
 {
@@ -1937,9 +1938,9 @@ void gradeAspectRatio(apf::Mesh* m,int idx)
       size[i]=sizeVec[idx]/sizeVec[0];
     }
     gradeSizeModify(m, gradingFactor, size, edgAdjVert, 
-      vertAdjEdg, markedEdges, isMarked, apf::VECTOR, idx, 0);
+      vertAdjEdg, markedEdges, isMarked, apf::VECTOR, idx, 0, PCUObj);
     gradeSizeModify(m, gradingFactor, size, edgAdjVert, 
-      vertAdjEdg, markedEdges, isMarked, apf::VECTOR, idx, 1);
+      vertAdjEdg, markedEdges, isMarked, apf::VECTOR, idx, 1, PCUObj);
 
     m->setIntTag(edge,isMarked,&marker[0]);
     markedEdges.pop();
@@ -1953,7 +1954,7 @@ void gradeAspectRatio(apf::Mesh* m,int idx)
   apf::synchronize(size_scale);
 }
 
-void gradeAnisoMesh(apf::Mesh* m,double gradingFactor)
+void gradeAnisoMesh(apf::Mesh* m,double gradingFactor,PCU_t PCUObj)
 //Function to grade anisotropic mesh through comparison of edge vertex aspect ratios and minimum sizes
 //For simplicity, we do not bother with accounting for entities across partitions
 {
@@ -2000,9 +2001,9 @@ void gradeAnisoMesh(apf::Mesh* m,double gradingFactor)
       size[i]=sizeVec[0];
     }
     gradeSizeModify(m, gradingFactor, size, edgAdjVert, 
-      vertAdjEdg, markedEdges, isMarked, apf::VECTOR,0, 0);
+      vertAdjEdg, markedEdges, isMarked, apf::VECTOR,0, 0, PCUObj);
     gradeSizeModify(m, gradingFactor, size, edgAdjVert, 
-      vertAdjEdg, markedEdges, isMarked, apf::VECTOR,0, 1);
+      vertAdjEdg, markedEdges, isMarked, apf::VECTOR,0, 1, PCUObj);
 
 /*
     if(size[0]>gradingFactor*size[1]){
@@ -2050,11 +2051,11 @@ void gradeAnisoMesh(apf::Mesh* m,double gradingFactor)
   //  std::cout<<"Completed minimum size grading\n";
 }
 
-void gradeAspectRatio(apf::Mesh* m,int idx,double gradingFactor)
+void gradeAspectRatio(apf::Mesh* m,int idx,double gradingFactor,PCU_t PCUObj)
 //Function to grade anisotropic mesh through comparison of edge vertex aspect ratios and minimum sizes
 //For simplicity, we do not bother with accounting for entities across partitions
 {
-  if(PCU_Comm_Self()==0)
+  if(PCU_Comm_Self(PCUObj)==0)
     std::cout<<"Entered function\n"; 
   apf::MeshIterator* it = m->begin(1);
   apf::MeshEntity* edge;
@@ -2089,7 +2090,7 @@ void gradeAspectRatio(apf::Mesh* m,int idx,double gradingFactor)
   }
   m->end(it); 
 
-  if(PCU_Comm_Self()==0)
+  if(PCU_Comm_Self(PCUObj)==0)
     std::cout<<"Got queue of size "<<markedEdges.size()<<std::endl; 
   while(!markedEdges.empty()){
     edge = markedEdges.front();
@@ -2099,9 +2100,9 @@ void gradeAspectRatio(apf::Mesh* m,int idx,double gradingFactor)
       size[i]=sizeVec[idx]/sizeVec[0];
     }
     gradeSizeModify(m, gradingFactor, size, edgAdjVert, 
-      vertAdjEdg, markedEdges, isMarked, apf::VECTOR, idx, 0);
+      vertAdjEdg, markedEdges, isMarked, apf::VECTOR, idx, 0, PCUObj);
     gradeSizeModify(m, gradingFactor, size, edgAdjVert, 
-      vertAdjEdg, markedEdges, isMarked, apf::VECTOR, idx, 1);
+      vertAdjEdg, markedEdges, isMarked, apf::VECTOR, idx, 1, PCUObj);
 
     m->setIntTag(edge,isMarked,&marker[0]);
     markedEdges.pop();

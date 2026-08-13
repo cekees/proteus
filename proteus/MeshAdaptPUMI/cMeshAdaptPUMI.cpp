@@ -44,9 +44,13 @@ MeshAdaptPUMIDrvr::MeshAdaptPUMIDrvr()
  * See MeshAdaptPUMI.h for the list of class variables/functions/objects
  * This is the constructor for the class
 */
+// pcuObj_ wraps the MPI_COMM_WORLD that proteus's Python layer (mpi4py)
+// already initialized before this driver is constructed -- not pcu::Init(),
+// which performs its own MPI bring-up and would be wrong here.
+  : pcuObj_(MPI_COMM_WORLD)
 {
   m = 0;
-  PCU_Comm_Init();
+  PCUObj = pcuObj_.GetCHandle();
   PCU_Protect();
 
 #ifdef PROTEUS_USE_SIMMETRIX
@@ -111,7 +115,9 @@ MeshAdaptPUMIDrvr::~MeshAdaptPUMIDrvr()
     //apf::destroyMesh(m);
   }
 */
-  PCU_Comm_Free();
+  // pcuObj_'s own destructor (RAII, SCOREC/core >= 3.0.0) tears down PCU
+  // state automatically -- no explicit PCU_Comm_Free() call needed or
+  // available anymore.
 #ifdef PROTEUS_USE_SIMMETRIX
   SimModel_stop();
   Sim_unregisterAllKeys();
@@ -135,20 +141,20 @@ static bool ends_with(std::string const& str, std::string const& ext)
 
 int MeshAdaptPUMIDrvr::loadModelAndMesh(const char* modelFile, const char* meshFile)
 {
-  comm_size = PCU_Comm_Peers();
-  comm_rank = PCU_Comm_Self();
+  comm_size = PCU_Comm_Peers(PCUObj);
+  comm_rank = PCU_Comm_Self(PCUObj);
   if (ends_with(meshFile, ".msh")){
-    m = apf::loadMdsFromGmsh(gmi_load(modelFile), meshFile);
+    m = apf::loadMdsFromGmsh(gmi_load(modelFile), meshFile, &pcuObj_);
     std::cout<<"Boundary Condition functionality has not been built in for gmsh yet.\n";
   }
   else if (ends_with(modelFile,".smd")){
-    m = apf::loadMdsMesh(modelFile, meshFile);
+    m = apf::loadMdsMesh(modelFile, meshFile, &pcuObj_);
     modelFileName=(char *) malloc(sizeof(char) * strlen(modelFile));
     strcpy(modelFileName,modelFile);
     getSimmetrixBC();
   }
   else{
-    m = apf::loadMdsMesh(modelFile, meshFile);
+    m = apf::loadMdsMesh(modelFile, meshFile, &pcuObj_);
   }
 
   m->verify();
@@ -158,9 +164,9 @@ int MeshAdaptPUMIDrvr::loadModelAndMesh(const char* modelFile, const char* meshF
 int MeshAdaptPUMIDrvr::loadMeshForAnalytic(const char* meshFile,double* boxDim,double* sphereCenter, double radius)
 {
   //assume analytic 
-  comm_size = PCU_Comm_Peers();
-  comm_rank = PCU_Comm_Self();
-  m = apf::loadMdsMesh(".null", meshFile);
+  comm_size = PCU_Comm_Peers(PCUObj);
+  comm_rank = PCU_Comm_Self(PCUObj);
+  m = apf::loadMdsMesh(".null", meshFile, &pcuObj_);
   m->verify();
 
   //create analytic geometry 
@@ -306,10 +312,10 @@ int MeshAdaptPUMIDrvr::getSimmetrixBC()
 #endif
   return 0;
 } 
-static int countTotal(apf::Mesh* m, int dim)
+static int countTotal(apf::Mesh* m, int dim, PCU_t PCUObj)
 {
   int total = apf::countOwned(m, dim);
-  PCU_Add_Ints(&total, 1);
+  PCU_Add_Ints(PCUObj, &total, 1);
   return total;
 }
 
@@ -384,12 +390,12 @@ int MeshAdaptPUMIDrvr::willErrorAdapt()
   m->end(it);
 
   assertFlag = adaptFlag;
-  PCU_Add_Ints(&assertFlag,1);
-  //assert(assertFlag ==0 || assertFlag == PCU_Proc_Peers());
+  PCU_Add_Ints(PCUObj, &assertFlag,1);
+  //assert(assertFlag ==0 || assertFlag == PCU_Proc_Peers(PCUObj));
 
   if(assertFlag>0)
   {
-    double totalNodes = countTotal(m,0);
+    double totalNodes = countTotal(m,0,PCUObj);
     double triggeredPercentage = assertFlag*100.0/totalNodes;
     char buffer[50];
     sprintf(buffer,"Need to error adapt %f%%",triggeredPercentage);
@@ -533,7 +539,7 @@ int MeshAdaptPUMIDrvr::willErrorAdapt_reference()
   }
 
   assertFlag = adaptFlag;
-  PCU_Add_Ints(&assertFlag,1);
+  PCU_Add_Ints(PCUObj, &assertFlag,1);
   nTriggers++;
 
   //if adapt, modify the error field to be predictive
@@ -656,8 +662,8 @@ int MeshAdaptPUMIDrvr::willInterfaceAdapt()
   }//end while
 
   assertFlag = adaptFlag;
-  PCU_Add_Ints(&assertFlag,1);
-  //assert(assertFlag ==0 || assertFlag == PCU_Proc_Peers());
+  PCU_Add_Ints(PCUObj, &assertFlag,1);
+  //assert(assertFlag ==0 || assertFlag == PCU_Proc_Peers(PCUObj));
 
   apf::destroyField(currentField);
   apf::destroyField(interfaceField);
@@ -749,7 +755,7 @@ int MeshAdaptPUMIDrvr::adaptPUMIMesh(const char* inputString)
   }
   if(hasVMS){
     freeField(vmsErrH1);
-    if(PCU_Comm_Self()==0) std::cout<<"cleared VMS field\n";
+    if(PCU_Comm_Self(PCUObj)==0) std::cout<<"cleared VMS field\n";
   }
 
   // These are relics from an attempt to pass BCs from proteus into the error estimator.
@@ -810,8 +816,8 @@ int MeshAdaptPUMIDrvr::adaptPUMIMesh(const char* inputString)
 
   m->verify();
   //double mass_after = getTotalMass();
-  //PCU_Add_Doubles(&mass_before,1);
-  //PCU_Add_Doubles(&mass_after,1);
+  //PCU_Add_Doubles(PCUObj, &mass_before,1);
+  //PCU_Add_Doubles(PCUObj, &mass_after,1);
   if(comm_rank==0 && logging_config=="on"){
 /*
     std::ios::fmtflags saved(std::cout.flags());
@@ -868,7 +874,7 @@ double MeshAdaptPUMIDrvr::getMinimumQuality()
     minq = std::min(minq, ma::measureElementQuality(m, isf, e));
   m->end(it);
   delete isf;
-  return PCU_Min_Double(minq);
+  return PCU_Min_Double(PCUObj, minq);
 }
 
 double MeshAdaptPUMIDrvr::getTotalMass()
@@ -902,7 +908,7 @@ double MeshAdaptPUMIDrvr::getTotalMass()
     apf::destroyMeshElement(elem);
   }
   m->end(it);
-  PCU_Add_Doubles(&mass,1);
+  PCU_Add_Doubles(PCUObj, &mass,1);
   return mass;
 }
 /** @} */
@@ -1016,7 +1022,7 @@ int MeshAdaptPUMIDrvr::setAdaptProperties(std::vector<std::string> sizeInputs,bo
     numIter=in_numIterations;
     adaptMesh = in_adapt;
     numAdaptSteps = in_numAdaptSteps;
-    if(PCU_Comm_Self()==0)
+    if(PCU_Comm_Self(PCUObj)==0)
         printf("MeshAdapt: Setting hmax=%lf, hmin=%lf, numIters(meshadapt)=%d\n",
          hmax, hmin, numIter);
     logging_config = in_logging;
