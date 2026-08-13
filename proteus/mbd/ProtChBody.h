@@ -141,7 +141,6 @@ void cppSystem::setTimestepperType(std::string tstype, bool verbose=false) {
     //mystepper->SetMode(ChTimestepperHHT::POSITION);
     //mystepper->SetScaling(false);
     mystepper->SetVerbose(verbose);
-    mystepper->SetModifiedNewton(false);
   }
   else if (tstype == "Euler") {
     system->SetTimestepperType(ChTimestepper::Type::EULER_IMPLICIT_LINEARIZED);
