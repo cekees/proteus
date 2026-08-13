@@ -14,24 +14,52 @@ mamba install proteus -c conda-forge
 
 ## conda / mamba for proteus development
 
-For a development installation, you want to install Proteus's dependencies and compile Proteus from source:
+For a development installation, you want to install Proteus's dependencies and compile Proteus from source. Two dependency files are provided, differing only in which MPI implementation they use -- see "Choosing between OpenMPI and MPICH" below. If in doubt, use the OpenMPI one:
 
 ```bash
-mamba env create -f environment-dev.yml #environment-dev-up.yml to try unpinned dependencies
-mamba activate proteus-dev
+mamba env create -f environment-openmpi-dev.yml # or environment-mpich-dev.yml; environment-dev-up.yml to try unpinned dependencies
+mamba activate proteus-dev-openmpi              # or proteus-dev-mpich
 pip install -v -e .
 ```
 
 ## conda / mamba with updated/unpinned dependencies
 
-`environment-dev.yml` pins conda-forge builds of everything proteus links
-against (PETSc, MPI, HDF5, SuperLU/SuperLU_DIST, METIS/ParMETIS, Chrono,
-SCOREC, Triangle/TetGen, xtensor, ...), so this is the path to use if you
-want the optional Chrono (multibody/FSI) and SCOREC (mesh adaptation)
-support built in. It intentionally excludes the `defaults` channel
-(`nodefaults`) -- conda-forge alone resolves everything here, and
-`defaults` pulls in `repo.anaconda.com`, a commercial channel with its own
-Terms of Service and registration-gated rate limits.
+`environment-openmpi-dev.yml`/`environment-mpich-dev.yml` pin conda-forge
+builds of everything proteus links against (PETSc, MPI, HDF5,
+SuperLU/SuperLU_DIST, METIS/ParMETIS, Chrono, SCOREC, Triangle/TetGen,
+xtensor, ...), so this is the path to use if you want the optional Chrono
+(multibody/FSI) and SCOREC (mesh adaptation) support built in. Both
+intentionally exclude the `defaults` channel (`nodefaults`) -- conda-forge
+alone resolves everything here, and `defaults` pulls in `repo.anaconda.com`,
+a commercial channel with its own Terms of Service and registration-gated
+rate limits.
+
+### Choosing between OpenMPI and MPICH
+
+The two files are identical except for the MPI provider (and the build-string
+wildcard on every MPI-linked package: `hdf5`, `h5py`, `scorec`, `zoltan`).
+
+- **`environment-openmpi-dev.yml` (default/recommended).** Pins OpenMPI
+  5.0.10. Known caveat: OpenMPI is not fork()-safe, so running the *entire*
+  test suite in one process via `pytest --forked` can produce spurious
+  SIGSEGV crashes in unrelated test files (an artifact of forking after MPI
+  is initialized, not a proteus bug) -- run test files individually, or with
+  `pytest-xdist` using separate worker processes, if you hit this.
+- **`environment-mpich-dev.yml`.** Pins MPICH 5.0.1. On Linux aarch64 this is
+  currently the *only* mpich version that works at all: conda-forge's scorec
+  build there requires `mpich>=5.0,<6.0a0`, and of the two aarch64 mpich
+  releases `>=5.0` (`5.0.0` and `5.0.1`), `5.0.0` fails outright at compile
+  time against conda-forge's aarch64 `petsc` package (`petscsys.h` hard-errors
+  on the mpi.h version mismatch). MPICH 5.0.1 itself has an open, observed bug
+  on aarch64 where real PETSc/hypre solves (BoomerAMG preconditioning) can
+  abort with `MPI_Allreduce() function was called before MPI_INIT was
+  invoked` (exit code 14) -- see the comment header in
+  `environment-mpich-dev.yml` for the reproduction and verification details.
+  If you hit this, switch to `environment-openmpi-dev.yml`.
+
+On x86_64, both files should resolve equally well and neither known issue
+above has been observed; OpenMPI remains the recommended default there too
+for consistency.
 
 ## pip
 
@@ -150,21 +178,38 @@ make PETSC_DIR="$(pwd)" PETSC_ARCH=arch-darwin-download-proteus all
 make PETSC_DIR="$(pwd)" PETSC_ARCH=arch-darwin-download-proteus install
 ```
 
-See that branch's `README_PROTEUS.md` for prerequisites, post-install steps,
-activating the resulting environment, running proteus's test suite, and —
-if you have your own proteus checkout you're actively developing rather
-than wanting `--download-proteus`'s own fresh clone — the development-build
-workflow (build PETSc and proteus's dependencies without `--download-proteus`,
-then `pip install` your own checkout against that prefix directly).
+On Linux (x86_64 or aarch64/ARM64), use `configure_linux_unified.sh`
+instead, which downloads and builds its own MPI/OpenBLAS/CMake straight
+into the same prefix rather than expecting an externally-supplied conda
+env to provide them — the toolchain env only needs to supply Python
+(+numpy) and a C/C++/Fortran compiler:
 
-Only macOS/arm64 has been validated end-to-end so far; other platforms are
-expected to need at most flag adjustments (MPI/BLAS locations) rather than
-changes to the package definitions themselves, but that hasn't been
-confirmed yet. If you're building on a platform other than macOS/arm64 and
-hit trouble, that branch's `README_PROTEUS.md` and the comments in
-`config/BuildSystem/config/packages/proteus.py`/`scorec.py` are the places
-to start (in particular, a couple of post-install fixups in there are
-known to be macOS/dyld-specific workarounds, not applicable elsewhere).
+```bash
+git clone git@gitlab.com:cekees/petsc.git
+cd petsc
+git checkout download-proteus-support
+PREFIX=/path/to/install ./setup_env_miniforge.sh   # minimal, throwaway Python env
+CONDA_PREFIX=/path/to/install PREFIX=/path/to/install PETSC_PREFIX=/path/to/install \
+  ./configure_linux_unified.sh
+make PETSC_DIR="$(pwd)" PETSC_ARCH=arch-linux-download-proteus all
+make PETSC_DIR="$(pwd)" PETSC_ARCH=arch-linux-download-proteus install
+```
+
+(A plain Python venv works too in place of `setup_env_miniforge.sh` — see
+`setup_env_venv.sh` — as does an already-existing conda/mamba env, in
+which case skip straight to `configure_linux_unified.sh` with
+`CONDA_PREFIX`/`PREFIX`/`PETSC_PREFIX` all pointing at it.)
+
+Validated end-to-end on macOS/arm64, Linux/x86_64, and Linux/ARM64
+(aarch64) — both the plain-venv and Miniforge-Python variants of the Linux
+path pass proteus's full test suite cleanly, modulo a small set of already
+independently-tracked numeric-tolerance and `gmsh`-packaging issues (not
+install-pathway problems). If you're building on a platform other than
+these three and hit trouble, that branch's `README_PROTEUS.md` and the
+comments in `config/BuildSystem/config/packages/proteus.py`/`scorec.py`
+are the places to start (in particular, a couple of post-install fixups in
+there are known to be macOS/dyld-specific workarounds, not applicable
+elsewhere).
 
 The package definitions themselves are plain PETSc packages and don't
 depend on that specific fork -- if your site already has its own PETSc
