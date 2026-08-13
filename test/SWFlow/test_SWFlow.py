@@ -81,17 +81,10 @@ class TestSWFlow(object):
                   "-l1 -v transcritical_bump.py -C 'refinement=3 final_time=0.1 dt_output=0.1'")
         self.compare_vs_saved_files("transcritical_bump")
 
-    # NOTE: obstacle_flow's mesh comes from the standalone triangle CLI
-    # (domain.MeshOptions.triangleOptions); a different triangle
-    # binary/version can legitimately produce a different Steiner-point
-    # count for the same quality constraints (149 vs 174 points seen here),
-    # which is an array-length mismatch no tolerance can paper over. Needs
-    # a size-independent comparison, not a tighter/looser
-    # assert_almost_equal.
     def test_obstacle_flow(self):
         os.system("parun --SWEs --path " + self.path + " "
                   "-l1 -v obstacle_flow.py -C 'he=4.0 final_time=0.1 dt_output=0.1'")
-        self.compare_vs_saved_files("obstacle_flow", write=False)
+        self.compare_vs_saved_files("obstacle_flow")
 
     def test_santos_step(self):
         os.system("parun --SWEs --path " + self.path + " "
