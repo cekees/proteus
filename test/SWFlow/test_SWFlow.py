@@ -91,7 +91,7 @@ class TestSWFlow(object):
     def test_obstacle_flow(self):
         os.system("parun --SWEs --path " + self.path + " "
                   "-l1 -v obstacle_flow.py -C 'he=4.0 final_time=0.1 dt_output=0.1'")
-        self.compare_vs_saved_files("obstacle_flow")
+        self.compare_vs_saved_files("obstacle_flow", write=False)
 
     def test_santos_step(self):
         os.system("parun --SWEs --path " + self.path + " "
