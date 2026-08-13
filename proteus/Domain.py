@@ -194,6 +194,8 @@ class D_base(object):
         he_max: Optional[double]
             Size of the maximum characteristic element size. Should be set
             for meshes using a uniform refinement.
+        lc: Optional[double]
+            target mesh size    
         """
         self.geofile = fileprefix
         self.polyfile = fileprefix
@@ -207,6 +209,7 @@ class D_base(object):
         # Vertices
         geo.write('\n// Points\n')
         z = 0
+        
         for i, v in enumerate(self.vertices):
             if self.nd == 3:
                 z = v[2]

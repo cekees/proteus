@@ -1,6 +1,6 @@
 from proteus import FemTools as ft
 from proteus import MeshTools as mt
-
+import numpy as np
 
 class SWFlowProblem:
     """ SWFlowProblem """
@@ -52,8 +52,9 @@ class SWFlowProblem:
                 nny) == int, "Provide (int) nnx and (int) nny"
         if domain is None:
             assert AdH_file is not None, "If domain is None then provide an AdH File"
-        else:
-            assert callable(bathymetry), "Bathymetry must be a function"
+        elif bathymetry is not None:
+            assert callable(bathymetry) or type(bathymetry)==np.ndarray, "bathymetry should be a callable or numpy array" #dict
+            
         assert triangleFlag in [0, 1, 2], "triangleFlag must be 1, 2 or 3"
         assert type(
             initialConditions) == dict, "Provide dict of initial conditions"
