@@ -1097,8 +1097,8 @@ public:
       // Define kinetic energy, kin = 1/2 q^2 / h
       max_of_h_and_hEps = xt::where(h_dof_old > hEps, h_dof_old, hEps);
       kin = 0.5 * (hu_dof_old * hu_dof_old + hv_dof_old * hv_dof_old);
-      kin *= 2.0 * h_dof_old /
-             (h_dof_old * h_dof_old + max_of_h_and_hEps * max_of_h_and_hEps);
+      kin = kin * (2.0 * h_dof_old /
+                   (h_dof_old * h_dof_old + max_of_h_and_hEps * max_of_h_and_hEps));
 
       /* First loop to define: delta_Sqd_h, delta_Sqd_kin */
       for (int i = 0; i < numDOFsPerEqn; i++) {
