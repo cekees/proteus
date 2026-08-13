@@ -657,6 +657,7 @@ class Mesh(object):
         self.subdomainMesh.cmesh=cmeshTools.CMesh()
         self.nLayersOfOverlap = nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         logEvent(memory("partitionMesh 2","MeshTools"),level=4)
+        
         if parallelPartitioningType == MeshParallelPartitioningTypes.node:
             logEvent("Starting nodal partitioning")#mwf for now always gives 1 layer of overlap
             logEvent("filebase {0:s}".format(filebase))
@@ -691,7 +692,7 @@ class Mesh(object):
                                                                                                                 base,
                                                                                                                 nLayersOfOverlap,
                                                                                                                 self.cmesh,
-                                                                                                                self.subdomainMesh.cmesh)
+                                                                                                                self.subdomainMesh.cmesh)                    
             else:
                 assert 0,"can't partition non-simplex mesh"
 
@@ -732,6 +733,7 @@ class Mesh(object):
         logEvent("Number of Subdomain Edges = "+str(self.subdomainMesh.nEdges_global))
         comm.barrier()
         logEvent("Finished partitioning")
+        
         par_nodeDiametersArray = ParVec_petsc4py(self.subdomainMesh.nodeDiametersArray,
                                                  bs=1,
                                                  n=self.subdomainMesh.nNodes_owned,
@@ -4013,9 +4015,12 @@ class TriangularMesh(Mesh):
         cmeshTools.allocateGeometricInfo_triangle(self.cmesh)
         cmeshTools.computeGeometricInfo_triangle(self.cmesh)
         self.buildFromC(self.cmesh)
+        #save the volume value here. check if its possible to make mesh.globalMesh.volume nonzero
+        np.save("volume.npy",self.volume)
     def writeTriangleFiles(self,filebase,base):
         from .import cmeshTools
         cmeshTools.writeTriangleFiles(self.cmesh,filebase,base)
+        
     def generateFrom2DMFile(self,filebase,base=1):
         from .import cmeshTools
         self.cmesh = cmeshTools.CMesh()
@@ -4902,6 +4907,7 @@ class MultilevelTriangularMesh(MultilevelMesh):
                                        parallelPartitioningType=MeshParallelPartitioningTypes.node):
         from .import cmeshTools
         #blow away or just trust garbage collection
+        
         self.nLayersOfOverlap = nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         self.meshList = []
         self.elementParents = None
@@ -4958,8 +4964,7 @@ class MultilevelTriangularMesh(MultilevelMesh):
         self.buildFromC(self.cmultilevelMesh)
         logEvent("partitionMesh")
         self.meshList[0].partitionMeshFromFiles(filebase,base,nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
-
-
+        
     def refine(self):
         self.meshList.append(TriangularMesh())
         childrenDict = self.meshList[-1].refine(self.meshList[-2])
@@ -5119,6 +5124,7 @@ class InterpolatedBathymetryMesh(MultilevelTriangularMesh):
     """A triangular mesh that interpolates bathymetry from a point cloud"""
     def __init__(self,
                  domain,
+                 gmshOption,
                  triangleOptions,
                  atol=1.0e-4,
                  rtol=1.0e-4,
@@ -5144,19 +5150,28 @@ class InterpolatedBathymetryMesh(MultilevelTriangularMesh):
         self.bathyType=bathyType
         self.bathyAssignmentScheme=bathyAssignmentScheme
         self.errorNormType = errorNormType
+        self.gmshOption = gmshOption
+        if gmshOption==True:
+            logEvent("InterpolatedBathymetryMesh: Calling gmsh to generate 2D coarse mesh for"+self.domain.name)
+            runGmsh(domain.polyfile)
+            logEvent("InterpolatedBathymetryMesh: Converting to Proteus Mesh")
+            self.coarseMesh= TriangularMesh()            
+        else:
+            logEvent("InterpolatedBathymetryMesh: Calling Triangle to generate 2D coarse mesh for "+self.domain.name)
+            runTriangle(domain.polyfile,
+                    self.triangleOptions)       
 
-        logEvent("InterpolatedBathymetryMesh: Calling Triangle to generate 2D coarse mesh for "+self.domain.name)
-        runTriangle(domain.polyfile,
-                    self.triangleOptions)
+            logEvent("InterpolatedBathymetryMesh: Converting to Proteus Mesh")
+            self.coarseMesh = TriangularMesh()
 
-        logEvent("InterpolatedBathymetryMesh: Converting to Proteus Mesh")
-        self.coarseMesh = TriangularMesh()
         self.coarseMesh.generateFromTriangleFiles(filebase=domain.polyfile,base=1)
+        
         MultilevelTriangularMesh.__init__(self,0,0,0,skipInit=True,nLayersOfOverlap=0,
                                           parallelPartitioningType=MeshParallelPartitioningTypes.node)
         self.generateFromExistingCoarseMesh(self.coarseMesh,1,
                                             parallelPartitioningType=MeshParallelPartitioningTypes.node)
         self.computeGeometricInfo()
+        
         #allocate some arrays based on the bathymetry data
         logEvent("InterpolatedBathymetryMesh:Allocating data structures for bathymetry interpolation algorithm")
         if bathyType == "points":
@@ -5176,15 +5191,21 @@ class InterpolatedBathymetryMesh(MultilevelTriangularMesh):
             z = self.domain.bathy[:,2].reshape(self.domain.bathyGridDim).transpose()
             self.bathyInterpolant = scipy_interpolate.RectBivariateSpline(x,y,z,kx=1,ky=1)
             #self.bathyInterpolant = scipy_interpolate.interp2d(x,y,z)
-        #
+        
         logEvent("InterpolatedBathymetryMesh: Locating points on initial mesh")
         self.locatePoints_initial(self.meshList[-1])
+        
         logEvent("InterpolatedBathymetryMesh:setting mesh bathymetry from data")
         self.setMeshBathymetry(self.meshList[-1])
         logEvent("InterpolatedBathymetryMesh: tagging elements for refinement")
         self.tagElements(self.meshList[-1])
-        levels = 0
-        error = 1.0;
+        
+        if gmshOption==True:
+            levels=0
+            error= 0.5 #self.tagElements(self.meshList[-1])
+        else:
+            levels = 0
+            error = 1.0  #self.tagElements
         while error >= 1.0 and self.meshList[-1].nNodes_global < self.maxNodes and levels < self.maxLevels:
             levels += 1
             logEvent("InterpolatedBathymetryMesh: Locally refining, level = %i" % (levels,))
@@ -5198,7 +5219,7 @@ class InterpolatedBathymetryMesh(MultilevelTriangularMesh):
             logEvent("InterpolatedBathymetryMesh: tagging elements for refinement")
             error = self.tagElements(self.meshList[-1])
             logEvent("InterpolatedBathymetryMesh: error = %f atol = %f rtol = %f number of elements tagged = %i" % (error,self.atol,self.rtol,self.meshList[-1].elementTags.sum()))
-
+        
     def setMeshBathymetry(self,mesh):
         if self.bathyAssignmentScheme == "interpolation":
             self.setMeshBathymetry_interpolate(mesh)
@@ -6395,6 +6416,41 @@ def getMeshIntersections(mesh, toPolyhedron, endpoints):
             intersections.update(((tuple(elementIntersections[0]), tuple(elementIntersections[1])),),)
     return intersections
 
+def runGmsh(polyfile,
+               baseFlags="Yp",  #change baseflags for gmsh file
+               name = ""):
+    """
+    Generate msh files from a polyfile.
+    Arguments
+    ---------
+    polyfile : str
+        Filename with appropriate data for gmsh.
+    baseFlags : str
+        Standard Tetgen options for generation
+    name : str
+    """
+    #rom subprocess import check_call
+    #gmshcmd = "gmsh -%s -e %s.poly" % (baseFlags, polyfile)  #change this to accept gmsh command. 
+    # 
+    #check_call(gmshcmd,shell=True)
+    
+    logEvent("Done running gmsh")
+    elefile = "%s.ele" % polyfile
+    nodefile = "%s.node" % polyfile
+    edgefile = "%s.edge" % polyfile
+    assert os.path.exists(elefile), "no 1.ele"
+    tmp = "%s.ele" % polyfile
+    os.rename(elefile,tmp)
+    assert os.path.exists(tmp), "no .ele"
+    assert os.path.exists(nodefile), "no 1.node"
+    tmp = "%s.node" % polyfile
+    os.rename(nodefile,tmp)
+    assert os.path.exists(tmp), "no .node"
+    if os.path.exists(edgefile):
+        tmp = "%s.edge" % polyfile
+        os.rename(edgefile,tmp)
+        assert os.path.exists(tmp), "no 1.edge"
+        
 def runTriangle(polyfile,
                baseFlags="Yp",
                name = ""):
@@ -6498,6 +6554,7 @@ def genMeshWithTriangle(polyfile,
    mesh = TriangularMesh()
    mesh.generateFromTriangleFiles(polyfile,
                                   base=nbase)
+   
    return mesh
 
 def genMeshWithTetgen(polyfile,

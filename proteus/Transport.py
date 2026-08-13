@@ -27,7 +27,7 @@ from . import csparsity
 from .Profiling import logEvent
 from petsc4py import PETSc as p4pyPETSc
 from . import superluWrappers
-import numpy
+import numpy as np
 
 class StorageSet(set):
     def __init__(self,initializer=[],shape=(0,),storageType='d'):
@@ -237,6 +237,7 @@ class OneLevelTransport(NonlinearEquation):
         self.bdyNullSpace = bdyNullSpace
         self.coefficients = coefficients
         self.coefficients.initializeMesh(self.mesh)
+        
         self.nc = self.coefficients.nc
         self.stabilization = stabilization
         self.shockCapturing = shockCapturing
@@ -3620,7 +3621,6 @@ class OneLevelTransport(NonlinearEquation):
             for t,g in sbcObject.stressFluxBoundaryConditionsDict.items():
                 self.ebqe[('stressFlux',ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
 
-
     def calculateQuadrature(self):
         logEvent(memory("ElementQuadrature","OneLevelTransport"),level=4)
         logEvent("Element Quadrature",level=3)
@@ -3647,6 +3647,7 @@ class OneLevelTransport(NonlinearEquation):
         #
         self.u[0].femSpace.elementMaps.getValues(self.elementQuadraturePoints,
                                                   self.q['x'])
+        
         if self.movingDomain:
             if self.tLast_mesh is not None:
                 self.q['xt'][:]=self.q['x']
@@ -6252,7 +6253,9 @@ class MultilevelTransport(object):
             self.trialSpaceListDict[cj]=[]
             self.bcListDict[cj]=[]
         for mesh in mlMesh.meshList:
-            sdmesh = mesh.subdomainMesh
+            
+            sdmesh = mesh.subdomainMesh # Linoj: mesh.subdomainMesh.nodeArray[:,2]=all zeros
+            
             memory()
             logEvent("Generating Trial Space",level=2)
             trialSpaceDict = dict([ (cj,TrialSpaceType(sdmesh,nd)) for (cj,TrialSpaceType) in TrialSpaceTypeDict.items()])
@@ -6282,6 +6285,7 @@ class MultilevelTransport(object):
             logEvent("Setting Boundary Conditions-1")
             for cj in list(trialSpaceDict.keys()):
                 if cj not in dirichletConditionsSetterDict:
+
                     dirichletConditionsSetterDict[cj] = None
                 if cj not in fluxBoundaryConditionsDict:
                     fluxBoundaryConditionsDict[cj] = None
@@ -6388,8 +6392,13 @@ class MultilevelTransport(object):
             #
             logEvent(memory("boundary conditions","MultilevelTransport"),level=4)
             logEvent("Initializing OneLevelTransport",level=2)
+            
             uDict[0].femSpace.mesh.nLayersOfOverlap = mesh.nLayersOfOverlap
             uDict[0].femSpace.mesh.parallelPartitioningType = mesh.parallelPartitioningType
+            uDict[0].femSpace.mesh.nodeNumbering_subdomain2global = mesh.nodeNumbering_subdomain2global     ###NEW LINE
+            #uDict[0].femSpace.mesh.globalMesh.volume = mesh.volume
+            #uDict[0].femSpace.mesh.nodeArray = mesh.nodeArray[mesh.nodeNumbering_subdomain2global,:]        ###NEW LINE
+            
             transport=self.OneLevelTransportType(uDict,
                                             phiDict,
                                             testSpaceDict,
@@ -6414,6 +6423,7 @@ class MultilevelTransport(object):
                                             self.name + str(len(self.levelModelList)),
                                             sd=useSparseDiffusion,
                                             movingDomain=movingDomain)
+            
             self.offsetListList.append(transport.offset)
             self.strideListList.append(transport.stride)
             memory()
@@ -6431,13 +6441,16 @@ class MultilevelTransport(object):
             par_bs = transport.coefficients.nc
             logEvent("Allocating parallel storage",level=2)
             comm = Comm.get()
-            self.comm=comm
+            self.comm=comm               
+            
             if (comm.size() > 1):
                 for ci in range(transport.nc):
                     assert trialSpaceDict[ci].dofMap.dof_offsets_subdomain_owned is not None, "trial space %s needs subdomain -> global mappings " % trialSpaceDict
+                
                 #initially assume all the spaces can share the same l2g information ...
                 par_n = trialSpaceDict[0].dofMap.dof_offsets_subdomain_owned[comm.rank()+1] - trialSpaceDict[0].dofMap.dof_offsets_subdomain_owned[comm.rank()]
                 par_N = trialSpaceDict[0].dofMap.nDOF_all_processes
+                
                 mixed = False
                 for ts in list(trialSpaceDict.values()):
                     if ts.dofMap.nDOF_all_processes != par_N:
@@ -6451,6 +6464,7 @@ class MultilevelTransport(object):
                     #
                     #first create list of global dof dim for each component
                     #this is the proteus component global numbering
+                    
                     par_N_list = [ts.dofMap.nDOF_all_processes for ts in list(trialSpaceDict.values())]
                     #sum to get total global dimension
                     par_N = sum(par_N_list)
@@ -6503,6 +6517,7 @@ class MultilevelTransport(object):
                     subdomain2global = numpy.hstack([offset+ts.dofMap.subdomain2global
                                                      for offset,ts in
                                                      zip(global_component_offset, list(trialSpaceDict.values()))])
+                    
                     #
                     #store ghost proc w.r.t. proteus  global number
                     #store petsc global w.r.t. proteus global number
@@ -6658,6 +6673,7 @@ class MultilevelTransport(object):
                     logEvent("Allocating un-ghosted parallel vectors on rank %i" % comm.rank(),level=2)
                     par_du = ParVec_petsc4py(du,par_bs,par_n,par_N)
                     logEvent("Allocating matrix on rank %i" % comm.rank(),level=2)
+                    
                     try:
                         transport.par_info.par_bs = par_bs
                         transport.par_info.par_n = par_n
@@ -6669,6 +6685,7 @@ class MultilevelTransport(object):
                     except AttributeError:
                         logEvent("Transport class has no ParInfo_petsc4py class to store parallel data.",level=4)
                     par_jacobian = ParMat_petsc4py(jacobian,par_bs,par_n,par_N,par_nghost,subdomain2global,pde=transport)
+
             elif  (options.multilevelLinearSolver == KSP_petsc4py or
                    options.levelLinearSolver == KSP_petsc4py):
                 assert trialSpaceDict[0].dofMap.subdomain2global is not None, "need trivial subdomain2global in dofMap for running PETSc"
@@ -6682,6 +6699,7 @@ class MultilevelTransport(object):
                 subdomain2global = trialSpaceDict[0].dofMap.subdomain2global
                 max_dof_neighbors= trialSpaceDict[0].dofMap.max_dof_neighbors
                 logEvent("Allocating ghosted parallel vectors on rank %i" % comm.rank(),level=2)
+                
                 if mixed:
                     par_N = par_n = sum([ts.dofMap.nDOF_all_processes for ts in list(trialSpaceDict.values())])
                     transport.owned_local = numpy.arange(par_n)
@@ -6724,19 +6742,23 @@ class MultilevelTransport(object):
                     except AttributeError:
                         logEvent("Transport class has no ParInfo_petsc4py class to store parallel data.",level=4)
             else:
-                transport.owned_local = numpy.arange(transport.dim)
+                transport.owned_local = numpy.arange(transport.dim)                
                 par_u = None
                 par_r = None
                 par_du = None
                 par_jacobian = None
+            
             self.par_uList.append(par_u)
             self.par_duList.append(par_du)
             self.par_rList.append(par_r)
             self.par_jacobianList.append(par_jacobian)
             logEvent(memory("global Jacobian and vectors","MultilevelTransport"),level=4)
+            ##transport.mesh.nodeArray[:,2] is partitioned bathymetry
+            ## transport.coefficients.bathymetry is global bathymetry
         logEvent("Building Mesh Transfers",level=2)
+        
         MultilevelProjectionOperatorType = MultilevelProjectionOperators
-        self. meshTransfers = MultilevelProjectionOperatorType(
+        self.meshTransfers = MultilevelProjectionOperatorType(
             mlMesh,
             self.trialSpaceDictList,
             self.offsetListList,
@@ -6745,6 +6767,7 @@ class MultilevelTransport(object):
         logEvent(memory("mesh transfers","MultilevelTransport"),level=4)
         #mwf hack keep reference to mlMesh in Transport ctor for now
         self.mlMeshSave = mlMesh
+        
     def setInitialConditions(self,getInitialConditionsDict,T=0.0):
         logEvent("Setting initial conditions on model "+self.name)
         self.t=T
@@ -6765,6 +6788,7 @@ class MultilevelTransport(object):
         for m in self.levelModelList:
             m.calculateAuxiliaryQuantitiesAfterStep()
     def attachModels(self,modelList):
+        
         for l,m in enumerate(self.levelModelList):
             models=[]
             for mOther in modelList:
