@@ -38,8 +38,8 @@ void copyLeftElementBoundaryInfo(int nElementBoundaries_element,
       left_eN_global   = elementBoundaryElementsArray[ebN*2+0];
       left_ebN_element  = elementBoundaryLocalElementBoundariesArray[ebN*2+0];
       for (k=0;k<nElementBoundaryQuadraturePoints_elementBoundary;k++)
-        for (I=0;I<nSpace_global;I++)
-          {
+        {
+          for (I=0;I<3;I++)
             xg[ebN*nElementBoundaryQuadraturePoints_elementBoundary*3+
                k*3+
                I] =
@@ -47,6 +47,7 @@ void copyLeftElementBoundaryInfo(int nElementBoundaries_element,
                 left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
                 k*3+
                 I];
+          for (I=0;I<nSpace_global;I++)
             ng[ebN*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
                k*nSpace_global+
                I] =
@@ -54,7 +55,7 @@ void copyLeftElementBoundaryInfo(int nElementBoundaries_element,
                 left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
                 k*nSpace_global+
                 I];
-          }
+        }
     }
   for (ebNI=0;ebNI<nInteriorElementBoundaries_global;ebNI++)
     {
@@ -64,39 +65,44 @@ void copyLeftElementBoundaryInfo(int nElementBoundaries_element,
       right_eN_global  = elementBoundaryElementsArray[ebN*2+1];
       right_ebN_element = elementBoundaryLocalElementBoundariesArray[ebN*2+1];
       for (k=0;k<nElementBoundaryQuadraturePoints_elementBoundary;k++)
-        for (I=0;I<nSpace_global;I++)
-          {
-            xg[ebN*nElementBoundaryQuadraturePoints_elementBoundary*3+
-               k*3+
-               I] =
-              x[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
-                left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
+        {
+          for (I=0;I<3;I++)
+            {
+              xg[ebN*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                 k*3+
+                 I] =
+                x[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                  left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                  k*3+
+                  I];
+              x[right_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                right_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
                 k*3+
-                I];
-            ng[ebN*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-               k*nSpace_global+
-               I] =
-              n[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-                left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-                k*nSpace_global+
-                I];
-            x[right_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
-              right_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
-              k*3+
-              I]=
-              x[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
-                left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
-                k*3+
-                I];
-            n[right_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-              right_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-              k*nSpace_global+
-              I]=
-              -n[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-                 left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                I]=
+                x[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                  left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                  k*3+
+                  I];
+            }
+          for (I=0;I<nSpace_global;I++)
+            {
+              ng[ebN*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
                  k*nSpace_global+
-                 I];
-          }
+                 I] =
+                n[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                  left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                  k*nSpace_global+
+                  I];
+              n[right_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                right_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                k*nSpace_global+
+                I]=
+                -n[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                   left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                   k*nSpace_global+
+                   I];
+            }
+        }
     }
 }
 
@@ -138,7 +144,7 @@ void copyGlobalElementBoundaryInfo(int nElementBoundaries_element,
           else
             sign=1.0;
 
-        for (I=0;I<nSpace_global;I++)
+        for (I=0;I<3;I++)
           {
             x[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
               left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
@@ -146,6 +152,14 @@ void copyGlobalElementBoundaryInfo(int nElementBoundaries_element,
               I] = xg[ebN*nElementBoundaryQuadraturePoints_elementBoundary*3+
                       k*3+
                       I];
+            ebqe_x[ebNE*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                      k*3+
+                      I] = xg[ebN*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                      k*3+
+                      I];
+          }
+        for (I=0;I<nSpace_global;I++)
+          {
             n[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
               left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
               k*nSpace_global+
@@ -153,11 +167,6 @@ void copyGlobalElementBoundaryInfo(int nElementBoundaries_element,
               ng[ebN*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
                  k*nSpace_global+
                  I];
-            ebqe_x[ebNE*nElementBoundaryQuadraturePoints_elementBoundary*3+
-                      k*3+
-                      I] = xg[ebN*nElementBoundaryQuadraturePoints_elementBoundary*3+
-                      k*3+
-                      I];
             ebqe_n[ebNE*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
                    k*nSpace_global+
                    I]=
@@ -175,33 +184,38 @@ void copyGlobalElementBoundaryInfo(int nElementBoundaries_element,
       right_eN_global  = elementBoundaryElementsArray[ebN*2+1];
       right_ebN_element = elementBoundaryLocalElementBoundariesArray[ebN*2+1];
       for (k=0;k<nElementBoundaryQuadraturePoints_elementBoundary;k++)
-        for (I=0;I<nSpace_global;I++)
-          {
-            x[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
-              left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
-              k*3+
-              I] = xg[ebN*nElementBoundaryQuadraturePoints_elementBoundary*3+
-                      k*3+
-                      I];
-            n[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-              left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-              k*nSpace_global+
-              I] = ng[ebN*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-                      k*nSpace_global+
-                      I];
-            x[right_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
-              right_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
-              k*3+
-              I] = xg[ebN*nElementBoundaryQuadraturePoints_elementBoundary*3+
-                      k*3+
-                      I];
-            n[right_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-              right_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-              k*nSpace_global+
-              I] = -ng[ebN*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
-                       k*nSpace_global+
-                       I];
-          }
+        {
+          for (I=0;I<3;I++)
+            {
+              x[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                k*3+
+                I] = xg[ebN*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                        k*3+
+                        I];
+              x[right_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                right_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                k*3+
+                I] = xg[ebN*nElementBoundaryQuadraturePoints_elementBoundary*3+
+                        k*3+
+                        I];
+            }
+          for (I=0;I<nSpace_global;I++)
+            {
+              n[left_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                left_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                k*nSpace_global+
+                I] = ng[ebN*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                        k*nSpace_global+
+                        I];
+              n[right_eN_global*nElementBoundaries_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                right_ebN_element*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                k*nSpace_global+
+                I] = -ng[ebN*nElementBoundaryQuadraturePoints_elementBoundary*nSpace_global+
+                         k*nSpace_global+
+                         I];
+            }
+        }
     }
 }
 
@@ -594,7 +608,7 @@ void parametricMaps_getValues(int nElements_global,
         {
           j_global = l2g[eN*nDOF_element+
                          j];
-          for(I=0;I<nSpace_global;I++)
+          for(I=0;I<3;I++)
             xArray[eN*nQuadraturePoints_element*3+
                    k*3+
                    I]
@@ -626,7 +640,7 @@ void parametricMaps_getValuesTrace(int nElements_global,
           {
             j_global = l2g[eN*nDOF_element+
                            j];
-            for(I=0;I<nSpace_global;I++)
+            for(I=0;I<3;I++)
               xArray[eN*nElementBoundaries_element*nQuadraturePoints_element*3+
                      ebN*nQuadraturePoints_element*3+
                      k*3+
@@ -665,7 +679,7 @@ void parametricMaps_getValuesGlobalExteriorTrace(int nQuadraturePoints_elementBo
           {
             j_global = l2g[eN*nDOF_element+
                            j];
-            for(I=0;I<nSpace_global;I++)
+            for(I=0;I<3;I++)
               xArray[ebNE*nQuadraturePoints_elementBoundary*3+
                      k*3+
                      I]

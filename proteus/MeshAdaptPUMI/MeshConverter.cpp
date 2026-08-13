@@ -1400,7 +1400,7 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus2(Mesh& mesh,int* isModelVert,int* 
     globalToRegion.insert(std::pair<int,apf::MeshEntity*> (counter,ent ));
     counter++;
   }
-    
+
   if(dim == 2)
     apf::derive2DMdlFromManifold(m,isModelVert_bool,nBFaces,bEdges_1D,outMap,globalToRegion);
   else

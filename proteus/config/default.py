@@ -3,6 +3,7 @@ from os.path import join as pjoin
 import sys
 import platform
 import site
+import glob
 PROTEUS_PRELOAD_LIBS=[]
 prefix = os.getenv('PROTEUS_PREFIX')
 if not prefix:
@@ -112,6 +113,52 @@ def get_petsc_flags():
     # the environment is genuinely unusual.
     return candidates[0]
 
+def get_petsc_blaslapack(petsc_lib_dir):
+    """ Parse PETSc's own petscvariables for BLASLAPACK_LIB, so proteus's
+    C extensions link against the exact same BLAS/LAPACK library PETSc
+    itself was configured with, instead of a fixed guess.
+
+    A fixed guess (historically 'openblas') doesn't match every PETSc
+    configuration -- e.g. --download-fblaslapack (the pip install recipe)
+    provides libfblas/libflapack, not libopenblas, so linking proteus's
+    own extensions against '-lopenblas' fails outright when that's what
+    PETSc was actually built with. Beyond just fixing the link, this also
+    avoids loading two different BLAS/LAPACK implementations into the same
+    process, which is worth avoiding even on configurations where a fixed
+    guess happens to also be present.
+
+    Returns (blas_lib, lapack_lib, lib_dir), or None if petscvariables
+    can't be found/parsed, so callers can fall back to a fixed default.
+    """
+    petscvariables = pjoin(petsc_lib_dir, 'petsc', 'conf', 'petscvariables')
+    if not os.path.isfile(petscvariables):
+        return None
+    petsc_dir = os.path.dirname(petsc_lib_dir)
+    blaslapack_line = None
+    with open(petscvariables) as f:
+        for line in f:
+            if line.startswith('BLASLAPACK_LIB'):
+                blaslapack_line = line.split('=', 1)[1]
+                break
+    if not blaslapack_line:
+        return None
+    blaslapack_line = blaslapack_line.replace('${PETSC_DIR}', petsc_dir)
+    tokens = blaslapack_line.split()
+    lib_dirs = [tok[2:] for tok in tokens if tok.startswith('-L')]
+    lib_names = [tok[2:] for tok in tokens if tok.startswith('-l')]
+    if not lib_names:
+        return None
+    lib_dir = lib_dirs[0] if lib_dirs else petsc_lib_dir
+    if len(lib_names) == 1:
+        # A single combined library (OpenBLAS, MKL, ...) provides both.
+        return lib_names[0], lib_names[0], lib_dir
+    # PETSc lists dependent-first (LAPACK before BLAS), e.g.
+    # "-lflapack -lfblas".
+    return lib_names[-1], lib_names[0], lib_dir
+
+PROTEUS_PETSC_INCLUDE_DIR, PROTEUS_PETSC_LIB_DIR = get_petsc_flags()
+_petsc_blaslapack = get_petsc_blaslapack(PROTEUS_PETSC_LIB_DIR) if sys.platform.startswith('linux') else None
+
 PROTEUS_BLAS_INCLUDE_DIR, PROTEUS_BLAS_LIB_DIR = get_flags('blas')
 PROTEUS_EXTRA_LINK_ARGS=[]
 
@@ -121,8 +168,27 @@ if sys.platform == 'darwin':
     PROTEUS_BLAS_INCLUDE_DIR = PROTEUS_INCLUDE_DIR
     PROTEUS_EXTRA_LINK_ARGS=platform_extra_link_args
 elif sys.platform.startswith('linux'):
-    PROTEUS_BLAS_LIB   ='openblas'
-    PROTEUS_BLAS_INCLUDE_DIR, PROTEUS_BLAS_LIB_DIR = get_flags('blas')
+    if _petsc_blaslapack:
+        PROTEUS_BLAS_LIB, _, PROTEUS_BLAS_LIB_DIR = _petsc_blaslapack
+        # A BLAS/LAPACK provided only as a static archive (e.g. PETSc's
+        # --download-fblaslapack, a Fortran translation of reference
+        # BLAS/LAPACK) doesn't carry its own transitive libgfortran
+        # dependency the way a shared library (OpenBLAS, MKL, ...) does --
+        # callers linking against it need to add libgfortran explicitly, or
+        # the resulting extension fails to *import* with "undefined symbol:
+        # _gfortran_concat_string" (or similar), not to build. Detect this
+        # by checking whether only a .a, and no .so, exists for the
+        # discovered library names.
+        for _lib_name in {_petsc_blaslapack[0], _petsc_blaslapack[1]}:
+            _static_only = (
+                os.path.isfile(pjoin(PROTEUS_BLAS_LIB_DIR, 'lib'+_lib_name+'.a'))
+                and not glob.glob(pjoin(PROTEUS_BLAS_LIB_DIR, 'lib'+_lib_name+'.so*'))
+            )
+            if _static_only and '-lgfortran' not in PROTEUS_EXTRA_LINK_ARGS:
+                PROTEUS_EXTRA_LINK_ARGS.append('-lgfortran')
+    else:
+        PROTEUS_BLAS_LIB   ='openblas'
+        PROTEUS_BLAS_INCLUDE_DIR, PROTEUS_BLAS_LIB_DIR = get_flags('blas')
 
 
 PROTEUS_CHRONO_INCLUDE_DIR, PROTEUS_CHRONO_LIB_DIR = get_flags('chrono')
@@ -132,7 +198,9 @@ chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','Chrono','C
 if not os.path.isfile(chrono_cmake_file_path):
     chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','ChronoConfig.cmake')
     if not os.path.isfile(chrono_cmake_file_path):
-        chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','Chrono','chrono-config.cmake') 
+        chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','ChronoConfig.cmake')
+        if not os.path.isfile(chrono_cmake_file_path):
+            chrono_cmake_file_path = os.path.join(PROTEUS_CHRONO_LIB_DIR,'cmake','Chrono','chrono-config.cmake') 
 try:
     with open(chrono_cmake_file_path,'r') as f:
         for l in f:
@@ -164,6 +232,8 @@ else:
 
 if sys.platform == 'darwin':
     PROTEUS_LAPACK_LIB ='m'
+elif _petsc_blaslapack:
+    _, PROTEUS_LAPACK_LIB, PROTEUS_LAPACK_LIB_DIR = _petsc_blaslapack
 else:
     PROTEUS_LAPACK_LIB = 'openblas'
 
@@ -186,7 +256,6 @@ PROTEUS_MPI_INCLUDE_DIRS = [PROTEUS_MPI_INCLUDE_DIR, PROTEUS_MPI_LIB_DIR, os.pat
 PROTEUS_MPI_LIB_DIRS = [PROTEUS_MPI_LIB_DIR]
 PROTEUS_MPI_LIBS =['mpi']
 
-PROTEUS_PETSC_INCLUDE_DIR, PROTEUS_PETSC_LIB_DIR = get_petsc_flags()
 PROTEUS_PETSC_LIB_DIRS = [PROTEUS_PETSC_LIB_DIR]
 PROTEUS_PETSC_LIBS = ['petsc']
 PROTEUS_PETSC_INCLUDE_DIRS = [PROTEUS_PETSC_INCLUDE_DIR,PROTEUS_PETSC_LIB_DIR]#, os.path.join(PROTEUS_PETSC_LIB_DIR,'petsc4py')]

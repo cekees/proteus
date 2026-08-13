@@ -2,6 +2,7 @@
 #define PARTITIONING_H
 #include <iostream>
 #include <valarray>
+#include <iterator>
 #include "mpi.h"
 #include "hdf5.h"
 #include "petsc.h"

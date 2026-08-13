@@ -24,7 +24,8 @@ opts= Context.Options([
     ("gauges", True, "Collect data for validation"),
     ("cfl",0.2,"Desired CFL restriction"),
     ("he",0.5,"Max mesh element diameter"),
-    ("ARTIFICIAL_VISCOSITY",3,"artificial viscosity")
+    ("ARTIFICIAL_VISCOSITY",3,"artificial viscosity"),
+    ("genMesh",False,"generate the mesh on the fly")
     ])
 
 #assert opts.ns_model==1, "use ns_model=1 (rans3pf) for this"
@@ -134,13 +135,14 @@ domain.MeshOptions.setParallelPartitioningType('node')
 domain.boundaryTags = boundaryTags
 #domain.polyfile="meshMarin"
 domain.polyfile=os.path.dirname(os.path.abspath(__file__))+"/"+"meshMarin"
-#domain.writePoly("meshMarin")
 #domain.writePLY("mesh")
 #domain.writeAsymptote("mesh")
 domain.MeshOptions.triangleOptions="VApq1.25q12feena%e" % ((he**3)/6.0,)
 domain.MeshOptions.he = opts.he
 domain.MeshOptions.triangleFlag = 0
-domain.MeshOptions.genMesh=False
+domain.MeshOptions.genMesh=opts.genMesh
+if opts.genMesh:
+    domain.writePoly("meshMarin")
 
 # ****************************** #
 # ***** INITIAL CONDITIONS ***** #
@@ -336,8 +338,8 @@ m['clsvof'].p.coefficients.disc_ICs = disc_ICs
 m['flow'].p.coefficients.useVF = 1.0
 m['flow'].p.coefficients.eb_bc_penalty_constant = 1e6
 m['flow'].p.coefficients.ARTIFICIAL_VISCOSITY = opts.ARTIFICIAL_VISCOSITY
-m['clsvof'].auxiliaryVariables = [point_height_gauges, height_gauges]
-m['pressure'].auxiliaryVariables = [pressure_gauges]
+if opts.gauges:
+    m['pressure'].auxiliaryVariables = [pressure_gauges]
 
 myTpFlowProblem.SystemNumerics.cfl=opts.cfl
 myTpFlowProblem.SystemNumerics.useSuperlu=True

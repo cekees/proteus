@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH -N NUM_NODES
-#SBATCH --ntasks-per-node 128
-#SBATCH -t 00:30:00
-#SBATCH -q QUEUE_NAME 
-#SBATCH -A ARONC51302008
+#SBATCH -n TASKS_PER_NODE
+#SBATCH -t 12:00:00
+#SBATCH -p PARTITION_NAME 
+#SBATCH -A hpc_ceds2d_2hp
 #SBATCH -J "poisson test"
 #SBATCH -o poisson-%j.out	
 #SBATCH -e poisson-%j.err
@@ -20,27 +20,24 @@ echo "Number of Nodes Allocated      = $SLURM_NNODES"
 echo "Number of Tasks Allocated      = $SLURM_NTASKS"
 eval "$(/p/home/cekees/miniforge3/bin/conda shell.bash hook)"
 
-conda activate petsc-dev
-
-export PROTEUS_ENV=/p/home/cekees/miniforge3/envs/petsc-dev
-
-export LD_LIBRARY_PATH="$PROTEUS_ENV/lib:$LD_LIBRARY_PATH"
-
-export WORK_DIR=$WORKDIR/poisson-hd2-${SLURM_NNODES}_${SLURM_NTASKS}
-export MESH_DIR=$WORKDIR/poisson-${SLURM_NNODES}_${SLURM_NTASKS}
+# Set some handy environment variables.
+export PROJECT_DIR=/project/cekees/$USER/proteus_cekees/test/ci
+export WORK_DIR=/work/$USER/poisson-${SLURM_NNODES}_${SLURM_NTASKS}_${SLURM_JOBID}
 
 #Make sure the WORK_DIR exists:
 mkdir -p $WORK_DIR
 
 # Copy files, jump to WORK_DIR, and execute a program
-cp $SLURM_SUBMIT_DIR/poisson_3d_tetgen_p.py $WORK_DIR
-cp $SLURM_SUBMIT_DIR/poisson_3d_tetgen_c0p1_n.py $WORK_DIR
-cp $SLURM_SUBMIT_DIR/poisson.sh $WORK_DIR
-#cp $MESH_DIR/meshNoVessel.* $WORK_DIR
+cp poisson_slurm.sh $WORK_DIR
+cp $PROJECT_DIR/poisson_3d_tetgen_p.py $WORK_DIR
+cp $PROJECT_DIR/poisson_3d_tetgen_c0p1_n.py $WORK_DIR
+# cp poisson.sh $WORK_DIR
+
 cd $WORK_DIR
 start_time=$(date +%s)
-export UCX_UD_TIMEOUT=2m
-srun parun poisson_3d_tetgen_p.py poisson_3d_tetgen_c0p1_n.py -C "Refinement=NUM_REFINEMENT genMesh=True" -F -P "-ksp_rtol 0.0 -ksp_atol 1.0e-9 -ksp_type cg -pc_type gamg -log_view" -l 5 -m
+module list
+which parun
+srun parun poisson_3d_tetgen_p.py poisson_3d_tetgen_c0p1_n.py -C "Refinement=NUM_REFINEMENT" -F -P "-ksp_type cg -pc_type gamg" -m -M 4.0 -p -l 7
 end_time=$(date +%s)
 
 # Mark the time it finishes.

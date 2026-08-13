@@ -31,9 +31,10 @@ shockCapturing = None
 #nonlinear solver choices
 multilevelNonlinearSolver  = Newton
 levelNonlinearSolver = Newton
+computeNonlinearSolverRates=False
 #linear problem so force 1 iteration allowed
 maxNonlinearIts = 1
-maxLineSearches = 1
+maxLineSearches = 0
 fullNewtonFlag = True
 #absolute nonlinear solver residual tolerance
 nl_atol_res = 1.0e-8

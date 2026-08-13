@@ -285,7 +285,8 @@ EXTENSIONS_TO_BUILD = [
         library_dirs=[PROTEUS_LAPACK_LIB_DIR,
                       PROTEUS_BLAS_LIB_DIR],
         libraries=['m',PROTEUS_LAPACK_LIB,
-                   PROTEUS_BLAS_LIB]
+                   PROTEUS_BLAS_LIB],
+        extra_link_args=PROTEUS_EXTRA_LINK_ARGS
     ),
     Extension(
         'mprans.cRANS3PF',
@@ -311,13 +312,13 @@ EXTENSIONS_TO_BUILD = [
               sources=['proteus/BoundaryConditions.py'],
               depends=['proteus/BoundaryConditions.pxd'],
               language='c++',
-              extra_compile_args=PROTEUS_OPT,
+              extra_compile_args=PROTEUS_OPT+['-std=c++14'],
               include_dirs=[numpy.get_include(),'proteus']),
     Extension("mprans.BoundaryConditions",
               sources=['proteus/mprans/BoundaryConditions.py'],
               depends=['proteus/mprans/BoundaryConditions.pxd'],
               language='c++',
-              extra_compile_args=PROTEUS_OPT,
+              extra_compile_args=PROTEUS_OPT+['-std=c++14'],
               include_dirs=[numpy.get_include(),'proteus']),
     Extension("mprans.MeshSmoothing",
               sources=['proteus/mprans/MeshSmoothing.pyx'],
@@ -934,6 +935,7 @@ def setup_given_extensions(extensions):
           cmdclass = {'build_ext':custom_build_ext},
           ext_package='proteus',
           ext_modules=extensions,
+        #   ext_modules=cythonize(extensions, gdb_debug=True),
           data_files=[(proteus_install_path,
                        ['proteus/proteus_blas.h',
                         'proteus/proteus_lapack.h',

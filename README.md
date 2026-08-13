@@ -50,12 +50,24 @@ you need those.
 
 ```bash
 python -m venv proteus-env && source proteus-env/bin/activate
-pip install cython pybind11 wheel numpy mpi4py "cmake>=3.29"
+# setuptools: needed by the final --no-build-isolation step below, which
+# uses the active venv's own packages rather than an isolated sandbox.
+# scipy: several of proteus's own modules (BoundaryConditions, SpatialTools)
+# import it directly. pybind11 is pinned: xtensor-python 0.28.0's
+# xt::pyarray<T> doesn't compose with pybind11 3.x's reworked class
+# hierarchy ("member 'operator*=' found in multiple base classes of
+# different types" when proteus's mprans kernels use xt::pyarray); 2.13.6
+# is the last known-good 2.x line.
+pip install cython "pybind11==2.13.6" wheel numpy mpi4py "cmake>=3.29" setuptools scipy
 
 # xtensor/xtl/xtensor-python aren't in upstream PETSc (proteus's plan is to
 # drop this dependency; until then, install from our fork instead of PyPI's
-# own `petsc` package, since only this fork's PETSc knows about them):
-export PETSC_CONFIGURE_OPTIONS="--download-fblaslapack --download-superlu --download-superlu_dist --download-metis --download-parmetis --download-hdf5 --download-triangle --download-triangle-build-exec=1 --download-tetgen --download-tetgen-build-exec=1 --download-xtl --download-xtensor --download-xtensor-python"
+# own `petsc` package, since only this fork's PETSc knows about them).
+# --download-cmake: PETSc's own configure can't see the cmake pip just
+# installed above from inside its build-isolation sandbox.
+# --download-hypre: several of proteus's own solver tests configure
+# pc_type=hypre; without this they fail with "PCSetType(): Unknown type".
+export PETSC_CONFIGURE_OPTIONS="--download-fblaslapack --download-superlu --download-superlu_dist --download-metis --download-parmetis --download-hdf5 --download-triangle --download-triangle-build-exec=1 --download-tetgen --download-tetgen-build-exec=1 --download-xtl --download-xtensor --download-xtensor-python --download-cmake --download-hypre"
 pip install "petsc @ git+https://gitlab.com/cekees/petsc.git@download-proteus-support"
 pip install petsc4py
 
@@ -65,13 +77,22 @@ PETSC_DIR=$(python -c "import petsc; print(petsc.get_petsc_dir())")
 # Work around a packaging quirk in the `petsc` wheel: its libhdf5.so is a
 # linker script (`INPUT(libhdf5.so.NNN)`), not a real file, which trips up
 # h5py's own HDF5 version/config introspection at build time.
-real_hdf5=$(readlink -f "$PETSC_DIR"/lib/libhdf5.so.*.* 2>/dev/null | head -1)
+real_hdf5=$(readlink -f "$PETSC_DIR"/lib/libhdf5.so.[0-9]* 2>/dev/null | head -1)
 ln -sf "$(basename "$real_hdf5")" "$PETSC_DIR/lib/libhdf5.so"
 CC=mpicc HDF5_MPI=ON HDF5_DIR="$PETSC_DIR" pip install --no-binary h5py h5py
 
 export PETSC_ARCH=""
 export PROTEUS_PREFIX="$PETSC_DIR"
 export PROTEUS_SKIP_PUMI_CHRONO=1
+# Only needed if your system's mpicc doesn't put mpi.h somewhere proteus's
+# own build already looks (Debian/Ubuntu's mpich package doesn't; -lmpi
+# itself already resolves fine via the system's default library search
+# path, this is purely about the header):
+export MPI_DIR=$(dirname "$(mpicc -show | grep -o '\-I[^ ]*' | head -1 | cut -c3-)")
+# $PETSC_DIR/bin needs to stay on PATH after this point too, not just for
+# the build below -- it's where the `triangle` CLI
+# --download-triangle-build-exec=1 built lives, and some of proteus's own
+# tests shell out to it.
 export PATH="$PETSC_DIR/bin:$PATH"
 pip install --no-build-isolation --no-deps .
 ```
