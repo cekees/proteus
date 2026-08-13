@@ -1,5 +1,4 @@
 #include <math.h>
-#include "ncursesw/curses.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,7 +50,6 @@ if(strcmp(Theory,"Stokes")==0)
 			{
 			printf("\nThe dimensionless wavelength is greater than 10.");
 			printf("\nStokes theory should not be applied. Exiting.");
-			getch();
 			exit(1);
 			}
 	iff(Case,Period)
@@ -59,7 +57,6 @@ if(strcmp(Theory,"Stokes")==0)
 			{
 			printf("\nThe dimensionless period is greater than 10.");
 			printf("\nStokes theory should not be applied. Exiting.");
-			getch();
 			exit(1);
 			}
 	}
@@ -242,7 +239,7 @@ for(I = 0; I <= Nprofiles ; ++I)
 	{
 	X = 0.5 * L * I/(Nprofiles);
 	eta = Surface(X);
-	fprintf(Flowfield,  "\n\n# X/d = %8.4f, Phase = %6.1f°\n", X, X/L*360);
+	fprintf(Flowfield,  "\n\n# X/d = %8.4f, Phase = %6.1fï¿½\n", X, X/L*360);
 
 	for(i=0 ; i <= Points; ++i)
 		{

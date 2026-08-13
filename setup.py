@@ -58,6 +58,44 @@ from Cython.Distutils import build_ext
 class custom_build_ext(build_ext):
     def build_extensions(self):
         self.parallel=True
+        # OpenMPI's/MPICH's mpi.h transparently pulls in its legacy C++
+        # bindings (the `MPI::` namespace, removed from the MPI standard
+        # since 3.0) the moment mpi.h is included from a C++ translation
+        # unit. Several extensions (cmeshTools.pyx/cpartitioning.pyx/
+        # RANS2P.cpp and others) pull mpi.h in this way via generated
+        # Cython code that `cimport`s mpi4py.MPI, which #includes mpi.h
+        # before any of proteus's own headers get a chance to guard
+        # against this -- and per-extension `extra_compile_args` wiring is
+        # inconsistent across this file's ~100 Extension() entries (some
+        # include PROTEUS_EXTRA_COMPILE_ARGS, several of the mprans.c*
+        # extensions don't), so a couple of these silently slipped through
+        # a first attempt at fixing this per-extension. Some of the
+        # bindings' methods aren't fully header-inline, so merely including
+        # the header -- without proteus's own source ever writing `MPI::`
+        # anywhere -- silently requires linking a separate libmpi_cxx that
+        # these extensions never ask for. Confirmed via a real build
+        # against Ubuntu's system OpenMPI package: cpartitioning and
+        # mprans.cRANS2P both failed to import with "undefined symbol:
+        # _ZN3MPI8Datatype4FreeEv". Setting this here, on the compiler
+        # instance itself right before any extension is actually compiled
+        # (same idea as the -fPIE handling below, applied globally rather
+        # than per-Extension), guarantees every extension gets it
+        # regardless of that extension's own extra_compile_args. Getting
+        # the right attribute took two tries: patching compiler_so alone
+        # only reached .c files, and compiler_cxx turned out to be a red
+        # herring too -- on this setuptools/Python combination, UnixCCompiler
+        # ._compile() actually dispatches C++ sources through
+        # compiler_so_cxx (confirmed by reading _compile()'s source
+        # directly: it builds the g++ command from compiler_so_cxx, not
+        # compiler_cxx, which distutils only ever uses as a bare
+        # [executable-name] placeholder). Patch every list that could
+        # plausibly be consulted so this isn't sensitive to yet another
+        # distutils-vs-setuptools-vendored-copy naming difference.
+        for macro in ('-DOMPI_SKIP_MPICXX', '-DMPICH_SKIP_MPICXX'):
+            for attr in ('compiler_so', 'compiler_so_cxx', 'compiler_cxx', 'compiler'):
+                lst = getattr(self.compiler, attr, None)
+                if isinstance(lst, list) and macro not in lst:
+                    lst.append(macro)
         try:
             self.compiler.linker_so.remove('-Wl,-pie')
             self.compiler.compiler_so.remove('-fPIE')
@@ -381,10 +419,8 @@ EXTENSIONS_TO_BUILD = [
               language='c++',
               include_dirs=[numpy.get_include(),
                             'proteus',
-                            PROTEUS_INCLUDE_DIR,
-                            PROTEUS_NCURSES_INCLUDE_DIR,],
-              library_dirs=[PROTEUS_NCURSES_LIB_DIR,],
-              libraries=['ncurses','stdc++','m'],
+                            PROTEUS_INCLUDE_DIR,],
+              libraries=['stdc++','m'],
               extra_compile_args=["-std=c++11"]+PROTEUS_OPT),
     Extension(
         'cADR',
