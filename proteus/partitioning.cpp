@@ -2140,7 +2140,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
               ne = *eN_c;//elements_collection[eN_c-eN_c_start];
               for (int iv = 0; iv < simplexDim; iv++)
                 {
-                  element_nodes_old[iv] = element_old_nodes_collection[eN_c-eN_c_start][iv];
+                  element_nodes_old[iv] = (*element_old_nodes_c)[iv];
                   element_nodes_new[iv] = nodes_old2new_subset_map[element_nodes_old[iv]];
                 }
               NodeTuple<4> nodeTuple(&element_nodes_new[0]);
@@ -2206,7 +2206,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                     elements_subdomain_owned.insert(ne);
                   if (hasElementMarkers > 0)
                     {
-                      elementId = static_cast<long int>(elementId_collection[eN_c-eN_c_start]);
+                      elementId = static_cast<long int>(*elementId_c);
                       elementMaterialTypesMap[ne] = elementId;
                     }
                 }
@@ -3031,8 +3031,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hid_t ed_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
 #ifdef H5_HAVE_PARALLEL
   H5Pset_dxpl_mpio(ed_old2new_subdomain_plist_id, H5FD_MPIO_INDEPENDENT);
-  status = H5Dread(ed_old2new_dataspace_id, H5T_NATIVE_INT, ed_old2new_subdomain_memspace_id, 
-                   ed_old2new_filespace_id, 
+#endif
+  status = H5Dread(ed_old2new_dataspace_id, H5T_NATIVE_INT, ed_old2new_subdomain_memspace_id,
+                   ed_old2new_filespace_id,
                    H5P_DEFAULT, &new_edge_indices_subdomain[0]);
   H5Pclose(ed_old2new_subdomain_plist_id);
   H5Sclose(ed_old2new_subdomain_memspace_id);
