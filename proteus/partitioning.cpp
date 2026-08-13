@@ -1632,7 +1632,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
         }
       elementFile >> eatline;
     }//end ie
-  elements_old.clear();
   elementFile.close();
   //cek todo: track c++ containers and put inside scope to reduce dynamic memory usage
   PetscLogEventEnd(read_elements_event,0,0,0,0);
@@ -2097,7 +2096,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
               ne = elements_collection[eN_c-eN_c_start];
               for (int iv = 0; iv < simplexDim; iv++)
                 {
-                  element_nodes_old[iv] = (*element_old_nodes_c)[iv]; //element_old_nodes_collection[eN_c-eN_c_start][iv];
+                  element_nodes_old[iv] = element_old_nodes_collection[eN_c-eN_c_start][iv];
                   element_nodes_new[iv] = nodes_old2new_subset_map[element_nodes_old[iv]];
                 }
               NodeTuple<4> nodeTuple(&element_nodes_new[0]);
@@ -2163,7 +2162,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                     elements_subdomain_owned.insert(ne);
                   if (hasElementMarkers > 0)
                     {
-                      elementId = static_cast<long int>(*elementId_c);//elementId_collection[eN_c-eN_c_start]);
+                      elementId = static_cast<long int>(elementId_collection[eN_c-eN_c_start]);
                       elementMaterialTypesMap[ne] = elementId;
                     }
                 }
