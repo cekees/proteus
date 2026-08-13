@@ -72,6 +72,11 @@ cdef class ProtChBody:
         self.ChBodyAddedMass = ChBodyAddedMass()
         self.ChBody = self.ChBodyAddedMass.ChBodySWIG
         self.thisptr.body = self.ChBodyAddedMass.sharedptr_chbody  # give pointer to cpp class
+        # cppRigidBody's constructor got force/torque accumulator indices from
+        # its own (now-discarded) placeholder ChBody -- get fresh ones for the
+        # body actually assigned above, or prestep() segfaults on first use
+        # indexing into the new body's own (empty) accumulators vector.
+        self.thisptr.addAccumulators()
         # # add body to system
         if system is not None:
             self.ProtChSystem.addProtChBody(self)

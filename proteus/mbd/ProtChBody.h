@@ -76,6 +76,7 @@ public:
   double hy(double* x, double t);
   double hz(double* x, double t);
   void calculate_init();
+  void addAccumulators();
   void prestep(double* force, double* torque);
   void poststep();
   void setConstraints(double* free_x, double* free_y);
@@ -181,6 +182,22 @@ cppRigidBody::cppRigidBody(cppSystem* system):
   free_r = ChVector3d(1., 1., 1.);
   lock_motion_t_max = 0.;
   has_trimesh = false;
+}
+
+// The constructor's own body (above) is a throwaway placeholder -- the
+// Cython layer (CouplingFSI.pyx's ProtChBody.__cinit__) immediately
+// overwrites `body` with the ChBody actually shared with a ChBodyAddedMass
+// instance ("self.thisptr.body = self.ChBodyAddedMass.sharedptr_chbody"),
+// discarding the constructor's own ChBody along with the accumulator
+// indices obtained from it. Without this, accumulator_force_idx/
+// accumulator_torque_idx are stale indices into the *new* body's own
+// (empty) accumulators vector -- ChBody::GetAccumulatedForce()/
+// EmptyAccumulator()/AccumulateForce() index into it with no bounds
+// checking, so prestep() segfaults on the very first call. Call this again
+// on whatever body ends up actually being used, right after reassigning it.
+void cppRigidBody::addAccumulators() {
+  accumulator_force_idx = body->AddAccumulator();
+  accumulator_torque_idx = body->AddAccumulator();
 }
 
 void cppSystem::setDirectory(std::string dir) {
