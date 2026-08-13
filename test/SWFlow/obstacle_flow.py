@@ -79,7 +79,6 @@ if opts.he==4.0:
     for name in ["obstacle.1.neigh","obstacle.1.poly","obstacle.edge","obstacle.ele","obstacle.node","obstacle.poly"]:
         saved_file = os.path.join(saved_mesh,name)
         copied_to = os.path.join(os.path.dirname(os.path.abspath(__file__)),name)
-        print(saved_file, copied_to)
         copyfile(saved_file, copied_to)
     domain.polyfile="obstacle"
     domain.MeshOptions.genMesh=False
