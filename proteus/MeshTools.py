@@ -5124,8 +5124,8 @@ class InterpolatedBathymetryMesh(MultilevelTriangularMesh):
     """A triangular mesh that interpolates bathymetry from a point cloud"""
     def __init__(self,
                  domain,
-                 gmshOption,
                  triangleOptions,
+                 gmshOption=False,
                  atol=1.0e-4,
                  rtol=1.0e-4,
                  maxElementDiameter=None,
