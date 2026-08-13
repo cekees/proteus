@@ -437,6 +437,8 @@ EXTENSIONS_TO_BUILD = [
                              ('USE_BLAS',1)],
               include_dirs=['proteus',
                             numpy.get_include(),
+                            str(get_pybind_include()),
+                            str(get_pybind_include(user=True)),
                             PROTEUS_SUPERLU_INCLUDE_DIR,
                             PROTEUS_TRIANGLE_INCLUDE_DIR,
                             PROTEUS_HDF5_INCLUDE_DIR] + \
@@ -654,6 +656,8 @@ EXTENSIONS_TO_BUILD = [
                              ('USE_BLAS',1)],
               include_dirs=['proteus',
                             numpy.get_include(),
+                            str(get_pybind_include()),
+                            str(get_pybind_include(user=True)),
                             PROTEUS_SUPERLU_INCLUDE_DIR,
                             PROTEUS_TRIANGLE_INCLUDE_DIR,
                             PROTEUS_HDF5_INCLUDE_DIR] +
