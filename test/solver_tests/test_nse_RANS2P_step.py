@@ -150,6 +150,16 @@ def initialize_schur_ksp_obj(matrix_A, schur_approx):
 
 def runTest(ns, name):
     ns.calculateSolution(name)
+    # Profiling.logEvent() only flushes proteus.log when the global
+    # flushBuffer flag is set (default False), so the read-back just below
+    # can race the still-buffered writes from calculateSolution() above --
+    # confirmed this reproduces 100% of the time on Python 3.14 (this
+    # module's build_from_proteus_log() sees an empty log/dictionary here,
+    # even though the file is complete once the process exits), while
+    # older Python's io buffering happened to flush enough to mask it.
+    # Flushing explicitly here, rather than flipping the global flag,
+    # keeps the fix scoped to this read-immediately-after-write pattern.
+    Profiling.logFile.flush()
     actual_log = TestTools.NumericResults.build_from_proteus_log('proteus.log')
     return actual_log
 
