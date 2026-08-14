@@ -4232,8 +4232,6 @@ class TriangularMesh(Mesh):
         cmeshTools.allocateGeometricInfo_triangle(self.cmesh)
         cmeshTools.computeGeometricInfo_triangle(self.cmesh)
         self.buildFromC(self.cmesh)
-        #save the volume value here. check if its possible to make mesh.globalMesh.volume nonzero
-        np.save("volume.npy",self.volume)
     def writeTriangleFiles(self,filebase,base):
         from .import cmeshTools
         cmeshTools.writeTriangleFiles(self.cmesh,filebase,base)
