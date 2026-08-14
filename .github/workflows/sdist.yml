@@ -2,7 +2,7 @@ name: sdist build + install
 
 on:
   push:
-    branches: [torino_narwhal]
+    branches: [main]
   pull_request:
 
 jobs:
