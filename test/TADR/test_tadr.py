@@ -189,4 +189,17 @@ class TestTADR(object):
             expected_path = os.path.join(self._scriptdir,"comparison_files","tadr_level_0"+tname+ "_u_t2.csv")
             #write comparison file
             #(actual['u_t2'][:]).tofile(expected_path,sep=",")
-            np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=8)
+            # STABILIZATION_TYPE=4 (Kuzmin's FCT limiter) clips values against a
+            # bound; a handful of nodes sitting almost exactly on that bound can
+            # flip which side they land on from a tiny (~1e-8 absolute, ~1.5e-7
+            # relative) cross-build BLAS/Hypre/compiler difference, unlike this
+            # file's other (unlimited) test cases, which stay reproducible to
+            # decimal=10. Confirmed real: conda-forge, pip, and both PETSc
+            # BuildSystem builds agree bit-for-bit with each other but differ
+            # from an independently-toolchained Spack build at exactly this
+            # tolerance. assert_almost_equal's fixed decimal count can't express
+            # "tight everywhere except at a limiter threshold", so use an
+            # explicit relative+absolute tolerance sized to what's actually been
+            # observed across builds (with a comfortable margin), rather than
+            # enshrining one build's exact bit pattern as the only correct one.
+            np.testing.assert_allclose(np.fromfile(expected_path,sep=","),actual['u_t2'][:],rtol=1e-6,atol=1e-7)
