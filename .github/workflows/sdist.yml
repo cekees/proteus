@@ -86,6 +86,15 @@ jobs:
         shell: bash -l {0}
         run: |
           export MPLBACKEND="AGG"
+          # OpenBLAS's pthread-based threading isn't fork-safe: a child forked
+          # by pytest-forked can inherit the parent's BLAS thread-pool state
+          # and abort (SIGABRT) the first time it calls into BLAS/LAPACK, even
+          # for something as innocuous as numpy.polynomial.legendre.leggauss
+          # at module-import time (proteus/Quadrature.py). Seen as
+          # "Fatal Python error: Aborted" during test collection on
+          # macos-14/osx-arm64. Force single-threaded BLAS instead.
+          export OPENBLAS_NUM_THREADS=1
+          export OMP_NUM_THREADS=1
           mkdir test_output && cd test_output
           # These 6 are known-failing (real numerics/environment issues, not
           # collection errors) and deliberately left unskipped in source so
@@ -103,7 +112,13 @@ jobs:
           # PUMI mesh-adaptation and Chrono FSI extensions aren't built on this leg
           # (see PROTEUS_SKIP_PUMI_CHRONO above); ignore the test files that import
           # proteus.MeshAdaptPUMI.MeshAdapt or pychrono/proteus.mbd, since collecting
-          # them would fail on import rather than skip cleanly.
+          # them would fail on import rather than skip cleanly. This list was built
+          # by hand against a point-in-time test tree; it silently goes stale as new
+          # PUMI/Chrono-dependent test files are added (already caught two waves of
+          # that: test/MeshAdaptPUMI/case_run+gauge_compare and test/AddedMass were
+          # both added after the list below was first written) -- if a no-PUMI/Chrono
+          # leg starts failing on a PUMI- or Chrono-touching test not listed here,
+          # that's why, not a real regression.
           IGNORE_ARGS=()
           if [ "${{ matrix.skip_pumi_chrono }}" = "true" ]; then
             IGNORE_ARGS=(
@@ -112,8 +127,15 @@ jobs:
               --ignore=../test/MeshAdaptPUMI/test_parallelMeshLoad.py
               --ignore=../test/MeshAdaptPUMI/test_meshLoad.py
               --ignore=../test/MeshAdaptPUMI/Sizefields/cylinder2D_ibm/test_cylinder2D_ibm_rans2p.py
+              --ignore=../test/MeshAdaptPUMI/case_run/test_workflowPUMI.py
+              --ignore=../test/MeshAdaptPUMI/gauge_compare/dambreak_Colagrossi_2D/test_MeshAdaptRestart.py
+              --ignore=../test/MeshAdaptPUMI/gauge_compare/dambreak_Colagrossi_2D_rd/test_MeshAdaptRestart_withRedistancing.py
+              --ignore=../test/MeshAdaptPUMI/gauge_compare/dambreak_Colagrossi_2D_rdmc/test_MeshAdaptRestart_withRDMC.py
               --ignore=../test/FSI/test_FSI.py
               --ignore=../test/test_mbd_chrono.py
+              --ignore=../test/AddedMass/test_addedmass2D.py
+              --ignore=../test/AddedMass/test_addedmass3D.py
+              --deselect ../test/TwoPhaseFlow/test_TwoPhaseFlow.py::TestTwoPhaseFlow::test_damBreak_runPUMI
             )
           fi
           python -m pytest -v --forked --import-mode=importlib \
