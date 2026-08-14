@@ -71,10 +71,18 @@ and `make`) using PETSc's own `--download-x` configure options, exposed to
 its PyPI package via the `PETSC_CONFIGURE_OPTIONS` environment variable.
 This builds everything from source, so expect it to take a while.
 
-Chrono and SCOREC (proteus's optional multibody/FSI and mesh-adaptation
-support) don't have a pip-installable path yet; the recipe below skips them
-via `PROTEUS_SKIP_PUMI_CHRONO=1`. Use the conda/mamba or HPC paths above if
-you need those.
+The recipe below also builds Chrono (multibody/FSI) and SCOREC (mesh
+adaptation) via PETSc's `--download-chrono`/`--download-scorec` (plus their
+own extra dependencies: `--download-eigen` for Chrono, `--download-zoltan`
+for SCOREC). SCOREC's build additionally needs `libbz2`'s development
+package on the system already (Debian/Ubuntu: `apt install libbz2-dev`;
+most systems already have the runtime `libbz2` library but not its
+link-time `.so` symlink, which is what's actually needed here). If you'd
+rather skip one or both (e.g. to avoid that extra build time, or if you
+can't install `libbz2-dev`), set `PROTEUS_SKIP_PUMI=1` and/or
+`PROTEUS_SKIP_CHRONO=1` (or `PROTEUS_SKIP_PUMI_CHRONO=1` for both at once)
+before the final `pip install` step below, and drop the corresponding
+`--download-x` options above it.
 
 ```bash
 python -m venv proteus-env && source proteus-env/bin/activate
@@ -95,7 +103,9 @@ pip install cython "pybind11==2.13.6" wheel numpy mpi4py "cmake>=3.29" setuptool
 # installed above from inside its build-isolation sandbox.
 # --download-hypre: several of proteus's own solver tests configure
 # pc_type=hypre; without this they fail with "PCSetType(): Unknown type".
-export PETSC_CONFIGURE_OPTIONS="--download-fblaslapack --download-superlu --download-superlu_dist --download-metis --download-parmetis --download-hdf5 --download-triangle --download-triangle-build-exec=1 --download-tetgen --download-tetgen-build-exec=1 --download-xtl --download-xtensor --download-xtensor-python --download-cmake --download-hypre"
+# --download-eigen/--download-zoltan: required by --download-chrono/
+# --download-scorec respectively, not optional once those are requested.
+export PETSC_CONFIGURE_OPTIONS="--download-fblaslapack --download-superlu --download-superlu_dist --download-metis --download-parmetis --download-hdf5 --download-triangle --download-triangle-build-exec=1 --download-tetgen --download-tetgen-build-exec=1 --download-xtl --download-xtensor --download-xtensor-python --download-cmake --download-hypre --download-eigen --download-zoltan --download-chrono --download-scorec"
 pip install "petsc @ git+https://gitlab.com/cekees/petsc.git@download-proteus-support"
 pip install petsc4py
 
@@ -111,7 +121,14 @@ CC=mpicc HDF5_MPI=ON HDF5_DIR="$PETSC_DIR" pip install --no-binary h5py h5py
 
 export PETSC_ARCH=""
 export PROTEUS_PREFIX="$PETSC_DIR"
-export PROTEUS_SKIP_PUMI_CHRONO=1
+# To skip PUMI/SCOREC and/or Chrono instead of building them (see above),
+# uncomment as needed -- and drop the matching --download-x option(s) too:
+# export PROTEUS_SKIP_PUMI=1
+# export PROTEUS_SKIP_CHRONO=1
+# export PROTEUS_SKIP_PUMI_CHRONO=1   # both at once
+# Chrono's own Python bindings (pychrono, imported directly by
+# CouplingFSI.pyx and several tests) live here, not in site-packages:
+export PYTHONPATH="$PETSC_DIR/share/chrono/python"
 # Only needed if your system's mpicc doesn't put mpi.h somewhere proteus's
 # own build already looks (Debian/Ubuntu's mpich package doesn't; -lmpi
 # itself already resolves fine via the system's default library search
@@ -130,6 +147,9 @@ xtensor and can use PyPI's own `petsc` package directly), skip straight to
 the `petsc4py`/`h5py`/proteus steps with `PETSC_DIR` (and `PETSC_ARCH`, if
 set) pointing at that install; `PETSC_CONFIGURE_OPTIONS` is only consulted
 when `petsc4py`'s own install triggers a fresh PETSc build.
+
+If PyPI does not have gmsh and you want to use or run tests with gmsh, get
+it from elsewhere, (e.g. from the gmsh website or conda).
 
 This path is new and less battle-tested than the conda/mamba route above and the PETSc BuildSystem/HPC routes below -- if something here breaks, those are
 the more mature fallbacks.
