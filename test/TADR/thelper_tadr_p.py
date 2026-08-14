@@ -14,6 +14,9 @@ name=soname
 nd=ct.nd
 
 coefficients = MyCoefficients(
+    alpha_L=0.0,
+    alpha_T=0.0,
+    Dm=0.0,
     checkMass=checkMass,
     FCT=ct.FCT,
     LUMPED_MASS_MATRIX=ct.LUMPED_MASS_MATRIX, 

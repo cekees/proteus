@@ -373,9 +373,12 @@ class Coefficients(TC_base):
         except:
             raise ValueError("STABILIZATION_TYPE must be one of "+str(stabilization_types.keys())+" not "+STABILIZATION_TYPE)
         try:
+            if isinstance(ENTROPY_TYPE, int):
+                ENTROPY_TYPE = [key for key, value in entropy_types.items() if value == ENTROPY_TYPE][0]
+
             self.ENTROPY_TYPE = entropy_types[ENTROPY_TYPE]
         except:
-            raise ValueError("ENTROPY_TYPE must be one of "+str(entropy_types.keys())+" not "+ENTROPY_TYPE)
+            raise ValueError("ENTROPY_TYPE must be one of "+str(entropy_types.keys())+" not "+str(ENTROPY_TYPE))
         self.cE = cE
         self.cMax = cMax
         self.uL = uL
