@@ -665,6 +665,49 @@ namespace equivalent_polynomials
       }
       return icase;
     }
+    else if (nSpace == 1 && edge == 1)
+    {
+      // 1D only: the "edge" here is a single node, so touching zero there
+      // is a measure-zero point, not a genuine interface -- treat this the
+      // same as the fully-positive icase==1 case. (In 2D/3D "edge" means an
+      // entire element edge/face has phi==0, a real nonzero-measure
+      // interface, so this special case does not apply there.)
+      // inside_out was set true by the pcount==1 branch above (it flips the
+      // dir vector for the interior-cut machinery this case never reaches);
+      // reset it so set_quad()/set_boundary_quad() don't swap H and ImH.
+      inside_out = false;
+      for (unsigned int q = 0; q < nQ; q++)
+      {
+        _H[q] = 1.0;
+        _ImH[q] = 0.0;
+        _D[q] = 0.0;
+      }
+      for (unsigned int ebq = 0; ebq < nEBQ; ebq++)
+      {
+        _H_ebq[ebq] = 1.0;
+        _ImH_ebq[ebq] = 0.0;
+        _D_ebq[ebq] = 0.0;
+      }
+      return edge;
+    }
+    else if (nSpace == 1 && edge == -1)
+    {
+      // same as above, but the cell is entirely non-positive.
+      inside_out = false;
+      for (unsigned int q = 0; q < nQ; q++)
+      {
+        _H[q] = 0.0;
+        _ImH[q] = 1.0;
+        _D[q] = 0.0;
+      }
+      for (unsigned int ebq = 0; ebq < nEBQ; ebq++)
+      {
+        _H_ebq[ebq] = 0.0;
+        _ImH_ebq[ebq] = 1.0;
+        _D_ebq[ebq] = 0.0;
+      }
+      return edge;
+    }
     if (quad_cut)
     {
       _calculate_cuts_quad(); // THETA_* for quad cut in 3D
