@@ -180,7 +180,7 @@ def test_step_noslip_FullRun():
         * Pressure Projection Stablization.
         * he = 0.05
     """
-    petsc_options = initialize_petsc_options
+    petsc_options = initialize_petsc_options()
     context_options_str="boundary_condition_type='ns'"
     ns = load_simulation(context_options_str)
     actual_log = runTest(ns,'test_2')

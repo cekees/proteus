@@ -6,6 +6,7 @@ try:
     from . import cavity2d
 except:
     import cavity2d
+reload(cavity2d)
 
 from proteus import Context
 import os
