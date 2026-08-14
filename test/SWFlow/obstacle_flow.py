@@ -80,7 +80,7 @@ if opts.he==4.0:
         saved_file = os.path.join(saved_mesh,name)
         copied_to = os.path.join(os.path.dirname(os.path.abspath(__file__)),name)
         copyfile(saved_file, copied_to)
-    domain.polyfile="obstacle"
+    domain.polyfile=os.path.join(os.path.dirname(os.path.abspath(__file__)), "obstacle")
     domain.MeshOptions.genMesh=False
 ##########################################
 # DEFINE INITIAL CONSTANTS AND FUNCTIONS #
