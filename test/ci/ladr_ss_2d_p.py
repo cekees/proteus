@@ -29,7 +29,13 @@ opts = Context.Options([
     ("usePetsc", False, "Use PETSc linear solvers"),
     ("name", "ladr_ss_2d", "name of the test (default is ladr_ss_2d)"),
     ("immersedSCIFEM_switch", 0.0, "switch (0/1) for the SCIFEM interface consistency terms"),
-    ("immersedSCIFEM_penalty", 0.0, "coefficient gamma of the interior-penalty stabilization")
+    ("immersedSCIFEM_penalty", 0.0, "coefficient gamma of the interior-penalty stabilization"),
+    ("PG", False, "Petrov-Galerkin: test with ordinary P1 hat functions instead of "
+        "the enriched va/vb IFEM basis. Trial/solution side is unchanged."),
+    ("interfaceSlope", 0.5, "slope m of the straight interface y = m*x + interfaceOffset "
+        "used by test=13.0. Deliberately generic (not 0 or 1)."),
+    ("interfaceOffset", 0.37, "intercept c of the test=13.0 interface. Non-dyadic so it "
+        "never lands on a mesh edge or vertex.")
 ])
 
 name = opts.name
@@ -265,6 +271,37 @@ class AdjeridEtal16Example5p1(AnalyticalSolutions.SteadyState):
         else:
             return self.uOfX_inner(x)
 
+class PWLGeneric(AnalyticalSolutions.SteadyState):
+    """Piecewise-linear across a straight interface at an arbitrary angle
+    (test=13.0): test=11.0's PWLStraight (vertical interface x=jump_x,
+    u_outer = u_inner/1000) generalized to interface y = interfaceSlope*x +
+    interfaceOffset. u_outer is just u_inner scaled by betaMinus/betaPlus, with
+    no distance normalization -- continuity and flux-matching hold at any slope
+    regardless, since scaling a plane by a constant scales its whole gradient by
+    that same constant. Exact for P1 at any slope, unlike test=11.0 (vertical)
+    and test=12.0 (slope exactly 1.0), which makes it a useful regression check.
+    """
+    def __init__(self, slope, offset, betaMinus=1.0, betaPlus=1000.0):
+        self.slope = slope
+        self.offset = offset
+        self.L = (1.0 + slope**2)**0.5
+        self.betaMinus = betaMinus
+        self.betaPlus = betaPlus
+        super(PWLGeneric, self).__init__()
+    def phi(self, x):
+        return x[1] - self.slope*x[0] - self.offset
+    def interface_d(self, x):
+        return self.phi(x)/self.L
+    def uOfX_inner(self, x):
+        return -self.phi(x)
+    def uOfX_outer(self, x):
+        return -self.phi(x)*self.betaMinus/self.betaPlus
+    def uOfX(self, x):
+        if self.phi(x) <= 0.0:
+            return self.uOfX_inner(x)
+        else:
+            return self.uOfX_outer(x)
+
 if opts.test == 1.0:
     ans = LevequeLiExample1()
 elif opts.test == 2.0 or opts.test == 2.1:
@@ -291,6 +328,8 @@ elif opts.test == 11.0:
     ans = PWLStraight()
 elif opts.test == 12.0:
     ans = AdjeridEtal16Example5p1(betaMinus=1.0, betaPlus=1000.0)
+elif opts.test == 13.0:
+    ans = PWLGeneric(opts.interfaceSlope, opts.interfaceOffset, betaMinus=1.0, betaPlus=1000.0)
 else:
     assert False, "Unknown test %s" % opts.test
 
@@ -315,6 +354,9 @@ elif opts.test == 2.1:
 elif opts.test == 8.0 or opts.test == 11.0:
     mub = 1000.0
 elif opts.test == 12.0:
+    mua = 1.0
+    mub = 1000.0
+elif opts.test == 13.0:
     mua = 1.0
     mub = 1000.0
 
@@ -399,6 +441,15 @@ elif opts.test == 12.0:
 
         lap_g = (12.0 - p1*grad_psi_sq)*math.cos(psi) - 2.0*dp1_dot_dpsi*math.sin(psi) - 2.0*p2*math.sin(eta)
         return -(1.0/3.0)*lap_g
+elif opts.test == 13.0:
+    # both branches linear, so no source term
+    def a(x):
+        if ans.phi(x) <= 0.0:
+            return numpy.array([[mua,0.0],[0.0,mua]])
+        else:
+            return numpy.array([[mub,0.0],[0.0,mub]])
+    def f(x):
+        return 0.0
 
 
 aOfX = {0:a}; fOfX = {0:f}
@@ -422,10 +473,18 @@ def embeddedBoundary_sdf_diag(x,t):
     n = (1.0/2.0**0.5,-1.0/2.0**0.5,0.0)
     return sdf,n
 
+def embeddedBoundary_sdf_generic(x,t):
+    # generic-slope interface for test=13.0; sdf < 0 is Omega- (mua)
+    d = ans.interface_d(x)
+    n = (-opts.interfaceSlope/ans.L, 1.0/ans.L, 0.0)
+    return d,n
+
 if opts.test == 11.0:
     embeddedBoundary_sdf = embeddedBoundary_sdf_straight
 elif opts.test == 12.0:
     embeddedBoundary_sdf = embeddedBoundary_sdf_diag
+elif opts.test == 13.0:
+    embeddedBoundary_sdf = embeddedBoundary_sdf_generic
 #n = (1.0/2.0**0.5,-1.0/2.0**0.5,0.0)
 #def embeddedBoundary_sdf(x,t):
 #    n = (1.0/2.0**0.5,-1.0/2.0**0.5,0.0)
@@ -476,6 +535,7 @@ coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=B0_1c[0],nc=1,nd=nd
                                 mua=mua,
                                 mub=mub,
                                 jf=jf,
+                                embeddedBoundary=False,  # every test here is Gamma_f only, no embedded solid
                                 immersedBoundary=True,
                                 immersedBoundary_sdf=embeddedBoundary_sdf,
                                 immersedBoundary_u=embeddedBoundary_u,
@@ -485,6 +545,7 @@ coefficients = ADR.Coefficients(aOfX=aOfX,fOfX=fOfX,velocity=B0_1c[0],nc=1,nd=nd
                                 immersedBoundary_solutionJump=immersedBoundary_solutionJump,
                                 immersedSCIFEM_switch=opts.immersedSCIFEM_switch,
                                 immersedSCIFEM_penalty=opts.immersedSCIFEM_penalty,
+                                PG=opts.PG,
                                 analyticalSolution=analyticalSolution)
 
 def getDBC(x,flag):

@@ -466,7 +466,8 @@ namespace proteus
 											 double mua,
 											 double mub,
 											 xt::pyarray<double> &q_u_exact_inner,
-											 xt::pyarray<double> &q_u_exact_outer)
+											 xt::pyarray<double> &q_u_exact_outer,
+											 const bool PG)
 		{
 			// per-element cached equivalent-polynomial/IFEM reconstruction
 			// (see ensureIFEMCacheSized / ifemGeometryGeneration)
@@ -643,6 +644,21 @@ namespace proteus
 						{
 							ua_grad_trial[j * nSpace + I] = va_grad_trial[j * nSpace + I];
 							ub_grad_trial[j * nSpace + I] = vb_grad_trial[j * nSpace + I];
+						}
+					}
+					if (PG)
+					{
+						// Petrov-Galerkin: test with ordinary P1 hat functions instead of
+						// the enriched va/vb branches; trial/solution side is unchanged.
+						for (int i = 0; i < nDOF_test_element; i++)
+						{
+							ua_test_dV[i] = u_test_dV[i];
+							ub_test_dV[i] = u_test_dV[i];
+							for (int I = 0; I < nSpace; I++)
+							{
+								ua_grad_test_dV[i * nSpace + I] = u_grad_test_dV[i * nSpace + I];
+								ub_grad_test_dV[i * nSpace + I] = u_grad_test_dV[i * nSpace + I];
+							}
 						}
 					}
 				}
@@ -965,6 +981,7 @@ namespace proteus
 			const double immersedBoundary_penalty = args.scalar<double>("immersedBoundary_penalty");
 			const double immersedSCIFEM_switch = args.scalar<double>("immersedSCIFEM_switch");
 			const double immersedSCIFEM_penalty = args.scalar<double>("immersedSCIFEM_penalty");
+			const bool PG = args.scalar<int>("PG");
 			xt::pyarray<double> &immersedBoundary_sdf_nodes = args.array<double>("immersedBoundary_sdf_nodes");
 			xt::pyarray<double> &immersedBoundary_sdf_q = args.array<double>("immersedBoundary_sdf_q");
 			xt::pyarray<double> &immersedBoundary_normal_q = args.array<double>("immersedBoundary_normal_q");
@@ -1204,7 +1221,8 @@ namespace proteus
 												 mua,
 											 mub,
 											 q_u_exact_inner,
-											 q_u_exact_outer);
+											 q_u_exact_outer,
+											 PG);
 				//
 				// load element into global residual and save element residual
 				//
@@ -1824,7 +1842,8 @@ namespace proteus
 											 xt::pyarray<double> &immersedBoundary_solutionJump_nodes,
 											 double *element_phi_f,
 											 double mua,
-											 double mub)
+											 double mub,
+											 const bool PG)
 		{
 			// per-element cached equivalent-polynomial/IFEM reconstruction
 			// (see ensureIFEMCacheSized / ifemGeometryGeneration)
@@ -1964,6 +1983,21 @@ namespace proteus
 						}
 						// std::cout << " ua_grad_test_dV[" << j << "]=" << ua_grad_test_dV[j * nSpace + 0] << "," << ua_grad_test_dV[j * nSpace + 1] << std::endl;
 						// std::cout << " ub_grad_test_dV[" << j << "]=" << ub_grad_test_dV[j * nSpace + 0] << "," << ub_grad_test_dV[j * nSpace + 1] << std::endl;
+					}
+					if (PG)
+					{
+						// Same substitution as the residual; trial-side (j-index) arrays
+						// are untouched, only the test side (i-index) changes.
+						for (int i = 0; i < nDOF_test_element; i++)
+						{
+							ua_test_dV[i] = u_test_dV[i];
+							ub_test_dV[i] = u_test_dV[i];
+							for (int I = 0; I < nSpace; I++)
+							{
+								ua_grad_test_dV[i * nSpace + I] = u_grad_test_dV[i * nSpace + I];
+								ub_grad_test_dV[i * nSpace + I] = u_grad_test_dV[i * nSpace + I];
+							}
+						}
 					}
 				}
 				//
@@ -2229,6 +2263,7 @@ namespace proteus
 			const double immersedBoundary_penalty = args.scalar<double>("immersedBoundary_penalty");
 			const double immersedSCIFEM_switch = args.scalar<double>("immersedSCIFEM_switch");
 			const double immersedSCIFEM_penalty = args.scalar<double>("immersedSCIFEM_penalty");
+			const bool PG = args.scalar<int>("PG");
 			xt::pyarray<double> &immersedBoundary_sdf_nodes = args.array<double>("immersedBoundary_sdf_nodes");
 			xt::pyarray<double> &immersedBoundary_sdf_q = args.array<double>("immersedBoundary_sdf_q");
 			xt::pyarray<double> &immersedBoundary_normal_q = args.array<double>("immersedBoundary_normal_q");
@@ -2357,7 +2392,8 @@ namespace proteus
 										 immersedBoundary_solutionJump_nodes,
 										 element_phi_f,
 												 mua,
-											 mub);
+											 mub,
+											 PG);
 				//
 				// load into element Jacobian into global Jacobian
 				//

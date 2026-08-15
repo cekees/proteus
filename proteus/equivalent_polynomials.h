@@ -14,56 +14,6 @@
 
 namespace equivalent_polynomials
 {
-  // Edge-restricted equivalent-polynomial (moment-fit) Heaviside for a single mesh edge, treated
-  // as its own 1D domain with reference parameter t in [0,1] running from the edge's node 0 to its
-  // node 1. Purpose: let an integrand that is DISCONTINUOUS at the interface crossing point theta
-  // be integrated with the ordinary whole-edge quadrature rule. The fit satisfies
-  //     int_0^1 H_hat(t) p(t) dt = int_theta^1 p(t) dt   exactly for every p in P^nP,
-  // so (1-H_hat)*P_a + H_hat*P_b integrates to exactly int_0^theta P_a + int_theta^1 P_b whenever
-  // P_a,P_b are polynomials of degree <= nP -- which covers the facet integrands here (degree <= 1
-  // for P1, <= 3 for P2, against nP = 4).
-  //
-  // NOTE this is the *Heaviside*, used purely as an integration weight for an indicator function.
-  // It is deliberately NOT the Dirac: a mesh facet already carries its own arc-length measure, so
-  // no delta surrogate is needed (an earlier attempt that used one was wrong -- see
-  // SCIFEM_INTERFACE_CONSISTENCY.md). The pointwise overshoot inherent to moment fits is harmless
-  // here because H_hat only ever multiplies genuine polynomials, which is exactly the regime the
-  // moment guarantee covers.
-  //
-  // The 2D volume fit (_calculate_C()) evaluated at edge points is NOT a substitute: matching 2D
-  // volume moments places no constraint on 1D edge-trace moments. phi0/phi1 must have opposite
-  // signs (the edge must actually be cut). Orientation-safe: returns the fit for the indicator of
-  // {phi > 0} whichever way round the edge is parametrized.
-  template <int nP>
-  inline void calculate_edge_H(double phi0, double phi1, double C_H[nP + 1])
-  {
-    double theta = -phi0 / (phi1 - phi0);
-    double Ainv[(nP + 1) * (nP + 1)];
-    _set_Ainv<1, nP>(Ainv);
-    double b_H[nP + 1], b_ImH[nP + 1], b_dH[nP + 1];
-    _calculate_b<1, nP>(&theta, b_H, b_ImH, b_dH);
-    // _calculate_b assumes H=1 for t>theta (phi increasing along t); use the complementary
-    // moments when phi decreases instead, so C_H always fits the indicator of {phi>0}.
-    const double *b = (phi1 > phi0) ? b_H : b_ImH;
-    for (int i = 0; i <= nP; i++)
-    {
-      C_H[i] = 0.0;
-      for (int j = 0; j <= nP; j++)
-        C_H[i] += Ainv[i * (nP + 1) + j] * b[j];
-    }
-  }
-
-  template <int nP>
-  inline double evaluate_edge_poly(const double C[nP + 1], double t)
-  {
-    double val = 0.0, tpow = 1.0;
-    for (int i = 0; i <= nP; i++)
-    {
-      val += C[i] * tpow;
-      tpow *= t;
-    }
-    return val;
-  }
 
   template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
   class Regularized

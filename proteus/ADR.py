@@ -123,6 +123,7 @@ class Coefficients(TC_base):
                  immersedBoundary_penalty=100.0,
                  immersedSCIFEM_switch=0.0,
                  immersedSCIFEM_penalty=0.0,
+                 PG=False,
                  immersedBoundary_sdf=None,
                  immersedBoundary_u=None,
                  immersedBoundary_fluxJump=None,
@@ -144,6 +145,7 @@ class Coefficients(TC_base):
         self.immersedBoundary_penalty=immersedBoundary_penalty
         self.immersedSCIFEM_switch=immersedSCIFEM_switch
         self.immersedSCIFEM_penalty=immersedSCIFEM_penalty
+        self.PG=PG
         self.immersedBoundary_sdf=immersedBoundary_sdf
         self.immersedBoundary_u=immersedBoundary_u
         # Prescribed interface jump data, supplied by the physics file instead of
@@ -760,6 +762,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["immersedBoundary_penalty"] = self.coefficients.immersedBoundary_penalty
         argsDict["immersedSCIFEM_switch"] = self.coefficients.immersedSCIFEM_switch
         argsDict["immersedSCIFEM_penalty"] = self.coefficients.immersedSCIFEM_penalty
+        argsDict["PG"] = self.coefficients.PG
         argsDict["immersedBoundary_sdf_nodes"] = self.coefficients.immersedBoundary_sdf_nodes
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
@@ -872,6 +875,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["immersedBoundary_penalty"] = self.coefficients.immersedBoundary_penalty
         argsDict["immersedSCIFEM_switch"] = self.coefficients.immersedSCIFEM_switch
         argsDict["immersedSCIFEM_penalty"] = self.coefficients.immersedSCIFEM_penalty
+        argsDict["PG"] = self.coefficients.PG
         argsDict["immersedBoundary_sdf_nodes"] = self.coefficients.immersedBoundary_sdf_nodes
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
