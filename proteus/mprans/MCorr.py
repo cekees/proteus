@@ -5,6 +5,7 @@ from proteus.mprans.cMCorr import *
 import numpy as np
 from proteus.Transport import OneLevelTransport, logEvent, memory, fabs
 from proteus.Transport import TC_base, l2Norm, NonlinearEquation
+from proteus.LinearAlgebraTools import SparseMat
 from . import cArgumentsDict
 
 class Coefficients(proteus.TransportCoefficients.TC_base):
@@ -693,7 +694,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
         argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
-        argsDict["ghost_penalty_constant"] = self.coefficients.flowCoefficients.ghost_penalty_constant
+        argsDict["ghost_penalty_constant"] = 10.0*self.coefficients.flowCoefficients.ghost_penalty_constant
         argsDict["phi_solid_nodes"] = self.coefficients.flowCoefficients.phi_s
         argsDict["useExact_s"] = int(self.coefficients.flowCoefficients.useExact)
         argsDict["isActiveR"] = self.isActiveR
@@ -719,12 +720,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             rowptr, colind, nzval = self.jacobian.getCSRrepresentation()
             self.MassMatrix_a = nzval.copy()
             nnz = nzval.shape[-1]  # number of non-zero entries in sparse matrix
-            self.MassMatrix = LinearAlgebraTools.SparseMat(self.nFreeDOF_global[0],
-                                                           self.nFreeDOF_global[0],
-                                                           nnz,
-                                                           self.MassMatrix_a,
-                                                           colind,
-                                                           rowptr)
+            self.MassMatrix = SparseMat(self.nFreeDOF_global[0],
+                                        self.nFreeDOF_global[0],
+                                        nnz,
+                                        self.MassMatrix_a,
+                                        colind,
+                                        rowptr)
             # Lumped mass matrix
             self.LumpedMassMatrix = np.zeros(rowptr.size - 1, 'd')
         else:
@@ -818,7 +819,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["csrColumnOffsets_u_u"] = self.csrColumnOffsets[(0, 0)]
         argsDict["globalJacobian"] = jacobian.getCSRrepresentation()[2]
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0, 0)]
-        argsDict["ghost_penalty_constant"] = self.coefficients.flowCoefficients.ghost_penalty_constant
+        argsDict["ghost_penalty_constant"] = 10.0*self.coefficients.flowCoefficients.ghost_penalty_constant
         argsDict["phi_solid_nodes"] = self.coefficients.flowCoefficients.phi_s
         argsDict["useExact_s"] = int(self.coefficients.flowCoefficients.useExact)
         argsDict["isActiveR"] = self.isActiveR

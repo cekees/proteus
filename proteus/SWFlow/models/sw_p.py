@@ -42,8 +42,7 @@ LUMPED_MASS_MATRIX = numerical_parameters['LUMPED_MASS_MATRIX']
 # ********************************** #
 LevelModelType = SW2DCV.LevelModel
 coefficients = SW2DCV.Coefficients(g=g,
-                                   bathymetry={
-                                       0: bathymetry} if bathymetry is not None else None,
+                                   bathymetry=bathymetry,
                                    cE=cE,
                                    LUMPED_MASS_MATRIX=LUMPED_MASS_MATRIX,
                                    LINEAR_FRICTION=LINEAR_FRICTION,

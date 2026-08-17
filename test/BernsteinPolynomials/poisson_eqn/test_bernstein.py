@@ -37,7 +37,6 @@ class TestBernstein(object):
     def teardown_method(self,method):
         pass
 
-    @pytest.mark.skipif(sys.platform == "darwin", reason="does not run on macOS")
     def test_2D_hex(self):
         # Set parameters for this test
         parameters_for_poisson.ct.nd = 2

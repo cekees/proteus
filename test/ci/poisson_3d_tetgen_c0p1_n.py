@@ -80,7 +80,7 @@ else:
 #linear solver relative convergence test
 linTolFac = 0.0
 #linear solver absolute convergence test
-l_atol_res = 1.0e-10
+l_atol_res = 1.0e-9
 
 conservativeFlux =  None
 cfluxtag = None

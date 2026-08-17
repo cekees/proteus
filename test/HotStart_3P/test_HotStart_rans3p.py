@@ -46,6 +46,15 @@ class Test_HotStart_rans3p(object):
         Context.contextOptionsString = pre_setting
         from . import NS_hotstart_so as my_so
         reload(my_so)
+        # The p/n modules below (twp_navier_stokes_p.py etc.) import NS_hotstart
+        # via a bare "from NS_hotstart import *", not the package-relative
+        # "from . import NS_hotstart" above -- these are two separate entries
+        # in sys.modules for the same file. reload(my_so) only refreshes the
+        # package-relative one, so the bare one (and everything that did
+        # "from NS_hotstart import *" from it) stays stale across tests with
+        # different context options unless it's reloaded here too.
+        if "NS_hotstart" in sys.modules:
+            reload(sys.modules["NS_hotstart"])
         # defined in iproteus
         opts.profile = False
         opts.gatherArchive = True

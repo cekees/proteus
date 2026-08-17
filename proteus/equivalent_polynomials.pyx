@@ -35,6 +35,8 @@ cdef class Simplex:
     cdef int nEBQ
     cdef int q
     cdef bool inside_out
+    cdef int edge
+    cdef int corner
     cdef np.ndarray _H
     cdef np.ndarray _ImH
     cdef np.ndarray _D
@@ -63,70 +65,102 @@ cdef class Simplex:
             self._ImH = np.asarray(<double[:self.nQ]>self.s11.get_ImH())
             self._D = np.asarray(<double[:self.nQ]>self.s11.get_D())
             self.inside_out = self.s11.inside_out
+            self.edge = self.s11.edge
+            self.corner = self.s11.corner
         elif (self.nSpace,self.nP) == (1,2):
             icase = self.s12.calculate(<double*>(phi_dof.data), <double*>(phi_nodes.data), <double*>(self.xiBuffer.data),False)
             self._H = np.asarray(<double[:self.nQ]>self.s12.get_H())
             self._ImH = np.asarray(<double[:self.nQ]>self.s12.get_ImH())
             self._D = np.asarray(<double[:self.nQ]>self.s12.get_D())
             self.inside_out = self.s12.inside_out
+            self.edge = self.s12.edge
+            self.corner = self.s12.corner
         elif (self.nSpace,self.nP) == (1,3):
             icase = self.s13.calculate(<double*>(phi_dof.data), <double*>(phi_nodes.data), <double*>(self.xiBuffer.data),False)
             self._H = np.asarray(<double[:self.nQ]>self.s13.get_H())
             self._ImH = np.asarray(<double[:self.nQ]>self.s13.get_ImH())
             self._D = np.asarray(<double[:self.nQ]>self.s13.get_D())
             self.inside_out = self.s13.inside_out
+            self.edge = self.s13.edge
+            self.corner = self.s13.corner
         elif (self.nSpace,self.nP) == (2,1):
             icase = self.s21.calculate(<double*>(phi_dof.data), <double*>(phi_nodes.data), <double*>(self.xiBuffer.data),False)
             self._H = np.asarray(<double[:self.nQ]>self.s21.get_H())
             self._ImH = np.asarray(<double[:self.nQ]>self.s21.get_ImH())
             self._D = np.asarray(<double[:self.nQ]>self.s21.get_D())
             self.inside_out = self.s21.inside_out
+            self.edge = self.s21.edge
+            self.corner = self.s21.corner
         elif (self.nSpace,self.nP) == (2,2):
             icase = self.s22.calculate(<double*>(phi_dof.data), <double*>(phi_nodes.data), <double*>(self.xiBuffer.data),False)
             self._H = np.asarray(<double[:self.nQ]>self.s22.get_H())
             self._ImH = np.asarray(<double[:self.nQ]>self.s22.get_ImH())
             self._D = np.asarray(<double[:self.nQ]>self.s22.get_D())
             self.inside_out = self.s22.inside_out
+            self.edge = self.s22.edge
+            self.corner = self.s22.corner
         elif (self.nSpace,self.nP) == (2,3):
             icase = self.s23.calculate(<double*>(phi_dof.data), <double*>(phi_nodes.data), <double*>(self.xiBuffer.data),False)
             self._H = np.asarray(<double[:self.nQ]>self.s23.get_H())
             self._ImH = np.asarray(<double[:self.nQ]>self.s23.get_ImH())
             self._D = np.asarray(<double[:self.nQ]>self.s23.get_D())
             self.inside_out = self.s23.inside_out
+            self.edge = self.s23.edge
+            self.corner = self.s23.corner
         if (self.nSpace,self.nP) == (3,1):
             icase = self.s31.calculate(<double*>(phi_dof.data), <double*>(phi_nodes.data), <double*>(self.xiBuffer.data),False)
             self._H = np.asarray(<double[:self.nQ]>self.s31.get_H())
             self._ImH = np.asarray(<double[:self.nQ]>self.s31.get_ImH())
             self._D = np.asarray(<double[:self.nQ]>self.s31.get_D())
             self.inside_out = self.s31.inside_out
+            self.edge = self.s31.edge
+            self.corner = self.s31.corner
         elif (self.nSpace,self.nP) == (3,2):
             icase = self.s32.calculate(<double*>(phi_dof.data), <double*>(phi_nodes.data), <double*>(self.xiBuffer.data),False)
             self._H = np.asarray(<double[:self.nQ]>self.s32.get_H())
             self._ImH = np.asarray(<double[:self.nQ]>self.s32.get_ImH())
             self._D = np.asarray(<double[:self.nQ]>self.s32.get_D())
             self.inside_out = self.s32.inside_out
+            self.edge = self.s32.edge
+            self.corner = self.s32.corner
         elif (self.nSpace,self.nP) == (3,3):
             icase = self.s33.calculate(<double*>(phi_dof.data), <double*>(phi_nodes.data), <double*>(self.xiBuffer.data),False)
             self._H = np.asarray(<double[:self.nQ]>self.s33.get_H())
             self._ImH = np.asarray(<double[:self.nQ]>self.s33.get_ImH())
             self._D = np.asarray(<double[:self.nQ]>self.s33.get_D())
             self.inside_out = self.s33.inside_out
+            self.edge = self.s33.edge
+            self.corner = self.s33.corner
     def set_quad(self, int q):
         self.q=q
+    # Mirrors Simplex::set_quad() in equivalent_polynomials.h, including its precedence:
+    # the edge/corner degenerate cases are resolved BEFORE inside_out. Keying off inside_out
+    # alone (as this wrapper used to) reports H and ImH exchanged whenever a cell is flagged
+    # corner==1, which also sets inside_out for the P2 basis solve.
     @property
     def H(self):
-        if self.inside_out:
+        if self.edge == -1 or self.corner == -1:
+            return 0.0
+        elif self.edge == 1 or self.corner == 1:
+            return 1.0
+        elif self.inside_out:
             return self._ImH[self.q]
         else:
             return self._H[self.q]
     @property
     def ImH(self):
-        if self.inside_out:
+        if self.edge == -1 or self.corner == -1:
+            return 1.0
+        elif self.edge == 1 or self.corner == 1:
+            return 0.0
+        elif self.inside_out:
             return self._H[self.q]
         else:
             return self._ImH[self.q]
     @property
     def D(self):
+        # NOT zeroed for edge/corner: when the interface lies along an element edge it has real
+        # nonzero measure (the edge length), which the moment fit already carries in _D.
         return self._D[self.q]
 
 def calc_edge_H(double phi0, double phi1, int nP):

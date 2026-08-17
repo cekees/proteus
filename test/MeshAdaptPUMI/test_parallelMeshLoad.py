@@ -21,7 +21,7 @@ def test_3DparallelLoadPUMI(verbose=0):
     Model=testDir+ '/cubepar.dmg'
     Mesh=testDir + '/cubepar.smb'
     #domain.PUMIMesh=MeshAdapt.MeshAdaptPUMI()
-    domain.AdaptManager.PUMIAdapter.loadModelAndMesh(bytes(Model,'utf-8'), bytes(Mesh,'utf-8'))
+    domain.AdaptManager.PUMIAdapter.loadModelAndMesh(Model.encode('ascii'), Mesh.encode('ascii'))
     mesh = MeshTools.TetrahedralMesh()
     mesh.cmesh = cmeshTools.CMesh()
     mesh.convertFromPUMI(domain, domain.AdaptManager.PUMIAdapter, domain.faceList, domain.regList,parallel = comm.size() > 1, dim = domain.nd)
@@ -48,7 +48,7 @@ def test_2DparallelLoadPUMI(verbose=0):
     Model=testDir+ '/squarepar.dmg'
     Mesh=testDir + '/squarepar.smb'
     #domain.PUMIMesh=MeshAdapt.MeshAdaptPUMI()
-    domain.AdaptManager.PUMIAdapter.loadModelAndMesh(bytes(Model,'utf-8'), bytes(Mesh,'utf-8'))
+    domain.AdaptManager.PUMIAdapter.loadModelAndMesh(Model.encode('ascii'),Mesh.encode('ascii'))
     mesh = MeshTools.TriangularMesh()
     mesh.cmesh = cmeshTools.CMesh()
     mesh.convertFromPUMI(domain, domain.AdaptManager.PUMIAdapter, domain.faceList, domain.regList,parallel = comm.size() > 1, dim = domain.nd)

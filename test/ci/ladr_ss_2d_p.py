@@ -552,6 +552,8 @@ def getDBC(x,flag):
     if flag in [domain.boundaryTags['left'], domain.boundaryTags['right'], 
                 domain.boundaryTags['bottom'], domain.boundaryTags['top']]:
         return lambda x,t: ans.uOfX(x) 
+#    if flag in [domain.boundaryTags['left'], domain.boundaryTags['right']]:
+#        return lambda x,t: ans.uOfX(x) 
     
 dirichletConditions = {0:getDBC}
 

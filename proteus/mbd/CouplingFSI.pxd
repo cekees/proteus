@@ -134,6 +134,7 @@ cdef extern from "ProtChBody.h":
         ch.ChQuaternion rotq0_trimesh
         cppRigidBody(cppSystem* system)
         void calculate_init()
+        void addAccumulators()
         void prestep(double* force, double* torque)
         void poststep()
         ch.ChVector3d hxyz(double* x, double dt)

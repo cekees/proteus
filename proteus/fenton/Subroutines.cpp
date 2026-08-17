@@ -4,7 +4,6 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-#include "ncursesw/curses.h"
 
 #define	iff(x,y)	if(strcmp(x,#y)==0)
 #define	PI			3.14159265358979324

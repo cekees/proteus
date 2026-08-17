@@ -42,7 +42,6 @@ class Test_ibm(object):
 #         self.compare_name = "T8P2"
 #         self.example_setting("T=8.0 vspaceOrder=2 onlySaveFinalSolution=True")
 
-    @pytest.mark.skip(reason="need to redo after history revision")                         
     def test_ex2(self):
         self.compare_name = "T1_rans3p"
         self.example_setting("T=0.01 onlySaveFinalSolution=True")
@@ -61,11 +60,9 @@ class Test_ibm(object):
         sList=[]
         for (pModule,nModule) in my_so.pnList:
             pList.append(
-                importlib.import_module("."+pModule,
-                                        "proteus.tests.cylinder2D.ibm_method"))
+                importlib.import_module("."+pModule, __package__))
             nList.append(
-                importlib.import_module("."+nModule,
-                                        "proteus.tests.cylinder2D.ibm_method"))
+                importlib.import_module("."+nModule, __package__))
             if pList[-1].name == None:
                 pList[-1].name = pModule
             reload(pList[-1])  # Serious error

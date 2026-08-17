@@ -1,5 +1,4 @@
 #include <math.h>
-#include "ncursesw/curses.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,7 +50,6 @@ if(strcmp(Theory,"Stokes")==0)
 			{
 			printf("\nThe dimensionless wavelength is greater than 10.");
 			printf("\nStokes theory should not be applied. Exiting.");
-			getch();
 			exit(1);
 			}
 	iff(Case,Period)
@@ -59,7 +57,6 @@ if(strcmp(Theory,"Stokes")==0)
 			{
 			printf("\nThe dimensionless period is greater than 10.");
 			printf("\nStokes theory should not be applied. Exiting.");
-			getch();
 			exit(1);
 			}
 	}

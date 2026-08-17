@@ -2575,8 +2575,8 @@ namespace proteus
             // update residual
             if (LUMPED_MASS_MATRIX==1)
               globalResidual.data()[i] = u_dof_old.data()[i] - dt/mi*(ith_flux_term
-                                                        + boundary_integral[i]
-                                                        - ith_dissipative_term);
+                                                                      + boundary_integral[i]
+                                                                      - ith_dissipative_term);
             else
               globalResidual.data()[i] += dt*(ith_flux_term - ith_dissipative_term);
           }

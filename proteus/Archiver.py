@@ -174,20 +174,21 @@ class AR_base(object):
         """
         XDMF = self.treeGlobal.getroot()
         Domain = XDMF[0]
-        for TemporalGridCollection in Domain:
-            for i in range(self.n_datasets):
-                dataset_name = TemporalGridCollection.attrib['Name']+"_"+str(i)
-                dataset_name = dataset_name.replace(" ","_")
-                grid_array = self.hdfFile["/"+dataset_name]
-                if self.global_sync:
-                    TemporalGridCollection.append(fromstring(grid_array[0]))
-                else:
-                    SpatialCollection=SubElement(TemporalGridCollection,"Grid",{"GridType":"Collection",
-                                                                                "CollectionType":"Spatial"})
-                    time = SubElement(SpatialCollection,"Time",{"Value":grid_array.attrs['Time'],"Name":"%i" % (i,)})
-                    for j in range(self.size):
-                        Grid = fromstring(grid_array[j])
-                        SpatialCollection.append(Grid)
+        if self.hdfFile is not None:
+            for TemporalGridCollection in Domain:
+                for i in range(self.n_datasets):
+                    dataset_name = TemporalGridCollection.attrib['Name']+"_"+str(i)
+                    dataset_name = dataset_name.replace(" ","_")
+                    grid_array = self.hdfFile["/"+dataset_name]
+                    if self.global_sync:
+                        TemporalGridCollection.append(fromstring(grid_array[0]))
+                    else:
+                        SpatialCollection=SubElement(TemporalGridCollection,"Grid",{"GridType":"Collection",
+                                                                                    "CollectionType":"Spatial"})
+                        time = SubElement(SpatialCollection,"Time",{"Value":grid_array.attrs['Time'],"Name":"%i" % (i,)})
+                        for j in range(self.size):
+                            Grid = fromstring(grid_array[j])
+                            SpatialCollection.append(Grid)
         self.clear_xml()
         self.xmlFileGlobal.write(bytes(self.xmlHeader,"utf-8"))
         indentXML(self.treeGlobal.getroot())
@@ -290,13 +291,14 @@ class AR_base(object):
                 dataset_name = TemporalGridCollection.attrib['Name']+"_"+ \
                     str(self.n_datasets)
                 dataset_name = dataset_name.replace(" ","_")
-                xml_data  = self.hdfFile.create_dataset(name  = dataset_name,
-                                                        shape = (self.size,),
-                                                        dtype = '|S'+str(max_grid_string_len))
-                xml_data.attrs['Time'] = TimeAttrib
-                if self.comm.isMaster():
-                    for j, Grid in enumerate(Grids):
-                        xml_data[j] = tostring(Grid, encoding="utf-8")
+                if self.hdfFile is not None:
+                    xml_data  = self.hdfFile.create_dataset(name  = dataset_name,
+                                                            shape = (self.size,),
+                                                            dtype = '|S'+str(max_grid_string_len))
+                    xml_data.attrs['Time'] = TimeAttrib
+                    if self.comm.isMaster():
+                        for j, Grid in enumerate(Grids):
+                            xml_data[j] = tostring(Grid, encoding="utf-8")
         else:
             comm_world = self.comm.comm.tompi4py()
             for i, TemporalGridCollection in enumerate(Domain):
@@ -313,14 +315,15 @@ class AR_base(object):
                 dataset_name = TemporalGridCollection.attrib['Name']+"_"+ \
                     str(self.n_datasets)
                 dataset_name = dataset_name.replace(" ","_")
-                try:
-                    xml_data  = self.hdfFile.create_dataset(name  = dataset_name,
-                                                            shape = (1,),
-                                                            dtype = '|S'+str(max_grid_string_len))
-                except:
-                    xml_data = self.hdfFile[dataset_name]
-                if self.comm.isMaster():
-                    xml_data[0] = tostring(GridLocal, encoding="utf-8")
+                if self.hdfFile is not None:
+                    try:
+                        xml_data  = self.hdfFile.create_dataset(name  = dataset_name,
+                                                                shape = (1,),
+                                                                dtype = '|S'+str(max_grid_string_len))
+                    except:
+                        xml_data = self.hdfFile[dataset_name]
+                    if self.comm.isMaster():
+                        xml_data[0] = tostring(GridLocal, encoding="utf-8")
         self.n_datasets += 1
         logEvent("Done Gathering Archive Time Step")
     def sync(self):

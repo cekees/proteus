@@ -585,6 +585,9 @@ namespace proteus
 					for (int I = 0; I < nSpace; I++)
 					{
 						u_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//PGIFEM
+						//ua_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//ub_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
 					}
 				}
 				if (icase_f == 0)
@@ -691,8 +694,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,
@@ -732,8 +735,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateImmersedBoundaryTerms(immersedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,
@@ -856,6 +859,7 @@ namespace proteus
 					}
 					else
 					{
+
 						elementResidual_u.data()[i] += H_s * (ck.Advection_weak(f, &u_grad_test_dV[i_nSpace]) +
 															  ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a, grad_u, &u_grad_test_dV[i_nSpace]) +
 															  ck.Reaction_weak(r, u_test_dV[i]) +
@@ -1229,7 +1233,6 @@ namespace proteus
 				for (int i = 0; i < nDOF_test_element; i++)
 				{
 					int eN_i = eN * nDOF_test_element + i;
-
 					globalResidual.data()[offset_u + stride_u * u_l2g.data()[eN_i]] += elementResidual_u.data()[i];
 					if (element_active)
 						isActiveDOF.data()[offset_u + stride_u * u_l2g.data()[eN_i]] = 1.0;
@@ -1939,6 +1942,9 @@ namespace proteus
 					for (int I = 0; I < nSpace; I++)
 					{
 						u_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//PGIFEM
+						//ua_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
+						//ub_grad_test_dV[j * nSpace + I] = u_grad_trial[j * nSpace + I] * dV; // cek warning won't work for Petrov-Galerkin
 					}
 				}
 				if (icase_f == 0)
@@ -2025,8 +2031,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,
@@ -2060,8 +2066,8 @@ namespace proteus
 					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
 					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
 					if (sign < 0.0)
-						for (int I = 0; I < nSpace; I++)
-							level_set_normal[I] *= -1.0;
+					  for (int I = 0; I < nSpace; I++)
+					    level_set_normal[I] *= -1.0;
 					updateImmersedBoundaryTerms(immersedBoundary_penalty / h_phi, // penalty,
 												dV,
 												level_set_normal,

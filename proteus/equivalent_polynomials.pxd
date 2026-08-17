@@ -11,3 +11,5 @@ cdef extern from "equivalent_polynomials.h" namespace "equivalent_polynomials":
       double* get_ImH()
       double* get_D()
       bool inside_out
+      int edge
+      int corner

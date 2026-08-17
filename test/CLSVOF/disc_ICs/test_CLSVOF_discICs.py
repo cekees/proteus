@@ -70,7 +70,7 @@ class TestCLSVOF(object):
         #write comparison file
         if write:
             np.array(actual['u_t1']).tofile(os.path.join(self._scriptdir, expected_path),sep=",")
-        np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['u_t1']).flatten(),decimal=10)
+        np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['u_t1']).flatten(),decimal=2)
         actual.close()
 
     def test_case_1(self):

@@ -4,6 +4,14 @@
 #include <apfNumbering.h>
 #include <queue>
 #include "PyEmbeddedFunctions.h"
+// SCOREC/core >= 3.0.0 replaced PCU's global-state API with an explicit
+// pcu::PCU object; every PCU_* free function now takes a PCU_t handle as
+// its first argument, obtained from a live pcu::PCU via GetCHandle(). See
+// pcu/PCU.h (the pcu::PCU class) and pcu/PCU_C.h (the C shim that keeps
+// the existing PCU_* call sites below working with a threaded handle,
+// rather than rewriting them to the pcu::PCU member-function API).
+#include <PCU.h>
+#include <PCU_C.h>
 
 /**
    \file MeshAdaptPUMI.h
@@ -151,9 +159,22 @@ class MeshAdaptPUMIDrvr{
   int numModelOffsets[4];
   int numModelTotals[4];
 
-  private: 
+  private:
   apf::Mesh2* m;
   int comm_size, comm_rank;
+
+  // Owns the process's PCU state for the lifetime of this driver (SCOREC/core
+  // >= 3.0.0). Constructed from the pre-existing MPI_COMM_WORLD -- proteus's
+  // Python layer (mpi4py) already calls MPI_Init before this driver is ever
+  // constructed, so this wraps that communicator rather than calling
+  // pcu::Init(), which would attempt its own MPI bring-up. Must be a real
+  // member (not a local temporary): PCUObj below is a raw handle wrapping a
+  // pointer to pcuObj_, so pcuObj_ must outlive every PCU_* call.
+  pcu::PCU pcuObj_;
+  // Opaque C handle threaded as the first argument through every PCU_* call
+  // site below (pcu/PCU_C.h). Set once in the constructor via
+  // pcuObj_.GetCHandle().
+  PCU_t PCUObj;
 
   //double rho[2];
   //nu[2];

@@ -525,7 +525,7 @@ int MeshAdaptPUMIDrvr::updateMaterialArrays2(Mesh& mesh)
 
   apf::Field* nodeMaterials = apf::createLagrangeField(m, "nodeMaterials", apf::SCALAR, 1);
   it = m->begin(0);
-  PCU_Comm_Begin();
+  PCU_Comm_Begin(PCUObj);
   while(f = m->iterate(it))
     {
       geomEnt = m->toModel(f);
@@ -555,8 +555,8 @@ int MeshAdaptPUMIDrvr::updateMaterialArrays2(Mesh& mesh)
 		      m->getRemotes(f,remotes);
 		      for(apf::Copies::iterator iter = remotes.begin(); iter != remotes.end(); ++iter)
 			{
-			  PCU_COMM_PACK(iter->first,iter->second);
-			  PCU_COMM_PACK(iter->first,geomTag);
+			  PCU_COMM_PACK(PCUObj, iter->first,iter->second);
+			  PCU_COMM_PACK(PCUObj, iter->first,geomTag);
 			}
 		    }  
 		  break;
@@ -567,11 +567,11 @@ int MeshAdaptPUMIDrvr::updateMaterialArrays2(Mesh& mesh)
 	}
     }
   m->end(it);
-  PCU_Comm_Send();
-  while(PCU_Comm_Receive())
+  PCU_Comm_Send(PCUObj);
+  while(PCU_Comm_Receive(PCUObj))
     {
-      PCU_COMM_UNPACK(f);
-      PCU_COMM_UNPACK(geomTag);
+      PCU_COMM_UNPACK(PCUObj, f);
+      PCU_COMM_UNPACK(PCUObj, geomTag);
       int currentTag = apf::getScalar(nodeMaterials,f,0);
       int newTag = std::min(currentTag,geomTag);
       //if vertex is not interior and had no adjacent faces, take received values
@@ -686,12 +686,12 @@ namespace apf {
     }
   }
 
-  static apf::Gid getMax(const GlobalToVert& globalToVert)
+  static apf::Gid getMax(const GlobalToVert& globalToVert, PCU_t PCUObj)
   {
     apf::Gid max = -1;
     APF_CONST_ITERATE(GlobalToVert, globalToVert, it)
       max = std::max(max, it->first);
-    return PCU_Max_Int(max); // this is type-dependent
+    return PCU_Max_Int(PCUObj, max); // this is type-dependent
   }
 
 
@@ -699,65 +699,65 @@ namespace apf {
      use brokers/routers for the vertex global ids.
      Although we have used this trick before (see mpas/apfMPAS.cc),
      I didn't think to use it here, so credit is given. */
-  static void constructResidence(Mesh2* m, GlobalToVert& globalToVert)
+  static void constructResidence(Mesh2* m, GlobalToVert& globalToVert, PCU_t PCUObj)
   {
-    Gid max = getMax(globalToVert);
+    Gid max = getMax(globalToVert, PCUObj);
     Gid total = max + 1;
-    int peers = PCU_Comm_Peers();
+    int peers = PCU_Comm_Peers(PCUObj);
     int quotient = total / peers;
     int remainder = total % peers;
     int mySize = quotient;
-    int self = PCU_Comm_Self();
+    int self = PCU_Comm_Self(PCUObj);
     if (self == (peers - 1))
       mySize += remainder;
     typedef std::vector< std::vector<int> > TmpParts;
     TmpParts tmpParts(mySize);
     /* if we have a vertex, send its global id to the
        broker for that global id */
-    PCU_Comm_Begin();
+    PCU_Comm_Begin(PCUObj);
     APF_ITERATE(GlobalToVert, globalToVert, it) {
       int gid = it->first;
       int to = std::min(peers - 1, gid / quotient);
-      PCU_COMM_PACK(to, gid);
+      PCU_COMM_PACK(PCUObj, to, gid);
     }
-    PCU_Comm_Send();
+    PCU_Comm_Send(PCUObj);
     int myOffset = self * quotient;
     /* brokers store all the part ids that sent messages
        for each global id */
-    while (PCU_Comm_Receive()) {
+    while (PCU_Comm_Receive(PCUObj)) {
       int gid;
-      PCU_COMM_UNPACK(gid);
-      int from = PCU_Comm_Sender();
+      PCU_COMM_UNPACK(PCUObj, gid);
+      int from = PCU_Comm_Sender(PCUObj);
       tmpParts.at(gid - myOffset).push_back(from);
     }
     /* for each global id, send all associated part ids
        to all associated parts */
-    PCU_Comm_Begin();
+    PCU_Comm_Begin(PCUObj);
     for (int i = 0; i < mySize; ++i) {
       std::vector<int>& parts = tmpParts[i];
       for (size_t j = 0; j < parts.size(); ++j) {
 	int to = parts[j];
 	int gid = i + myOffset;
 	int nparts = parts.size();
-	PCU_COMM_PACK(to, gid);
-	PCU_COMM_PACK(to, nparts);
+	PCU_COMM_PACK(PCUObj, to, gid);
+	PCU_COMM_PACK(PCUObj, to, nparts);
 	for (size_t k = 0; k < parts.size(); ++k)
-	  PCU_COMM_PACK(to, parts[k]);
+	  PCU_COMM_PACK(PCUObj, to, parts[k]);
       }
     }
-    PCU_Comm_Send();
+    PCU_Comm_Send(PCUObj);
     /* receiving a global id and associated parts,
        lookup the vertex and classify it on the partition
        model entity for that set of parts */
-    while (PCU_Comm_Receive()) {
+    while (PCU_Comm_Receive(PCUObj)) {
       int gid;
-      PCU_COMM_UNPACK(gid);
+      PCU_COMM_UNPACK(PCUObj, gid);
       int nparts;
-      PCU_COMM_UNPACK(nparts);
+      PCU_COMM_UNPACK(PCUObj, nparts);
       Parts residence;
       for (int i = 0; i < nparts; ++i) {
 	int part;
-	PCU_COMM_UNPACK(part);
+	PCU_COMM_UNPACK(PCUObj, part);
 	residence.insert(part);
       }
       MeshEntity* vert = globalToVert[gid];
@@ -768,10 +768,10 @@ namespace apf {
   /* given correct residence from the above algorithm,
      negotiate remote copies by exchanging (gid,pointer)
      pairs with parts in the residence of the vertex */
-  static void constructRemotes(Mesh2* m, GlobalToVert& globalToVert)
+  static void constructRemotes(Mesh2* m, GlobalToVert& globalToVert, PCU_t PCUObj)
   {
-    int self = PCU_Comm_Self();
-    PCU_Comm_Begin();
+    int self = PCU_Comm_Self(PCUObj);
+    PCU_Comm_Begin(PCUObj);
     APF_ITERATE(GlobalToVert, globalToVert, it) {
       int gid = it->first;
       MeshEntity* vert = it->second;
@@ -779,31 +779,31 @@ namespace apf {
       m->getResidence(vert, residence);
       APF_ITERATE(Parts, residence, rit)
 	if (*rit != self) {
-	  PCU_COMM_PACK(*rit, gid);
-	  PCU_COMM_PACK(*rit, vert);
+	  PCU_COMM_PACK(PCUObj, *rit, gid);
+	  PCU_COMM_PACK(PCUObj, *rit, vert);
 	}
     }
-    PCU_Comm_Send();
-    while (PCU_Comm_Receive()) {
+    PCU_Comm_Send(PCUObj);
+    while (PCU_Comm_Receive(PCUObj)) {
       int gid;
-      PCU_COMM_UNPACK(gid);
+      PCU_COMM_UNPACK(PCUObj, gid);
       MeshEntity* remote;
-      PCU_COMM_UNPACK(remote);
-      int from = PCU_Comm_Sender();
+      PCU_COMM_UNPACK(PCUObj, remote);
+      int from = PCU_Comm_Sender(PCUObj);
       MeshEntity* vert = globalToVert[gid];
       m->addRemote(vert, from, remote);
     }
   }
 
-  void construct(Mesh2* m, const Gid* conn, const Gid* conn_b, int nelem, 
+  void construct(Mesh2* m, const Gid* conn, const Gid* conn_b, int nelem,
 		 int nelem_b, int nverts,int etype, int etype_b, int* local2globalMap,
-		 GlobalToVert& globalToVert)
+		 GlobalToVert& globalToVert, PCU_t PCUObj)
   {
     constructVerts(m, nverts,local2globalMap,globalToVert);
     constructBoundaryElements(m, conn_b, nelem_b, etype_b, globalToVert);
     constructElements(m, conn, nelem, etype, globalToVert);
-    constructResidence(m, globalToVert);
-    constructRemotes(m, globalToVert);
+    constructResidence(m, globalToVert, PCUObj);
+    constructRemotes(m, globalToVert, PCUObj);
     stitchMesh(m);
     m->acceptChanges();
   }
@@ -871,13 +871,13 @@ int MeshAdaptPUMIDrvr::transferModelInfo(int* numGeomEntities, int* edges, int* 
 
 int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int hasModel)
 {
-  if(PCU_Comm_Self()==0)
+  if(PCU_Comm_Self(PCUObj)==0)
     std::cout<<"STARTING RECONSTRUCTION\n";
   isReconstructed = 1; //True
 
   /************Preliminaries**************/
-  comm_size = PCU_Comm_Peers();
-  comm_rank = PCU_Comm_Self();
+  comm_size = PCU_Comm_Peers(PCUObj);
+  comm_rank = PCU_Comm_Self(PCUObj);
 
   int numModelNodes;
   int numModelEdges;
@@ -885,7 +885,7 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
   int numModelRegions;
 
   int nBoundaryNodes=0; //number of total boundary nodes regardless of ownership
-  int nNodes_owned = globalMesh.nodeOffsets_subdomain_owned[PCU_Comm_Self()+1]-globalMesh.nodeOffsets_subdomain_owned[PCU_Comm_Self()];
+  int nNodes_owned = globalMesh.nodeOffsets_subdomain_owned[PCU_Comm_Self(PCUObj)+1]-globalMesh.nodeOffsets_subdomain_owned[PCU_Comm_Self(PCUObj)];
 
   for(int i =0;i<mesh.nNodes_global;i++){
     if(mesh.nodeMaterialTypes[i]>0){
@@ -924,7 +924,7 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
   numModelTotals[1] = numModelEdges;
   numModelTotals[2] = numModelBoundaries;
   numModelTotals[3] = 0;//The total number of regions is known so no need to set a value
-  PCU_Add_Ints(&numModelTotals[0],4); //get all offsets at the same time
+  PCU_Add_Ints(PCUObj, &numModelTotals[0],4); //get all offsets at the same time
   numModelTotals[3] = numModelRegions;
 
   /************Model Allocation**************/
@@ -969,7 +969,7 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
   //to their global vertices as well as boundary elements to their global 
   //vertices and outputs a topologically correct mesh. 
   //
-  m = apf::makeEmptyMdsMesh(gMod,numDim,false);
+  m = apf::makeEmptyMdsMesh(gMod,numDim,false,&pcuObj_);
 
   int etype,etype_b;
   int boundaryDim = numDim-1;
@@ -999,7 +999,7 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
   //construct the mesh
   apf::construct(m,local2global_elementNodes,local2global_elementBoundaryNodes,
 		 mesh.nElements_global,mesh.nElementBoundaries_global,mesh.nNodes_global,etype,etype_b,
-		 globalMesh.nodeNumbering_subdomain2global,outMap);
+		 globalMesh.nodeNumbering_subdomain2global,outMap,PCUObj);
 
   //Get the global model offsets after the mesh has been created
   //Need to get the number of owned element boundaries on the current rank
@@ -1070,8 +1070,8 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
 
 
   //get all offsets at the same time
-  PCU_Exscan_Ints(&numModelOffsets[0],4);
-  PCU_Add_Ints(&numModelTotals[0],4); 
+  PCU_Exscan_Ints(PCUObj, &numModelOffsets[0],4);
+  PCU_Add_Ints(PCUObj, &numModelTotals[0],4); 
   numModelTotals[3] = numModelRegions;
 
   //classify mesh entities on model entities
@@ -1142,7 +1142,7 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
   //Iterate over the vertices and set the coordinates and model classification
   int vID = 0;
   entIter = m->begin(0);
-  PCU_Comm_Begin();
+  PCU_Comm_Begin(PCUObj);
   while(ent = m->iterate(entIter)){
     pt[0]=mesh.nodeArray[vID*3+0];
     pt[1]=mesh.nodeArray[vID*3+1];
@@ -1175,22 +1175,22 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
         apf::Copies remotes;
         m->getRemotes(ent,remotes);
         for(apf::Copies::iterator it = remotes.begin(); it != remotes.end(); ++it){
-          PCU_COMM_PACK(it->first,it->second);
-          PCU_COMM_PACK(it->first,gEnt);
+          PCU_COMM_PACK(PCUObj, it->first,it->second);
+          PCU_COMM_PACK(PCUObj, it->first,gEnt);
         }
       }
 
     } //endif owned
     vID++;
   }
-  PCU_Comm_Send();
+  PCU_Comm_Send(PCUObj);
   //receive model entity classification from owning nodes
-  while(PCU_Comm_Receive()){
-    PCU_COMM_UNPACK(ent);
-    PCU_COMM_UNPACK(gEnt);
+  while(PCU_Comm_Receive(PCUObj)){
+    PCU_COMM_UNPACK(PCUObj, ent);
+    PCU_COMM_UNPACK(PCUObj, gEnt);
     m->setModelEntity(ent,gEnt); 
   }
-  PCU_Barrier();
+  PCU_Barrier(PCUObj);
   m->end(entIter);
 
   //Classify the mesh boundary entities
@@ -1204,7 +1204,7 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
   int edgCounter = numModelOffsets[1]; //this is a counter for the set of exterior edge entities
   apf::ModelEntity* edg_gEnt;
   entIter=m->begin(boundaryDim);
-  PCU_Comm_Begin();
+  PCU_Comm_Begin(PCUObj);
   while(ent = m->iterate(entIter)){
     if(hasModel){
       gEnt = m->findModelEntity(meshBoundary2Model[2*boundaryID+1],meshBoundary2Model[2*boundaryID]);
@@ -1234,8 +1234,8 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
                 apf::Copies remotes;
                 m->getRemotes(ent,remotes);
                 for(apf::Copies::iterator it = remotes.begin(); it != remotes.end(); ++it){
-                  PCU_COMM_PACK(it->first,it->second);
-                  PCU_COMM_PACK(it->first,edg_gEnt);
+                  PCU_COMM_PACK(PCUObj, it->first,it->second);
+                  PCU_COMM_PACK(PCUObj, it->first,edg_gEnt);
                 }
               }
 
@@ -1267,8 +1267,8 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
                 apf::Copies remotes;
                 m->getRemotes(ent,remotes);
                 for(apf::Copies::iterator it = remotes.begin(); it != remotes.end(); ++it){
-                  PCU_COMM_PACK(it->first,it->second);
-                  PCU_COMM_PACK(it->first,gEnt);
+                  PCU_COMM_PACK(PCUObj, it->first,it->second);
+                  PCU_COMM_PACK(PCUObj, it->first,gEnt);
                 }
               }
             }
@@ -1280,14 +1280,14 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
     m->setModelEntity(ent,gEnt);
     boundaryID++;
   }
-  PCU_Comm_Send();
+  PCU_Comm_Send(PCUObj);
   //receive model entity classification from owning edges
-  while(PCU_Comm_Receive()){
-    PCU_COMM_UNPACK(ent);
-    PCU_COMM_UNPACK(gEnt);
+  while(PCU_Comm_Receive(PCUObj)){
+    PCU_COMM_UNPACK(PCUObj, ent);
+    PCU_COMM_UNPACK(PCUObj, gEnt);
     m->setModelEntity(ent,gEnt); 
   }
-  PCU_Barrier();
+  PCU_Barrier(PCUObj);
 
   m->end(entIter);
 
@@ -1310,9 +1310,9 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
   //Sum all of the material arrays to get the model-material mapping across all
   //ranks
   
-  PCU_Add_Ints(modelVertexMaterial,numModelTotals[0]);
-  PCU_Add_Ints(modelBoundaryMaterial,numModelTotals[2]);
-  PCU_Add_Ints(modelRegionMaterial,numModelTotals[3]);
+  PCU_Add_Ints(PCUObj, modelVertexMaterial,numModelTotals[0]);
+  PCU_Add_Ints(PCUObj, modelBoundaryMaterial,numModelTotals[2]);
+  PCU_Add_Ints(PCUObj, modelRegionMaterial,numModelTotals[3]);
 
   //check that the mesh is consistent
   m->acceptChanges();
@@ -1327,7 +1327,7 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int h
   free(local2global_elementBoundaryNodes);
   free(local2global_elementNodes);
 
-  if(PCU_Comm_Self()==0)
+  if(PCU_Comm_Self(PCUObj)==0)
     std::cout<<"FINISHING RECONSTRUCTION\n";
 }
 
@@ -1383,7 +1383,7 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus2(Mesh& mesh,int* isModelVert,int* 
   apf::GlobalToVert outMap;
 
   gmi_model* tempModel  = gmi_load(".null");
-  m = apf::makeEmptyMdsMesh(tempModel,dim,false);
+  m = apf::makeEmptyMdsMesh(tempModel,dim,false,&pcuObj_);
   std::valarray<apf::Gid> elementNodesArray(mesh.nElements_global*apf::Mesh::adjacentCount[elementType][0]);
   for(int i=0;i<mesh.nElements_global*apf::Mesh::adjacentCount[elementType][0];i++){
     elementNodesArray[i] = mesh.elementNodesArray[i];
@@ -1400,7 +1400,7 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus2(Mesh& mesh,int* isModelVert,int* 
     globalToRegion.insert(std::pair<int,apf::MeshEntity*> (counter,ent ));
     counter++;
   }
-    
+
   if(dim == 2)
     apf::derive2DMdlFromManifold(m,isModelVert_bool,nBFaces,bEdges_1D,outMap,globalToRegion);
   else

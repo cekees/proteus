@@ -8,8 +8,6 @@ import sys,os
 import logging
 import pytest
 
-import cython
-
 comm = Comm.init()
 Profiling.procID = comm.rank()
 def getpath():

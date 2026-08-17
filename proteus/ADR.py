@@ -754,6 +754,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["embeddedBoundary"] = self.coefficients.embeddedBoundary
         argsDict["embeddedBoundary_penalty"] = self.coefficients.embeddedBoundary_penalty
         argsDict["embeddedBoundary_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
+        argsDict["embedded_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
         argsDict["embeddedBoundary_sdf_nodes"] = self.coefficients.embeddedBoundary_sdf_nodes
         argsDict["embeddedBoundary_sdf_q"] = self.q['embeddedBoundary_sdf']
         argsDict["embeddedBoundary_normal_q"] = self.q['embeddedBoundary_normal']
@@ -767,6 +768,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
         argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
+        argsDict["x_ref"] = self.elementQuadraturePoints
+        argsDict["elementBoundaryDiameter"] = self.mesh.elementBoundaryDiametersArray
+        argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
+        argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
+        argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["immersedBoundary_fluxJump_q"] = self.q['immersedBoundary_fluxJump']
         argsDict["immersedBoundary_fluxJumpVector_q"] = self.q['immersedBoundary_fluxJumpVector']
         argsDict["immersedBoundary_solutionJump_nodes"] = self.coefficients.immersedBoundary_solutionJump_nodes
@@ -793,6 +799,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 r[self.offset[0] + self.stride[0] * dofN] = self.u[0].dof[dofN] - g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN], self.timeIntegration.t)
         self.u[0].dof[:] = np.where(self.isActiveDOF == 1.0, self.u[0].dof,0.0)
         r*=self.isActiveDOF
+        log("2 error = {0}".format(self.L2_error**0.5),level=3)
+        log("infty error = {0}".format(self.Linfty_error),level=3)
         log("Global residual",level=9,data=r)
         #self.coefficients.massConservationError = fabs(globalSum(sum(r.flat[:self.mesh.nElements_owned])))
         #log("   Mass Conservation Error",level=3,data=self.coefficients.massConservationError)
@@ -867,6 +875,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["embeddedBoundary"] = self.coefficients.embeddedBoundary
         argsDict["embeddedBoundary_penalty"] = self.coefficients.embeddedBoundary_penalty
         argsDict["embeddedBoundary_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
+        argsDict["embedded_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
         argsDict["embeddedBoundary_sdf_nodes"] = self.coefficients.embeddedBoundary_sdf_nodes
         argsDict["embeddedBoundary_sdf_q"] = self.q['embeddedBoundary_sdf']
         argsDict["embeddedBoundary_normal_q"] = self.q['embeddedBoundary_normal']
@@ -880,6 +889,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
         argsDict["immersedBoundary_u_q"] = self.q['immersedBoundary_u']
+        argsDict["x_ref"] = self.elementQuadraturePoints
+        argsDict["elementBoundaryDiameter"] = self.mesh.elementBoundaryDiametersArray
+        argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
+        argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
+        argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["immersedBoundary_fluxJump_q"] = self.q['immersedBoundary_fluxJump']
         argsDict["immersedBoundary_fluxJumpVector_q"] = self.q['immersedBoundary_fluxJumpVector']
         argsDict["immersedBoundary_solutionJump_nodes"] = self.coefficients.immersedBoundary_solutionJump_nodes
