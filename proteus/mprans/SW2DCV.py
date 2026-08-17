@@ -359,11 +359,10 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                 self.b.dof = self.bathymetry
                 mesh.nodeArray[:,2] = self.b.dof           
         else:
-            self.b.dof = self.bathymetry([x, y])          
+            self.b.dof = self.bathymetry([x, y])
             mesh.nodeArray[:,2] = self.b.dof     #if bathy is a function no need to pass subdomain info here
-        
+
         assert mesh.nodeArray.shape[1]==3
-                
 
     def initializeElementQuadrature(self, t, cq):
         pass
@@ -1229,8 +1228,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # hEps
         self.eps = 1E-5
         self.hEps = self.eps * comm.globalMax(self.u[0].dof.max())
-        self.mesh.globalMesh.volume = np.load("volume.npy") #Linoj hack: globalmesh.volume from MeshTools.generateFromTriangleFiles
-        
+        self.mesh.globalMesh.volume = comm.globalSum(self.mesh.volume) #Linoj:globalMesh volume from meshTools is empty. 
+        #Replaced with a nonZero sum of subdomain mesh volumes
         # size_of_domain used in relaxation of bounds
         self.size_of_domain = self.mesh.globalMesh.volume 
         # normal vectors
