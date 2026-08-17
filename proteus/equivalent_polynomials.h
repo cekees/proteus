@@ -1068,7 +1068,12 @@ namespace equivalent_polynomials
       ma_scale = ma;
       mb_scale = mb;
     }
-    _calculate_basis_coefficients(ma_scale, mb_scale, jf);
+    // The two-sided IFEM basis is only implemented for 2D simplices (P1 -> nP_ifem 3,
+    // P2 -> 6); _calculate_basis_coefficients asserts nSpace==2 and throws for any other
+    // nP_ifem. Guard the call so the 1D/3D instantiations, which need only the H/ImH/D
+    // moment fit, do not abort.
+    if (nSpace == 2)
+      _calculate_basis_coefficients(ma_scale, mb_scale, jf);
     // compute the default affine map based on phi_nodes[0]
     double Jac_0[nSpace * nSpace];
     for (unsigned int i = 0; i < nN - 1; i++)
