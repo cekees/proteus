@@ -361,7 +361,6 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         else:
             self.b.dof = self.bathymetry([x, y])
             mesh.nodeArray[:,2] = self.b.dof     #if bathy is a function no need to pass subdomain info here
-
         assert mesh.nodeArray.shape[1]==3
 
     def initializeElementQuadrature(self, t, cq):
