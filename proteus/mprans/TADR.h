@@ -1869,9 +1869,36 @@ inline
                       // NOT the directional a_ij).  calculateJacobian recomputes
                       // a_ij directly from T,D, so it no longer reads dLow.
                       dLow.data()[ij] = fmax(fabs(T_ij), fabs(TransposeTransportMatrix[ij]));
+                      // High-order (smoothness-compressed) graph dissipation for the
+                      // FCT post-step, mirroring the explicit EntropyViscosity branch
+                      // (dHij = dLowij*(1-Compij)).  Store dt*(dH - dLow) <= 0 so the
+                      // FCTStep removes ONLY the EXCESS low-order dissipation
+                      // (dLow - dH) and KEEPS dH.  Removing the full dLow (as the
+                      // explicit Kuzmin flux does) makes the antidiffusion target the
+                      // dissipation-free Galerkin solution, which over-sharpens the
+                      // Dirichlet source front back to the initial condition -> the
+                      // observed FCT=True freeze.  globalResidual is NOT touched here,
+                      // so calculateJacobian needs no change.
+                      {
+                        // Standard Kuzmin implicit FEM-FCT high-order target: ZERO
+                        // artificial dissipation (d^H = 0).  The full low-order graph
+                        // viscosity dLow is antidiffused; the Zalesak limiter
+                        // (min/max_u_bc bounds) provides boundedness.  The earlier
+                        // dH = dLow*(1-Comp) "smoothness compression" throttled the
+                        // antidiffusion so the consistent-mass term dominated and the
+                        // front stayed diffuse (verified in the 1D FCT numpy replica);
+                        // removing it recovers the textbook antidiffusive flux
+                        //   F_ij = M~_ij[(m_j^H-m_j^n)-(m_i^H-m_i^n)]
+                        //          + dt (d^H-d^L)_ij (m_j^n-m_i^n),  d^H=0.
+                        const double dHij = 0.0;
+                        dt_times_dH_minus_dL.data()[ij] = dt*(dHij - dLow.data()[ij]);
+                      }
                     }
                   else
-                    dLow.data()[ij] = 0.0;
+                    {
+                      dLow.data()[ij] = 0.0;
+                      dt_times_dH_minus_dL.data()[ij] = 0.0;
+                    }
                   ij += 1;
                 }
               // Stage-3 kinetic dissolution source (mass-rate form); MUST match
@@ -2713,14 +2740,33 @@ inline
             double solnmj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solnj)*solnj;
             double uDotLowj = (mLowj - solnmj)/dt;
             // i-th row of flux correction matrix
-            if (STABILIZATION_TYPE == STABILIZATION::Kuzmin ||
-                STABILIZATION_TYPE == STABILIZATION::ImplicitEV)
+            if (STABILIZATION_TYPE == STABILIZATION::Kuzmin)
               {
-                // ImplicitEV uses the same Kuzmin antidiffusive flux: consistent
-                // mass correction + symmetric graph viscosity dLow*(mLow_i-mLow_j).
-                // uLow here is the converged implicit (Newton) low-order solution.
+                // Explicit Kuzmin antidiffusive flux: consistent-mass correction +
+                // full removal of the symmetric graph viscosity dLow*(mLow_i-mLow_j).
                 FluxCorrectionMatrix[ij] = dt*(MassMatrix.data()[ij]*(uDotLowi-uDotLowj)
                                                + dLow.data()[ij]*(mLowi-mLowj));
+              }
+            else if (STABILIZATION_TYPE == STABILIZATION::ImplicitEV)
+              {
+                // Standard Kuzmin implicit FEM-FCT antidiffusive flux:
+                //   F_ij = M~_ij[(m_j^H - m_j^n) - (m_i^H - m_i^n)]
+                //          + dt (d^H - d^L)_ij (m_j^n - m_i^n)
+                // For ImplicitEV the Newton solve gives the low-order implicit
+                // solution, so the high-order state is taken as m^H := m^L (uLow):
+                //   first term  -M~_ij[(m_j^L-m_j^n)-(m_i^L-m_i^n)]
+                //               = dt*MC_ij*(uDotLow_i - uDotLow_j)   (consistent mass)
+                //   second term  dt_times_dH_minus_dL_ij*(m_j^n - m_i^n)
+                //               with dt_times_dH_minus_dL = dt*(d^H-d^L) = -dt*dLow.
+                // The dissipation antidiffusion now acts on the OLD-time mass m^n
+                // (solnm), matching the textbook Kuzmin form and the STAB=2
+                // (EntropyViscosity) `else` branch below.  The previous code used the
+                // diffused low-order m^L here and threw away most of dLow via the Comp
+                // throttle, so the front stayed under-sharpened.  solnm carries the
+                // density nonlinearity m^s(c)=theta*rho_f*(c + eps c^2); the inverse
+                // c = 2r/(1+sqrt(1+4 eps r)) is applied in invert().
+                FluxCorrectionMatrix[ij] = dt*MassMatrix.data()[ij]*(uDotLowi-uDotLowj)
+                                           + dt_times_dH_minus_dL.data()[ij]*(solnmj-solnmi);
               }
             else
               {

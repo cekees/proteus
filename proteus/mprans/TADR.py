@@ -1665,6 +1665,15 @@ class LevelModel(OneLevelTransport):
 
         if (self.auxiliaryCallCalculateResidual == False):
             if self.coefficients.STABILIZATION_TYPE == 5:
+                # Capture the converged DOF solution WHILE u[0].dof is still valid.
+                # calculateAuxiliaryQuantitiesAfterStep (where FCT runs) is called
+                # from modelStepTaken AFTER solveMultilevel with NO scatter back
+                # into u[0].dof, so u[0].dof/timeIntegration.u are stale (zero)
+                # there.  FCT must read uLow from this saved copy, not u[0].dof.
+                if (getattr(self, "_u_dof_conv", None) is None
+                        or self._u_dof_conv.shape != self.u[0].dof.shape):
+                    self._u_dof_conv = np.zeros_like(self.u[0].dof)
+                self._u_dof_conv[:] = self.u[0].dof
                 # ImplicitEV is solved implicitly by Newton (which already logs
                 # per-iteration norm(r)); the CFL is NOT the time-step limiter
                 # here, so report the residual norm like the implicit flow model
@@ -1898,8 +1907,39 @@ class LevelModel(OneLevelTransport):
         # solution.  The residual stored the symmetric dLow and the min/max_u_bc
         # bounds at the converged iterate, so FCTStep is consistent.
         if self.coefficients.STABILIZATION_TYPE == 5 and self.coefficients.FCT:
+            # This hook (from modelStepTaken) runs AFTER solveMultilevel with no
+            # scatter back into u[0].dof for the FCT limiter, so the DOF interior
+            # can be stale here.  Restore the converged field captured at the end
+            # of getResidual, then feed it to FCTStep as uLow.  Without this the
+            # limiter operates on a stale field and freezes the solution.
+            _conv = getattr(self, "_u_dof_conv", None)
+            if _conv is not None:
+                self.u[0].dof[:] = _conv
             self.uLow[:] = self.u[0].dof
+            # In-situ FCT sharpness diagnostic (set env TADR_FCT_DBG=1).  sum(u^2)
+            # rises when mass concentrates (front sharpens) and falls when it
+            # spreads (diffuses), at fixed mass.  Compares the low-order field
+            # (uLow) with the FCT-limited result to settle, on the REAL 2D run,
+            # whether the STAB=5 FCTStep sharpens or diffuses.  MAX/SUM-reduced
+            # across ranks (rank 0 owns a near-empty slice in parallel).
+            import os as _os
+            _dbg = bool(_os.environ.get("TADR_FCT_DBG"))
+            if _dbg:
+                _s_low = float(np.sum(self.uLow * self.uLow))
             self.FCTStep()
+            if _dbg:
+                _s_fct = float(np.sum(self.u[0].dof * self.u[0].dof))
+                try:
+                    from proteus import Comm
+                    _c = Comm.get().comm.tompi4py()
+                    _s_low = _c.allreduce(_s_low)
+                    _s_fct = _c.allreduce(_s_fct)
+                except Exception:
+                    pass
+                logEvent("TADR FCT sharpness sum(u^2): low=%.6e fct=%.6e d=%+.3e %s"
+                         % (_s_low, _s_fct, _s_fct - _s_low,
+                            "(FCT SHARPENS)" if _s_fct > _s_low
+                            else "(FCT DIFFUSES!)"), level=1)
 
     def updateAfterMeshMotion(self):
         pass

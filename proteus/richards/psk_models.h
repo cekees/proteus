@@ -107,6 +107,16 @@ inline void vgm_wetting(const double psiC,
 
 // Analytic van Genuchten inverse: theta_w -> psiC.  Leaves u untouched (so the
 // caller keeps its previous iterate) outside the strictly unsaturated range.
+//
+// The dry limit is a cap on psiC, not a fraction of thetaR -- same convention as
+// bc_invert_analytic below.  1.01*thetaR looks harmless but is a band in theta,
+// and theta -> psiC is exponentially steep in the tail, so it silently swallows
+// a huge band in head: for a sand with alpha=14.5 1/m and n=2.68 it refuses to
+// invert anything drier than psiC = 3.8 m, which for a 20 m column is the whole
+// unwetted region.  Every FCT-limited mass landing there was discarded (u kept
+// its pre-limiter value), which breaks the conservation chain theta_limited ->
+// psi and shows up as spurious infiltration.  pcBar <= 1e4 puts the cut at
+// psiC = 1e4/alpha instead, i.e. far outside any physical range.
 inline void vgm_invert_analytic(const double m,
                                 const double rho,
                                 const double alpha,
@@ -119,7 +129,9 @@ inline void vgm_invert_analytic(const double m,
   m_vg   = 1.0 - 1.0 / n_vg;
   thetaS = thetaR + thetaSR;
   thetaW = m / rho;
-  if (thetaW > 1.01 * thetaR && thetaW < thetaS) {
+  const double pcBarMax = 1.0e4;
+  const double SeMin    = pow(1.0 + pow(pcBarMax, n_vg), -m_vg);
+  if (thetaW > thetaR + SeMin * thetaSR && thetaW < thetaS) {
     sBar    = (thetaW - thetaR) / thetaSR;
     pcBar_n = pow(sBar, -1.0 / m_vg) - 1.0;
     pcBar   = pow(pcBar_n, 1.0 / n_vg);
@@ -155,7 +167,16 @@ inline void vgm_invert_newton(const double m,
   if (psiC0 <= 0.0) { return; } //saturated, no inversion
   const double rhom0 = rho * std::exp(beta * u);//first guess
   const double thetaW_imp = m / rhom0;
-  if (thetaW_imp < 1.01 * thetaR) { return; } //no inversion below residual saturation
+  // Dry limit stated the same way as in vgm_invert_analytic: a cap on psiC, not
+  // a fraction of thetaR.  Same reason -- theta -> psiC is exponentially steep
+  // in the tail, so 1.01*thetaR is a narrow band in theta but a huge one in
+  // head (psiC = 3.8 m for alpha = 14.5 1/m, n = 2.68), and every FCT-limited
+  // mass landing in it was silently discarded, breaking theta_limited -> psi.
+  // The analytic seed below is exact at beta = 0 and lands within a couple of
+  // Newton steps otherwise, so widening the range does not lengthen the solve.
+  const double pcBarMax = 1.0e4;
+  const double SeMin    = std::pow(1.0 + std::pow(pcBarMax, n_vg), -m_vg);
+  if (thetaW_imp < thetaR + SeMin * thetaSR) { return; } //below the dry cut
   const double thetaEps = 1e-12;
   double m_target = m;
   if (thetaW_imp > 0.99 * thetaS) {
@@ -339,14 +360,16 @@ inline void bc_invert_analytic(const double m,
 // retention curve.  Solved as a bracketed (safeguarded) Newton rather than the
 // plain Newton vgm_invert_newton uses, for three reasons specific to BC:
 //
-//  * Dead band.  The VG routine skips the inversion at theta < 1.01*thetaR.
-//    BC's Se ~ psiC^-lambda tail is far fatter than van Genuchten's, so a band
-//    scaled to thetaR swallows the whole dry range: with thetaR = 0.05,
-//    thetaSR = 0.35, p_d = 0.5 m, lambda = 2 it fires for every node drier
-//    than psiC ~ 13 m, where under VG (n = 1.8) it does not fire until
-//    psiC ~ 1800 m.  Here the limit is stated once, as a multiple of the entry
-//    pressure (psiCMax_over_pd), and enforced exactly: if g at that head has
-//    not yet changed sign the root is drier than the band and u is left alone.
+//  * Dead band.  Both routines cut the dry tail at a multiple of the entry
+//    pressure rather than at a fraction of thetaR (see vgm_invert_newton for
+//    why a band in theta is the wrong variable to state it in); BC needs that
+//    the more, since its Se ~ psiC^-lambda tail is far fatter than van
+//    Genuchten's.  With thetaR = 0.05, thetaSR = 0.35, p_d = 0.5 m, lambda = 2
+//    a 1.01*thetaR band would fire for every node drier than psiC ~ 13 m, where
+//    under VG (n = 1.8) it does not fire until psiC ~ 1800 m.  Here the limit is
+//    enforced exactly rather than through a proxy in theta: if g at that head
+//    has not yet changed sign the root is drier than the band and u is left
+//    alone.
 //
 //  * Entry-pressure wall.  theta is flat (== thetaS) for psiC <= p_d, so the
 //    root can lie inside a region the retention curve cannot resolve.  That is

@@ -2745,19 +2745,26 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     const double         D_m                                        = args.scalar<double>("D_m");           // molecular diffusion of dissolved CO2 [m2/s]
     xt::pyarray<int>    &interface_pairs                            = args.array<int>("interface_pairs");    // 5*n: [node, z_a, mat_a, z_b, mat_b]
     const int            n_interface_pairs                          = args.scalar<int>("n_interface_pairs");
-    // CO2-free anchor strength (absolute z-pin applied per comp-1 DOF after the
-    // element/interface assembly below -- see the "CO2-FREE ANCHOR" block).  alpha
-    // is the pin stiffness as a fraction of the nodal accumulation capacity:
-    // lam = alpha * (phi*N)*V_node / dt.  alpha = 0 -> inactive (byte-identical).
+    // CO2-free anchor strength (CONSERVATIVE anchor applied per comp-1 DOF after the
+    // element/interface assembly below -- see the "CO2-FREE ANCHOR" block).  alpha is
+    // the coupling stiffness as a fraction of the nodal accumulation capacity:
+    // lam = alpha * min(cap_i,cap_j) / dt.  alpha = 0 -> inactive (byte-identical).
     const double         split_anchor_alpha                         = args.scalar<double>("split_anchor_alpha");
-    // CO2-free anchor gate tolerances + pin floor (from Coefficients, tunable
-    // without recompiling once built).  A node is anchored only where the flash
-    // says S_g < Sg_tol AND X < X_tol (genuinely no CO2); X_tol just above the
-    // CO2-free background z preserves the dilute dissolution fringe (less CO2
-    // removed).  z_floor is the value a CO2-free node's z is pinned toward.
+    // CO2-free anchor gate tolerances (from Coefficients, tunable without recompiling
+    // once built).  A DOF is anchored only where the flash says S_g < Sg_tol AND
+    // X < X_tol (genuinely no CO2); X_tol just above the CO2-free background z excludes
+    // the dilute dissolution fringe from the gate.
     const double         split_anchor_Sg_tol                        = args.scalar<double>("split_anchor_Sg_tol");
     const double         split_anchor_X_tol                         = args.scalar<double>("split_anchor_X_tol");
+    // RETAINED for API compatibility; UNUSED by the conservative anchor (no floor).
     const double         split_anchor_zfloor                        = args.scalar<double>("split_anchor_zfloor");
+    (void)split_anchor_zfloor;
+    // Layer-1 (domain-wide graph-Laplacian) toggle.  The gate (X < X_tol) catches the
+    // ENTIRE CO2-free background, so Layer 1 imposes a stiff domain-wide z-diffusion
+    // that slows Newton; the actual split-node runaway is fixed by Layer 2 alone (the
+    // local fine<->coarse spring).  layer1 = 0 -> Layer-2-only (well-conditioned);
+    // layer1 = 1 (default) -> both layers.  Layer 2 is always on (gated by alpha).
+    const int            split_anchor_layer1                        = args.scalar<int>("split_anchor_layer1");
     xt::pyarray<int>    &r_l2g                                      = args.array<int>("r_l2g");
     xt::pyarray<double> &elementDiameter                            = args.array<double>("elementDiameter");
     int                  degree_polynomial                          = args.scalar<int>("degree_polynomial");
@@ -5111,39 +5118,111 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       }
     }
     // ============================================================================
-    // CO2-FREE ANCHOR (absolute z-pin).  In a CO2-free pocket every comp-1 coupling
-    // vanishes (gas mobility ~ S_g -> 0, Fickian ~ X -> 0, EV dissipation ~ S_g -> 0)
-    // and the comp-1 mass is lumped (diagonal), so a node's z is held by nothing but
-    // its own accumulation -> an isolated DOF (especially a node-split fine copy)
-    // drifts z unbounded with no spatial reference (the top-right z->3.19 runaway).
-    // A copy-to-copy spring can't fix this: BOTH copies are unanchored, so it only
-    // damps their DIFFERENCE, not the COMMON-MODE drift.  Where the flash says a node
-    // holds essentially NO CO2 (S_g < Sg_tol AND X < X_tol) add an ABSOLUTE pin to a
-    // small floor z_floor:
-    //     R_z[i] += lam_abs*(z_i - z_floor),   lam_abs = alpha * cap_i / dt,
-    //     cap_i  = (phi*N)_i * V_node_i = rho_n_phi_dof[i] * ML_n[i]   [mol].
-    // This references z to a FIXED value (kills the common-mode drift) and is exactly
-    // Jacobian-consistent (lam_abs constant in z).  The gate is FALSE wherever gas
-    // ponds or CO2 dissolves, so it never touches a real plume / capillary jump.  Not
-    // mass-conserving -- but a node with S_g~0 AND X~0 holds no CO2, so any z>floor is
-    // phantom mass and removing it CORRECTS a spurious source.  alpha =
-    // split_anchor_alpha (same knob); alpha = 0 -> inactive (byte-identical legacy).
+    // CO2-FREE ANCHOR (CONSERVATIVE + bound-preserving).  In a CO2-free pocket every
+    // PHYSICAL comp-1 coupling vanishes (gas mobility ~ S_g -> 0, Fickian ~ X -> 0, EV
+    // dissipation ~ S_g -> 0) and the comp-1 mass is lumped (diagonal), so a node's z
+    // is held by nothing but its own accumulation -> an isolated DOF (especially a
+    // node-split fine copy) drifts z unbounded with no spatial reference (the
+    // top-right z->3.19 runaway).  The legacy fix was an ABSOLUTE pin
+    // R_z[i] += lam*(z_i - z_floor): it bounds z but is a one-sided SINK (the removed
+    // CO2 lands nowhere), so it BLEEDS mass -- including off the genuine dispersing
+    // dissolved-CO2 fringe whenever the gate momentarily fires there (tightening X_tol
+    // only delays the sink, never removes it).
+    //
+    // This replaces the pin with a CONSERVATIVE anchor that is ALSO bound-preserving,
+    // built from two ANTISYMMETRIC (mass-telescoping) couplings -- never a sink:
+    //
+    //   LAYER 1 (graph-Laplacian over the compact comp-1 DOF graph).  Between two
+    //   CO2-free neighbour DOFs i,j add the diffusive flux
+    //       F_ij = lam_ij*(z_i - z_j),   lam_ij = alpha * min(cap_i,cap_j)/dt,
+    //       cap  = (phi*N)_old * V_node = rho_n_phi_dof_old * ML_n   [mol].
+    //   R_z[i] += F_ij is scattered on row i ONLY; row j adds lam_ji*(z_j - z_i) =
+    //   -F_ij when the loop reaches j (lam symmetric in i,j), so the pair telescopes
+    //   to 0 => CO2 conserved exactly.  By the discrete maximum principle the
+    //   Laplacian can only pull z_i toward [min_j z_j, max_j z_j], never outside, so z
+    //   is BOUNDED; for a closed CO2-free pocket conservation pins the MEAN and the
+    //   Laplacian pins the SPREAD.  Gated on BOTH sides (only smooths within genuinely
+    //   CO2-free rock) so the dispersing fringe (X >= X_tol) is never touched -> no
+    //   fringe mass loss.
+    //
+    //   LAYER 2 (fine<->coarse spring on the split-interface pairs).  A single
+    //   decoupled fine z-copy on a facies interface may have NO CO2-free compact-graph
+    //   neighbour to diffuse into (Layer 1 has nothing to work with); couple it
+    //   conservatively to its coarse copy z_a<->z_b:
+    //       F_s = lam_s*(z_a - z_b),   lam_s = alpha * min(cap_a,cap_b)/dt,
+    //   R_a += F_s, R_b -= F_s (antisymmetric => conserved).  The coarse copy reaches
+    //   live bulk, so this hands the fine copy an absolute reference WITHOUT a sink.
+    //   Inert when split_z == 0 (n_interface_pairs == 0).
+    //
+    // Both layers freeze lam at the OLD time (constant in z during Newton) => EXACT
+    // Jacobian: Layer 1 scatters +lam_ij on (i,i) and -lam_ij on (i,j) (the symmetric
+    // (j,j)/(j,i) halves land when the loop reaches j); Layer 2 scatters +lam_s on the
+    // (z_a,z_a)/(z_b,z_b) diagonals and -lam_s on the dedicated z_a<->z_b interface
+    // off-diagonal slots (comp1_iface_offsets, allocated by getExtraSparsityElements).
+    // The gate uses the LAGGED flash (frozen active set, no in-Newton on/off chatter).
+    // alpha = split_anchor_alpha; alpha = 0 -> inactive (byte-identical legacy).
+    // PARALLEL: Sg_dof_old/X_dof_old are the same lagged sensors the EV path uses;
+    // the antisymmetric scatter conserves on the owned-node pattern (a ghost row's
+    // -F is recomputed by its owner), the standard Richards DOF-graph behaviour.
     if (split_anchor_alpha > 0.0 && dt > 0.0) {
-      const double Sg_tol  = split_anchor_Sg_tol;   // S_g below this => no free gas
-      const double X_tol   = split_anchor_X_tol;    // dissolved-CO2 mole frac below this => no CO2
-      const double z_floor = split_anchor_zfloor;   // physical zero-CO2 floor (~ flash z clamp)
+      const double Sg_tol = split_anchor_Sg_tol;   // S_g below this => no free gas
+      const double X_tol  = split_anchor_X_tol;    // dissolved-CO2 mole frac below this => no CO2
+      // ---- LAYER 1: conservative graph-Laplacian among CO2-free neighbours. ----
+      // Disabled by split_anchor_layer1 == 0 (Layer-2-only): the gate catches the whole
+      // CO2-free background so this is a stiff domain-wide z-diffusion -> slows Newton.
+      if (split_anchor_layer1 != 0)
       for (int i = 0; i < numDOFs_n; i++) {
         if (ML_n[i] <= 0.0) continue;
-        // Gate on the LAGGED (old-time) flash so the active set is fixed during this
-        // Newton solve (no current-iterate on/off chatter).
-        if (Sg_dof_old[i] >= Sg_tol || X_dof_old[i] >= X_tol) continue; // held CO2 -> skip
-        // Old-time capacity -> lam constant in z during Newton -> EXACT diagonal Jac.
-        const double cap_i   = rho_n_phi_dof_old[i] * ML_n[i];    // phi*N_old*V_node [mol]
-        const double lam_abs = split_anchor_alpha * cap_i / dt;
-        const double zi      = u_dof_n.data()[i];
-        globalResidual.data()[offset_n + stride_n * i] += lam_abs * (zi - z_floor);
-        const int ii = comp1_offset(i, i);
-        if (ii >= 0) globalJacobian.data()[comp1_full_offsets.data()[ii]] += lam_abs;
+        if (Sg_dof_old[i] >= Sg_tol || X_dof_old[i] >= X_tol) continue; // i holds CO2 -> skip
+        const double cap_i = rho_n_phi_dof_old[i] * ML_n[i];            // phi*N_old*V_node [mol]
+        const double zi    = u_dof_n.data()[i];
+        double diag = 0.0;
+        for (int off = csrRowIndeces_n_DofLoops.data()[i];
+             off < csrRowIndeces_n_DofLoops.data()[i + 1]; ++off) {
+          const int j = csrColumnOffsets_n_DofLoops.data()[off];
+          if (j == i || ML_n[j] <= 0.0) continue;
+          if (Sg_dof_old[j] >= Sg_tol || X_dof_old[j] >= X_tol) continue; // CO2-free<->CO2-free only
+          const double cap_j  = rho_n_phi_dof_old[j] * ML_n[j];
+          const double lam_ij = split_anchor_alpha * fmin(cap_i, cap_j) / dt;
+          if (lam_ij <= 0.0) continue;
+          // F_ij = lam_ij*(z_i - z_j): row i only (row j adds the antisymmetric -F_ij).
+          globalResidual.data()[offset_n + stride_n * i] += lam_ij * (zi - u_dof_n.data()[j]);
+          diag += lam_ij;
+          // off-diagonal tangent d(R_i)/dz_j = -lam_ij (compact-graph slot, present).
+          globalJacobian.data()[comp1_full_offsets.data()[off]] += -lam_ij;
+        }
+        // diagonal tangent d(R_i)/dz_i = +sum_j lam_ij (adds to the comp-1 mass diagonal).
+        if (diag != 0.0) {
+          const int ii = comp1_offset(i, i);
+          if (ii >= 0) globalJacobian.data()[comp1_full_offsets.data()[ii]] += diag;
+        }
+      }
+      // ---- LAYER 2: conservative fine<->coarse spring on split-interface pairs. ----
+      for (int ip = 0; ip < n_interface_pairs; ip++) {
+        const int z_a = interface_pairs.data()[5 * ip + 1];
+        const int z_b = interface_pairs.data()[5 * ip + 3];
+        if (ML_n[z_a] <= 0.0 || ML_n[z_b] <= 0.0) continue;
+        // Spring only where BOTH copies are CO2-free; a real plume / capillary jump is
+        // carried by the gate-free interface flux above and must never be sprung over.
+        if (Sg_dof_old[z_a] >= Sg_tol || X_dof_old[z_a] >= X_tol) continue;
+        if (Sg_dof_old[z_b] >= Sg_tol || X_dof_old[z_b] >= X_tol) continue;
+        const double cap_a = rho_n_phi_dof_old[z_a] * ML_n[z_a];
+        const double cap_b = rho_n_phi_dof_old[z_b] * ML_n[z_b];
+        const double lam_s = split_anchor_alpha * fmin(cap_a, cap_b) / dt;
+        if (lam_s <= 0.0) continue;
+        const double F_s = lam_s * (u_dof_n.data()[z_a] - u_dof_n.data()[z_b]);
+        globalResidual.data()[offset_n + stride_n * z_a] += F_s;
+        globalResidual.data()[offset_n + stride_n * z_b] -= F_s;
+        // diagonal tangents into the existing (z,z) slots (always present).
+        const int caa = comp1_offset(z_a, z_a), cbb = comp1_offset(z_b, z_b);
+        if (caa >= 0) globalJacobian.data()[comp1_full_offsets.data()[caa]] += lam_s;
+        if (cbb >= 0) globalJacobian.data()[comp1_full_offsets.data()[cbb]] += lam_s;
+        // off-diagonal z_a<->z_b tangents: d(R_a)/dz_b = -lam_s, d(R_b)/dz_a = -lam_s,
+        // into the dedicated interface slots (NOT the compact graph, which excludes them).
+        const int cab = comp1_iface_offsets.data()[2 * ip + 0];   // (z_a row, z_b col)
+        const int cba = comp1_iface_offsets.data()[2 * ip + 1];   // (z_b row, z_a col)
+        if (cab >= 0) globalJacobian.data()[cab] += -lam_s;
+        if (cba >= 0) globalJacobian.data()[cba] += -lam_s;
       }
     }
     // DIAG: net gas-flux imbalance (Python prints + MPI-reduces). The T-asymmetry

@@ -246,7 +246,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  cK=1.0,
                  # OUTPUT quantDOFs
                  outputQuantDOFs=False,
-                  ):
+                 forceStrongConditions = False):
         self.VMS=VMS
         if density_model is None:
             density_model = DENSITY_MODEL
@@ -981,14 +981,28 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.fluxCorrection = np.zeros(self.u[0].dof.shape, 'd')
         self.mn = np.zeros(self.u[0].dof.shape, 'd')
         self.anb_seepage_flux_n = np.zeros(self.u[0].dof.shape, 'd')
+        #per-node ROCK region, from elementMaterialTypes (the .ele region
+        #attribute) via the first element containing each node.  NOT
+        #mesh.nodeMaterialTypes: that array is the .node boundary-marker column
+        #(0 for every interior node, segment tags on the boundary), so indexing
+        #alpha/n/thetaR/thetaSR/KWs with it gives the interior the unset slot 0
+        #and reads past the end of those arrays wherever a boundary tag exceeds
+        #nMediaTypes.  A node on a soil interface gets the first incident
+        #element's rock; the nodal scheme allows it only one theta(psi).
+        self.nodeMaterialTypes_n = np.zeros((self.mesh.nNodes_global,), 'i')
+        nodeMaterialTypesSet = np.zeros((self.mesh.nNodes_global,), 'i')
+        for eN in range(self.mesh.nElements_global):
+            for i_local in range(self.mesh.nNodes_element):
+                gN = self.mesh.elementNodesArray[eN, i_local]
+                if not nodeMaterialTypesSet[gN]:
+                    self.nodeMaterialTypes_n[gN] = self.mesh.elementMaterialTypes[eN]
+                    nodeMaterialTypesSet[gN] = 1
         self.freeDOFMaterialTypes = np.zeros((self.nFreeDOF_global[0],), 'i')
-        if hasattr(self.mesh, 'nodeMaterialTypes'):
-            free_l2g = np.asarray(self.l2g[0]['freeGlobal']).ravel()
-            dof_l2g = np.asarray(self.u[0].femSpace.dofMap.l2g).ravel()
-            node_material_types = np.asarray(self.mesh.nodeMaterialTypes)
-            for free_dof, global_dof in zip(free_l2g, dof_l2g):
-                if 0 <= free_dof < self.freeDOFMaterialTypes.shape[0]:
-                    self.freeDOFMaterialTypes[free_dof] = node_material_types[global_dof]
+        free_l2g = np.asarray(self.l2g[0]['freeGlobal']).ravel()
+        dof_l2g = np.asarray(self.u[0].femSpace.dofMap.l2g).ravel()
+        for free_dof, global_dof in zip(free_l2g, dof_l2g):
+            if 0 <= free_dof < self.freeDOFMaterialTypes.shape[0]:
+                self.freeDOFMaterialTypes[free_dof] = self.nodeMaterialTypes_n[global_dof]
         comm = Comm.get()
         self.comm=comm
         if comm.size() > 1:
@@ -1111,14 +1125,37 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         mLim  = limited_solution.copy()
         uLim  = self.u[0].dof.copy()
         du_inf = np.linalg.norm(uLim - uHigh, np.inf)
-        DU_INF_MAX = 1.0  # Conservative value to avoid instability due to large corrections
-        if (not np.isfinite(du_inf)) or (du_inf > DU_INF_MAX):
+        # Conservative value to avoid instability due to large corrections -- but
+        # only on the Newton-invert path (nd > 1), which is what actually goes
+        # unstable when the correction is large.  With the analytic invert the cap
+        # is pure damage: a threshold in psi is meaningless because dpsi/dtheta
+        # spans decades over the retention curve, so a sharp front (psi jumping
+        # ~10 m across one cell) trips it on most steps and throws the whole FCT
+        # step away, leaving the run to alternate silently between the limited
+        # scheme and the bare low-order one.
+        use_newton_invert = (self.coefficients.FCT == 1 and self.coefficients.nd > 1)
+        # RICHARDS_FCT_DU_MAX overrides the cap (use a huge value to disable it)
+        # so the veto can be tested without editing the source.
+        import os
+        DU_INF_MAX = float(os.environ.get("RICHARDS_FCT_DU_MAX",
+                                          1.0 if use_newton_invert else np.inf))
+        rejected = (not np.isfinite(du_inf)) or (du_inf > DU_INF_MAX)
+        if os.environ.get("RICHARDS_FCT_DBG"):
+            # untouched = DOFs the invert handed back bitwise unchanged, i.e. the
+            # limited mass was silently dropped there (one of the u = u_prev
+            # exits in vgm_invert_newton / a zero limiter correction).
+            untouched = int(np.count_nonzero(uLim == uHigh))
+            dm_inf = np.linalg.norm(mLim - self.mLow, np.inf)
+            m_scale = max(1.0e-30, np.linalg.norm(self.mLow, np.inf))
+            logEvent("[FCT] %s du_inf=%.3e dm_inf=%.3e (rel %.3e) untouched=%d/%d dt=%.3e"
+                     % ("REJECT" if rejected else "accept", du_inf, dm_inf,
+                        dm_inf / m_scale, untouched, uLim.size,
+                        self.timeIntegration.dt), level=1)
+        if rejected:
             self.u[0].dof[:] = uHigh
             self.timeIntegration.u[:] = self.u[0].dof
-            #print("[FCT] SKIPPED: du_inf =", du_inf, "dt =", self.timeIntegration.dt)
         else:
             self.timeIntegration.u[:] = self.u[0].dof
-            #print("[FCT] ACCEPTED: du_inf =", du_inf, "dt =", self.timeIntegration.dt)
         # print("dt =", self.timeIntegration.dt)
         # print("||mLim - mLow||inf =", np.linalg.norm(mLim - self.mLow, np.inf))
         # print("||uLim - uHigh||inf =", np.linalg.norm(uLim - uHigh, np.inf))
