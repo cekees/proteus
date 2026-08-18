@@ -1228,8 +1228,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # hEps
         self.eps = 1E-5
         self.hEps = self.eps * comm.globalMax(self.u[0].dof.max())
-        self.mesh.globalMesh.volume = comm.globalSum(self.mesh.volume) 
-        #Replaced with a nonZero sum of subdomain mesh volumes
+        self.mesh.globalMesh.volume = comm.globalSum(self.mesh.volume)
         # size_of_domain used in relaxation of bounds
         self.size_of_domain = self.mesh.globalMesh.volume 
         # normal vectors
