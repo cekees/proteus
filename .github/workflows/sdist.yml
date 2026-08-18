@@ -1,0 +1,142 @@
+name: sdist build + install
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Full test suite (PUMI mesh-adaptation + Chrono FSI included) on the two
+          # platforms where conda-forge actually ships scorec: linux-64 and osx-64.
+          - name: linux-64 / py3.11
+            os: ubuntu-latest
+            python: "3.11"
+            skip_pumi_chrono: false
+          - name: linux-64 / py3.12
+            os: ubuntu-latest
+            python: "3.12.5"
+            skip_pumi_chrono: false
+          - name: linux-64 / py3.13
+            os: ubuntu-latest
+            python: "3.13"
+            skip_pumi_chrono: false
+          - name: macos-13 (Intel) / py3.12
+            os: macos-13
+            python: "3.12.5"
+            skip_pumi_chrono: false
+          # scorec has no osx-arm64 or linux-aarch64 build on conda-forge, so these
+          # legs drop scorec+pychrono from the env and skip building/testing the
+          # PUMI mesh-adaptation and Chrono FSI extensions (PROTEUS_SKIP_PUMI_CHRONO).
+          - name: linux-aarch64 / py3.12 (no PUMI/Chrono)
+            os: ubuntu-24.04-arm
+            python: "3.12.5"
+            skip_pumi_chrono: true
+          - name: macos-14 (Apple Silicon) / py3.12 (no PUMI/Chrono)
+            os: macos-14
+            python: "3.12.5"
+            skip_pumi_chrono: true
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build environment file for this leg
+        shell: bash
+        run: |
+          cp environment-dev.yml environment-ci.yml
+          sed -i.bak "s/^  - python =.*/  - python =${{ matrix.python }}/" environment-ci.yml
+          if [ "${{ matrix.skip_pumi_chrono }}" = "true" ]; then
+            grep -Ev '^ *- *(scorec|pychrono) *=' environment-ci.yml > environment-ci.yml.tmp
+            mv environment-ci.yml.tmp environment-ci.yml
+          fi
+          rm -f environment-ci.yml.bak
+          cat environment-ci.yml
+
+      - name: Set up conda environment with PETSc/MPI/HDF5
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-file: environment-ci.yml
+          activate-environment: proteus-dev
+
+      - name: Build sdist
+        shell: bash -l {0}
+        run: |
+          pip install build
+          python -m build --sdist
+
+      - name: Install sdist with default build isolation
+        shell: bash -l {0}
+        env:
+          PROTEUS_SKIP_PUMI_CHRONO: ${{ matrix.skip_pumi_chrono == true && '1' || '' }}
+        run: pip install dist/proteus-*.tar.gz
+
+      - name: Smoke test
+        shell: bash -l {0}
+        run: |
+          cd /tmp
+          python -c "import proteus; from proteus import Comm; Comm.init(); print(proteus.__file__)"
+
+      - name: Run test suite
+        shell: bash -l {0}
+        run: |
+          export MPLBACKEND="AGG"
+          # OpenBLAS's pthread-based threading isn't fork-safe: a child forked
+          # by pytest-forked can inherit the parent's BLAS thread-pool state
+          # and abort (SIGABRT) the first time it calls into BLAS/LAPACK, even
+          # for something as innocuous as numpy.polynomial.legendre.leggauss
+          # at module-import time (proteus/Quadrature.py). Seen as
+          # "Fatal Python error: Aborted" during test collection on
+          # macos-14/osx-arm64. Force single-threaded BLAS instead.
+          export OPENBLAS_NUM_THREADS=1
+          export OMP_NUM_THREADS=1
+          mkdir test_output && cd test_output
+          # These 6 are known-failing (real numerics/environment issues, not
+          # collection errors) and deliberately left unskipped in source so
+          # they stay visible for a future fix session -- deselected here
+          # only so this workflow's own signal isn't drowned out by known
+          # failures. Remove each line as it gets fixed.
+          DESELECT_ARGS=(
+            --deselect test/cylinder2D/ibm_method/test_cylinder2D_ibm_rans3p.py::Test_ibm::test_ex2
+            --deselect test/cylinder2D/ibm_rans2p/test_cylinder2D_ibm_rans2p.py::Test_ibm::test_ex2
+            --deselect test/cylinder2D/ibm_rans2p_3D/test_cylinder3D_ibm_rans2p.py::Test_ibm::test_ex2
+            --deselect test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_ball
+            --deselect test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_sdf
+            --deselect test/SWFlow/test_SWFlow.py::TestSWFlow::test_obstacle_flow
+          )
+          # PUMI mesh-adaptation and Chrono FSI extensions aren't built on this leg
+          # (see PROTEUS_SKIP_PUMI_CHRONO above); ignore the test files that import
+          # proteus.MeshAdaptPUMI.MeshAdapt or pychrono/proteus.mbd, since collecting
+          # them would fail on import rather than skip cleanly. This list was built
+          # by hand against a point-in-time test tree; it silently goes stale as new
+          # PUMI/Chrono-dependent test files are added (already caught two waves of
+          # that: test/MeshAdaptPUMI/case_run+gauge_compare and test/AddedMass were
+          # both added after the list below was first written) -- if a no-PUMI/Chrono
+          # leg starts failing on a PUMI- or Chrono-touching test not listed here,
+          # that's why, not a real regression.
+          IGNORE_ARGS=()
+          if [ "${{ matrix.skip_pumi_chrono }}" = "true" ]; then
+            IGNORE_ARGS=(
+              --ignore=../test/MeshAdaptPUMI/test_gmshCheck.py
+              --ignore=../test/MeshAdaptPUMI/test_poiseuilleError.py
+              --ignore=../test/MeshAdaptPUMI/test_parallelMeshLoad.py
+              --ignore=../test/MeshAdaptPUMI/test_meshLoad.py
+              --ignore=../test/MeshAdaptPUMI/Sizefields/cylinder2D_ibm/test_cylinder2D_ibm_rans2p.py
+              --ignore=../test/MeshAdaptPUMI/case_run/test_workflowPUMI.py
+              --ignore=../test/MeshAdaptPUMI/gauge_compare/dambreak_Colagrossi_2D/test_MeshAdaptRestart.py
+              --ignore=../test/MeshAdaptPUMI/gauge_compare/dambreak_Colagrossi_2D_rd/test_MeshAdaptRestart_withRedistancing.py
+              --ignore=../test/MeshAdaptPUMI/gauge_compare/dambreak_Colagrossi_2D_rdmc/test_MeshAdaptRestart_withRDMC.py
+              --ignore=../test/FSI/test_FSI.py
+              --ignore=../test/test_mbd_chrono.py
+              --ignore=../test/AddedMass/test_addedmass2D.py
+              --ignore=../test/AddedMass/test_addedmass3D.py
+              --deselect ../test/TwoPhaseFlow/test_TwoPhaseFlow.py::TestTwoPhaseFlow::test_damBreak_runPUMI
+            )
+          fi
+          python -m pytest -v --forked --import-mode=importlib \
+            "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" ../test

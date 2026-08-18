@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include "xtensor-python/pyarray.hpp"
-#include "xtensor/xio.hpp"
+#include "xtensor/io/xio.hpp"
 
 namespace proteus
 {

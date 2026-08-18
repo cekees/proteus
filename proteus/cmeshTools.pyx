@@ -340,6 +340,42 @@ cpdef void writeTriangleFiles(CMesh cmesh,
     cdef int failed
     failed = cppm.writeTriangleMesh(cmesh.mesh,filebase.encode('utf8'),base);
 
+cpdef void generateCMeshFromDMPlex(self, CMesh cmesh):
+    cdef int failed
+    failed = cppm.readDMPlexMesh(self, cmesh.mesh);
+
+    # int
+    cmesh.nElements_global                           = self.nElements_global
+    cmesh.nNodes_global                              = self.nNodes_global
+    cmesh.nNodes_element                             = self.nNodes_element
+    cmesh.elementNodesArray                          = self.elementNodesArray
+    cmesh.nodeMaterialTypes                          = self.nodeMaterialTypes
+    cmesh.elementMaterialTypes                       = self.elementMaterialTypes
+    cmesh.nodeArray                                  = self.nodeArray
+
+    # cppm.constructElementBoundaryElementsArray_tetrahedron(cmesh.mesh);
+
+    cmesh.nNodes_elementBoundary                     = self.nNodes_elementBoundary
+    cmesh.nEdges_global                              = self.nEdges_global
+    cmesh.nElementBoundaries_element                 = self.nElementBoundaries_element
+    cmesh.nElementBoundaries_global                  = self.nElementBoundaries_global
+    cmesh.nInteriorElementBoundaries_global          = self.nInteriorElementBoundaries_global
+    cmesh.nExteriorElementBoundaries_global          = self.nExteriorElementBoundaries_global
+    cmesh.max_nNodeNeighbors_node                    = self.max_nNodeNeighbors_node
+
+    # int*
+    cmesh.nodeElementsArray                          = self.nodeElementsArray
+    
+    cmesh.nodeElementOffsets                         = self.nodeElementOffsets
+    cmesh.elementBoundariesArray                     = self.elementBoundariesArray
+    cmesh.elementBoundaryNodesArray                  = self.elementBoundaryNodesArray
+    cmesh.elementBoundaryElementsArray               = self.elementBoundaryElementsArray
+    cmesh.interiorElementBoundariesArray             = self.interiorElementBoundariesArray
+    cmesh.exteriorElementBoundariesArray             = self.exteriorElementBoundariesArray
+    cmesh.edgeNodesArray                             = self.edgeNodesArray
+    cmesh.nodeStarArray                              = self.nodeStarArray
+    cmesh.nodeStarOffsets                            = self.nodeStarOffsets
+
 cpdef void generateFromTetgenFiles(CMesh cmesh,
                                   unicode filebase,
                                   int base):

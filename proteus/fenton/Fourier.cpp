@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <sys/types.h> 
 #include <string.h>
-#include "ncursesw/curses.h"
 #include <stdlib.h>
 #define	ANSI
 #include "Allocation.h"
@@ -138,7 +137,6 @@ for ( wave=1 ; wave<2; wave++ )
 	Flowfield = fopen("Flowfield.res","w");
 	Output();
     fflush(NULL);
-        printf("\nTouch key to continue\n\n"); getch();
 
             free_dmatrix(CC,1,num,1,num);
                 free_dvector(Y,0,num);

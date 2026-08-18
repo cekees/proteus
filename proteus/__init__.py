@@ -2,13 +2,6 @@
 Modules for computing numerical solutions of differential equations
 """
 
-try:
-    import pkg_resources
-    pkg_resources.declare_namespace(__name__)
-except ImportError:
-    import pkgutil
-    __path__ = pkgutil.extend_path(__path__, __name__)
-
 __version__ = '1.8.3.dev'
 
 __all__ = ["Archiver",

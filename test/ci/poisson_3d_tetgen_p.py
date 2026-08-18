@@ -1,5 +1,7 @@
 from proteus import *
 from proteus.default_p import *
+from proteus import Context, Comm
+
 """
 Heterogeneous Poisson's equation, -div(a(x)u) = f(x), on unit domain [0,1]x[0,1]x[0,1]
 """
@@ -17,7 +19,14 @@ Heterogeneous Poisson's equation, -div(a(x)u) = f(x), on unit domain [0,1]x[0,1]
 # Domain - mesh - quadrature
 #----------------------------------------------------
 #space dimension
+opts = Context.Options([
+    ("genMesh", True, "Generate mesh on the fly, otherwise mesh files must be written prior to job"),
+    ("Refinement", 0, "Refine the mesh this many times"),
+])
+
+name = "poisson_tetgen_"+str(opts.Refinement)
 nd = 3
+# print("Running %s" % name)
 
 hull_length = 0.5
 hull_beam   = 0.5
@@ -37,10 +46,10 @@ hull_center = (0.5*hull_length,
 
 nLevels = 1
 
-he = L[0]/10.0
+he =  0.45*L[0] / ( ( 5 * 1.26**opts.Refinement) )
 #he = hull_draft/1.0
 #he = hull_draft/6.0
-genMesh=True
+genMesh=opts.genMesh
 vessel = None
 #vessel = 'cube'
 #vessel = 'wigley'
@@ -106,7 +115,7 @@ else:
             return 8 + i*n_points_draft+j
         for i in range(n_points_length-1):
             for j in range(n_points_draft-1):
-                if i < n_points_length/2:
+                if i < n_points_length//2:
                     facets.append([[vN_right(i,j),vN_right(i+1,j+1),vN_right(i+1,j)]])
                     facetFlags.append(boundaryTags['obstacle'])
                     facets.append([[vN_right(i,j),vN_right(i,j+1),vN_right(i+1,j+1)]])

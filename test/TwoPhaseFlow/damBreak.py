@@ -21,6 +21,7 @@ opts= Context.Options([
     ("he",0.01,"he relative to Length of domain in x"),
     ("refinement",3,"level of refinement"),
     ("hotstart",False,"will be hotstartting?"),
+    ("genMesh", False,"generate the mesh on the fly")
     ])
 
 # ****************** #
@@ -82,8 +83,9 @@ st.assembleDomain(domain)
 domain.MeshOptions.triangleOptions = "VApq30Dena%8.8f" % ((he**2)/2.0,)
 domain.polyfile=os.path.dirname(os.path.abspath(__file__))+"/"+"meshDambreak"
 domain.MeshOptions.triangleFlag=0
-domain.MeshOptions.genMesh=False
-#domain.writePoly("meshDambreak")
+domain.MeshOptions.genMesh=opts.genMesh
+if opts.genMesh:
+    domain.writePoly("meshDambreak")
 
 # ****************************** #
 # ***** INITIAL CONDITIONS ***** #

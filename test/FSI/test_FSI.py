@@ -46,12 +46,20 @@ class TestIBM(unittest.TestCase):
             else:
                 pass
 
-    @pytest.mark.skip(reason="need to redo after history revision")                         
+    # NOTE: mechanical bugs (Chrono API rename Set_G_acc/ChVectorD/
+    # ChQuaternionD -> SetGravitationalAcceleration/ChVector3d/ChQuaterniond,
+    # a missing `proteus.TwoPhaseFlow.utils.Parameters` import, an invalid 2D
+    # 'w' initial condition, an unguarded addedMass initial condition, and
+    # this test's own `case.m.rans2p` attribute access instead of
+    # `case.m['flow']`) were all fixed this session -- simulation now runs
+    # cleanly, but produces an unphysical result (cylinder exits the tank
+    # domain entirely). Needs real physics/numerics investigation before
+    # trusting.
     def test_fallingCylinderIBM_ball(self):
         from . import fallingCylinder
         from proteus import defaults
         case = fallingCylinder
-        case.m.rans2p.p.coefficients.use_ball_as_particle = 1.
+        case.m['flow'].p.coefficients.use_ball_as_particle = 1.
         case.myTpFlowProblem.initializeAll()
         so = case.myTpFlowProblem.so
         so.name = 'fallingCylinderIBM'
@@ -93,13 +101,16 @@ class TestIBM(unittest.TestCase):
         npt.assert_almost_equal(pos, np.array([1.5, 1.98645, 0.]), decimal=5)
         #self.teardown_method(self)
 
-    @pytest.mark.skip(reason="need to redo after history revision")                         
+    # NOTE: same mechanical bugs as test_fallingCylinderIBM_ball above were
+    # fixed this session -- simulation now runs cleanly, but produces an
+    # unphysical result (cylinder exits the tank domain entirely). Needs
+    # real physics/numerics investigation before trusting.
     def test_fallingCylinderIBM_sdf(self):
         from proteus import defaults
         from . import fallingCylinder
         importlib.reload(fallingCylinder)
         case = fallingCylinder
-        case.m.rans2p.p.coefficients.use_ball_as_particle = 0.
+        case.m['flow'].p.coefficients.use_ball_as_particle = 0.
         case.myTpFlowProblem.initializeAll()
         so = case.myTpFlowProblem.so
         so.name = 'fallingCylinderIBM2'
@@ -141,7 +152,6 @@ class TestIBM(unittest.TestCase):
         npt.assert_almost_equal(pos, np.array([1.5, 1.98645, 0.]), decimal=5)
         #self.teardown_method(self)
 
-    @pytest.mark.skipif(os.sys.platform == "darwin", reason="does not run on macOS")    
     def test_floatingCylinderALE(self):
         from proteus import defaults
         from . import floatingCylinder
@@ -187,7 +197,6 @@ class TestIBM(unittest.TestCase):
         npt.assert_almost_equal(pos, np.array([0.5, 0.5074055958, 0.]), decimal=5)
         #self.teardown_method(self)
 
-    @pytest.mark.skipif(os.sys.platform == "darwin", reason="does not run on macOS")
     def test_floatingCubeALE(self):
         from proteus import defaults
         from . import floatingCube

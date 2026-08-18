@@ -271,7 +271,7 @@ def returnRectangles(a,x):
     """ Returns 2D discrete integral array using the rectangle method
 
     The calculation for each array element is
-    :math:`(\Delta y_i = 0.5(a_{n-1}+a_{n})*(x_{n-1}-x_{n})`
+    :math:`(\\Delta y_i = 0.5(a_{n-1}+a_{n})*(x_{n-1}-x_{n})`
 
     Parameters
     ----------
@@ -291,7 +291,7 @@ def returnRectangles3D(a,x,y):
     """ Returns 3D discrete integrals using the rectangle method
 
     The calculation for each array element is
-    :math: `(\Delta y = 0.25*(a_(n-1,m-1)+a_(n,m-1)+a_(n-1,m) ...
+    :math: `(\\Delta y = 0.25*(a_(n-1,m-1)+a_(n,m-1)+a_(n-1,m) ...
     ...+a_(n,m))*(x_n-1-x_n) *(z_m-1-z_m))`
 
     Parameters
@@ -317,7 +317,7 @@ def returnRectangles3D(a,x,y):
 def normIntegral(f,dom):
     """Returns a normalised 2D function
 
-    The calculation is  :math: `(\int_\Omega f d\Omega =1)`
+    The calculation is  :math: `(\\int_\\Omega f d\\Omega =1)`
 
     Parameters
     ----------

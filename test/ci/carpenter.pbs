@@ -1,0 +1,46 @@
+#!/bin/bash
+#PBS -A ARONC51302008
+#PBS -N poisson
+#PBS -q PARTITION_NAME
+#PBS -l select=NUM_NODES:ncpus=192:mpiprocs=192
+#PBS -l walltime=002:00:00
+#PBS -l application=proteus
+#PBS -j oe
+export PROTEUS_ARCH=carpenter
+mamba activate petsc-dev-3.12-mp
+export MPI_WILDCARDS=true
+export FI_CXI_RX_MATCH_MODE=hybrid
+cd $PBS_O_WORKDIR
+echo "Hostname          = $(hostname -s)"
+echo "Working Directory = $(pwd)"
+echo ""
+#echo "Slurm Nodes Allocated          = $SLURM_JOB_NODELIST"
+#echo "Number of Nodes Allocated      = $SLURM_NNODES"
+#echo "Number of Tasks Allocated      = $SLURM_NTASKS"
+# Set some handy environment variables.
+export PROJECT_DIR=/app/unsupported/proteus/proteus_cekees/test/ci
+export WORK_DIR=$WORKDIR/$PBS_JOBNAME.$PBS_JOBID
+
+# mamba activate petsc-dev
+#Make sure the WORK_DIR exists:
+mkdir -p $WORK_DIR
+
+# Copy files, jump to WORK_DIR, and execute a program
+cp $PROJECT_DIR/poisson_3d_tetgen_p.py $WORK_DIR
+cp $PROJECT_DIR/poisson_3d_tetgen_c0p1_n.py $WORK_DIR
+# cp poisson.sh $WORK_DIR
+
+cd $WORK_DIR
+export OMP_NUM_THREADS=1
+start_time=$(date +%s)
+#aprun -n $BC_MPI_TASKS_ALLOC parun poisson_3d_tetgen_p.py poisson_3d_tetgen_c0p1_n.py -C "Refinement=NUM_REFINEMENT" -F -P "-ksp_rtol 1.0e-10 -ksp_type cg -pc_type bjacobi -sub_pc_type ilu -ksp_monitor" -p -l 2
+#aprun -n $BC_MPI_TASKS_ALLOC parun poisson_3d_tetgen_p.py poisson_3d_tetgen_c0p1_n.py -C "Refinement=NUM_REFINEMENT" -F -P "-ksp_rtol 1.0e-10 -ksp_type cg -pc_type hypre -pc_hypre_type boomeramg -ksp_monitor" -p -l 2
+aprun -n $BC_MPI_TASKS_ALLOC parun poisson_3d_tetgen_p.py poisson_3d_tetgen_c0p1_n.py -C "Refinement=NUM_REFINEMENT" -F -P "-ksp_type cg -pc_type gamg -ksp_monitor" -m -M 1.8 -l 2
+end_time=$(date +%s)
+
+# Mark the time it finishes.
+echo "Date              = $(date)"
+echo "Total time to run the job is $(($end_time - $start_time))"
+echo NUM_NODES  $BC_MPI_TASKS_ALLOC  $(awk '/primitive calls/ {print $8}' $WORK_DIR/poisson_3d_tetgen_p.log | tail -n 1) >> ../poisson_3.12_mp_time.txt
+# exit the job
+exit 0

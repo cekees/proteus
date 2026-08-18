@@ -4,7 +4,6 @@
 #include "chrono/physics/ChSystem.h"
 #include "chrono/timestepper/ChTimestepper.h"
 #include "chrono/timestepper/ChTimestepperHHT.h"
-#include "chrono/solver/ChSolverPMINRES.h"
 #include "chrono/core/ChFrame.h"
 #include "chrono/physics/ChLinkTSDA.h"
 #include "chrono/geometry/ChTriangleMeshConnected.h"
@@ -65,6 +64,7 @@ public:
   std::shared_ptr<ChLinkTSDA> spring;
   /* ChVector <> inertia; */
   double* inertia;
+  unsigned int accumulator_force_idx, accumulator_torque_idx;
   shared_ptr<ChTriangleMeshConnected> trimesh;
   bool has_trimesh;
   std::shared_ptr<ChBody> body;
@@ -75,6 +75,7 @@ public:
   double hy(double* x, double t);
   double hz(double* x, double t);
   void calculate_init();
+  void addAccumulators();
   void prestep(double* force, double* torque);
   void poststep();
   void setConstraints(double* free_x, double* free_y);
@@ -140,7 +141,6 @@ void cppSystem::setTimestepperType(std::string tstype, bool verbose=false) {
     //mystepper->SetMode(ChTimestepperHHT::POSITION);
     //mystepper->SetScaling(false);
     mystepper->SetVerbose(verbose);
-    mystepper->SetModifiedNewton(false);
   }
   else if (tstype == "Euler") {
     system->SetTimestepperType(ChTimestepper::Type::EULER_IMPLICIT_LINEARIZED);
@@ -167,6 +167,8 @@ cppRigidBody::cppRigidBody(cppSystem* system):
 {
 
   body = chrono_types::make_shared<ChBody>();
+  accumulator_force_idx = body->AddAccumulator();
+  accumulator_torque_idx = body->AddAccumulator();
   // add body to system
   /* system->system->AddBody(body); */ // now added externally in cython
   // basic attributes of body
@@ -179,6 +181,22 @@ cppRigidBody::cppRigidBody(cppSystem* system):
   free_r = ChVector3d(1., 1., 1.);
   lock_motion_t_max = 0.;
   has_trimesh = false;
+}
+
+// The constructor's own body (above) is a throwaway placeholder -- the
+// Cython layer (CouplingFSI.pyx's ProtChBody.__cinit__) immediately
+// overwrites `body` with the ChBody actually shared with a ChBodyAddedMass
+// instance ("self.thisptr.body = self.ChBodyAddedMass.sharedptr_chbody"),
+// discarding the constructor's own ChBody along with the accumulator
+// indices obtained from it. Without this, accumulator_force_idx/
+// accumulator_torque_idx are stale indices into the *new* body's own
+// (empty) accumulators vector -- ChBody::GetAccumulatedForce()/
+// EmptyAccumulator()/AccumulateForce() index into it with no bounds
+// checking, so prestep() segfaults on the very first call. Call this again
+// on whatever body ends up actually being used, right after reassigning it.
+void cppRigidBody::addAccumulators() {
+  accumulator_force_idx = body->AddAccumulator();
+  accumulator_torque_idx = body->AddAccumulator();
 }
 
 void cppSystem::setDirectory(std::string dir) {
@@ -264,21 +282,22 @@ void cppRigidBody::prestep(double* force, double* torque)
   rotq_last = body->GetRot();
   angacc_last = body->GetAngAccLocal();
   angvel_last = body->GetAngVelLocal();
-  F_last = body->GetAccumulatedForce();
-  M_last = body->GetAccumulatedTorque();
+  F_last = body->GetAccumulatedForce(accumulator_force_idx);
+  M_last = body->GetAccumulatedTorque(accumulator_torque_idx);
   // apply external forces
-  body->EmptyAccumulators();
+  body->EmptyAccumulator(accumulator_force_idx);
+  body->EmptyAccumulator(accumulator_torque_idx);
   // calculate opposite force of gravity if free_x is 0
   double forceG[3]={0.,0.,0.};
   if (free_x.x() == 0) {forceG[0] = -system->system->GetGravitationalAcceleration().x()*body->GetMass();}
   if (free_x.y() == 0) {forceG[1] = -system->system->GetGravitationalAcceleration().y()*body->GetMass();}
   if (free_x.z() == 0) {forceG[2] = -system->system->GetGravitationalAcceleration().z()*body->GetMass();}
-  body->AccumulateForce(ChVector3d(forceG[0]+force[0]*free_x.x(),
+  body->AccumulateForce(accumulator_force_idx, ChVector3d(forceG[0]+force[0]*free_x.x(),
 				   forceG[1]+force[1]*free_x.y(),
 				   forceG[2]+force[2]*free_x.z()),
 			pos_last,
 			false);
-  body->AccumulateTorque(ChVector3d(torque[0]*free_r.x(),
+  body->AccumulateTorque(accumulator_torque_idx,ChVector3d(torque[0]*free_r.x(),
 				    torque[1]*free_r.y(),
 				    torque[2]*free_r.z()),
 			 false);
@@ -304,8 +323,8 @@ void cppRigidBody::poststep()
   rotq = body->GetRot();
   angacc = body->GetAngAccLocal();
   angvel = body->GetAngVelLocal();
-  F = body->GetAccumulatedForce();
-  M = body->GetAccumulatedTorque();
+  F = body->GetAccumulatedForce(accumulator_force_idx);
+  M = body->GetAccumulatedTorque(accumulator_torque_idx);
   if (lock_motion_t_max > 0) {
     double t = system->system->GetChTime();
     if (lock_motion_t_max < t && lock_motion->IsDisabled() == false) {

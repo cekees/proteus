@@ -38,7 +38,7 @@ class Coefficients(TC_base):
 
     .. math::
 
-       \nabla\cdot( -a \nabla \phi^{k+1} - \mathbf{q^t}^{k+1} ) = 0
+       \nabla\\cdot( -a \nabla \\phi^{k+1} - \\mathbf{q^t}^{k+1} ) = 0
        a = \frac{\tau (1-\theta_s)}{\rho_f} + \frac{\tau \theta_s}{\rho_s}
        q^t = (1-\theta_s) v_f + \theta_s v_s
     """

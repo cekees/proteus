@@ -15,10 +15,10 @@ const int EXTERIOR_NODE_MATERIAL=1;
 const int INTERIOR_ELEMENT_BOUNDARY_MATERIAL=0;
 const int EXTERIOR_ELEMENT_BOUNDARY_MATERIAL=1;
 
-static int countTotal(apf::Mesh* m, int dim)
+static int countTotal(apf::Mesh* m, int dim, PCU_t PCUObj)
 {
   int total = apf::countOwned(m, dim);
-  PCU_Add_Ints(&total, 1);
+  PCU_Add_Ints(PCUObj, &total, 1);
   return total;
 }
 
@@ -26,26 +26,26 @@ int MeshAdaptPUMIDrvr::constructFromParallelPUMIMesh(Mesh& mesh, Mesh& subdomain
 {
   mesh.subdomainp = &subdomain_mesh;
   initializeMesh(subdomain_mesh);
-  if (!PCU_Comm_Self())
+  if (!PCU_Comm_Self(PCUObj))
     std::cerr << "Constructing parallel proteus mesh\n"; 
   
   int dim = m->getDimension();
-  int numGlobElem = countTotal(m, dim);
+  int numGlobElem = countTotal(m, dim, PCUObj);
   mesh.nElements_global = numGlobElem;
 
   int numLocElem = m->count(dim);
   mesh.subdomainp->nElements_global = numLocElem;
 
-  int numGlobNodes = countTotal(m, 0);
+  int numGlobNodes = countTotal(m, 0, PCUObj);
   mesh.nNodes_global = numGlobNodes;
 
   int numLocNodes = m->count(0);
   mesh.subdomainp->nNodes_global = numLocNodes;
 
-  int numGlobFaces = countTotal(m, 2);
+  int numGlobFaces = countTotal(m, 2, PCUObj);
   int numLocFaces = m->count(2);
 
-  int numGlobEdges = countTotal(m, 1);
+  int numGlobEdges = countTotal(m, 1, PCUObj);
   mesh.nEdges_global = numGlobEdges;
 
   int numLocEdges = m->count(1);
@@ -70,8 +70,8 @@ int MeshAdaptPUMIDrvr::constructFromParallelPUMIMesh(Mesh& mesh, Mesh& subdomain
 
   
 #ifdef MESH_INFO
-  for (int i = 0; i < PCU_Comm_Peers(); ++i) {
-    if (i == PCU_Comm_Self()) {
+  for (int i = 0; i < PCU_Comm_Peers(PCUObj); ++i) {
+    if (i == PCU_Comm_Self(PCUObj)) {
       std::cerr << "*******Local Proteus Mesh Stats*********\n";
       std::cerr << "Rank: " << comm_rank << ": Number of elements " << mesh.subdomainp->nElements_global << "\n";
       std::cerr << "Rank: " << comm_rank << ": Number of nodes " << mesh.subdomainp->nNodes_global << "\n";
@@ -79,7 +79,7 @@ int MeshAdaptPUMIDrvr::constructFromParallelPUMIMesh(Mesh& mesh, Mesh& subdomain
       std::cerr << "Rank: " << comm_rank << ": Number of edges " << mesh.subdomainp->nEdges_global << "\n";
       std::cerr << "*****************************************\n";
     }
-    PCU_Barrier();
+    PCU_Barrier(PCUObj);
   }
   
   if(comm_rank==0) {
@@ -125,7 +125,7 @@ int MeshAdaptPUMIDrvr::constructGlobalNumbering(Mesh &mesh)
 
       int nLocalOwned = apf::countOwned(m, dim);
       int localOffset = nLocalOwned;
-      PCU_Exscan_Ints(&localOffset, 1);
+      PCU_Exscan_Ints(PCUObj, &localOffset, 1);
 
       int* allOffsets;
       if(dim==3){
@@ -144,7 +144,7 @@ int MeshAdaptPUMIDrvr::constructGlobalNumbering(Mesh &mesh)
       /* one of the many reasons N^2 algorithms are bad */
       MPI_Allgather(&localOffset, 1, MPI_INT,
                     allOffsets, 1, MPI_INT, MPI_COMM_WORLD);
-      allOffsets[PCU_Comm_Peers()] = countTotal(m, dim);
+      allOffsets[PCU_Comm_Peers(PCUObj)] = countTotal(m, dim, PCUObj);
   
       std::stringstream ss;
       ss << "proteus_global_";
@@ -161,7 +161,7 @@ int MeshAdaptPUMIDrvr::constructGlobalNumbering(Mesh &mesh)
 
       int nLocalOwned = apf::countOwned(m, dim);
       int localOffset = nLocalOwned;
-      PCU_Exscan_Ints(&localOffset, 1);
+      PCU_Exscan_Ints(PCUObj, &localOffset, 1);
 
       int* allOffsets;
       if(dim==2){
@@ -177,7 +177,7 @@ int MeshAdaptPUMIDrvr::constructGlobalNumbering(Mesh &mesh)
       /* one of the many reasons N^2 algorithms are bad */
       MPI_Allgather(&localOffset, 1, MPI_INT,
                     allOffsets, 1, MPI_INT, MPI_COMM_WORLD);
-      allOffsets[PCU_Comm_Peers()] = countTotal(m, dim);
+      allOffsets[PCU_Comm_Peers(PCUObj)] = countTotal(m, dim, PCUObj);
       std::stringstream ss;
       ss << "proteus_global_";
       ss << dim;
@@ -242,10 +242,10 @@ int MeshAdaptPUMIDrvr::constructGlobalStructures(Mesh &mesh)
 int MeshAdaptPUMIDrvr::dumpMesh(Mesh& mesh)
 {
   std::stringstream ss;
-  ss << "dan_debug_" << PCU_Comm_Self() << ".txt";
+  ss << "dan_debug_" << PCU_Comm_Self(PCUObj) << ".txt";
   std::string s = ss.str();
   FILE* f = fopen(s.c_str(), "w");
-  dump_proteus_mesh(&mesh, f);
+  dump_proteus_mesh(&mesh, f, PCUObj);
   fclose(f);
   return 0;
 }

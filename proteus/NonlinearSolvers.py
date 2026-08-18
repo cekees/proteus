@@ -267,8 +267,10 @@ class NonlinearSolver(object):
 
     def converged(self,r):
         self.convergedFlag = False
-        self.norm_r = self.norm(r)
-        self.norm_du = self.unorm(self.du)
+        if self.its != 0:
+            self.norm_r = self.norm(r)
+        if self.computeRates == True or self.convergenceTest == 'u':
+            self.norm_du = self.unorm(self.du)
         if self.computeRates ==  True:
             self.computeConvergenceRates()
         if self.convergenceTest == 'its' or self.convergenceTest == 'rits':
@@ -396,9 +398,12 @@ class Newton(NonlinearSolver):
         self.fullNewton=fullNewton
         self.linearSolver = linearSolver
         self.directSolver = directSolver
-        self.lineSearch = True
         self.EWtol=EWtol
         self.maxLSits = maxLSits
+        if maxLSits > 0:
+            self.lineSearch = True
+        else:
+            self.lineSearch = False
         if self.linearSolver.computeEigenvalues:
             self.JLast = copy.deepcopy(self.J)
             self.J_t_J = copy.deepcopy(self.J)
@@ -476,10 +481,10 @@ class Newton(NonlinearSolver):
         par_r : :class:`proteus.LinearAlgebraTools.ParVec_petsc4py`
            Parallel residual vector, :math:`r = b - F(u)`
         """
+        logEvent(memory("Entering Newton.solve","NonlinearSolvers"),level=4)
         from . import Viewers
         if self.linearSolver.computeEigenvalues:
             self.u0[:]=u
-        r=self.solveInitialize(u,r,b)
         if par_u is not None:
             #allow linear solver to know what type of assembly to use
             self.linearSolver.par_fullOverlap = self.par_fullOverlap
@@ -489,8 +494,7 @@ class Newton(NonlinearSolver):
             else:
                 #no overlap or overlap (until we compute norms over only owned dof)
                 par_r.scatter_forward_insert()
-
-        self.norm_r0 = self.norm(r)
+        r=self.solveInitialize(u,r,b)
         self.norm_r_hist = []
         self.norm_du_hist = []
         self.gammaK_max=0.0
@@ -669,6 +673,7 @@ class Newton(NonlinearSolver):
                 logEvent("FCT Step After Newton")
                 self.F.FCTStep()
                 u[:] = self.F.u[0].dof
+            logEvent(memory("Exiting Newton.solve","NonlinearSolvers"),level=4)
             return self.failedFlag
         logEvent("  NumericalAnalytics NewtonIteration: %d, NewtonNorm: %12.5e"
                  %(self.its-1, self.norm_r), level=7)
@@ -814,7 +819,8 @@ class ExplicitLumpedMassMatrix(Newton):
         ############
         # FCT STEP #
         ############
-        self.F.kth_FCT_step()
+        self.F.FCTStep()
+        #self.F.kth_FCT_step()
 
         ###########################################
         # DISTRUBUTE SOLUTION FROM u to u[ci].dof #

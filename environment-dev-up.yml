@@ -1,7 +1,7 @@
 name: proteus-dev-up-240912
 channels:
   - conda-forge
-  - defaults
+  - nodefaults
 dependencies:
   - pip
   - compilers
@@ -16,13 +16,13 @@ dependencies:
   - mpich-mpicc
   - mpich-mpicxx
   - numpy
-  - openblas
+  - openblas >=0.3.20
   - parmetis
   - petsc4py
   - petsc
   - superlu
   - superlu_dist
-  - scorec >=2.2.8
+  - scorec >=4.0
   - triangle
   - pychrono >=9.0.1
   - gmsh
