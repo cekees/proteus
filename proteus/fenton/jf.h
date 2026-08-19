@@ -47,7 +47,7 @@
 #define iff(x,y)		if(strcmp(x,#y)==0)
 #define Screenfull(x,y)	if((x) % ((y)+1) == (y)) pause
 
-#define PI				3.14159265358979324
+#define pi				3.14159265358979324
 #define twopi			6.2831853071795864769
 
 int *ivector(long, long), **imatrix(long,long,long,long);

@@ -448,8 +448,7 @@ EXTENSIONS_TO_BUILD = [
                        'proteus/equivalent_polynomials_coefficients_quad.h'],
               language='c++',
               extra_compile_args=PROTEUS_OPT,
-              include_dirs=[numpy.get_include(),'proteus']
-    ),
+              include_dirs=[numpy.get_include(),'proteus'],),
     Extension('cfemIntegrals',
               sources=['proteus/cfemIntegrals.pyx',
                        'proteus/femIntegrals.c',

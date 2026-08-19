@@ -1,5 +1,5 @@
 #define Skip		fgets(dummy,100,Input1)
-#define PI			3.14159265358979324
+#define pi			3.14159265358979324
 #define iff(x,y)	if(strcmp(x,#y)==0)
 #define HI			"\t%10.6f"
 #define LO			"\t%7.4f"

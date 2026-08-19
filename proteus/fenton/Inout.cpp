@@ -122,14 +122,14 @@ fprintf(file,"\n%s\n", Method);
 void Title_block(FILE* file)
 {
 // Highest wave - eqn (32) of Fenton (1990)
-L = 2*PI/z[1];
+L = 2*pi/z[1];
 Highest = (0.0077829*L*L*L+0.0095721*L*L+0.141063*L)
 	/(0.0093407*L*L*L+0.0317567*L*L+0.078834*L+1);
 fprintf(file,"# %s", Title);
 fprintf(file,"\n%s\n", Method);
 fprintf(file,"\n# Height/Depth:%6.3f, %3.0lf\%% of the maximum of H/d =%6.3f for this length:",
 	z[2]/z[1],z[2]/z[1]/Highest*100., Highest);
-fprintf(file,"\n# Length/Depth:%7.2f", 2*PI/z[1]);
+fprintf(file,"\n# Length/Depth:%7.2f", 2*pi/z[1]);
 fprintf(file,"\n# Dimensionless Period T*sqrt(g/d):%7.2f", z[3]/sqrt(z[1]));
 fprintf(file,"\n# Current criterion: %s,  Dimensionless value:%6.3lf\n", Currentname, Current);
 }
@@ -149,7 +149,7 @@ Title_block(monitor);
 Title_block(Solution);
 
 kd = z[1];
-L=2*PI/z[1];
+L=2*pi/z[1];
 H=z[2]/z[1];
 T=z[3]/sqrt(z[1]);
 c=z[4]/sqrt(z[1]);
@@ -179,7 +179,7 @@ fprintf(Solution, "\n# Stokes-Ursell number %7.3f", 0.5*z[2]/pow(z[1],3));
 fprintf(Solution, "\n\n# Integral quantities - notation from Fenton (1988)");
 fprintf(Solution, "\n# (1) Quantity, (2) symbol, solution non-dimensionalised by (3) g & wavenumber, and (4) g & mean depth\n");
 fprintf(Solution, "\n# Water depth                        (d)" LO LO, z[1], 1.);
-fprintf(Solution, "\n# Wave length                   (lambda)" LO LO, 2*PI, L);
+fprintf(Solution, "\n# Wave length                   (lambda)" LO LO, 2*pi, L);
 fprintf(Solution, "\n# Wave height                        (H)" LO LO, z[2], H);
 fprintf(Solution, "\n# Wave period                      (tau)" LO LO, z[3], T);
 fprintf(Solution, "\n# Wave speed                         (c)" LO LO, z[4], c);

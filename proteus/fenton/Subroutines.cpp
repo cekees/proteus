@@ -6,7 +6,7 @@
 #include <string.h>
 
 #define	iff(x,y)	if(strcmp(x,#y)==0)
-#define	PI			3.14159265358979324
+#define	pi			3.14159265358979324
 
 #define	Int	extern int
 #define	Double	extern double
@@ -31,17 +31,17 @@ double a, b, t;
 
 iff(Case,Period)
 	{
-	a=4.*PI*PI*height/Hoverd;
+	a=4.*pi*pi*height/Hoverd;
 	b=a/sqrt(tanh(a));
 	t=tanh(b);
 	z[1]=b+(a-b*t)/(t+b*(1.-t*t));
 	}
 else
-	z[1]=2.*PI*height/Hoverd;
+	z[1]=2.*pi*height/Hoverd;
 
 z[2]=z[1]*Hoverd;
 z[4]=sqrt(tanh(z[1]));
-z[3]=2.*PI/z[4];
+z[3]=2.*pi/z[4];
 if(Current_criterion==1)
 	{
 	z[5]=Current*sqrt(z[2]);
@@ -60,10 +60,10 @@ sina[0]=0.;
 z[10]=0.5*z[2];
 	for( i=1 ; i<=n ; i++ )
 		{
-		cosa[i]=cos(i*PI/n);
-		cosa[i+n]=cos((i+n)*PI/n);
-		sina[i]=sin(i*PI/n);
-		sina[i+n]=sin((i+n)*PI/n);
+		cosa[i]=cos(i*pi/n);
+		cosa[i+n]=cos((i+n)*pi/n);
+		sina[i]=sin(i*pi/n);
+		sina[i+n]=sin((i+n)*pi/n);
 		z[n+i+10]=0.;
 		z[i+10]=0.5*z[2]*cosa[i];
 		}
@@ -87,11 +87,11 @@ double c, e, s, u, v;
 rhs[1]=z[2]-z[1]*Hoverd;
 
 iff(Case,Wavelength)
-	rhs[2]=z[2]-2.*PI*height;
+	rhs[2]=z[2]-2.*pi*height;
 else
 	rhs[2]=z[2]-height*z[3]*z[3];
 
-rhs[3]=z[4]*z[3]-PI-PI;
+rhs[3]=z[4]*z[3]-pi-pi;
 rhs[4]=z[5]+z[7]-z[4];
 rhs[5]=z[6]+z[7]-z[4];
 
