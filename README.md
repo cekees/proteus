@@ -130,10 +130,29 @@ export PROTEUS_PREFIX="$PETSC_DIR"
 # CouplingFSI.pyx and several tests) live here, not in site-packages:
 export PYTHONPATH="$PETSC_DIR/share/chrono/python"
 # Only needed if your system's mpicc doesn't put mpi.h somewhere proteus's
-# own build already looks (Debian/Ubuntu's mpich package doesn't; -lmpi
-# itself already resolves fine via the system's default library search
-# path, this is purely about the header):
-export MPI_DIR=$(dirname "$(mpicc -show | grep -o '\-I[^ ]*' | head -1 | cut -c3-)")
+# own build already looks (get_flags('mpi') in proteus/config/default.py
+# expects $MPI_DIR/include/mpi.h specifically). Most OpenMPI/Homebrew
+# installs already have mpi.h under a plain <prefix>/include, so deriving
+# MPI_DIR as the parent of mpicc's own -I flag (the dirname below) works
+# directly. Debian/Ubuntu's mpich package does NOT follow that layout --
+# its mpi.h lives at a multiarch-nested path like
+# /usr/include/x86_64-linux-gnu/mpich/mpi.h, which has no plain
+# "<prefix>/include" ancestor at all; naively taking dirname() of that
+# points MPI_DIR at a directory whose own include/mpi.h doesn't exist,
+# and proteus's build fails with "fatal error: mpi.h: No such file or
+# directory" partway through (confirmed on Ubuntu 22.04/24.04/26.04 with
+# the distro's own mpich package). Detect which layout you're in and, for
+# the nested case, build a small symlink shim so $MPI_DIR/include/mpi.h
+# resolves correctly either way:
+_mpi_inc=$(mpicc -show | grep -o '\-I[^ ]*' | head -1 | cut -c3-)
+if [ "$(basename "$_mpi_inc")" = "include" ]; then
+  export MPI_DIR=$(dirname "$_mpi_inc")
+else
+  mkdir -p "$HOME/.proteus_mpi_dir"
+  ln -sf "$_mpi_inc" "$HOME/.proteus_mpi_dir/include"
+  ln -sf "$(mpicc -show | grep -o '\-L[^ ]*' | head -1 | cut -c3-)" "$HOME/.proteus_mpi_dir/lib"
+  export MPI_DIR="$HOME/.proteus_mpi_dir"
+fi
 # $PETSC_DIR/bin needs to stay on PATH after this point too, not just for
 # the build below -- it's where the `triangle` CLI
 # --download-triangle-build-exec=1 built lives, and some of proteus's own
