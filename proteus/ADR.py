@@ -111,6 +111,9 @@ class Coefficients(TC_base):
                  useMetrics=0.0,
                  sc_uref=1.0,
                  sc_beta=1.0,
+                 mua=1.0,
+                 mub=1.0,
+                 jf=0.0,
                  embeddedBoundary=False,
                  embeddedBoundary_penalty=100.0,
                  embeddedBoundary_ghost_penalty=0.1,
@@ -118,11 +121,18 @@ class Coefficients(TC_base):
                  embeddedBoundary_u=None,
                  immersedBoundary=False,
                  immersedBoundary_penalty=100.0,
-                 immersedBoundary_ghost_penalty=0.1,
+                 immersedSCIFEM_switch=0.0,
+                 immersedSCIFEM_penalty=0.0,
+                 PG=False,
                  immersedBoundary_sdf=None,
                  immersedBoundary_u=None,
+                 immersedBoundary_fluxJump=None,
+                 immersedBoundary_fluxJumpVector=None,
+                 immersedBoundary_solutionJump=None,
+                 analyticalSolution=None,
                  test=1.0):
         self.test = test
+        self.analyticalSolution = analyticalSolution
         self.embeddedBoundary=embeddedBoundary
         self.embeddedBoundary_penalty=embeddedBoundary_penalty
         self.embeddedBoundary_ghost_penalty=embeddedBoundary_ghost_penalty
@@ -133,9 +143,20 @@ class Coefficients(TC_base):
             assert(self.embeddedBoundary_u is not None)
         self.immersedBoundary=immersedBoundary
         self.immersedBoundary_penalty=immersedBoundary_penalty
-        self.immersedBoundary_ghost_penalty=immersedBoundary_ghost_penalty
+        self.immersedSCIFEM_switch=immersedSCIFEM_switch
+        self.immersedSCIFEM_penalty=immersedSCIFEM_penalty
+        self.PG=PG
         self.immersedBoundary_sdf=immersedBoundary_sdf
         self.immersedBoundary_u=immersedBoundary_u
+        # Prescribed interface jump data, supplied by the physics file instead of
+        # being hardcoded per test number in ADR.h:
+        #   flux jump      [beta du/dn] = immersedBoundary_fluxJump(x,t)
+        #                                 + immersedBoundary_fluxJumpVector(x,t) . n
+        #   solution jump  [u]          = immersedBoundary_solutionJump(x,t)
+        # All default to zero, i.e. a continuous interface with continuous flux.
+        self.immersedBoundary_fluxJump=immersedBoundary_fluxJump
+        self.immersedBoundary_fluxJumpVector=immersedBoundary_fluxJumpVector
+        self.immersedBoundary_solutionJump=immersedBoundary_solutionJump
         if self.immersedBoundary:
             assert(self.immersedBoundary_sdf is not None)
             assert(self.immersedBoundary_u is not None)
@@ -144,6 +165,9 @@ class Coefficients(TC_base):
         self.aOfX = aOfX
         self.fOfX = fOfX
         self.velocity=velocity
+        self.mua = mua
+        self.mub = mub
+        self.jf = jf
         self.nd = nd
         self.l2proj = l2proj
         self.timeVaryingCoefficients=timeVaryingCoefficients
@@ -175,15 +199,22 @@ class Coefficients(TC_base):
                          sparseDiffusionTensors=sdInfo,
                          useSparseDiffusion=True,
                          movingDomain=False)
-    def initializeMesh(self,mesh):
-        self.embeddedBoundary_sdf_nodes = 100*np.ones((mesh.nodeArray.shape[0],),'d')
+    def initializeSDF(self,femSpace):
+        nodeArray = femSpace.mesh.nodeArray if (femSpace.max_nDOF_element==3) else femSpace.dofMap.lagrangeNodesArray
+        self.embeddedBoundary_sdf_nodes = 100*np.ones((nodeArray.shape[0],),'d')
         if self.embeddedBoundary:
-            for nN in range(mesh.nodeArray.shape[0]):
-                self.embeddedBoundary_sdf_nodes[nN], dummy_normal = self.embeddedBoundary_sdf(t=0.0,x=mesh.nodeArray[nN])
-        self.immersedBoundary_sdf_nodes = -100*np.ones((mesh.nodeArray.shape[0],),'d')
+            for nN in range(nodeArray.shape[0]):
+                self.embeddedBoundary_sdf_nodes[nN], dummy_normal = self.embeddedBoundary_sdf(t=0.0,x=nodeArray[nN])
+        self.immersedBoundary_sdf_nodes = -100*np.ones((nodeArray.shape[0],),'d')
         if self.immersedBoundary:
-            for nN in range(mesh.nodeArray.shape[0]):
-                self.immersedBoundary_sdf_nodes[nN], dummy_normal = self.immersedBoundary_sdf(t=0.0,x=mesh.nodeArray[nN])
+            for nN in range(nodeArray.shape[0]):
+                self.immersedBoundary_sdf_nodes[nN], dummy_normal = self.immersedBoundary_sdf(t=0.0,x=nodeArray[nN])
+        # [u] at the DOF locations: the kernel builds JA/JB from per-node values, so the
+        # jump must be sampled where the DOFs live, not at quadrature points.
+        self.immersedBoundary_solutionJump_nodes = np.zeros((nodeArray.shape[0],),'d')
+        if self.immersedBoundary and self.immersedBoundary_solutionJump is not None:
+            for nN in range(nodeArray.shape[0]):
+                self.immersedBoundary_solutionJump_nodes[nN] = self.immersedBoundary_solutionJump(t=0.0,x=nodeArray[nN])
     def initializeElementQuadrature(self,t,cq):
         nd = self.nd
         for ci in range(self.nc):
@@ -211,6 +242,35 @@ class Coefficients(TC_base):
                 for k in range(cq['immersedBoundary_sdf'].shape[1]):
                     cq['immersedBoundary_sdf'][eN,k],cq['immersedBoundary_normal'][eN,k] = self.immersedBoundary_sdf(t=0.0,x=cq['x'][eN,k])
                     cq['immersedBoundary_u'][eN,k] = self.immersedBoundary_u(t=0.0,x=cq['x'][eN,k])
+        # Exact solution at quadrature points, reused from the analyticalSolution
+        # supplied by the physics (p) file instead of being redefined in C++.
+        # Cut elements need both the "inner"/"outer" branch values at the same
+        # physical point, so uOfX_inner/uOfX_outer (raw branch formulas) are
+        # queried directly when the analytical solution class provides them.
+        cq['immersedBoundary_fluxJump'] = np.zeros_like(cq[('u',0)])
+        cq['immersedBoundary_fluxJumpVector'] = np.zeros_like(cq['x'])
+        if self.immersedBoundary:
+            for eN in range(cq['x'].shape[0]):
+                for k in range(cq['x'].shape[1]):
+                    xk = cq['x'][eN,k]
+                    if self.immersedBoundary_fluxJump is not None:
+                        cq['immersedBoundary_fluxJump'][eN,k] = self.immersedBoundary_fluxJump(t=0.0,x=xk)
+                    if self.immersedBoundary_fluxJumpVector is not None:
+                        cq['immersedBoundary_fluxJumpVector'][eN,k] = self.immersedBoundary_fluxJumpVector(t=0.0,x=xk)
+        cq[('u_exact_inner',0)] = np.zeros_like(cq[('u',0)])
+        cq[('u_exact_outer',0)] = np.zeros_like(cq[('u',0)])
+        if self.analyticalSolution is not None and self.analyticalSolution.get(0) is not None:
+            ans0 = self.analyticalSolution[0]
+            has_split = hasattr(ans0,'uOfX_inner') and hasattr(ans0,'uOfX_outer')
+            for eN in range(cq['x'].shape[0]):
+                for k in range(cq['x'].shape[1]):
+                    xk = cq['x'][eN,k]
+                    if has_split:
+                        cq[('u_exact_inner',0)][eN,k] = ans0.uOfX_inner(xk)
+                        cq[('u_exact_outer',0)][eN,k] = ans0.uOfX_outer(xk)
+                    else:
+                        cq[('u_exact_inner',0)][eN,k] = ans0.uOfX(xk)
+                        cq[('u_exact_outer',0)][eN,k] = cq[('u_exact_inner',0)][eN,k]
 
     def initializeElementBoundaryQuadrature(self,t,cebq,cebq_global):
         nd = self.nd
@@ -288,6 +348,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                  movingDomain=False):
         if coefficients.embeddedBoundary or coefficients.immersedBoundary:
             self.hasCutCells=True
+        # Tells the C++ layer to (re)build its per-element cache of the
+        # equivalent-polynomial/IFEM reconstruction (cut classification, basis
+        # coefficients, H/ImH/D, VA/VB) on the next residual/Jacobian call, then
+        # reuse it until this is set True again. Starts True so the cache is
+        # built on first use. For a steady problem with a fixed interface this
+        # never needs to be set again. For a future moving-interface/unsteady
+        # problem, call invalidateIFEMGeometry() whenever the embedded/immersed
+        # sdf is re-evaluated (e.g. at the start of each new time step).
+        self.recompute_ifem_geometry = True
         from proteus import Comm
         #
         #set the objects describing the method and boundary conditions
@@ -318,7 +387,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.dirichletConditions = dofBoundaryConditionsDict
         self.dirichletNodeSetList=None #explicit Dirichlet  conditions for now, no Dirichlet BC constraints
         self.coefficients = coefficients
-        self.coefficients.initializeMesh(self.mesh)
+        self.coefficients.initializeSDF(self.u[0].femSpace)
         self.nc = self.coefficients.nc
         self.stabilization = stabilization
         self.shockCapturing = shockCapturing
@@ -623,9 +692,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["mesh_trial_ref"] = self.u[0].femSpace.elementMaps.psi
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
-        argsDict["mesh_dof"] = self.mesh.nodeArray
+        # ToDo: Have lagrange nodes for all DOFmaps. 
+        argsDict["mesh_dof"] = self.mesh.nodeArray if (self.u[0].femSpace.max_nDOF_element==3) else self.u[0].femSpace.dofMap.lagrangeNodesArray
+        # argsDict["mesh_dof"] = self.mesh.nodeArray
         argsDict["mesh_l2g"] = self.mesh.elementNodesArray
         argsDict["x_ref"] = self.elementQuadraturePoints
+        argsDict["xB_ref"] = self.elementBoundaryQuadraturePoints
         argsDict["dV_ref"] = self.elementQuadratureWeights[('u',0)]
         argsDict["u_trial_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_trial_ref"] = self.u[0].femSpace.grad_psi
@@ -681,6 +753,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["eb_adjoint_sigma"] = self.numericalFlux.boundaryAdjoint_sigma
         argsDict["embeddedBoundary"] = self.coefficients.embeddedBoundary
         argsDict["embeddedBoundary_penalty"] = self.coefficients.embeddedBoundary_penalty
+        argsDict["embeddedBoundary_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
         argsDict["embedded_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
         argsDict["embeddedBoundary_sdf_nodes"] = self.coefficients.embeddedBoundary_sdf_nodes
         argsDict["embeddedBoundary_sdf_q"] = self.q['embeddedBoundary_sdf']
@@ -688,7 +761,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["embeddedBoundary_u_q"] = self.q['embeddedBoundary_u']
         argsDict["immersedBoundary"] = self.coefficients.immersedBoundary
         argsDict["immersedBoundary_penalty"] = self.coefficients.immersedBoundary_penalty
-        argsDict["immersedBoundary_ghost_penalty"] = self.coefficients.immersedBoundary_ghost_penalty
+        argsDict["immersedSCIFEM_switch"] = self.coefficients.immersedSCIFEM_switch
+        argsDict["immersedSCIFEM_penalty"] = self.coefficients.immersedSCIFEM_penalty
+        argsDict["PG"] = self.coefficients.PG
         argsDict["immersedBoundary_sdf_nodes"] = self.coefficients.immersedBoundary_sdf_nodes
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
@@ -698,8 +773,17 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
         argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
+        argsDict["immersedBoundary_fluxJump_q"] = self.q['immersedBoundary_fluxJump']
+        argsDict["immersedBoundary_fluxJumpVector_q"] = self.q['immersedBoundary_fluxJumpVector']
+        argsDict["immersedBoundary_solutionJump_nodes"] = self.coefficients.immersedBoundary_solutionJump_nodes
         argsDict["isActiveDOF"] = self.isActiveDOF
-        argsDict["test"] = self.coefficients.test
+        argsDict["mua"] = self.coefficients.mua
+        argsDict["mub"] = self.coefficients.mub
+        argsDict["jf"] = self.coefficients.jf
+        argsDict["q_u_exact_inner"] = self.q[('u_exact_inner',0)]
+        argsDict["q_u_exact_outer"] = self.q[('u_exact_outer',0)]
+        argsDict["recomputeIFEMGeometry"] = int(self.recompute_ifem_geometry)
+        self.recompute_ifem_geometry = False
         self.L2_error = np.array((0.0,),'d')
         argsDict["L2_error"] = self.L2_error
         self.Linfty_error = np.array((0.0,),'d')
@@ -708,6 +792,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
                 self.u[0].dof[dofN] = g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN], self.timeIntegration.t)
         self.adr.calculateResidual(argsDict)
+        self.L2_error[0] = globalSum(self.L2_error[0])
+        self.Linfty_error[0] = globalMax(self.Linfty_error[0])
         if self.forceStrongConditions:
             for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
                 r[self.offset[0] + self.stride[0] * dofN] = self.u[0].dof[dofN] - g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN], self.timeIntegration.t)
@@ -727,9 +813,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["mesh_trial_ref"] = self.u[0].femSpace.elementMaps.psi
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
-        argsDict["mesh_dof"] = self.mesh.nodeArray
+        argsDict["mesh_dof"] = self.mesh.nodeArray if (self.u[0].femSpace.max_nDOF_element==3) else self.u[0].femSpace.dofMap.lagrangeNodesArray
+        # argsDict["mesh_dof"] = self.mesh.nodeArray
         argsDict["mesh_l2g"] = self.mesh.elementNodesArray
         argsDict["x_ref"] = self.elementQuadraturePoints
+        argsDict["xB_ref"] = self.elementBoundaryQuadraturePoints
         argsDict["dV_ref"] = self.elementQuadratureWeights[('u',0)]
         argsDict["u_trial_ref"] = self.u[0].femSpace.psi
         argsDict["u_grad_trial_ref"] = self.u[0].femSpace.grad_psi
@@ -786,6 +874,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["eb_adjoint_sigma"] = self.numericalFlux.boundaryAdjoint_sigma
         argsDict["embeddedBoundary"] = self.coefficients.embeddedBoundary
         argsDict["embeddedBoundary_penalty"] = self.coefficients.embeddedBoundary_penalty
+        argsDict["embeddedBoundary_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
         argsDict["embedded_ghost_penalty"] = self.coefficients.embeddedBoundary_ghost_penalty
         argsDict["embeddedBoundary_sdf_nodes"] = self.coefficients.embeddedBoundary_sdf_nodes
         argsDict["embeddedBoundary_sdf_q"] = self.q['embeddedBoundary_sdf']
@@ -793,7 +882,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["embeddedBoundary_u_q"] = self.q['embeddedBoundary_u']
         argsDict["immersedBoundary"] = self.coefficients.immersedBoundary
         argsDict["immersedBoundary_penalty"] = self.coefficients.immersedBoundary_penalty
-        argsDict["immersedBoundary_ghost_penalty"] = self.coefficients.immersedBoundary_ghost_penalty
+        argsDict["immersedSCIFEM_switch"] = self.coefficients.immersedSCIFEM_switch
+        argsDict["immersedSCIFEM_penalty"] = self.coefficients.immersedSCIFEM_penalty
+        argsDict["PG"] = self.coefficients.PG
         argsDict["immersedBoundary_sdf_nodes"] = self.coefficients.immersedBoundary_sdf_nodes
         argsDict["immersedBoundary_sdf_q"] = self.q['immersedBoundary_sdf']
         argsDict["immersedBoundary_normal_q"] = self.q['immersedBoundary_normal']
@@ -803,8 +894,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["nElementBoundaries_owned"] = int(self.mesh.nElementBoundaries_owned)
         argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
+        argsDict["immersedBoundary_fluxJump_q"] = self.q['immersedBoundary_fluxJump']
+        argsDict["immersedBoundary_fluxJumpVector_q"] = self.q['immersedBoundary_fluxJumpVector']
+        argsDict["immersedBoundary_solutionJump_nodes"] = self.coefficients.immersedBoundary_solutionJump_nodes
         argsDict["isActiveDOF"] = self.isActiveDOF
-        argsDict["test"] = self.coefficients.test
+        argsDict["mua"] = self.coefficients.mua
+        argsDict["mub"] = self.coefficients.mub
+        argsDict["jf"] = self.coefficients.jf
+        argsDict["recomputeIFEMGeometry"] = int(self.recompute_ifem_geometry)
+        self.recompute_ifem_geometry = False
         self.adr.calculateJacobian(argsDict)
         if self.forceStrongConditions:
             for dofN in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.keys()):
@@ -826,6 +924,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 else:
                     self.nzval[i] = 0.0
         return jacobian
+    def invalidateIFEMGeometry(self):
+        """
+        Call whenever the embedded/immersed interface geometry (sdf) changes -
+        e.g. mesh adaptation, or a new time step for a moving interface - so
+        the C++ layer recomputes and refreshes its per-element equivalent-
+        polynomial/IFEM cache on the next residual/Jacobian call instead of
+        reusing stale cut-cell data.
+        """
+        self.recompute_ifem_geometry = True
     def calculateElementQuadrature(self):
         """
         Calculate the physical location and weights of the quadrature rules
@@ -845,6 +952,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.stabilization.initializeTimeIntegration(self.timeIntegration)
         if self.shockCapturing is not None:
             self.shockCapturing.initializeElementQuadrature(self.mesh,self.timeIntegration.t,self.q)
+        self.invalidateIFEMGeometry()
     def calculateElementBoundaryQuadrature(self):
         pass
     def calculateExteriorElementBoundaryQuadrature(self):

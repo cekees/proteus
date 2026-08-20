@@ -117,7 +117,7 @@ namespace proteus
   }
   
   template<int nSpace, int nP, int nQ, int nEBQ>
-  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nQ, nEBQ>;
+  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nP, nQ, nEBQ>;
 
   class RANS2P_base
   {

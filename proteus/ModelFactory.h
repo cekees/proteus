@@ -392,36 +392,36 @@ namespace proteus
 			    abort();
 			  }
 		      }
-		    /* else if (nQuadraturePoints_elementIn == 3) */
-		    /*   { */
-		    /*     if (nQuadraturePoints_elementBoundaryIn == 2) */
-		    /*       return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<2,3,6,6>,2,3,3,6,6,2>()); */
-		    /*     else */
-		    /*       { */
-		    /*         NO_INSTANCE; */
-		    /*         abort(); */
-		    /*       } */
-		    /*   } */
-		    /* else if (nQuadraturePoints_elementIn == 4) */
-		    /*   { */
-		    /*     if (nQuadraturePoints_elementBoundaryIn == 3) */
-		    /*       return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<2,3,6,6>,2,4,3,6,6,3>()); */
-		    /*     else */
-		    /*       { */
-		    /*         NO_INSTANCE; */
-		    /*         abort(); */
-		    /*       } */
-		    /*   } */
-		    /* else if (nQuadraturePoints_elementIn == 6) */
-		    /*   { */
-		    /*     if (nQuadraturePoints_elementBoundaryIn == 4) */
-		    /*       return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<2,3,6,6>,2,6,3,6,6,4>()); */
-		    /*     else */
-		    /*       { */
-		    /*         NO_INSTANCE; */
-		    /*         abort(); */
-		    /*       } */
-		    /*   } */
+		    else if (nQuadraturePoints_elementIn == 3)
+		      {
+		        if (nQuadraturePoints_elementBoundaryIn == 2)
+		          return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<2,3,6,6>,2,3,3,6,6,2>());
+		        else
+		          {
+		            NO_INSTANCE;
+		            abort();
+		          }
+		      }
+		    else if (nQuadraturePoints_elementIn == 4)
+		      {
+		        if (nQuadraturePoints_elementBoundaryIn == 3)
+		          return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<2,3,6,6>,2,4,3,6,6,3>());
+		        else
+		          {
+		            NO_INSTANCE;
+		            abort();
+		          }
+		      }
+		    else if (nQuadraturePoints_elementIn == 6)
+		      {
+		        if (nQuadraturePoints_elementBoundaryIn == 4)
+		          return static_cast<Model_Base*>(new ModelTemplate<CompKernelTemplate<2,3,6,6>,2,6,3,6,6,4>());
+		        else
+		          {
+		            NO_INSTANCE;
+		            abort();
+		          }
+		      }
 		    else if (nQuadraturePoints_elementIn == 7)
 		      {
 		        if (nQuadraturePoints_elementBoundaryIn == 5)

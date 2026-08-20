@@ -412,3 +412,32 @@ def test_3D():
                     assert(int_H == approx(int_H_exact,1e-12,1e-12))
                     assert(int_ImH == approx(int_ImH_exact,1e-12,1e-12))
                     assert(int_D == approx(int_D_exact,1e-11,1e-11))
+def test_edge_H():
+    """The edge-restricted moment-fit Heaviside must reproduce, exactly, the integral of any
+    polynomial of degree <= nP over the cut sub-interval:
+        int_0^1 H_hat(t) t**d dt == int_theta^1 t**d dt   for d = 0..nP.
+    That identity is the whole reason it can integrate a discontinuous facet integrand with an
+    ordinary whole-edge quadrature rule. Checked for both edge orientations."""
+    import numpy as np
+    gauss_t, gauss_w = np.polynomial.legendre.leggauss(12)
+    gauss_t = 0.5 * (gauss_t + 1.0)
+    gauss_w = 0.5 * gauss_w
+    for nP in [1, 2, 3, 4]:
+        for theta in [0.05, 0.25, 0.5, 0.6180339887, 0.9]:
+            for increasing in [True, False]:
+                # phi linear along the edge, vanishing at t = theta
+                if increasing:
+                    phi0, phi1 = -theta, 1.0 - theta
+                else:
+                    phi0, phi1 = theta, theta - 1.0
+                C_H = eqp.calc_edge_H(phi0, phi1, nP)
+                Hh = np.array([eqp.eval_edge_poly(C_H, t, nP) for t in gauss_t])
+                for d in range(nP + 1):
+                    got = float(np.sum(gauss_w * Hh * gauss_t**d))
+                    # exact integral of t**d over the region where phi > 0
+                    if increasing:   # phi>0 on (theta,1)
+                        exact = (1.0 - theta**(d + 1)) / (d + 1)
+                    else:            # phi>0 on (0,theta)
+                        exact = theta**(d + 1) / (d + 1)
+                    assert got == approx(exact, abs=1.0e-10), \
+                        f"nP={nP} theta={theta} inc={increasing} d={d}: {got} vs {exact}"

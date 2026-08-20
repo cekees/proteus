@@ -56,7 +56,7 @@ inline void baryCoords(const double r0[2],
 namespace proteus
 {
   template<int nSpace, int nP, int nQ, int nEBQ>
-  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nQ, nEBQ>;
+  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nP, nQ, nEBQ>;
 
   class cppRANS3PF2D_base
   {

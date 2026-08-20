@@ -119,6 +119,46 @@ namespace equivalent_polynomials
       }
   }
 
+  // calculate_edge_H / evaluate_edge_poly: the SCIFEM edge-restricted moment-fit Heaviside
+  // (ADR.h's ifem_boundaries facet term). Not a duplicate of _calculate_polynomial_1D above,
+  // despite the similar Horner loop: that function EVALUATES an already-computed (C_H,C_ImH,C_D)
+  // triple for a genuinely 1D *element* (Simplex<1,...>); calculate_edge_H instead COMPUTES a
+  // single H-only fit (via _set_Ainv<1,nP>/_calculate_b<1,nP> from
+  // equivalent_polynomials_coefficients.h) for one *edge* of a 2D/3D element, with the
+  // orientation-safe sign handling a facet needs. Orientation-safe: returns the fit for the
+  // indicator of {phi > 0} whichever way round the edge is parametrized. phi0/phi1 must have
+  // opposite signs (the edge must actually be cut).
+  template <int nP>
+  inline void calculate_edge_H(double phi0, double phi1, double C_H[nP + 1])
+  {
+    double theta = -phi0 / (phi1 - phi0);
+    double Ainv[(nP + 1) * (nP + 1)];
+    _set_Ainv<1, nP>(Ainv);
+    double b_H[nP + 1], b_ImH[nP + 1], b_dH[nP + 1];
+    _calculate_b<1, nP>(&theta, b_H, b_ImH, b_dH);
+    // _calculate_b assumes H=1 for t>theta (phi increasing along t); use the complementary
+    // moments when phi decreases instead, so C_H always fits the indicator of {phi>0}.
+    const double *b = (phi1 > phi0) ? b_H : b_ImH;
+    for (int i = 0; i <= nP; i++)
+    {
+      C_H[i] = 0.0;
+      for (int j = 0; j <= nP; j++)
+        C_H[i] += Ainv[i * (nP + 1) + j] * b[j];
+    }
+  }
+
+  template <int nP>
+  inline double evaluate_edge_poly(const double C[nP + 1], double t)
+  {
+    double val = 0.0, tpow = 1.0;
+    for (int i = 0; i <= nP; i++)
+    {
+      val += C[i] * tpow;
+      tpow *= t;
+    }
+    return val;
+  }
+
   template<int nP>
   inline void _calculate_polynomial_2D(double* xi, double* C_H, double* C_ImH, double* C_D, double& _H, double& _ImH, double& _D)
   {
