@@ -77,7 +77,7 @@ its PyPI package via the `PETSC_CONFIGURE_OPTIONS` environment variable.
 This builds everything from source, so expect it to take a while.
 
 The recipe below also builds Chrono (multibody/FSI) and PUMI (mesh
-adaptation) via PETSc's `--download-chrono`/`--download-scorec` (plus their
+adaptation) via PETSc's `--download-chrono`/`--download-pumi` (plus their
 own extra dependencies: `--download-eigen` for Chrono, `--download-zoltan`
 for PUMI). PUMI's build additionally needs `libbz2`'s development
 package on the system already (Debian/Ubuntu: `apt install libbz2-dev`;
@@ -134,8 +134,8 @@ pip install --no-cache-dir --no-binary mpi4py mpi4py
 # --download-hypre: several of proteus's own solver tests configure
 # pc_type=hypre; without this they fail with "PCSetType(): Unknown type".
 # --download-eigen/--download-zoltan: required by --download-chrono/
-# --download-scorec respectively, not optional once those are requested.
-export PETSC_CONFIGURE_OPTIONS="--download-fblaslapack --download-superlu --download-superlu_dist --download-metis --download-parmetis --download-hdf5 --download-triangle --download-triangle-build-exec=1 --download-tetgen --download-tetgen-build-exec=1 --download-xtl --download-xtensor --download-xtensor-python --download-cmake --download-hypre --download-eigen --download-zoltan --download-chrono --download-scorec"
+# --download-pumi respectively, not optional once those are requested.
+export PETSC_CONFIGURE_OPTIONS="--download-fblaslapack --download-superlu --download-superlu_dist --download-metis --download-parmetis --download-hdf5 --download-triangle --download-triangle-build-exec=1 --download-tetgen --download-tetgen-build-exec=1 --download-xtl --download-xtensor --download-xtensor-python --download-cmake --download-hypre --download-eigen --download-zoltan --download-chrono --download-pumi"
 pip install "petsc @ git+https://gitlab.com/cekees/petsc.git@download-proteus-support"
 # --no-build-isolation is required, not optional: petsc4py declares `petsc` as a
 # build backend dependency, so under isolation pip builds a SECOND petsc from
@@ -240,7 +240,7 @@ For installation on high performance environments, the recommended path is
 PETSc's own build system, which most HPC sites and module systems already
 support: `git@gitlab.com:cekees/petsc.git`, branch `download-proteus-support`,
 adds a `--download-proteus` PETSc package (plus PETSc packages for proteus's
-optional native dependencies: chrono, scorec, xtensor) so a single
+optional native dependencies: chrono, pumi, xtensor) so a single
 `./configure` + `make` builds PETSc, proteus, and everything in between,
 instead of the separate per-dependency manual build this section used to describe. You will need a user-installable prefix directory, which below is assumed to be a conda environment, but a Python venv should also work.
 
@@ -281,14 +281,14 @@ path pass proteus's full test suite cleanly, modulo a small set of already
 independently-tracked numeric-tolerance and `gmsh`-packaging issues (not
 install-pathway problems). If you're building on a platform other than
 these three and hit trouble, that branch's `README_PROTEUS.md` and the
-comments in `config/BuildSystem/config/packages/proteus.py`/`scorec.py`
+comments in `config/BuildSystem/config/packages/proteus.py`/`pumi.py`
 are the places to start (in particular, a couple of post-install fixups in
 there are known to be macOS/dyld-specific workarounds, not applicable
 elsewhere).
 
 The package definitions themselves are plain PETSc packages and don't
 depend on that specific fork -- if your site already has its own PETSc
-checkout, copying `config/BuildSystem/config/packages/{proteus,chrono,scorec,xtl,xtensor,xtensor-python,numpy,h5py}.py`
+checkout, copying `config/BuildSystem/config/packages/{proteus,chrono,pumi,xtl,xtensor,xtensor-python,numpy,h5py}.py`
 into it works the same way.
 
 See https://github.com/erdc/proteus/wiki/How-to-Build-Proteus for old information on building the entire stack by hand.
