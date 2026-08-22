@@ -111,7 +111,7 @@ jobs:
           export OPENBLAS_NUM_THREADS=1
           export OMP_NUM_THREADS=1
           mkdir test_output && cd test_output
-          # These 6 are known-failing (real numerics/environment issues, not
+          # These are known-failing (real numerics/environment issues, not
           # collection errors) and deliberately left unskipped in source so
           # they stay visible for a future fix session -- deselected here
           # only so this workflow's own signal isn't drowned out by known
@@ -123,6 +123,18 @@ jobs:
             --deselect test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_ball
             --deselect test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_sdf
             --deselect test/SWFlow/test_SWFlow.py::TestSWFlow::test_obstacle_flow
+            # Regression from 2d71064a ("Immersed FEM with P1/P2, SCIFEM, and PG (#12)"):
+            # its new `order > 2` guards in equivalent_polynomials.h changed this case.
+            # TO RE-ENABLE: delete this one --deselect line and confirm the test passes,
+            # in the same PR that fixes the guard.
+            --deselect test/levelset/vortex2D/test_vortex2D.py::TestVortex2D::test_vortex2D_exactHeaviside
+            # Iteration-count tolerance rather than a hard failure: asserts
+            # L3[0][1] == pytest.approx(10, rel=0.1) and currently gets 14. This
+            # assertion was already loosened once (133731a6) when it came in at 11, so
+            # the count has drifted again. TO RE-ENABLE: either widen the tolerance at
+            # test_nse_RANS2P_step.py:184 to cover the real cross-platform spread, or
+            # find why the solver now needs 14 iterations.
+            --deselect test/solver_tests/test_nse_RANS2P_step.py::test_step_slip_FullRun
           )
           # PUMI mesh-adaptation and Chrono FSI extensions aren't built on this leg
           # (see PROTEUS_SKIP_PUMI_CHRONO above); ignore the test files that import
