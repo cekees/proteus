@@ -14,8 +14,20 @@ jobs:
         include:
           # Full test suite (PUMI mesh-adaptation + Chrono FSI included).
           # conda-forge ships the scorec package (PUMI) on linux-64, osx-64,
-          # linux-aarch64 and osx-arm64 -- but only with mpich builds on
-          # osx-arm64, so that leg must use the mpich environment file.
+          # linux-aarch64 and osx-arm64. As of scorec 4.2.1 *build 1* it ships
+          # openmpi builds on osx-arm64 too (conda-forge/scorec-feedstock#32
+          # removed the skip), so that platform is no longer restricted to the
+          # mpich environment file -- but 2.2.8 and 4.1.0 remain mpich-only
+          # there, so the >=4.2.1 floor in the environment files is what makes
+          # the openmpi file solvable on Apple Silicon.
+          #
+          # Runner labels: use macos-15-intel for x86_64 and macos-15 for arm64.
+          # macos-13 is retired and macos-14 is deprecated; a job whose runs-on
+          # label no runner satisfies does not fail fast -- it sits queued until
+          # GitHub's 24h ceiling kills it, and because one queued job keeps the
+          # whole run non-terminal, the other legs' logs stay unreadable while
+          # it waits. Every run from 2026-08-12 (when the macos-13 leg was added)
+          # to 2026-08-23 died that way at exactly 24h0m.
           - name: linux-64 / py3.11
             os: ubuntu-latest
             python: "3.11"
@@ -31,8 +43,8 @@ jobs:
             python: "3.13"
             skip_pumi_chrono: false
             env_file: environment-openmpi-dev.yml
-          - name: macos-13 (Intel) / py3.12
-            os: macos-13
+          - name: macos-15 (Intel) / py3.12
+            os: macos-15-intel
             python: "3.12.5"
             skip_pumi_chrono: false
             env_file: environment-openmpi-dev.yml
@@ -48,8 +60,8 @@ jobs:
             python: "3.12.5"
             skip_pumi_chrono: true
             env_file: environment-openmpi-dev.yml
-          - name: macos-14 (Apple Silicon) / py3.12 (no PUMI/Chrono)
-            os: macos-14
+          - name: macos-15 (Apple Silicon) / py3.12 (no PUMI/Chrono)
+            os: macos-15
             python: "3.12.5"
             skip_pumi_chrono: true
             env_file: environment-mpich-dev.yml
@@ -106,8 +118,9 @@ jobs:
           # and abort (SIGABRT) the first time it calls into BLAS/LAPACK, even
           # for something as innocuous as numpy.polynomial.legendre.leggauss
           # at module-import time (proteus/Quadrature.py). Seen as
-          # "Fatal Python error: Aborted" during test collection on
-          # macos-14/osx-arm64. Force single-threaded BLAS instead.
+          # "Fatal Python error: Aborted" during test collection on the
+          # arm64 macOS leg (macos-14 at the time; now macos-15). Force
+          # single-threaded BLAS instead.
           export OPENBLAS_NUM_THREADS=1
           export OMP_NUM_THREADS=1
           mkdir test_output && cd test_output
