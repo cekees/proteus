@@ -62,17 +62,15 @@ wildcard on every MPI-linked package: `hdf5`, `h5py`, `scorec`, `zoltan`).
   `environment-mpich-dev.yml` for the reproduction and verification details.
   If you hit this, switch to `environment-openmpi-dev.yml`.
 
-On macOS/arm64 (Apple Silicon) the choice is not free: conda-forge's `scorec`
-package has **mpich-only builds** on that platform, so `scorec >=4.2.1` can never
-resolve against a forced OpenMPI and `environment-openmpi-dev.yml` is
-unsatisfiable there by construction. Use `environment-mpich-dev.yml` on Apple
-Silicon. (The cause is a `skip:` in conda-forge's scorec-feedstock, added because
-OpenMPI's `mpicxx` is a real binary that cannot execute during the osx-arm64
-cross-compile; conda-forge/scorec-feedstock#32 removes it, after which OpenMPI
-becomes available there too.)
+On macOS/arm64 (Apple Silicon), `environment-openmpi-dev.yml` requires
+`scorec >=4.2.1` and will not solve with anything older. conda-forge's `scorec`
+had mpich-only builds on that platform until 4.2.1 build 1
+(conda-forge/scorec-feedstock#32 removed the `skip:`), so an older `scorec` pin
+cannot resolve against OpenMPI there. With the version floor the dependency
+files already carry, both files solve on Apple Silicon and either is fine.
 
-On x86_64, both files should resolve equally well and neither known issue
-above has been observed; OpenMPI remains the recommended default there too
+On x86_64 and Linux/aarch64, both files resolve equally well and neither known
+issue above has been observed; OpenMPI remains the recommended default there too
 for consistency.
 
 ## pip
