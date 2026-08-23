@@ -1,49 +1,63 @@
 name: proteus-dev-up-240912
+# Every dependency carries a minimum version. This file is the "track the latest"
+# environment -- it deliberately does not pin exact versions -- but unconstrained
+# is not the same as latest: the solver is free to satisfy an awkward constraint by
+# reaching backwards, and it does. A relaxed solve on linux-64 produced a proteus
+# extension linked against libgfortran.so.3 (the GCC 4/5-era soname) in an
+# environment that installs libgfortran 16, breaking every import of
+# proteus.superluWrappers. Floors are taken from the versions
+# environment-openmpi-dev.yml pins, i.e. "at least as new as what we test", with
+# major.minor floors for the few packages that file leaves open. Verified to solve
+# on osx-arm64 (418 packages), linux-64 (461) and linux-aarch64 (454).
+#
+# superlu and zoltan are floored at major.minor rather than an exact patch on
+# purpose: `superlu =7.0.1` was half of the minimal unsatisfiable core that broke
+# the macOS solves (see PATHWAY_TEST_REPORT.md finding 3a).
 channels:
   - conda-forge
   - nodefaults
 dependencies:
-  - pip
-  - compilers
-  - make
-  - setuptools
-  - cython
-  - pybind11
+  - pip >=24.0
+  - compilers >=2.0
+  - make >=4.4.1
+  - setuptools >=73.0.1
+  - cython >=3.0.11
+  - pybind11 >=3.1
   - hdf5 =*=mpi_*
   - h5py =*=mpi_*
-  - metis
-  - numpy
+  - metis >=5.1.0
+  - numpy >=2.5.2
   - openblas >=0.3.20
-  - parmetis
-  - petsc4py
-  - petsc
-  - superlu
-  - superlu_dist
+  - parmetis >=4.0.3
+  - petsc4py >=3.25.4
+  - petsc >=3.25.4
+  - superlu >=7.0
+  - superlu_dist >=9.2.1
   - scorec >=4.2.1
-  - triangle
+  - triangle >=1.6
   - pychrono >=10.0.0
-  - gmsh
-  - matplotlib
-  - mpi4py
-  - pytest
-  - pytest-cov
-  - pytest-xdist
-  - scipy
-  - tetgen
-  - ncurses
-  - python
-  - ipyparallel
-  - xtensor-python
-  - git-lfs
-  - eigen
-  - zoltan
-  - hypre
-  - tbb
-  - zipp
-  - parso
-  - pycparser
-  - ipython
-  - decorator
-  - cffi
-  - jupyterlab
-  - llvm-openmp
+  - gmsh >=4.12.2
+  - matplotlib >=3.9.2
+  - mpi4py >=4.1.2
+  - pytest >=9.1.1
+  - pytest-cov >=5.0.0
+  - pytest-xdist >=3.6.1
+  - scipy >=1.18.0
+  - tetgen >=1.6.0
+  - ncurses >=6.6
+  - python >=3.13.15
+  - ipyparallel >=9.2
+  - xtensor-python >=0.29.0
+  - git-lfs >=3.7
+  - eigen >=5.0.1
+  - zoltan >=3.901
+  - hypre >=3.1.0
+  - tbb >=2021.13.0
+  - zipp >=3.20.1
+  - parso >=0.8.4
+  - pycparser >=2.22
+  - ipython >=9.16
+  - decorator >=5.3
+  - cffi >=1.17.1
+  - jupyterlab >=4.6
+  - llvm-openmp >=22.1

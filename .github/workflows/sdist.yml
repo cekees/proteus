@@ -28,10 +28,11 @@ jobs:
           # whole run non-terminal, the other legs' logs stay unreadable while
           # it waits. Every run from 2026-08-12 (when the macos-13 leg was added)
           # to 2026-08-23 died that way at exactly 24h0m.
-          - name: linux-64 / py3.11
-            os: ubuntu-latest
-            python: "3.11"
-            env_file: environment-openmpi-dev.yml
+          # No py3.11 leg: the floors cannot be satisfied there. numpy >=2.5.2 has
+          # cp312/cp313/cp314 builds only (the newest with a py3.11 build is 2.4.6),
+          # and scipy >=1.18.0 requires python >=3.12. Lowering the floors to admit
+          # py3.11 is what pulled in the 2018 openblas described below, so the leg
+          # goes rather than the floors.
           - name: linux-64 / py3.12
             os: ubuntu-latest
             python: "3.12.5"
@@ -89,16 +90,26 @@ jobs:
             # python >=3.12. 37 packages are exactly pinned; relaxing them one at a
             # time is whack-a-mole, so relax the versions wholesale for off-lock legs.
             #
-            # Crucially this keeps build-string selectors: "hdf5 =1.14.6=*openmpi*"
-            # becomes "hdf5 =*=*openmpi*", NOT "hdf5". Dropping the selector lets the
-            # solver pick h5py-*-nompi_*, which silently produces a serial HDF5 and
-            # a flood of "h5py was built without MPI support" failures. Verified on
-            # py3.11: h5py resolves to mpi_openmpi_py311h1356dc7_4 and hdf5 to
-            # mpi_openmpi_h8451b09_10, with numpy 2.4.6 / scipy 1.17.1.
-            echo "-- python ${{ matrix.python }} differs from the file's pin $FILE_PY; relaxing exact versions"
-            sed -i.bak -E 's/^(  - [a-z0-9_.-]+) *=[0-9][^ =]*(=[^ ]*)$/\1 =*\2/' environment-ci.yml
-            sed -i.bak -E 's/^(  - [a-z0-9_.-]+) *=[0-9][^ =]*$/\1/' environment-ci.yml
-            sed -i.bak "s/^  - python$/  - python =${{ matrix.python }}/" environment-ci.yml
+            # Convert to a FLOOR, never remove. An earlier version of this step
+            # dropped the pins outright and that broke both linux-64 legs: with
+            # "openblas =0.3.34" reduced to bare "openblas", the solver selected
+            # openblas 0.3.4 -- a 2018 build, since 0.3.4 sorts BELOW 0.3.34 -- whose
+            # dependency is "libgfortran >=3.0". The environment installs libgfortran
+            # 16 (libgfortran.so.5), so proteus.superluWrappers linked against a
+            # libgfortran.so.3 that is not present, and all 71 test modules failed to
+            # import. Unconstrained is not the same as latest: the solver will reach
+            # backwards to satisfy an awkward constraint.
+            #
+            # Build-string selectors are preserved either way:
+            # "hdf5 =1.14.6=*openmpi*" becomes "hdf5 >=1.14.6=*openmpi*", never
+            # "hdf5". Dropping the selector lets the solver pick h5py-*-nompi_*, a
+            # serial HDF5, and a flood of "h5py was built without MPI support"
+            # failures. Verified on linux-64 py3.12: 376 packages, openblas 0.3.34,
+            # h5py mpi_openmpi_*, libgfortran 16.1.0.
+            echo "-- python ${{ matrix.python }} differs from the file's pin $FILE_PY; converting exact pins to floors"
+            sed -i.bak -E 's/^(  - [a-z0-9_.-]+) *=([0-9][^ =]*)(=[^ ]*)$/\1 >=\2\3/' environment-ci.yml
+            sed -i.bak -E 's/^(  - [a-z0-9_.-]+) *=([0-9][^ =]*)$/\1 >=\2/' environment-ci.yml
+            sed -i.bak "s/^  - python >=.*/  - python =${{ matrix.python }}/" environment-ci.yml
           fi
           rm -f environment-ci.yml.bak
           cat environment-ci.yml
