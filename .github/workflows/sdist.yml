@@ -31,39 +31,37 @@ jobs:
           - name: linux-64 / py3.11
             os: ubuntu-latest
             python: "3.11"
-            skip_pumi_chrono: false
             env_file: environment-openmpi-dev.yml
           - name: linux-64 / py3.12
             os: ubuntu-latest
             python: "3.12.5"
-            skip_pumi_chrono: false
             env_file: environment-openmpi-dev.yml
-          - name: linux-64 / py3.13
+          # This leg's python matches the pin in the environment files, so it is the
+          # one that tests the committed lock verbatim; the others relax it.
+          - name: linux-64 / py3.13 (locked)
             os: ubuntu-latest
-            python: "3.13"
-            skip_pumi_chrono: false
+            python: "3.13.15"
             env_file: environment-openmpi-dev.yml
           - name: macos-15 (Intel) / py3.12
             os: macos-15-intel
             python: "3.12.5"
-            skip_pumi_chrono: false
             env_file: environment-openmpi-dev.yml
-          # These two legs still drop scorec+pychrono and skip the PUMI/Chrono
-          # extensions (PROTEUS_SKIP_PUMI_CHRONO), but no longer because scorec is
-          # missing -- it now builds on both. pychrono is the blocker: on osx-arm64
-          # `import pychrono` raises a SWIG overload error on chrono::ChVector3, and
-          # importing it after proteus's own C extensions crashes the interpreter
-          # outright, taking whole-suite collection with it. Re-enabling PUMI alone
-          # on these legs is worth doing once that is sorted out.
-          - name: linux-aarch64 / py3.12 (no PUMI/Chrono)
+          # These two ran without PUMI/Chrono while conda-forge lacked the binaries
+          # and while pychrono crashed on osx-arm64. Both reasons are gone: scorec
+          # 4.2.1 and pychrono 10.0.0 are published for linux-64, osx-64,
+          # linux-aarch64 and osx-arm64 (py3.10-3.14), and with pychrono 10.0.0
+          # `import pychrono` succeeds on osx-arm64 both alone and after proteus's own
+          # C extensions -- the ChVector3 SWIG overload crash was a 9.0.1 problem.
+          # Confirmed by full-suite runs with PUMI and Chrono included: osx-arm64
+          # 527/5/0 (all three environment files) and linux-aarch64 526/6/0 (both).
+          # The macOS leg keeps the mpich file so one leg still exercises it.
+          - name: linux-aarch64 / py3.12
             os: ubuntu-24.04-arm
             python: "3.12.5"
-            skip_pumi_chrono: true
             env_file: environment-openmpi-dev.yml
-          - name: macos-15 (Apple Silicon) / py3.12 (no PUMI/Chrono)
+          - name: macos-15 (Apple Silicon) / py3.12
             os: macos-15
             python: "3.12.5"
-            skip_pumi_chrono: true
             env_file: environment-mpich-dev.yml
     name: ${{ matrix.name }}
     steps:
@@ -76,14 +74,34 @@ jobs:
           # the openmpi/mpich files declare different env names; normalize so
           # activate-environment below matches whichever one this leg copied
           sed -i.bak "s/^name: .*/name: proteus-dev/" environment-ci.yml
-          sed -i.bak "s/^  - python =.*/  - python =${{ matrix.python }}/" environment-ci.yml
-          if [ "${{ matrix.skip_pumi_chrono }}" = "true" ]; then
-            grep -Ev '^ *- *(scorec|pychrono) *[=<>]' environment-ci.yml > environment-ci.yml.tmp
-            mv environment-ci.yml.tmp environment-ci.yml
+          FILE_PY=$(sed -n 's/^  - python =\(.*\)$/\1/p' environment-ci.yml)
+          if [ "${{ matrix.python }}" = "$FILE_PY" ]; then
+            # This leg's python IS the one the file pins, so use the file verbatim:
+            # that is the only leg that actually tests the committed lock.
+            echo "-- python ${{ matrix.python }} matches the file's pin; using the lock as-is"
+          else
+            # Every exact "=x.y.z" pin in the dev environment files is part of one
+            # lock chosen together with python =$FILE_PY, and many of those builds
+            # are python-ABI-specific, so overriding python alone is unsatisfiable.
+            # That is why the py3.11 leg failed at "Set up conda environment" rather
+            # than at the tests: numpy =2.5.2 has cp312/cp313/cp314 builds only
+            # (highest with py3.11 is 2.4.6), and behind it scipy =1.18.0 requires
+            # python >=3.12. 37 packages are exactly pinned; relaxing them one at a
+            # time is whack-a-mole, so relax the versions wholesale for off-lock legs.
+            #
+            # Crucially this keeps build-string selectors: "hdf5 =1.14.6=*openmpi*"
+            # becomes "hdf5 =*=*openmpi*", NOT "hdf5". Dropping the selector lets the
+            # solver pick h5py-*-nompi_*, which silently produces a serial HDF5 and
+            # a flood of "h5py was built without MPI support" failures. Verified on
+            # py3.11: h5py resolves to mpi_openmpi_py311h1356dc7_4 and hdf5 to
+            # mpi_openmpi_h8451b09_10, with numpy 2.4.6 / scipy 1.17.1.
+            echo "-- python ${{ matrix.python }} differs from the file's pin $FILE_PY; relaxing exact versions"
+            sed -i.bak -E 's/^(  - [a-z0-9_.-]+) *=[0-9][^ =]*(=[^ ]*)$/\1 =*\2/' environment-ci.yml
+            sed -i.bak -E 's/^(  - [a-z0-9_.-]+) *=[0-9][^ =]*$/\1/' environment-ci.yml
+            sed -i.bak "s/^  - python$/  - python =${{ matrix.python }}/" environment-ci.yml
           fi
           rm -f environment-ci.yml.bak
           cat environment-ci.yml
-
       - name: Set up conda environment with PETSc/MPI/HDF5
         uses: conda-incubator/setup-miniconda@v3
         with:
@@ -99,8 +117,6 @@ jobs:
 
       - name: Install sdist with default build isolation
         shell: bash -l {0}
-        env:
-          PROTEUS_SKIP_PUMI_CHRONO: ${{ matrix.skip_pumi_chrono == true && '1' || '' }}
         run: pip install dist/proteus-*.tar.gz
 
       - name: Smoke test
@@ -141,42 +157,30 @@ jobs:
             # TO RE-ENABLE: delete this one --deselect line and confirm the test passes,
             # in the same PR that fixes the guard.
             --deselect test/levelset/vortex2D/test_vortex2D.py::TestVortex2D::test_vortex2D_exactHeaviside
-            # Iteration-count tolerance rather than a hard failure: asserts
-            # L3[0][1] == pytest.approx(10, rel=0.1) and currently gets 14. This
-            # assertion was already loosened once (133731a6) when it came in at 11, so
-            # the count has drifted again. TO RE-ENABLE: either widen the tolerance at
-            # test_nse_RANS2P_step.py:184 to cover the real cross-platform spread, or
-            # find why the solver now needs 14 iterations.
-            --deselect test/solver_tests/test_nse_RANS2P_step.py::test_step_slip_FullRun
+            # DO NOT deselect test_nse_RANS2P_step.py::test_step_slip_FullRun.
+            # It fails an iteration-count assertion (see below), but it is also the
+            # PRODUCER of dump_test_1_step2d_1.0par_j_0, which
+            # test_amg_iteration_matrix_slip and test_amg_step_problem_slip load via
+            # LAT.petsc_load_matrix. Those dumps are not in the repo -- they are
+            # side-effects of runTest(ns,'test_1') -- and petsc_load_matrix returns
+            # None on a missing file instead of raising, so the consumers die with
+            # "AttributeError: 'NoneType' object has no attribute 'getSizes'".
+            # Deselecting the producer therefore turns one honest tolerance failure
+            # into three. Verified: the dump is written before the failing assertion,
+            # and with it present both AMG slip tests pass.
+            #   (test_step_noslip_FullRun -> runTest(ns,'test_2') -> dump_test_2_*
+            #    feeds the *_noslip AMG tests the same way.)
+            #
+            # The real, reproducible failure to run down is the drift in
+            # test_nse_RANS2P_step.py:184, "assert L3[0][1] == pytest.approx(10, rel=0.1)":
+            #   expected  10 +/- 1
+            #   linux-64  14
+            #   osx-arm64 15   (measured directly, conda-dev-openmpi)
+            # L1 (==2) and L2 (approx 11, rel=0.1) both still pass, so only the third
+            # KSP solve has drifted. The assertion was already loosened once in
+            # 133731a6 when the count came in at 11, so this is the second drift in the
+            # same place -- 10 -> 11 -> 14/15 -- which argues for finding the cause
+            # rather than widening the tolerance a third time.
           )
-          # PUMI mesh-adaptation and Chrono FSI extensions aren't built on this leg
-          # (see PROTEUS_SKIP_PUMI_CHRONO above); ignore the test files that import
-          # proteus.MeshAdaptPUMI.MeshAdapt or pychrono/proteus.mbd, since collecting
-          # them would fail on import rather than skip cleanly. This list was built
-          # by hand against a point-in-time test tree; it silently goes stale as new
-          # PUMI/Chrono-dependent test files are added (already caught two waves of
-          # that: test/MeshAdaptPUMI/case_run+gauge_compare and test/AddedMass were
-          # both added after the list below was first written) -- if a no-PUMI/Chrono
-          # leg starts failing on a PUMI- or Chrono-touching test not listed here,
-          # that's why, not a real regression.
-          IGNORE_ARGS=()
-          if [ "${{ matrix.skip_pumi_chrono }}" = "true" ]; then
-            IGNORE_ARGS=(
-              --ignore=../test/MeshAdaptPUMI/test_gmshCheck.py
-              --ignore=../test/MeshAdaptPUMI/test_poiseuilleError.py
-              --ignore=../test/MeshAdaptPUMI/test_parallelMeshLoad.py
-              --ignore=../test/MeshAdaptPUMI/test_meshLoad.py
-              --ignore=../test/MeshAdaptPUMI/Sizefields/cylinder2D_ibm/test_cylinder2D_ibm_rans2p.py
-              --ignore=../test/MeshAdaptPUMI/case_run/test_workflowPUMI.py
-              --ignore=../test/MeshAdaptPUMI/gauge_compare/dambreak_Colagrossi_2D/test_MeshAdaptRestart.py
-              --ignore=../test/MeshAdaptPUMI/gauge_compare/dambreak_Colagrossi_2D_rd/test_MeshAdaptRestart_withRedistancing.py
-              --ignore=../test/MeshAdaptPUMI/gauge_compare/dambreak_Colagrossi_2D_rdmc/test_MeshAdaptRestart_withRDMC.py
-              --ignore=../test/FSI/test_FSI.py
-              --ignore=../test/test_mbd_chrono.py
-              --ignore=../test/AddedMass/test_addedmass2D.py
-              --ignore=../test/AddedMass/test_addedmass3D.py
-              --deselect ../test/TwoPhaseFlow/test_TwoPhaseFlow.py::TestTwoPhaseFlow::test_damBreak_runPUMI
-            )
-          fi
           python -m pytest -v --forked --import-mode=importlib \
-            "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" ../test
+            "${DESELECT_ARGS[@]}" ../test
