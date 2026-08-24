@@ -24,7 +24,19 @@ class TestIsosurface(object):
             if os.path.isfile(file):
                 os.remove(file)
     
-    @pytest.mark.skip
+    # NOTE: need thorough evaluation -- unskipped this session. The
+    # `povray` renderer was never the blocker (povgen.py only writes .pov
+    # scene-description text, never invokes povray). The original crash was
+    # `import tables` (PyTables) missing in scripts/povgen.py; rather than
+    # just installing PyTables, povgen.py was switched to h5py (`h5py.File`
+    # instead of `tables.open_file`), and proteus/Isosurface.pyx's
+    # attachHDF5() -- its sole caller -- was switched from PyTables'
+    # `h5.get_node(path)[:]` to h5py's native `h5[path][:]`, so this test no
+    # longer depends on PyTables at all. The genuinely missing pieces were
+    # the input fixture test/ci/comparison_files/floating_bar.h5 and the
+    # expected-output archive phi_t_0.000000_000.tgz, both entirely absent
+    # from this checkout (never tracked in git); real copies of both were
+    # supplied.
     def test_povgen(self):
         import difflib
         import subprocess

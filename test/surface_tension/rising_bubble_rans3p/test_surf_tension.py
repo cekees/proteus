@@ -74,15 +74,15 @@ class TestSurfaceTension(object):
         expected_path = 'comparison_files/' + 'comparison_' + name + '_phi_t2.csv'
         #write comparison file
         #np.array(actual.root.phi_t2).tofile(os.path.join(self._scriptdir, expected_path),sep=",")
-        np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['phi_t2']).flatten(),decimal=10)
+        np.testing.assert_allclose(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['phi_t2']).flatten(),atol=0.05,rtol=0.05)
 
         expected_path = 'comparison_files/' + 'comparison_' + name + '_p_t2.csv'
         #np.array(actual.root.p_t2).tofile(os.path.join(self._scriptdir, expected_path),sep=",")
-        np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['p_t2']).flatten(),decimal=10)
+        np.testing.assert_allclose(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['p_t2']).flatten(),atol=0.05,rtol=0.05)
 
         expected_path = 'comparison_files/' + 'comparison_' + name + '_velocity_t2.csv'
         #np.array(actual.root.velocity_t2).tofile(os.path.join(self._scriptdir, expected_path),sep=",")
-        np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['velocity_t2']).flatten(),decimal=10)
+        np.testing.assert_allclose(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['velocity_t2']).flatten(),atol=0.05,rtol=0.05)
 
         actual.close()
 

@@ -69,7 +69,7 @@ apf::Matrix3x3 getKJ(int nsd)
 
 void MeshAdaptPUMIDrvr::get_VMS_error(double &total_error_out) 
 {
-  if(PCU_Comm_Self()==0)
+  if(PCU_Comm_Self(PCUObj)==0)
     std::cout<<"The beginning of the VMS\n";
   getProps(rho,nu,delta_T);
   approx_order = approximation_order; 
@@ -88,18 +88,18 @@ void MeshAdaptPUMIDrvr::get_VMS_error(double &total_error_out)
     velf_old = m->findField("velocity_old");
   else{
     velf_old = velf;
-    if(PCU_Comm_Self()==0)
+    if(PCU_Comm_Self(PCUObj)==0)
       std::cout<<"WARNING: old velocity field not found. Will proceed as if unsteady term is 0. \n";
     dt_err = 1.0;
   }
   assert(velf_old);
   //*****               *****//
-  if(PCU_Comm_Self()==0)
+  if(PCU_Comm_Self(PCUObj)==0)
     std::cout<<"Got the solution fields\n";
   //***** Compute the viscosity field *****//
 /*
   apf::Field* visc = getViscosityField(voff);
-  if(PCU_Comm_Self()==0)
+  if(PCU_Comm_Self(PCUObj)==0)
     std::cout<<"Got viscosity fields \n";
 */
   freeField(vmsErrH1);
@@ -108,7 +108,7 @@ void MeshAdaptPUMIDrvr::get_VMS_error(double &total_error_out)
   //vmsErrH1 = apf::createField(m,"VMSH1",apf::SCALAR,apf::getVoronoiShape(nsd,1));
   vmsErrH1 = apf::createField(m,"VMSH1",apf::SCALAR,apf::getVoronoiShape(nsd,1));
   
-  if(PCU_Comm_Self()==0)
+  if(PCU_Comm_Self(PCUObj)==0)
     std::cout<<"Created the error fields\n";
   //Start computing element quantities
   int numqpt; //number of quadrature points
@@ -256,9 +256,9 @@ void MeshAdaptPUMIDrvr::get_VMS_error(double &total_error_out)
     count++;
   } //end loop over elements
   
-    //PCU_Add_Doubles(&VMSerrTotalL2,1);
-    PCU_Add_Doubles(&VMSerrTotalH1,1);
-    if(PCU_Comm_Self()==0)
+    //PCU_Add_Doubles(PCUObj, &VMSerrTotalL2,1);
+    PCU_Add_Doubles(PCUObj, &VMSerrTotalH1,1);
+    if(PCU_Comm_Self(PCUObj)==0)
       std::cout<<std::scientific<<std::setprecision(15)<<"Total Error H1 "<<sqrt(VMSerrTotalH1)<<std::endl;
     total_error = sqrt(VMSerrTotalH1);
     total_error_out = sqrt(VMSerrTotalH1);

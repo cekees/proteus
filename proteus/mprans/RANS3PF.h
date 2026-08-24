@@ -47,7 +47,7 @@ static const  double DM3=1.0;//1-point-wise divergence, 0-point-wise rate of vol
 namespace proteus
 {
   template<int nSpace, int nP, int nQ, int nEBQ>
-  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nQ, nEBQ>;
+  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nP, nQ, nEBQ>;
 
   class cppRANS3PF_base
   {

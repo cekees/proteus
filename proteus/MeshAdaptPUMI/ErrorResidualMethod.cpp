@@ -361,7 +361,7 @@ void MeshAdaptPUMIDrvr::computeDiffusiveFlux(apf::Mesh*m,apf::Field* voff, apf::
   if(comm_rank==0)
    std::cerr<<"Initialized flux"<<std::endl;
   //loop over regions
-  PCU_Comm_Begin();
+  PCU_Comm_Begin(PCUObj);
   iter = m->begin(nsd);
   int ent_count=0;
   while(ent = m->iterate(iter))
@@ -441,7 +441,12 @@ void MeshAdaptPUMIDrvr::computeDiffusiveFlux(apf::Mesh*m,apf::Field* voff, apf::
           bflux = tempbflux*normal;
         } //end if boundary
         bflux = bflux*weight*Jdet;
-        bflux.toArray(&(tempflux[l*nsd]));
+        // bflux.toArray() always writes all 3 components of an apf::Vector3,
+        // regardless of nsd -- tempflux is only sized/strided for nsd components
+        // per quadrature point, so using toArray() here overflows it by one
+        // component per point when nsd==2 (harmless no-op when nsd==3, since the
+        // stride then matches the 3 components written).
+        for(int d = 0; d < nsd; d++) tempflux[l*nsd+d] = bflux[d];
       }
       flux = (double*) calloc(numbqpt*nsd*2,sizeof(double));
       m->getDoubleTag(bent,diffFlux,flux);
@@ -461,9 +466,9 @@ void MeshAdaptPUMIDrvr::computeDiffusiveFlux(apf::Mesh*m,apf::Field* voff, apf::
         m->getRemotes(bent,remotes);
         for(apf::Copies::iterator it=remotes.begin(); it!=remotes.end();++it)
         {
-          PCU_COMM_PACK(it->first, it->second);
-          PCU_COMM_PACK(it->first, orientation);
-          PCU_COMM_PACK(it->first, tempflux);
+          PCU_COMM_PACK(PCUObj, it->first, it->second);
+          PCU_COMM_PACK(PCUObj, it->first, orientation);
+          PCU_COMM_PACK(PCUObj, it->first, tempflux);
         }
       } //end if
       ent_count++;
@@ -472,20 +477,20 @@ void MeshAdaptPUMIDrvr::computeDiffusiveFlux(apf::Mesh*m,apf::Field* voff, apf::
   m->end(iter);
   if(comm_rank==0)
     std::cerr<<"Sending flux"<<std::endl;
-  PCU_Comm_Send(); 
+  PCU_Comm_Send(PCUObj); 
   flux = (double*) calloc(numbqpt*nsd*2,sizeof(double));
-  while(PCU_Comm_Receive())
+  while(PCU_Comm_Receive(PCUObj))
   {
-    PCU_COMM_UNPACK(bent);
-    PCU_COMM_UNPACK(orientation);
-    PCU_COMM_UNPACK(tempflux);
+    PCU_COMM_UNPACK(PCUObj, bent);
+    PCU_COMM_UNPACK(PCUObj, orientation);
+    PCU_COMM_UNPACK(PCUObj, tempflux);
     m->getDoubleTag(bent,diffFlux,flux);
     for (int i=0;i<numbqpt*nsd;i++){
       flux[orientation*numbqpt*nsd+i] = flux[orientation*numbqpt*nsd+i]+tempflux[i];
     }
     m->setDoubleTag(bent,diffFlux,flux);
   }
-  PCU_Barrier();
+  PCU_Barrier(PCUObj);
   free(flux);
   if(comm_rank==0)
     std::cerr<<"End computeDiffusiveFlux()"<<std::endl;
@@ -931,8 +936,8 @@ void MeshAdaptPUMIDrvr::get_local_error(double &total_error)
     apf::destroyElement(visc_elem);apf::destroyElement(pres_elem);apf::destroyElement(velo_elem);apf::destroyElement(est_elem);apf::destroyElement(vof_elem);
   } //end element loop
 
-  PCU_Add_Doubles(&err_est_total,1);
-  PCU_Add_Doubles(&u_norm_total,1);
+  PCU_Add_Doubles(PCUObj, &err_est_total,1);
+  PCU_Add_Doubles(PCUObj, &u_norm_total,1);
 
   total_error = sqrt(err_est_total);
   u_norm_total = sqrt(u_norm_total);

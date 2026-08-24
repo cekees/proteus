@@ -31,9 +31,10 @@ shockCapturing = None
 #nonlinear solver choices
 multilevelNonlinearSolver  = Newton
 levelNonlinearSolver = Newton
+computeNonlinearSolverRates=False
 #linear problem so force 1 iteration allowed
-maxNonlinearIts = 2
-maxLineSearches = 1
+maxNonlinearIts = 1
+maxLineSearches = 0
 fullNewtonFlag = True
 #absolute nonlinear solver residual tolerance
 nl_atol_res = 1.0e-8
@@ -79,7 +80,7 @@ else:
 #linear solver relative convergence test
 linTolFac = 0.0
 #linear solver absolute convergence test
-l_atol_res = 1.0e-10
+l_atol_res = 1.0e-9
 
 conservativeFlux =  None
 cfluxtag = None

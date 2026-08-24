@@ -24,8 +24,9 @@ opts = Context.Options([
     ("Refinement", 0, "Refine the mesh this many times"),
 ])
 
-name = "poisson_"+str(opts.Refinement)
+name = "poisson_tetgen_"+str(opts.Refinement)
 nd = 3
+# print("Running %s" % name)
 
 hull_length = 0.5
 hull_beam   = 0.5
@@ -45,7 +46,7 @@ hull_center = (0.5*hull_length,
 
 nLevels = 1
 
-he = L[0]/10.0 * 0.5**opts.Refinement
+he =  0.45*L[0] / ( ( 5 * 1.26**opts.Refinement) )
 #he = hull_draft/1.0
 #he = hull_draft/6.0
 genMesh=opts.genMesh
@@ -114,7 +115,7 @@ else:
             return 8 + i*n_points_draft+j
         for i in range(n_points_length-1):
             for j in range(n_points_draft-1):
-                if i < n_points_length/2:
+                if i < n_points_length//2:
                     facets.append([[vN_right(i,j),vN_right(i+1,j+1),vN_right(i+1,j)]])
                     facetFlags.append(boundaryTags['obstacle'])
                     facets.append([[vN_right(i,j),vN_right(i,j+1),vN_right(i+1,j+1)]])

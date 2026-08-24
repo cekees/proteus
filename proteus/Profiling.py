@@ -96,7 +96,7 @@ def logEvent(stringIn, level=1, data=None):
                     if data is not None:
                         string += repr(data)
                     string +='\n'
-                    string = ("[%8d] " % (time() - startTime)) + string
+                    string = ("[%8.4f] " % (time() - startTime)) + string
                     global logFile,verbose
                     logFile.write(string)
                     if flushBuffer:

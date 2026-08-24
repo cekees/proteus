@@ -870,7 +870,7 @@ class HeuristicNL_dt_controller(SC_base):
 
     Also includes simple linear predictor for initial guess
 
-    y^{n+1,p} = y^{n} + (y^{n}-y^{n-1})/(\Delta t^{n})(t - t^{n-1})
+    y^{n+1,p} = y^{n} + (y^{n}-y^{n-1})/(\\Delta t^{n})(t - t^{n-1})
 
 
     TODO:
@@ -1019,7 +1019,7 @@ class GustafssonFullNewton_dt_controller(SC_base):
 
     Also includes simple linear predictor for initial guess
 
-    y^{n+1,p} = y^{n} + (y^{n}-y^{n-1})/(\Delta t^{n})(t - t^{n-1})
+    y^{n+1,p} = y^{n} + (y^{n}-y^{n-1})/(\\Delta t^{n})(t - t^{n-1})
 
 
     TODO:

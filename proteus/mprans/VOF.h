@@ -46,7 +46,7 @@ namespace proteus
 namespace proteus
 {
   template<int nSpace, int nP, int nQ, int nEBQ>
-  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nQ, nEBQ>;
+  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nP, nQ, nEBQ>;
 
   class VOF_base
   {
@@ -2575,8 +2575,8 @@ namespace proteus
             // update residual
             if (LUMPED_MASS_MATRIX==1)
               globalResidual.data()[i] = u_dof_old.data()[i] - dt/mi*(ith_flux_term
-                                                        + boundary_integral[i]
-                                                        - ith_dissipative_term);
+                                                                      + boundary_integral[i]
+                                                                      - ith_dissipative_term);
             else
               globalResidual.data()[i] += dt*(ith_flux_term - ith_dissipative_term);
           }

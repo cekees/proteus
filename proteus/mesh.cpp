@@ -1120,6 +1120,7 @@ extern "C"
   {
     mesh.nNodes_elementBoundary = 3;
     mesh.nElementBoundaries_element = 4;
+    
     using namespace std;
     double start,stop;
     typedef map<NodeTuple<3>, ElementNeighbors> ElementBoundaryElementsType;
@@ -1160,6 +1161,7 @@ extern "C"
     mesh.elementNeighborsArray = new int[mesh.nElements_global*mesh.nElementBoundaries_element];
     mesh.elementBoundariesArray= new int[mesh.nElements_global*mesh.nElementBoundaries_element];
     stop = CurrentTime();
+    
     //std::cout<<"Elapsed time for allocating arrays = "<<(stop-start)<<"s"<<endl;
     //std::cout<<"Generating elementBoundaryElementsArray and elementBoundaryNodesArray"<<endl;
     start = CurrentTime();
@@ -3115,6 +3117,13 @@ extern "C"
 
   int constructElementBoundaryElementsArrayWithGivenElementBoundaryAndEdgeNumbers_tetrahedron(Mesh& mesh)
   {
+    // printf("nNodes_global = %d\n", mesh.nNodes_global);
+    // printf("nElements_global = %d\n", mesh.nElements_global);
+    // printf("nNodes_element = %d\n", mesh.nNodes_element);
+    // printf("nElementBoundaries_element = %d\n", mesh.nElementBoundaries_element);
+    // printf("nNodes_elementBoundary = %d\n", mesh.nNodes_elementBoundary);
+    // printf("nElementBoundaries_global = %d\n", mesh.nElementBoundaries_global);
+    
     mesh.nNodes_elementBoundary = 3;
     mesh.nElementBoundaries_element = 4;
     assert(mesh.elementBoundariesArray);
@@ -3134,6 +3143,7 @@ extern "C"
           nodes[0] = mesh.elementNodesArray[eN*4+((ebN+1)%4)];
           nodes[1] = mesh.elementNodesArray[eN*4+((ebN+2)%4)];
           nodes[2] = mesh.elementNodesArray[eN*4+((ebN+3)%4)];
+          // printf("eN = %d, ebN = %d, ebN_global = %d, nodes = %d %d %d\n", eN, ebN, ebN_global, nodes[0], nodes[1], nodes[2]);
 
           NodeTuple<3> ebt(nodes);
           if(elementBoundaryElements.find(ebt) != elementBoundaryElements.end())
@@ -3169,6 +3179,7 @@ extern "C"
         eb != elementBoundaryElements.end();
         eb++)
       {
+        //  printf("eb->first.nodes = %d %d %d\n", eb->first.nodes[0], eb->first.nodes[1], eb->first.nodes[2]);   
 	int ebN = elementBoundaryIds[eb->first];
         mesh.elementBoundaryNodesArray[ebN*3 + 0] = eb->first.nodes[0];
         mesh.elementBoundaryNodesArray[ebN*3 + 1] = eb->first.nodes[1];
@@ -3553,9 +3564,11 @@ extern "C"
 	mesh.elementBoundaryBarycentersArray[ebN*3 + 0] = 0.0;
 	mesh.elementBoundaryBarycentersArray[ebN*3 + 1] = 0.0;
 	mesh.elementBoundaryBarycentersArray[ebN*3 + 2] = 0.0;
-
+        // printf("ebN = %d, nElementBoundaries_global = %d\n",ebN,mesh.nElementBoundaries_global);
         for (int nN_L=0;nN_L<mesh.nNodes_elementBoundary;nN_L++)
           {
+            // printf("nN_L = %d, nNodes_elementBoundary = %d \t elementBoundaryNodesArray[%d] %d \n",nN_L,mesh.nNodes_elementBoundary, ebN*mesh.nNodes_elementBoundary+nN_L, mesh.elementBoundaryNodesArray[ebN*mesh.nNodes_elementBoundary+nN_L]);
+            // printf("nodeArray = %f \n", mesh.nodeArray[mesh.elementBoundaryNodesArray[ebN*mesh.nNodes_elementBoundary+nN_L]*3 + 0]);
 	    mesh.elementBoundaryBarycentersArray[ebN*3 + 0] += 
 	      nNperElemBInv*mesh.nodeArray[mesh.elementBoundaryNodesArray[ebN*mesh.nNodes_elementBoundary+nN_L]*3 + 0];
 	    mesh.elementBoundaryBarycentersArray[ebN*3 + 1] += 
@@ -5283,7 +5296,8 @@ int readTetgenElementBoundaryMaterialTypes(Mesh& mesh, const char* filebase, int
 		mesh.elementBoundariesArray[eb->second.right*mesh.nElementBoundaries_element + eb->second.right_ebN_element] = ebN;
 	      }
 	  }
-      }
+       
+    }
       //mesh.nInteriorElementBoundaries_global = interiorElementBoundaries.size();
       //mesh.interiorElementBoundariesArray = new int[mesh.nInteriorElementBoundaries_global];
       //mesh.nExteriorElementBoundaries_global = exteriorElementBoundaries.size();
@@ -5448,8 +5462,17 @@ int readTetgenElementBoundaryMaterialTypes(Mesh& mesh, const char* filebase, int
     }
   else
     {
+      printf("Assertion failed in readTetgenElementBoundaryMaterialTypes\n");
       assert(0);//shouldnt be here
     }
+  // std::cout << "elementBoundaryNodesArray:" << std::endl;
+  // for (int ebN = 0; ebN < mesh.nElementBoundaries_global; ++ebN) {
+  //     std::cout << "Boundary " << ebN << ":";
+  //     for (int nN = 0; nN < mesh.nNodes_elementBoundary; ++nN) {
+  //         std::cout << " " << mesh.elementBoundaryNodesArray[ebN * mesh.nNodes_elementBoundary + nN];
+  //     }
+  //     std::cout << std::endl;
+  // }
   return 0;
 }
 
@@ -7746,8 +7769,151 @@ bool subdivideTriangle4T(int eN_parent,
     }//element refined
   return failed;
 }
-			 
-			 
+
+// DMPlex and Pybind11 stuff
+#include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
+namespace py = pybind11;
+// Function to read DMPlex mesh from MeshTools
+int readDMPlexMesh(PyObject* dmplexMesh, Mesh& mesh)
+{
+  /***************************************************
+   Access mesh info from DMPlex mesh set in MeshTools. 
+   
+   **************************************************/
+  py::module_ meshTools = py::module_::import("proteus.MeshTools");
+  py::object plexMesh = py::reinterpret_borrow<py::object>(dmplexMesh);
+
+  if (py::isinstance(plexMesh, meshTools.attr("Mesh"))) {
+    logEvent("DMPlex mesh is available in MeshTools.", 1);
+    logEvent("Reading DMPlex mesh from MeshTools", 1);
+    mesh.usePlex = true;
+    mesh.nNodes_global = plexMesh.attr("nNodes_global").cast<int>();
+    mesh.nElements_global = plexMesh.attr("nElements_global").cast<int>();    
+    mesh.nElementBoundaries_global = plexMesh.attr("nElementBoundaries_global").cast<int>();
+    mesh.nEdges_global = plexMesh.attr("nEdges_global").cast<int>();
+    mesh.nNodes_element = plexMesh.attr("nNodes_element").cast<int>();
+    mesh.nNodes_elementBoundary = plexMesh.attr("nNodes_elementBoundary").cast<int>();
+    mesh.nElementBoundaries_element = plexMesh.attr("nElementBoundaries_element").cast<int>();
+    mesh.nInteriorElementBoundaries_global = plexMesh.attr("nInteriorElementBoundaries_global").cast<int>();
+    mesh.nExteriorElementBoundaries_global = plexMesh.attr("nExteriorElementBoundaries_global").cast<int>();
+    
+    mesh.max_nNodeNeighbors_node = plexMesh.attr("max_nNodeNeighbors_node").cast<int>();
+    
+    py::array_t<int> nodeElementsArray = plexMesh.attr("nodeElementsArray").cast<py::array_t<int>>();
+    auto nodeElementsArrayBuf = nodeElementsArray.request();
+    mesh.nodeElementsArray = static_cast<int*>(nodeElementsArrayBuf.ptr);
+    
+    py::array_t<int> elementNodesArray = plexMesh.attr("elementNodesArray").cast<py::array_t<int>>();
+    auto elementNodesArrayBuf = elementNodesArray.request();
+    mesh.elementNodesArray = static_cast<int*>(elementNodesArrayBuf.ptr);    
+    
+    py::array_t<int> nodeElementOffsets = plexMesh.attr("nodeElementOffsets").cast<py::array_t<int>>();
+    auto nodeElementOffsetsBuf = nodeElementOffsets.request();
+    mesh.nodeElementOffsets = static_cast<int*>(nodeElementOffsetsBuf.ptr);
+    
+    // py::array_t<int> elementNeighborsArray = plexMesh.attr("elementNeighborsArray").cast<py::array_t<int>>();
+    // auto elementNeighborsArrayBuf = elementNeighborsArray.request();
+    // mesh.elementNeighborsArray = static_cast<int*>(elementNeighborsArrayBuf.ptr);
+    
+    py::array_t<int> elementBoundariesArray = plexMesh.attr("elementBoundariesArray").cast<py::array_t<int>>();
+    auto elementBoundariesArrayBuf = elementBoundariesArray.request();
+    mesh.elementBoundariesArray = static_cast<int*>(elementBoundariesArrayBuf.ptr);
+    
+    // py::array_t<int> elementBoundaryNodesArray = plexMesh.attr("elementBoundaryNodesArray").cast<py::array_t<int>>();
+    // auto elementBoundaryNodesArrayBuf = elementBoundaryNodesArray.request();
+    // mesh.elementBoundaryNodesArray = static_cast<int*>(elementBoundaryNodesArrayBuf.ptr);
+  //   std::cout << "elementBoundaryNodesArray:" << std::endl;
+  // for (int ebN = 0; ebN < mesh.nElementBoundaries_global; ++ebN) {
+  //     std::cout << "Boundary " << ebN << ":";
+  //     for (int nN = 0; nN < mesh.nNodes_elementBoundary; ++nN) {
+  //         std::cout << " " << mesh.elementBoundaryNodesArray[ebN * mesh.nNodes_elementBoundary + nN];
+  //     }
+  //     std::cout << std::endl;
+  // }
+  py::array_t<int> elementBoundaryElementsArray = plexMesh.attr("elementBoundaryElementsArray").cast<py::array_t<int>>();
+    auto elementBoundaryElementsArrayBuf = elementBoundaryElementsArray.request();
+    mesh.elementBoundaryElementsArray = static_cast<int*>(elementBoundaryElementsArrayBuf.ptr);
+    
+    // py::array_t<int> elementBoundaryLocalElementBoundariesArray = plexMesh.attr("elementBoundaryLocalElementBoundariesArray").cast<py::array_t<int>>();
+    // auto elementBoundaryLocalElementBoundariesArrayBuf = elementBoundaryLocalElementBoundariesArray.request();
+    // mesh.elementBoundaryLocalElementBoundariesArray = static_cast<int*>(elementBoundaryLocalElementBoundariesArrayBuf.ptr);
+    
+    py::array_t<int> interiorElementBoundariesArray = plexMesh.attr("interiorElementBoundariesArray").cast<py::array_t<int>>();
+    auto interiorElementBoundariesArrayBuf = interiorElementBoundariesArray.request();
+    mesh.interiorElementBoundariesArray = static_cast<int*>(interiorElementBoundariesArrayBuf.ptr);
+    
+    py::array_t<int> exteriorElementBoundariesArray = plexMesh.attr("exteriorElementBoundariesArray").cast<py::array_t<int>>();
+    auto exteriorElementBoundariesArrayBuf = exteriorElementBoundariesArray.request();
+    mesh.exteriorElementBoundariesArray = static_cast<int*>(exteriorElementBoundariesArrayBuf.ptr);
+    
+    py::array_t<int> edgeNodesArray = plexMesh.attr("edgeNodesArray").cast<py::array_t<int>>();
+    auto edgeNodesArrayBuf = edgeNodesArray.request();
+    mesh.edgeNodesArray = static_cast<int*>(edgeNodesArrayBuf.ptr);
+    
+    py::array_t<int> nodeStarArray = plexMesh.attr("nodeStarArray").cast<py::array_t<int>>();
+    auto nodeStarArrayBuf = nodeStarArray.request();
+    mesh.nodeStarArray = static_cast<int*>(nodeStarArrayBuf.ptr);
+    
+    py::array_t<int> nodeStarOffsets = plexMesh.attr("nodeStarOffsets").cast<py::array_t<int>>();
+    auto nodeStarOffsetsBuf = nodeStarOffsets.request();
+    mesh.nodeStarOffsets = static_cast<int*>(nodeStarOffsetsBuf.ptr);
+    
+    py::array_t<int> elementMaterialTypes = plexMesh.attr("elementMaterialTypes").cast<py::array_t<int>>();
+    auto elementMaterialTypesBuf = elementMaterialTypes.request();
+    mesh.elementMaterialTypes = static_cast<int*>(elementMaterialTypesBuf.ptr);
+    
+    py::array_t<int> elementBoundaryMaterialTypes = plexMesh.attr("elementBoundaryMaterialTypes").cast<py::array_t<int>>();
+    auto elementBoundaryMaterialTypesBuf = elementBoundaryMaterialTypes.request();
+    mesh.elementBoundaryMaterialTypes = static_cast<int*>(elementBoundaryMaterialTypesBuf.ptr);
+    
+    py::array_t<int> nodeMaterialTypes = plexMesh.attr("nodeMaterialTypes").cast<py::array_t<int>>();
+    auto nodeMaterialTypesBuf = nodeMaterialTypes.request();
+    mesh.nodeMaterialTypes = static_cast<int*>(nodeMaterialTypesBuf.ptr);
+    
+    py::array_t<double> nodeArray = plexMesh.attr("nodeArray").cast<py::array_t<double>>();
+    auto nodeArrayBuf = nodeArray.request();
+    mesh.nodeArray = static_cast<double*>(nodeArrayBuf.ptr);
+
+    // py::array_t<double> elementDiametersArray = plexMesh.attr("elementDiametersArray").cast<py::array_t<double>>();
+    // auto elementDiametersArrayBuf = elementDiametersArray.request();
+    // mesh.elementDiametersArray = static_cast<double*>(elementDiametersArrayBuf.ptr);
+
+    // py::array_t<double> elementInnerDiametersArray = plexMesh.attr("elementInnerDiametersArray").cast<py::array_t<double>>();
+    // auto elementInnerDiametersArrayBuf = elementInnerDiametersArray.request();
+    // mesh.elementInnerDiametersArray = static_cast<double*>(elementInnerDiametersArrayBuf.ptr);
+
+    // py::array_t<double> elementBoundaryDiametersArray = plexMesh.attr("elementBoundaryDiametersArray").cast<py::array_t<double>>();
+    // auto elementBoundaryDiametersArrayBuf = elementBoundaryDiametersArray.request();
+    // mesh.elementBoundaryDiametersArray = static_cast<double*>(elementBoundaryDiametersArrayBuf.ptr);
+
+    // py::array_t<double> elementBarycentersArray = plexMesh.attr("elementBarycentersArray").cast<py::array_t<double>>();
+    // auto elementBarycentersArrayBuf = elementBarycentersArray.request();
+    // mesh.elementBarycentersArray = static_cast<double*>(elementBarycentersArrayBuf.ptr);
+
+    // py::array_t<double> elementBoundaryBarycentersArray = plexMesh.attr("elementBoundaryBarycentersArray").cast<py::array_t<double>>();
+    // auto elementBoundaryBarycentersArrayBuf = elementBoundaryBarycentersArray.request();
+    // mesh.elementBoundaryBarycentersArray = static_cast<double*>(elementBoundaryBarycentersArrayBuf.ptr);
+
+    // py::array_t<double> nodeDiametersArray = plexMesh.attr("nodeDiametersArray").cast<py::array_t<double>>();
+    // auto nodeDiametersArrayBuf = nodeDiametersArray.request();
+    // mesh.nodeDiametersArray = static_cast<double*>(nodeDiametersArrayBuf.ptr);
+
+    // py::array_t<double> nodeSupportArray = plexMesh.attr("nodeSupportArray").cast<py::array_t<double>>();
+    // auto nodeSupportArrayBuf = nodeSupportArray.request();
+    // mesh.nodeSupportArray = static_cast<double*>(nodeSupportArrayBuf.ptr);
+
+    // mesh.h = plexMesh.attr("h").cast<double>();
+    // mesh.hMin = plexMesh.attr("hMin").cast<double>();
+    // mesh.sigmaMax = plexMesh.attr("sigmaMax").cast<double>();
+    // mesh.volume = plexMesh.attr("volume").cast<double>();
+
+  } else {
+    std::cerr << "DMPlex mesh is not available in MeshTools." << std::endl;
+    return -1;
+  }
+  return 0;
+}
 
 #ifdef MWF_HACK_2D_COARSE
 int findGlueNeighbor2d(int eN,

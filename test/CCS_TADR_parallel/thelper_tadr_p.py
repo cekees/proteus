@@ -38,13 +38,13 @@ def velx(X,t):
     if ct.problem in [0,2]:
         return 0.5
     else:        
-        return 4.0 #-2*pi*(X[1]-0.5)
+        return 5.0 #-2*pi*(X[1]-0.5)
 
 def vely(X,t):
     if ct.problem in [0,2]:
         return 0.5
     else:
-        return 3.0 # 2*pi*(X[0]-0.5)
+        return -5.0 # 2*pi*(X[0]-0.5)
 
 velocityFieldAsFunction={0:velx,
                          1:vely}
@@ -54,9 +54,9 @@ velocityFieldAsFunction={0:velx,
 #####################
 class init_cond(object):
     def __init__(self,L):
-        self.point_x = 0.5  # X-coordinate of the small point
-        self.point_y = 0.5  # Y-coordinate of the small point
-        self.radius = 0.05  # Radius of the small point region    
+        self.point_x = 1.4   # X-coordinate of the small point
+        self.point_y = 1.2  # Y-coordinate of the small point
+        self.radius = 0.1  # Radius of the small point region    
         #self.radius = 0.15
         #self.xc=0.5
         #self.yc=0.75
@@ -75,7 +75,7 @@ class init_cond(object):
         elif ct.problem==1: 
             distance = math.sqrt((x[0] - self.point_x)**2 + (x[1] - self.point_y)**2)
             if distance <= self.radius:
-                return 1.0  # Value of the small point region
+                return 2.0  # Value of the small point region
             else:
                 return 0.0  # Value elsewhere
             # r  = math.sqrt((x[0]-self.xc )**2 + (x[1]-self.yc )**2)

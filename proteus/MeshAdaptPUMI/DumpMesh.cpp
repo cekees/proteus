@@ -130,9 +130,9 @@ static void dump_proteus_subdomain(Mesh* m, FILE* f)
   fprintf(f, "volume = %f\n", m->volume);
 }
 
-static void dump_proteus_parallel_arrays(Mesh* m, FILE* f)
+static void dump_proteus_parallel_arrays(Mesh* m, FILE* f, PCU_t PCUObj)
 {
-  int size = PCU_Comm_Peers();
+  int size = PCU_Comm_Peers(PCUObj);
   fprintf(f, "elementOffsets_subdomain_owned:\n");
   for (int i = 0; i <= size; ++i)
     fprintf(f, "%d\n", m->elementOffsets_subdomain_owned[i]);
@@ -160,14 +160,14 @@ static void dump_proteus_parallel_arrays(Mesh* m, FILE* f)
 
 }
 
-void dump_proteus_mesh(Mesh* m, FILE* f)
+void dump_proteus_mesh(Mesh* m, FILE* f, PCU_t PCUObj)
 {
-  fprintf(stderr,"%d dumping mesh file\n", PCU_Comm_Self());
-  if (PCU_Comm_Peers() > 1) {
+  fprintf(stderr,"%d dumping mesh file\n", PCU_Comm_Self(PCUObj));
+  if (PCU_Comm_Peers(PCUObj) > 1) {
     fprintf(f, "PARALLEL HEADER\n");
     dump_proteus_mesh_header(m, f);
     fprintf(f, "PARALLEL ARRAYS\n");
-    dump_proteus_parallel_arrays(m, f);
+    dump_proteus_parallel_arrays(m, f, PCUObj);
     fprintf(f, "SUBDOMAIN\n");
     dump_proteus_subdomain(m->subdomainp, f);
   } else {

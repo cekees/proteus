@@ -3,6 +3,7 @@ from proteus import FemTools
 from proteus import LinearAlgebraTools as LAT
 from proteus.mprans.cSW2DCV import *
 import numpy as np
+import h5py
 from proteus.Transport import OneLevelTransport, TC_base, NonlinearEquation
 from proteus.Transport import Quadrature, logEvent, memory, BackwardEuler
 from proteus.Transport import FluxBoundaryConditions, Comm, DOFBoundaryConditions
@@ -320,9 +321,11 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                              variableNames,
                              sparseDiffusionTensors=sdInfo,
                              useSparseDiffusion=sd,
-                             movingDomain=movingDomain)
+                             movingDomain=movingDomain,
+                             )
             self.vectorComponents = [1, 2]
-
+            self.vectorName = 'Momentum'
+            
     def attachModels(self, modelList):
         self.model = modelList[self.modelIndex]
         # pass
@@ -330,10 +333,36 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
     def initializeMesh(self, mesh):
         x = mesh.nodeArray[:, 0]
         y = mesh.nodeArray[:, 1]
+        comm=Comm.get()        
         if self.bathymetry is None:
-            self.b.dof = mesh.nodeArray[:, 2].copy()
+            self.b.dof = mesh.nodeArray[:, 2].copy()     
+        elif type(self.bathymetry) is np.ndarray:
+            #if mpi, use mapping old2new to rearrange b.dof vector globally
+            if self.bathymetry.ndim==1:
+                b_global = self.bathymetry.copy() 
+            elif self.bathymetry.shape[1]==1:
+                b_global = self.bathymetry[:,0].copy()
+            elif self.bathymetry.shape[1]==3:
+                b_global = self.bathymetry[:,2].copy()
+            if comm.size() > 1: 
+                fname= 'mappings.h5'
+                with h5py.File(fname,'r') as f:
+                    vname=list(f.keys())[0]
+                    old2new=np.asarray(f[vname])       
+                sub2glob=mesh.nodeNumbering_subdomain2global                                   
+                indx=[]
+                for i in range (0, len(sub2glob)):  
+                    indx.append(np.where(old2new==sub2glob[i]))
+                self.b.dof = np.ravel(b_global[indx])
+                mesh.nodeArray[:,2] = self.b.dof
+            else:
+                self.b.dof = self.bathymetry
+                mesh.nodeArray[:,2] = self.b.dof           
         else:
-            self.b.dof = self.bathymetry[0]([x, y])
+            self.b.dof = self.bathymetry([x, y])
+            mesh.nodeArray[:,2] = self.b.dof     #if bathy is a function no need to pass subdomain info here
+
+        assert mesh.nodeArray.shape[1]==3
 
     def initializeElementQuadrature(self, t, cq):
         pass
@@ -441,7 +470,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # explicit Dirichlet conditions for now, no Dirichlet BC constraints
         self.dirichletNodeSetList = None
         self.coefficients = coefficients
-        # cek hack? give coefficients a bathymetriy array
+        # cek hack? give coefficients a bathymetry array
         import copy
         self.coefficients.b = self.u[0].copy()
         self.coefficients.b.name = 'b'
@@ -449,6 +478,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #
         self.coefficients.initializeMesh(self.mesh)
         self.nc = self.coefficients.nc
+        for ci in range(self.nc):
+            self.u[ci].femSpace.updateInterpolationPoints()
         self.stabilization = stabilization
         self.shockCapturing = shockCapturing
         # no velocity post-processing for now
@@ -568,7 +599,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.h_dof_old = None
         self.hu_dof_old = None
         self.hv_dof_old = None
-
         # Vector for mass matrix
         self.check_positivity_water_height = True
         # mesh
@@ -630,6 +660,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #
         # show quadrature
         #
+        
         logEvent("Dumping quadrature shapes for model %s" % self.name, level=9)
         logEvent("Element quadrature array (q)", level=9)
         for (k, v) in list(self.q.items()):
@@ -678,7 +709,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.internalNodesArray = np.zeros((self.nNodes_internal,), 'i')
         for nI, n in enumerate(self.internalNodes):
             self.internalNodesArray[nI] = n
-        #
+        
         del self.internalNodes
         self.internalNodes = None
         logEvent("Updating local to global mappings", 2)
@@ -686,11 +717,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         logEvent("Building time integration object", 2)
         logEvent(memory("inflowBC, internalNodes,updateLocal2Global", "OneLevelTransport"), level=4)
         self.timeIntegration = TimeIntegrationClass(self)
-
         if options is not None:
             self.timeIntegration.setFromOptions(options)
         logEvent(memory("TimeIntegration", "OneLevelTransport"), level=4)
         logEvent("Calculating numerical quadrature formulas", 2)
+        
         self.calculateQuadrature()
         self.setupFieldStrides()
 
@@ -1190,7 +1221,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
 
     def initDataStructures(self):
         comm = Comm.get()
-
         # old vectors
         self.h_dof_old = np.copy(self.u[0].dof)
         self.hu_dof_old = np.copy(self.u[1].dof)
@@ -1200,7 +1230,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.hEps = self.eps * comm.globalMax(self.u[0].dof.max())
 
         # size_of_domain used in relaxation of bounds
-        self.size_of_domain = self.mesh.globalMesh.volume
+        self.size_of_domain = self.mesh.globalMesh.volume 
         # normal vectors
         self.normalx = np.zeros(self.u[0].dof.shape, 'd')
         self.normaly = np.zeros(self.u[0].dof.shape, 'd')
@@ -1306,7 +1336,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                                                 n=n,N=N,nghosts=nghosts,
                                                 subdomain2global=subdomain2global)
         self.par_ML.scatter_forward_insert()
-
+        
         self.urelax = 1.0 + pow(np.sqrt(np.sqrt(self.ML / self.size_of_domain)),3)
         self.drelax = 1.0 - pow(np.sqrt(np.sqrt(self.ML / self.size_of_domain)),3)
         self.par_urelax.scatter_forward_insert()
@@ -1359,9 +1389,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         if self.forceStrongConditions:
             for cj in range(len(self.dirichletConditionsForceDOF)):
                 for dofN, g in list(self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.items()):
+                    
                     self.u[cj].dof[dofN] = g(self.dirichletConditionsForceDOF[cj].DOFBoundaryPointDict[dofN], self.timeIntegration.t)
-        #
-
+        #       
         # CHECK POSITIVITY OF WATER HEIGHT
         if (self.check_positivity_water_height == True):
             assert self.u[0].dof.min() >= -self.eps * self.u[0].dof.max(), ("Negative water height: ", self.u[0].dof.min())
