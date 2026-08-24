@@ -14,19 +14,25 @@
 //     PSK_TYPE 0 -> vgm_*   van Genuchten retention + Mualem k_rw  (default)
 //     PSK_TYPE 1 -> bc_*    Brooks-Corey retention + Burdine k_rw
 //     PSK_TYPE 2 -> bc_*    Brooks-Corey retention + Mualem  k_rw
+//     PSK_TYPE 3 -> gardner_* Gardner exponential retention + k_rw = S_e
 //
 // Codes 1 and 2 share one retention curve and differ only in the exponent of
 // k_rw = S_e^eta, so only the forward closure branches on them; the inverses
-// (which see theta_w alone) treat them alike.
+// (which see theta_w alone) treat them alike.  Code 3 is a model of its own in
+// both halves; it is the closure Tracy's analytical solutions assume.
 //
 // Conventions shared by every routine here:
 //   psiC is the suction (-u).  psiC > 0 is unsaturated, psiC <= 0 saturated.
+//   vgm_ and bc_ clamp that saturated side to (thetaS, 1) with zero slope;
+//   gardner_ deliberately does NOT, and the block below says why -- a zero
+//   dtheta/dpsiC is a lost Jacobian diagonal wherever beta = 0.
 //   Derivatives are with respect to psiC, NOT with respect to u; the caller in
 //   Richards.h owns the sign flip d(psiC)/du = -1.
-//   The vgm_ and bc_ routines take the same parameter slots in the same order,
-//   so the branch is a one-line swap.  In the BC parameterisation the second
-//   numeric parameter is the pore-size index lambda (taking n_vg's slot) and
-//   alpha = 1/p_d is the inverse entry-pressure head.
+//   The vgm_, bc_ and gardner_ routines take the same parameter slots in the
+//   same order, so the branch is a one-line swap.  In the BC parameterisation
+//   the second numeric parameter is the pore-size index lambda (taking n_vg's
+//   slot) and alpha = 1/p_d is the inverse entry-pressure head; under Gardner
+//   alpha is the exponential decay rate [1/m] and the n_vg slot is unused.
 //
 // The Brooks-Corey conductivity exponent eta is NOT fixed by lambda.  Two
 // closures are in common use and they do not agree: Burdine gives
@@ -446,6 +452,211 @@ inline void bc_invert_newton(const double m,
     const double dSe_DpsiC = -lam * alpha * pow(pcBar, -lam - 1.0);
     const double thetaW    = thetaR + thetaSR * Se;
     const double dtheta_du = -thetaSR * dSe_DpsiC; // d(psiC)/d(u) = -1
+
+    const double rhom = rho * std::exp(beta * u);
+    const double g    = rhom * thetaW - m;
+    if (std::fabs(g) < tol) return;
+    if (g > 0.0) hi = u; else lo = u;
+
+    const double gp    = rhom * (beta * thetaW + dtheta_du);
+    const double gpTol = 1e-14 * std::max(1.0, std::fabs(rhom * thetaW));
+    double u_next = (std::fabs(gp) > gpTol) ? (u - g / gp) : 0.5 * (lo + hi);
+    // Bisect whenever Newton leaves the bracket.
+    if (!(u_next > lo && u_next < hi)) u_next = 0.5 * (lo + hi);
+
+    if (std::fabs(u_next - u) <= 1e-15 * std::fabs(u)) return;
+    u = u_next;
+  }
+  // Bracketed throughout, so the last iterate is the best available answer.
+}
+
+// -----------------------------------------------------------------------------
+// Gardner (quasi-linear) retention + conductivity, with the Irmay-style linear
+// theta_w(k_rw) pairing:
+//
+//   S_e     = exp(-alpha*psiC) = exp(alpha*u)
+//   theta_w = thetaR + thetaSR * S_e
+//   k_rw    = S_e                       i.e. K(psi) = Ks*exp(alpha*psi)
+//   psiC(S_e) = -ln(S_e)/alpha          (analytic inverse, exact)
+//
+// alpha here is Gardner's exponent [1/m]; it takes the same parameter slot as
+// van Genuchten's alpha and the Brooks-Corey inverse entry pressure, and the
+// second numeric parameter (n_vg / lambda) is unused.
+//
+// This is the pairing Tracy's analytical solutions are built on, and both
+// halves of it matter: with k_rw = S_e and theta_w affine in S_e, the Kirchhoff
+// transform hbar = exp(alpha*psi) turns Richards into a linear advection-
+// diffusion equation for hbar, which is what makes the closed-form steady and
+// transient solutions exist.  Substituting Mualem k_rw here would keep the
+// retention curve but destroy the linearisation, so the two are one model, not
+// two independent choices.
+//
+// There is no entry pressure and no dry-end kink: theta_w and k_rw are C-inf
+// for psiC > 0 and both approach saturation smoothly as psiC -> 0.  What it
+// does have is an unbounded dry tail -- S_e -> 0 only as psiC -> inf -- so the
+// inversions cut at alpha*psiC = 7e2, stated as a cap on head like the vgm_/bc_
+// routines rather than as a band in theta.  That is where exp() underflows,
+// i.e. as far out as double precision can represent the curve at all, and
+// orders of magnitude beyond any head a solve will see.
+//
+// UNLIKE vgm_ and bc_, there is NO saturated branch: the exponential is
+// continued through psiC = 0 into psiC < 0 rather than clamped to
+// (theta_w, k_rw) = (thetaS, 1).  That is deliberate and it is not cosmetic.
+// Clamping sets DthetaW_DpsiC = 0, hence dm = drhom*thetaW, which at beta = 0
+// is exactly zero -- and the low-order diagonal in Richards.h is
+//
+//     globalJacobian[ii] += bc_mask[i]*(MLi*dm/dt + J_ii) + (1-bc_mask[i])
+//
+// where MLi*dm/dt outweighs the graph term J_ii by ~3 orders at a small dt.  A
+// free DOF that reaches psi >= 0 therefore keeps its residual row but loses its
+// diagonal, takes a correction ~3 orders too large, falls back below zero where
+// dm > 0 again, and overshoots once more: Newton locks into an exact period-2
+// orbit that no tolerance or step cap will break.  vgm_/bc_ carry the same
+// clamp harmlessly because the only node pinned at psi = 0 is normally a
+// Dirichlet node, which bc_mask = 0 replaces with an identity row; Gardner
+// reaches psi = 0 at *free* nodes because its diffusivity is
+// Ks/(alpha*thetaSR), constant over the whole curve and typically orders above
+// van Genuchten's in the unsaturated range, so a sharp boundary layer drives
+// interior nodes into saturation within one step.
+//
+// The continuation is the same exponential, so the closure stays C-inf and
+// every derivative used to build the diagonal stays strictly positive.  It does
+// mean k_rw > 1 and theta_w > thetaS for psi > 0, which is unphysical -- but
+// Gardner is a psi <= 0 model with no saturated branch to speak of, and these
+// values are only ever visited by transient iterates on the way back down.  Any
+// case that genuinely ponds wants vgm_ or bc_, which cap properly.
+// -----------------------------------------------------------------------------
+
+// Dry-end cut for the Gardner inversions, in units of alpha*psiC.  exp(-7e2) is
+// ~1e-304, one decade off denormal, so this is the widest cut that keeps S_e a
+// normal double.
+constexpr double gardner_alphaPsiCMax = 7.0e2;
+
+// Wet-end rail on the SAME exponent, so exp(alpha*u) cannot overflow if an
+// iterate runs away.  This is an arithmetic guard, not a saturation limit: at a
+// typical alpha it sits hundreds of metres above ground, far outside any head a
+// solve can reach without having already failed, and it is placed on the
+// exponent (not on theta) so it can never fire near psi = 0 where the clamp
+// above would cost the diagonal.
+constexpr double gardner_alphaPsiMax = 5.0e1;
+
+inline void gardner_wetting(const double psiC,
+                            const double alpha,
+                            const double n_vg,
+                            const double thetaR,
+                            const double thetaSR,
+                            double &thetaW,
+                            double &DthetaW_DpsiC,
+                            double &KWr,
+                            double &DKWr_DpsiC)
+{
+  (void)n_vg; // Gardner is a one-parameter curve
+  // One branch for every psiC.  exp(-alpha*psiC) underflows to 0 past the dry
+  // cut (theta_w -> thetaR, k_rw -> 0 with zero slope, all correct); the wet
+  // rail below only bounds a runaway iterate.
+  const double x  = -alpha * psiC;
+  const double Se = std::exp(x < gardner_alphaPsiMax ? x : gardner_alphaPsiMax);
+  const double dSe_DpsiC = (x < gardner_alphaPsiMax) ? (-alpha * Se) : 0.0;
+  thetaW        = thetaR + thetaSR * Se;
+  DthetaW_DpsiC = thetaSR * dSe_DpsiC;
+  KWr           = Se;
+  DKWr_DpsiC    = dSe_DpsiC;
+}
+
+// Analytic Gardner inverse: theta_w -> psiC.  Exact (the retention curve is a
+// plain exponential), so this is the whole inversion whenever beta = 0.
+//
+// The admissible band is the forward curve's own range, dry cut to wet rail --
+// NOT thetaW < thetaS.  Since gardner_wetting continues the exponential above
+// psi = 0, theta_w > thetaS is a value the forward model genuinely produces and
+// the inverse has to be able to return the u > 0 that generated it; cutting at
+// thetaS would leave those DOFs holding a stale iterate whose theta is
+// unrelated to the mass handed in, which is the conservation break the vgm_/bc_
+// dry-cut comments describe, at the other end of the curve.
+inline void gardner_invert_analytic(const double m,
+                                    const double rho,
+                                    const double alpha,
+                                    const double n_vg,
+                                    const double thetaR,
+                                    const double thetaSR,
+                                    double &u)
+{
+  (void)n_vg;
+  const double thetaW = m / rho;
+  const double SeMin  = std::exp(-gardner_alphaPsiCMax);
+  const double SeMax  = std::exp(gardner_alphaPsiMax);
+  if (thetaW > thetaR + SeMin * thetaSR && thetaW < thetaR + SeMax * thetaSR) {
+    const double Se = (thetaW - thetaR) / thetaSR;
+    const double u_new = std::log(Se) / alpha; // = -psiC; sign follows Se vs 1
+    if (std::isfinite(u_new)) u = u_new;
+  }
+}
+
+// Inverse of the FULL forward mass m = rho(u)*theta_w(u) against the Gardner
+// curve, i.e. including the exp(beta*u) the analytic inverse drops.
+//
+// Bracketed Newton, like bc_invert_newton and for the same conditioning
+// reason: g(u) = rho*exp(beta*u)*(thetaR + thetaSR*exp(alpha*u)) - m is a sum
+// of increasing exponentials, so it is monotone in u and [u_floor, u_rail]
+// brackets the root by construction.  In the dry tail the beta*theta term
+// dominates thetaSR*alpha*Se, so a plain Newton seeded from a stale iterate can
+// walk off exactly as it does under BC; bracketing removes the dependence on
+// the seed.
+//
+// Both ends of the bracket are the forward curve's own limits.  There is no
+// wall at u = 0: gardner_wetting has no saturated branch, so psi > 0 is inside
+// the model here and a mass above rho*thetaS inverts to the positive head that
+// produced it rather than being flattened onto zero.  Nothing is refused for
+// being "ponded" either -- an iterate that has overshot into psi > 0 is exactly
+// the state the inversion has to be able to walk back down.
+inline void gardner_invert_newton(const double m,
+                                  const double rho,
+                                  const double beta,
+                                  const double alpha,
+                                  const double n_vg,
+                                  const double thetaR,
+                                  const double thetaSR,
+                                  double &u)
+{
+  (void)n_vg;
+
+  auto g_of = [&](const double uu) -> double {
+    const double x  = alpha * uu;
+    const double Se = std::exp(x < gardner_alphaPsiMax ? x : gardner_alphaPsiMax);
+    return rho * std::exp(beta * uu) * (thetaR + thetaSR * Se) - m;
+  };
+
+  const double u_rail = gardner_alphaPsiMax / alpha;
+  if (g_of(u_rail) <= 0.0) { u = u_rail; return; } //root at or above the rail
+
+  const double u_floor = -gardner_alphaPsiCMax / alpha;
+  if (g_of(u_floor) > 0.0) { return; } //root drier than the band: leave u alone
+
+  double lo = u_floor, hi = u_rail; // g(lo) <= 0 < g(hi)
+
+  // Density-free analytic inverse as the opening guess; the bracket catches it
+  // if the neglected exp(beta*u) puts it in the wrong place.
+  {
+    const double Se = (m / rho - thetaR) / thetaSR;
+    double u_guess = 0.5 * (lo + hi);
+    if (Se > 0.0) { // Se >= 1 is admissible now: it is the psi > 0 continuation
+      const double u_analytic = std::log(Se) / alpha;
+      if (std::isfinite(u_analytic) && u_analytic > lo && u_analytic < hi)
+        u_guess = u_analytic;
+    }
+    u = u_guess;
+  }
+  if (!(u > lo && u < hi)) u = 0.5 * (lo + hi);
+
+  // maxIts covers the bisection worst case over the widest bracket; from the
+  // analytic seed Newton lands in a couple of steps for any sane beta.
+  const int    maxIts = 100;
+  const double tol    = 1e-12 * std::max(1.0, std::fabs(m));
+
+  for (int it = 0; it < maxIts; ++it) {
+    const double Se        = std::exp(alpha * u);
+    const double thetaW    = thetaR + thetaSR * Se;
+    const double dtheta_du = thetaSR * alpha * Se;
 
     const double rhom = rho * std::exp(beta * u);
     const double g    = rhom * thetaW - m;

@@ -74,16 +74,12 @@ public:
   std::vector<double> rho_dof_member;
   // Pore size distribution / relative permeability model selected from Python
   // (Coefficients.PSK_type). 0 = van Genuchten-Mualem (default), 1 = Brooks-
-  // Corey-Burdine. Refreshed from args at the top of every kernel that
-  // evaluates the closure.
+  // Corey-Burdine, 2 = Brooks-Corey-Mualem, 3 = Gardner. Refreshed from args at
+  // the top of every kernel that evaluates the closure.
   int PSK_TYPE_member = 0;
   Richards() : nDOF_test_X_trial_element(nDOF_test_element * nDOF_trial_element), ck() { }
   inline void evaluateCoefficients(const int rowptr[nSpace], const int colind[nnz], const double rho0, const double rho_transport, const double beta, const double gravity[nSpace], const double alpha, const double n_vg, const double thetaR, const double thetaSR, const double KWs[nnz], const double &u, double &m, double &dm, double f[nSpace], double df[nSpace], double a[nnz], double da[nnz], double as[nnz], double &kr, double &dkr, double &thetaW_out)
   {
-    // Constitutive closure: theta_w(psiC) and k_rw(psiC) come from the selected
-    // PSK model; everything below is the PDE coefficient assembly and is model
-    // independent. Derivatives returned are w.r.t. psiC = -u, so each use below
-    // carries the d(psiC)/du = -1 sign flip.
     const double psiC = -u;
     double thetaW, DthetaW_DpsiC, KWr, DKWr_DpsiC;
     if (PSK_TYPE_member == 1 || PSK_TYPE_member == 2) {
@@ -94,6 +90,10 @@ public:
           thetaW, DthetaW_DpsiC, KWr, DKWr_DpsiC,
           PSK_TYPE_member == 2 ? proteus::richards::psk::bc_kr::mualem
                                : proteus::richards::psk::bc_kr::burdine);
+    } else if (PSK_TYPE_member == 3) {
+      proteus::richards::psk::gardner_wetting(
+          psiC, alpha, n_vg, thetaR, thetaSR,
+          thetaW, DthetaW_DpsiC, KWr, DKWr_DpsiC);
     } else {
       proteus::richards::psk::vgm_wetting(
           psiC, alpha, n_vg, thetaR, thetaSR,
@@ -132,6 +132,8 @@ public:
     // bc_*; PSK_TYPE 1 vs 2 differs only in k_rw, which plays no part here.
     if (PSK_TYPE_member == 1 || PSK_TYPE_member == 2) {
       proteus::richards::psk::bc_invert_analytic(m, rho, alpha, n_vg, thetaR, thetaSR, u);
+    } else if (PSK_TYPE_member == 3) {
+      proteus::richards::psk::gardner_invert_analytic(m, rho, alpha, n_vg, thetaR, thetaSR, u);
     } else {
       proteus::richards::psk::vgm_invert_analytic(m, rho, alpha, n_vg, thetaR, thetaSR, u);
     }
@@ -163,6 +165,8 @@ inline void evaluateInverseCoefficients_Newton(const int rowptr[nSpace],
   // curve it solves against is the selected PSK model.
   if (PSK_TYPE_member == 1 || PSK_TYPE_member == 2) {
     proteus::richards::psk::bc_invert_newton(m, rho, beta, alpha, n_vg, thetaR, thetaSR, u);
+  } else if (PSK_TYPE_member == 3) {
+    proteus::richards::psk::gardner_invert_newton(m, rho, beta, alpha, n_vg, thetaR, thetaSR, u);
   } else {
     proteus::richards::psk::vgm_invert_newton(m, rho, beta, alpha, n_vg, thetaR, thetaSR, u);
   }
@@ -894,141 +898,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     } //ebNE
   } //computeJacobian
 
-  // void FCTStep(arguments_dict &args)
-  // {
-  //   xt::pyarray<double> &bc_mask                   = args.array<double>("bc_mask");
-  //   int                  NNZ                       = args.scalar<int>("NNZ");     //number on non-zero entries on sparsity pattern
-  //   int                  numDOFs                   = args.scalar<int>("numDOFs"); //number of DOFs
-  //   double               dt                        = args.scalar<double>("dt");
-  //   xt::pyarray<double> &ML                        = args.array<double>("ML"); //lumped mass matrix (as vector)
-  //   xt::pyarray<double> &mn                        = args.array<double>("mn");               //DOFs of solution at time tn
-  //   xt::pyarray<double> &mHigh                     = args.array<double>("mHigh");               //DOFs of high order solution at tnp1
-  //   xt::pyarray<double> &mLow                      = args.array<double>("mLow");
-  //   xt::pyarray<double> &mDotHigh                     = args.array<double>("mDotHigh");               //DOFs of high order solution at tnp1
-  //   xt::pyarray<double> &mDotLow                      = args.array<double>("mDotLow");
-  //   xt::pyarray<double> &limited_solution          = args.array<double>("limited_solution");
-  //   xt::pyarray<int>    &csrRowIndeces_DofLoops    = args.array<int>("csrRowIndeces_DofLoops");    //csr row indeces
-  //   xt::pyarray<int>    &csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops"); //csr column offsets
-  //   xt::pyarray<double> &MC                        = args.array<double>("MC");             //mass matrix
-  //   xt::pyarray<double> &dt_times_fH_minus_fL      = args.array<double>("dt_times_fH_minus_fL");   //low minus high order dissipative matrices
-  //   xt::pyarray<double> &min_m_bc                  = args.array<double>("min_m_bc");               //min/max value at BCs. If DOF is not at boundary then min=1E10, max=-1E10
-  //   xt::pyarray<double> &max_m_bc                  = args.array<double>("max_m_bc");
-  //   xt::pyarray<double> &fluxCorrection                  = args.array<double>("fluxCorrection");
-  //   //flags
-  //   int                  LUMPED_MASS_MATRIX        = args.scalar<int>("LUMPED_MASS_MATRIX");
-  //   int                  MONOLITHIC                = args.scalar<int>("MONOLITHIC");
-  //   double               Rpos[numDOFs], Rneg[numDOFs];
-  //   double               FluxCorrectionMatrix[NNZ];
-  //   double               mDot[numDOFs];
-
-  //   //////////////////
-  //   // LOOP in DOFs //
-  //   //////////////////
-  //   int ij = 0;
-  //   for (int i = 0; i < numDOFs; i++) {
-  //     mDot[i] = (mLow.data()[i] - mn.data()[i])/dt;
-  //     //cek todo: add boundary data--these are just initialized
-  //     //will need to pass p_bc at DOF and calc M
-  //     double mini=min_m_bc.data()[i], maxi=max_m_bc.data()[i];
-  //     //we're doing local FCT
-  //     //if (GLOBAL_FCT == 1) {
-  //     //  mini = 0.;
-  //     //  maxi = 1.;
-  //     //}
-
-  //     double Pposi = 0, Pnegi = 0;
-  //     // LOOP OVER THE SPARSITY PATTERN (j-LOOP)//
-  //     for (int offset = csrRowIndeces_DofLoops.data()[i]; offset < csrRowIndeces_DofLoops.data()[i + 1]; offset++) {
-  //       int j = csrColumnOffsets_DofLoops.data()[offset];
-  //       ////////////////////////
-  //       // COMPUTE THE BOUNDS //
-  //       ////////////////////////
-  //       if (GLOBAL_FCT == 0) {
-  //         if (MONOLITHIC == 0) {
-  //           mini = fmin(mini, mLow[j]);
-  //           maxi = fmax(maxi, mLow[j]);
-  //         } else {
-  //           mini = fmin(mini, mn.data()[j]);
-  //           maxi = fmax(maxi, mn.data()[j]);
-  //         }
-  //       }
-  //       // i-th row of flux correction matrix
-  //       //double I_plus_ML_minus_MC = (i == j ? 1. : 0.) * (1. + ML.data()[i]) - MC.data()[ij];
-  //       //mDot[i] += I_plus_ML_minus_MC * (mHigh.data()[j] - mn.data()[j]) / ML.data()[i];
-  //       mDot[j] = (mLow.data()[j] - mn.data()[j])/dt;
-  //       if (MONOLITHIC == 0) {
-  //         FluxCorrectionMatrix[ij] = (LUMPED_MASS_MATRIX == 1 ? 0. : 1.) * dt * MC.data()[ij] * (mDotLow.data()[i] - mDotLow.data()[j]) + dt_times_fH_minus_fL.data()[ij];
-  //       } else {
-  //         FluxCorrectionMatrix[ij] = dt_times_fH_minus_fL.data()[ij];
-  //       }
-  //       ///////////////////////
-  //       // COMPUTE P VECTORS //
-  //       ///////////////////////
-  //       Pposi += FluxCorrectionMatrix[ij] * ((FluxCorrectionMatrix[ij] > 0) ? 1. : 0.);
-  //       Pnegi += FluxCorrectionMatrix[ij] * ((FluxCorrectionMatrix[ij] < 0) ? 1. : 0.);
-
-  //       //update ij
-  //       ij += 1;
-  //     }
-  //     ///////////////////////
-  //     // COMPUTE Q VECTORS //
-  //     ///////////////////////
-  //     double gamma;
-  //     double Qposi;
-  //     double Qnegi;
-  //     if (MONOLITHIC == 0) {
-  //       Qposi = ML.data()[i] * (maxi - mLow[i]);
-  //       Qnegi = ML.data()[i] * (mini - mLow[i]);
-  //     } else {
-  //       //cek todo: don't think this is right for Richards
-  //       gamma = 10.0 * ML.data()[i];
-  //       Qposi = fmin(0.5 * ML.data()[i] * (1.0 - mn.data()[i]), gamma * (maxi - mn[i]));
-  //       Qnegi = fmax(0.5 * ML.data()[i] * (0.0 - mn.data()[i]), gamma * (mini - mn[i]));
-  //     }
-  //     ///////////////////////
-  //     // COMPUTE R VECTORS //
-  //     ///////////////////////
-  //     Rpos[i] = ((Pposi == 0) ? 1. : fmin(1.0, Qposi / Pposi));
-  //     Rneg[i] = ((Pnegi == 0) ? 1. : fmin(1.0, Qnegi / Pnegi));
-  //   } // i DOFs
-
-  //   //////////////////////
-  //   // COMPUTE LIMITERS //
-  //   //////////////////////
-  //   ij = 0;
-  //   for (int i = 0; i < numDOFs; i++) {
-  //     double ith_Limiter_times_FluxCorrectionMatrix = 0.;
-  //     double alpha_fA, alpha_dot, beta_ij = 1.0;
-  //     // LOOP OVER THE SPARSITY PATTERN (j-LOOP)//
-  //     for (int offset = csrRowIndeces_DofLoops.data()[i]; offset < csrRowIndeces_DofLoops.data()[i + 1]; offset++) {
-  //       int j = csrColumnOffsets_DofLoops.data()[offset];
-  //       alpha_fA     = ((FluxCorrectionMatrix[ij] > 0) ? fmin(Rpos[i], Rneg[j]) : fmin(Rneg[i], Rpos[j])) * FluxCorrectionMatrix[ij];
-  //       alpha_dot    = fmin(1.0, beta_ij * fabs(alpha_fA) / MC.data()[ij] / fmax(1.0e-8, fabs(mDot[i] - mDot[j])));
-  //       if (MONOLITHIC == 0) {
-  //         ith_Limiter_times_FluxCorrectionMatrix += alpha_fA;
-  //       } else {
-  //         ith_Limiter_times_FluxCorrectionMatrix += alpha_fA + (LUMPED_MASS_MATRIX == 1 ? 0. : 1.) * dt * alpha_dot * MC.data()[ij] * (mDot[i] - mDot[j]);
-  //       }
-  //       ij += 1;
-  //     }
-
-  //     fluxCorrection.data()[i] = -ith_Limiter_times_FluxCorrectionMatrix*bc_mask[i]/dt;
-  //     limited_solution.data()[i] = mLow[i] + 1. / ML.data()[i] * ith_Limiter_times_FluxCorrectionMatrix * bc_mask[i];
-
-  //     //cek todo: double check that the below is not necesary. The limted_solution should already be within the bounds
-  //     //Calculate the min and max mass bounds
-  //     //double mMin = rho * thetaR.data()[elementMaterialTypes.data()[0]];
-  //     //double mMax = rho * (thetaR.data()[elementMaterialTypes.data()[0]] + thetaSR.data()[elementMaterialTypes.data()[0]]);
-
-  //     // Check if the limited mass is within bounds
-  //     //if (limited_mass < mMin || limited_mass > mMax) {
-  //     //  limited_solution.data()[i] = solL[i]; // Fallback to lower-order solution
-  //     //} else {
-  //     //  limited_solution.data()[i] = limited_mass; // Assign the limited mass
-  //     //}
-  //   }
-  // }
-
   void FCTStep(arguments_dict &args)
 {
   xt::pyarray<double> &bc_mask                   = args.array<double>("bc_mask");
@@ -1048,30 +917,40 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
   xt::pyarray<double> &min_m_bc                  = args.array<double>("min_m_bc");
   xt::pyarray<double> &max_m_bc                  = args.array<double>("max_m_bc");
   xt::pyarray<double> &fluxCorrection            = args.array<double>("fluxCorrection");
+  //owned by Python so they survive between the two passes below
+  xt::pyarray<double> &Rpos                      = args.array<double>("Rpos");
+  xt::pyarray<double> &Rneg                      = args.array<double>("Rneg");
+  xt::pyarray<double> &FluxCorrectionMatrix      = args.array<double>("FluxCorrectionMatrix");
   // flags
   int                  LUMPED_MASS_MATRIX        = args.scalar<int>("LUMPED_MASS_MATRIX");
   int                  MONOLITHIC                = args.scalar<int>("MONOLITHIC");
+  int                  fct_pass                  = args.scalar<int>("fct_pass");
 
-  // heap arrays instead of VLAs
-  std::vector<double> Rpos(numDOFs, 0.0);
-  std::vector<double> Rneg(numDOFs, 0.0);
-  std::vector<double> FluxCorrectionMatrix(NNZ, 0.0);
+  //PARALLEL. The limiter is L_ij = min(Rpos_i, Rneg_j), so an owned row i reads the ratio of a column
+  //j that may be a ghost, and everything a ratio is built from -- the row's own sparsity, ML, mDotLow,
+  //min/max_m_bc -- is INCOMPLETE at a ghost DOF: with one layer of overlap a ghost's element star and
+  //its boundary faces are only partly on this rank. Both ranks sharing a cut edge would then apply a
+  //different L_ij, f_ij = -f_ji dies and the correction manufactures mass along the partition.
+  //The cure is to let the owners' values cross the cut in the middle of the limiter:
+  //  fct_pass = 1 -> FluxCorrectionMatrix + the local ratios Rpos/Rneg
+  //  [Python forward-inserts Rpos/Rneg, owner -> ghost; the inputs above are scattered before pass 1]
+  //  fct_pass = 2 -> apply the limiter
+  //  fct_pass = 0 -> both back to back; this is the serial path and is byte-identical to the old
+  //                  single-pass function.
+  //mDot is pointwise in (mLow, mn) so it is rebuilt in whichever pass needs it rather than carried.
+  const bool doPass1 = (fct_pass != 2);
+  const bool doPass2 = (fct_pass != 1);
+
   std::vector<double> mDot(numDOFs, 0.0);
+  for (int i = 0; i < numDOFs; i++)
+    mDot.at(i) = (mLow.at(i) - mn.at(i)) / dt; // local time derivative from low-order mass
 
-  // for debugging bounds
-  std::vector<double> localMin(numDOFs, 0.0);
-  std::vector<double> localMax(numDOFs, 0.0);
-
-  //////////////////
-  // LOOP in DOFs //
-  //////////////////
+  ///////////////////////////////////////////////////////
+  // PASS 1: antidiffusive fluxes and Zalesak's ratios  //
+  ///////////////////////////////////////////////////////
+  if (doPass1) {
   int ij = 0;
-
- 
   for (int i = 0; i < numDOFs; i++) {
- 
-    // local time derivative from low-order mass
-    mDot.at(i) = (mLow.at(i) - mn.at(i)) / dt;
 
     // initialize local min/max from BC
     double mini = min_m_bc.at(i);
@@ -1096,8 +975,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           maxi = fmax(maxi, mn.at(j));
         }
       }
-
-      mDot.at(j) = (mLow.at(j) - mn.at(j)) / dt;
 
       if (MONOLITHIC == 0) {
         FluxCorrectionMatrix.at(ij) = (LUMPED_MASS_MATRIX == 1 ? 0. : 1.) * dt * MC.at(ij) * (mDotLow.at(i) - mDotLow.at(j)) + dt_times_fH_minus_fL.at(ij);
@@ -1137,16 +1014,14 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     ///////////////////////
     Rpos.at(i) = ((Pposi == 0.0) ? 1.0 : fmin(1.0, Qposi / Pposi));
     Rneg.at(i) = ((Pnegi == 0.0) ? 1.0 : fmin(1.0, Qnegi / Pnegi));
-
-    // store local bounds for later bound check
-    localMin.at(i) = mini;
-    localMax.at(i) = maxi;
   } // i DOFs
+  } // pass 1
 
   //////////////////////
   // COMPUTE LIMITERS //
   //////////////////////
-  ij = 0;
+  if (doPass2) {
+  int ij = 0;
  // std::cout << "FCT: entering second DOF loop (applying limiters)...\n";
 
   for (int i = 0; i < numDOFs; i++) {
@@ -1165,10 +1040,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         ith_Limiter_times_FluxCorrectionMatrix += alpha_fA + (LUMPED_MASS_MATRIX == 1 ? 0. : 1.) * dt * alpha_dot * MC.at(ij) * (mDot.at(i) - mDot.at(j));
       }
       ij += 1;
-    } // j-loop
+    } 
     fluxCorrection.at(i) = -ith_Limiter_times_FluxCorrectionMatrix * bc_mask.at(i) / dt;
     limited_solution.at(i) = mLow.at(i) + 1.0 / ML.at(i) * ith_Limiter_times_FluxCorrectionMatrix * bc_mask.at(i);
-}
+  }
+  } 
 }
 
 
@@ -1346,9 +1222,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     //////////////////////////////Density Coupling ///////////////////////////////
     xt::pyarray<double> &q_rho                                     = args.array<double>("q_rho");
     xt::pyarray<double> &ebqe_rho                                  = args.array<double>("ebqe_rho");
-    ////////////////////////////////////////////////////////////////////////////
-
-
     xt::pyarray<double> &gravity                                    = args.array<double>("gravity");
     xt::pyarray<double> &alpha                                      = args.array<double>("alpha");
     xt::pyarray<double> &n                                          = args.array<double>("n");
@@ -1641,42 +1514,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           velocity.data()[eN_k_nSpace + I] = -acc;
           velocity_couple.data()[eN_k_nSpace + I] = -acc;
         }
-        // static int debug_ev_prints = 0;
-        // if (debug_ev_prints < 6 && eN < 2 && k < 2)
-        // {
-        //   std::cout << "[Richards EV fixed] eN=" << eN
-        //             << " k=" << k
-        //             << " u=" << u
-        //             << " un=" << un
-        //             << " grad_phi=(" << grad_phi[0];
-        //   for (int I = 1; I < nSpace; ++I)
-        //     std::cout << "," << grad_phi[I];
-        //   std::cout << ") grad_u_velocity=(" << grad_u_velocity[0];
-        //   for (int I = 1; I < nSpace; ++I)
-        //     std::cout << "," << grad_u_velocity[I];
-        //   std::cout << ") velocity_couple=(" << velocity_couple.data()[eN_k_nSpace + 0];
-        //   for (int I = 1; I < nSpace; ++I)
-        //     std::cout << "," << velocity_couple.data()[eN_k_nSpace + I];
-        //   std::cout << ")" << std::endl;
-        //   for (int j = 0; j < nDOF_trial_element; ++j)
-        //   {
-        //     const int u_gj = u_l2g.data()[eN_nDOF_trial_element + j];
-        //     const int x_gj = mesh_l2g.data()[eN_nDOF_mesh_trial_element + j];
-        //     const int free_gj = r_l2g.data()[eN_nDOF_trial_element + j];
-        //     std::cout << "  [EV fixed dof] j=" << j
-        //               << " mapped_u=" << u_dof.data()[u_gj]
-        //               << " mapped_u_old=" << u_dof_old.data()[u_gj]
-        //               << " free_material=" << freeDOFMaterialTypes.data()[free_gj]
-        //               << " mapped_x=(" << mesh_dof.data()[x_gj * 3 + 0]
-        //               << "," << mesh_dof.data()[x_gj * 3 + 1]
-        //               << "," << mesh_dof.data()[x_gj * 3 + 2]
-        //               << ") Phi=" << Phi[j]
-        //               << " Phi_n=" << Phi_n[j]
-        //               << std::endl;
-        //   }
-        //   debug_ev_prints++;
-        // }
-       // if (nSpace != 2) {std::cout << "WARNING nSpace=" << nSpace << std::endl;}
         //
         //moving mesh
         //
@@ -1753,25 +1590,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         } //j
       } //i
       
-    } //elementsxw
-
-    // double s = 0.0, sabs = 0.0;
-    // double vmin = 1e300, vmax = -1e300;
-    // size_t n_nonzero = 0;
-
-    // for (size_t i = 0; i < velocity.size(); i++) {
-    //   double v = velocity.data()[i];
-    //   s += v;
-    //   sabs += std::abs(v);
-    //   vmin = std::min(vmin, v);
-    //   vmax = std::max(vmax, v);
-    //   if (std::abs(v) > 1e-14) n_nonzero++;
-    // }
-
-    // std::cout << "[after compute] size=" << velocity.size()
-    //           << " nnz=" << n_nonzero
-    //           << " min=" << vmin << " max=" << vmax
-    //           << " sumabs=" << sabs << std::endl;
+    } 
 
         //loop over exterior element boundaries to calculate surface integrals and load into element and global residuals
     //
@@ -1834,10 +1653,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_ext, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[eN]], n.data()[elementMaterialTypes.data()[eN]], thetaR.data()[elementMaterialTypes.data()[eN]],
                              thetaSR.data()[elementMaterialTypes.data()[eN]], &KWs.data()[elementMaterialTypes.data()[eN] * nnz], bc_u_ext, bc_m_ext, bc_dm_ext, bc_f_ext, bc_df_ext, bc_a_ext, bc_da_ext, bc_as_ext, bc_Kr_ext,bc_dKr_ext, thetaW_bc_ext);
         ebqe_theta.data()[ebNE_kb] = thetaW_ext;
-        
-        //
-        //Calculate Darcy Velocity at external faces
-        //
         //
         //Calculate Darcy Velocity at external faces
         //
@@ -1889,6 +1704,24 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         anb_seepage_flux             = seepagefluxcalculator(anb_seepage_flux, isSeepageFace.data()[ebNE], dS, flux_ext);
         anb_seepage_flux_n.data()[0] = anb_seepage_flux;
         ebqe_u.data()[ebNE_kb]       = u_ext;
+        //seed the FCT bounds with the imposed value. min_m_bc/max_m_bc are otherwise left at +-1e10, so
+        //Zalesak's bounds at a weakly imposed Dirichlet DOF come only from the neighbours' low order masses
+        //and the limiter clamps the boundary layer. theta(bc_u) uses the DOF's own soil and density so the
+        //bound lies on the same retention curve as mLow in the edge loop below. done after the flux call so
+        //the seepage active set is current
+        if (isDOFBoundary_u.data()[ebNE_kb]) {
+          double bc_u_dof = isSeepageFace.data()[ebNE] ? 0.0 : ebqe_bc_u_ext.data()[ebNE_kb];
+          for (int i = 0; i < nDOF_test_element; i++) {
+            if (u_test_trace_ref.data()[ebN_local_kb * nDOF_test_element + i] <= 1.0e-12) continue; //DOF not on this face
+            int    free_gi = r_l2g.data()[eN * nDOF_test_element + i], mat_gi = freeDOFMaterialTypes.data()[free_gi];
+            double m_bc, dm_bc, f_bc[nSpace], df_bc[nSpace], a_bc[nnz], da_bc[nnz], as_bc[nnz], Kr_bc, dKr_bc, thetaW_bc;
+            evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_dof[free_gi], beta, gravity.data(), alpha.data()[mat_gi],
+                                 n.data()[mat_gi], thetaR.data()[mat_gi], thetaSR.data()[mat_gi], &KWs.data()[mat_gi * nnz], bc_u_dof,
+                                 m_bc, dm_bc, f_bc, df_bc, a_bc, da_bc, as_bc, Kr_bc, dKr_bc, thetaW_bc);
+            min_m_bc.data()[free_gi] = fmin(min_m_bc.data()[free_gi], m_bc);
+            max_m_bc.data()[free_gi] = fmax(max_m_bc.data()[free_gi], m_bc);
+          }
+        }
         //
         //update residuals
         //
@@ -2154,6 +1987,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       globalJacobian.data()[ii] += bc_mask.data()[i] * (MLi * dm / dt + J_ii) + (1.0 - bc_mask.data()[i]);
     }
     if (STABILIZATION_TYPE == STABILIZATION::Implicit_FCT) {
+      //SERIAL ONLY. This runs the limiter inside the residual, where the ghost scatter of Rpos/Rneg
+      //cannot happen, so it is stuck on fct_pass=0 (Python sets that key) and the ratios it reads at a
+      //ghost column are this rank's incomplete ones. Use the post-Newton FCTStep in Richards.py, which
+      //is split across the cut, for parallel runs.
       FCTStep(args);
       for (int i = 0; i < numDOFs; i++) {
         globalResidual.data()[i] += fluxCorrection.data()[i];

@@ -285,9 +285,18 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         # 6.378 against 5.878, a factor ~4 in kr by psiC = 7.5 m, so the choice
         # has to follow whichever parameter set is being reproduced.  'BC' keeps
         # Burdine, the historical behaviour.
+        #
+        # 'Gardner' is the quasi-linear closure Tracy's analytical solutions are
+        # derived from: theta = thetaR + thetaSR*exp(alpha*psi) with
+        # kr = exp(alpha*psi), i.e. K = Ks*exp(alpha*psi).  It is one model, not
+        # a retention/kr pair that can be mixed -- kr linear in Se is what makes
+        # the Kirchhoff transform hbar = exp(alpha*psi) linearise Richards and
+        # the closed forms exist.  alpha is Gardner's exponent [1/m] and
+        # vgm_n_types is unused.
         psk_types = {"VG": 0,          # van Genuchten retention + Mualem  kr
                      "BC": 1,          # Brooks-Corey  retention + Burdine kr
-                     "BC_MUALEM": 2}   # Brooks-Corey  retention + Mualem  kr
+                     "BC_MUALEM": 2,   # Brooks-Corey  retention + Mualem  kr
+                     "Gardner": 3}     # Gardner exponential retention + kr=Se
         try:
             if isinstance(PSK_type, int):
                 PSK_type = [key for key, value in psk_types.items() if value == PSK_type][0]
@@ -973,6 +982,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.dt_times_dC_minus_dL = None
         self.min_m_bc = None
         self.max_m_bc = None
+        # Zalesak's ratios and the assembled antidiffusive flux matrix.  Owned here
+        # rather than inside the kernel so they survive between FCTStep's two passes
+        # and can be ghost-scattered in between; see FCTStep.
+        self.Rpos = None
+        self.Rneg = None
+        self.FluxCorrectionMatrix = None
         # Aux quantity at DOFs to be filled by optimized code (MQL)
         self.quantDOFs = np.zeros(self.u[0].dof.shape, 'd')
         self.mLow = np.zeros(self.u[0].dof.shape, 'd')
@@ -1091,12 +1106,47 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             for cj in range(self.nc):
                 self.dirichletConditionsForceDOF[cj] = DOFBoundaryConditions(self.u[cj].femSpace,dofBoundaryConditionsSetterDict[cj],weakDirichletConditions=False)
    
+    def ghostScatter(self, *arrays):
+        """Forward-insert (owner -> ghost copy) each free-DOF array.  No-op in serial.
+
+        With one layer of overlap only the OWNED DOFs have their full element star
+        and their full set of boundary faces on this rank, so anything built by a
+        loop -- mDotLow, min/max_m_bc, the Zalesak ratios -- is
+        incomplete at a ghost DOF.  The edge loops read those arrays at the COLUMN
+        j of an owned row i, and j can be a ghost, so without this the two ranks
+        sharing a cut edge build different f_ij, the antisymmetry f_ij = -f_ji is
+        lost and the correction manufactures mass along the partition.  The owner
+        always holds the complete value, so an insert scatter repairs every ghost.
+
+        u[0].par_dof is the only ghosted vector this module owns, so the arrays are
+        shuttled through u[0].dof (the same idiom as mphase_co2/m_comp_co2).
+        Integer arrays round-trip exactly: they only ever carry small whole numbers
+        (0/1 flags, material indices).
+        """
+        par = getattr(self.u[0], 'par_dof', None)
+        if par is None:
+            return
+        ndof = self.u[0].dof.shape[0]
+        saved = self.u[0].dof.copy()
+        for a in arrays:
+            if a is None or a.shape[0] != ndof:
+                continue
+            self.u[0].dof[:] = a
+            par.scatter_forward_insert()
+            a[:] = self.u[0].dof
+        self.u[0].dof[:] = saved
+
     def FCTStep(self):
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         limited_solution = np.zeros((len(rowptr) - 1),'d')
+        # Ghost-sync everything the limiter reads at a column before it reads it.
+        # mLow/mn are pointwise in u and u_dof_old and so are already consistent,
+        # but mLow is re-listed because it also carries the per-DOF soil, and ML is
+        # not: ML is only ever touched at row i, never at a column.
+        self.ghostScatter(self.mLow, self.mDotLow, self.min_m_bc, self.max_m_bc)
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["bc_mask"] = self.bc_mask
-        argsDict["NNZ"] = self.nnz 
+        argsDict["NNZ"] = self.nnz
         argsDict["numDOFs"] = len(rowptr) - 1  # num of DOFs
         argsDict["dt"] = self.timeIntegration.dt
         argsDict["ML"] = self.ML
@@ -1112,11 +1162,24 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["dt_times_fH_minus_fL"] = self.dt_times_dC_minus_dL
         argsDict["min_m_bc"] = self.min_m_bc
         argsDict["max_m_bc"] = self.max_m_bc
+        argsDict["Rpos"] = self.Rpos
+        argsDict["Rneg"] = self.Rneg
+        argsDict["FluxCorrectionMatrix"] = self.FluxCorrectionMatrix
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["MONOLITHIC"] =0#cek hack self.coefficients.MONOLITHIC
         argsDict["anb_seepage_flux_n"]= self.anb_seepage_flux_n
         argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
-        self.richards.FCTStep(argsDict)
+        if getattr(self.u[0], 'par_dof', None) is None:
+            argsDict["fct_pass"] = 0            # serial: both passes, one call
+            self.richards.FCTStep(argsDict)
+        else:
+            # L_ij = min(Rpos_i, Rneg_j) needs the OWNER's ratio at a ghost column,
+            # so the ratios have to cross the cut half way through the limiter.
+            argsDict["fct_pass"] = 1            # -> FluxCorrectionMatrix, Rpos, Rneg
+            self.richards.FCTStep(argsDict)
+            self.ghostScatter(self.Rpos, self.Rneg)
+            argsDict["fct_pass"] = 2            # -> limited_solution, fluxCorrection
+            self.richards.FCTStep(argsDict)
         old_dof = self.u[0].dof.copy()
         self.invert(u=limited_solution, ulow=old_dof)
         #self.invert(u=limited_solution, ulow=self.u[0].dof) ##Original::
@@ -1139,7 +1202,14 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         import os
         DU_INF_MAX = float(os.environ.get("RICHARDS_FCT_DU_MAX",
                                           1.0 if use_newton_invert else np.inf))
-        rejected = (not np.isfinite(du_inf)) or (du_inf > DU_INF_MAX)
+        # The veto has to be ONE decision for the whole domain: taken rank-locally
+        # it can leave one subdomain on the limited solution and its neighbour on
+        # the high order one, i.e. two different schemes inside the same step.
+        # globalMax over the local flag is a no-op in serial.  du_inf below stays
+        # rank-local and the log says so, rather than adding a reduction inside a
+        # branch that is only entered when an env var is set.
+        rejected_local = (not np.isfinite(du_inf)) or (du_inf > DU_INF_MAX)
+        rejected = self.comm.globalMax(1.0 if rejected_local else 0.0) > 0.0
         if os.environ.get("RICHARDS_FCT_DBG"):
             # untouched = DOFs the invert handed back bitwise unchanged, i.e. the
             # limited mass was silently dropped there (one of the u = u_prev
@@ -1147,15 +1217,23 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             untouched = int(np.count_nonzero(uLim == uHigh))
             dm_inf = np.linalg.norm(mLim - self.mLow, np.inf)
             m_scale = max(1.0e-30, np.linalg.norm(self.mLow, np.inf))
-            logEvent("[FCT] %s du_inf=%.3e dm_inf=%.3e (rel %.3e) untouched=%d/%d dt=%.3e"
+            logEvent("[FCT] %s du_inf=%.3e dm_inf=%.3e (rel %.3e) untouched=%d/%d dt=%.3e (rank-local norms)"
                      % ("REJECT" if rejected else "accept", du_inf, dm_inf,
                         dm_inf / m_scale, untouched, uLim.size,
                         self.timeIntegration.dt), level=1)
         if rejected:
             self.u[0].dof[:] = uHigh
-            self.timeIntegration.u[:] = self.u[0].dof
-        else:
-            self.timeIntegration.u[:] = self.u[0].dof
+        # invert() wrote every local row, ghosts included, and the ghost rows were
+        # limited off an incomplete stencil.  Hand the owners' values back before
+        # anything reads u again: the caller (NonlinearSolvers.Newton.solve, which
+        # does u[:] = F.u[0].dof right after this) does not scatter afterwards the
+        # way the shallow-water solvers in the same file do.  Scattered directly,
+        # not through ghostScatter: that helper uses u[0].dof as its shuttle and
+        # would restore the pre-scatter values here.
+        _par = getattr(self.u[0], 'par_dof', None)
+        if _par is not None:
+            _par.scatter_forward_insert()
+        self.timeIntegration.u[:] = self.u[0].dof
         # print("dt =", self.timeIntegration.dt)
         # print("||mLim - mLow||inf =", np.linalg.norm(mLim - self.mLow, np.inf))
         # print("||uLim - uHigh||inf =", np.linalg.norm(uLim - uHigh, np.inf))
@@ -1406,6 +1484,27 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.min_m_bc *= 1.0e10
         self.max_m_bc = np.ones(nFree, 'd')
         self.max_m_bc *= -1.0e10
+        # Zalesak's ratios and the antidiffusive flux matrix.  Same lifetime as the
+        # arrays above; FCTStep fills them in its first pass and consumes them in
+        # its second, with a ghost scatter of the ratios in between.
+        self.Rpos = np.zeros(nFree, 'd')
+        self.Rneg = np.zeros(nFree, 'd')
+        self.FluxCorrectionMatrix = np.zeros(Cx.shape, 'd')
+        # PARALLEL (one-time): freeDOFMaterialTypes is built in __init__ from the
+        # FIRST incident element in LOCAL element numbering, so on a node sitting
+        # on a soil interface two ranks can pick different rocks.  mat_j selects
+        # the upwind k_rw in the edge loop of Richards.h, so a disagreement makes
+        # fL_ij != -fL_ji on a cut edge and the LOW ORDER scheme stops conserving,
+        # with FCT off too.  The owner's choice is the one everybody must use.
+        # Done here rather than in __init__ because u[0].par_dof only exists once
+        # the parallel layout is built; no-op in serial and on one-material meshes.
+        # The flag is only latched once the scatter could actually run, so a
+        # par_dof that is not up yet on the first residual does not silently skip
+        # the sync forever.  Every rank evaluates the same condition.
+        if not getattr(self, '_freeDOFMaterialTypes_synced', False):
+            if getattr(self.u[0], 'par_dof', None) is not None or self.comm.size() == 1:
+                self.ghostScatter(self.freeDOFMaterialTypes)
+                self._freeDOFMaterialTypes_synced = True
         #
         # cek end computationa of cterm_global
         #
@@ -1589,6 +1688,14 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["dt_times_fH_minus_fL"] = self.dt_times_dC_minus_dL
         argsDict["min_m_bc"] = self.min_m_bc
         argsDict["max_m_bc"] = self.max_m_bc
+        # Needed here as well as in FCTStep: STABILIZATION_TYPE=Implicit_FCT calls
+        # FCTStep from inside the residual off this same dict, and arguments_dict
+        # throws on a missing key.  fct_pass=0 keeps that in-kernel call single
+        # pass -- it cannot scatter, so it stays serial only.
+        argsDict["Rpos"] = self.Rpos
+        argsDict["Rneg"] = self.Rneg
+        argsDict["FluxCorrectionMatrix"] = self.FluxCorrectionMatrix
+        argsDict["fct_pass"] = 0
         argsDict["quantDOFs"] = self.quantDOFs
         argsDict["mn"] = self.mn
         argsDict["anb_seepage_flux_n"]= self.anb_seepage_flux_n
