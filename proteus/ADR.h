@@ -17,7 +17,7 @@ namespace py = pybind11;
 namespace proteus
 {
 	template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
-	using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP_ifem, nP, nQ, nEBQ>;
+	using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP_ifem, nP, nQ, nEBQ, true>;
 
 	class cADR_base
 	{
@@ -1108,7 +1108,15 @@ namespace proteus
 						// indexing convention for P1: edge opposite to node i is given by (i+1)%3 and (i+2)%3 nodes. 
 						// nathawani: P2 needs different indexing convention.
 						// Do we need corner cases? (<=0) or just (<0) for cut edge detection?
-						if (element_phi_f[(ebN_element + 1) % 3] * element_phi_f[(ebN_element + 2) % 3] < 0.0)
+						// The SCIFEM facet term is an inter-element consistency term: it needs the
+						// trace from BOTH elements sharing the face. On an exterior face the second
+						// entry of elementBoundaryElementsArray is -1, and the loops below index
+						// elementIsActive[] and gf_f_cache[] with it before any validity test, which
+						// is out of bounds. test=8's circle lies wholly inside the domain so this
+						// never triggered; test=12's diagonal interface exits through the boundary
+						// and segfaulted on arm64. Only interior faces belong in this set.
+						if (elementBoundaryElementsArray.data()[ebN * 2 + 1] != -1 &&
+							element_phi_f[(ebN_element + 1) % 3] * element_phi_f[(ebN_element + 2) % 3] < 0.0)
 						{
 							// This should give just the cut edges for simplices.
 							ifem_boundaries.insert(ebN);

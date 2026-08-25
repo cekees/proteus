@@ -157,17 +157,9 @@ jobs:
           # only so this workflow's own signal isn't drowned out by known
           # failures. Remove each line as it gets fixed.
           DESELECT_ARGS=(
-            --deselect test/cylinder2D/ibm_method/test_cylinder2D_ibm_rans3p.py::Test_ibm::test_ex2
-            --deselect test/cylinder2D/ibm_rans2p/test_cylinder2D_ibm_rans2p.py::Test_ibm::test_ex2
             --deselect test/cylinder2D/ibm_rans2p_3D/test_cylinder3D_ibm_rans2p.py::Test_ibm::test_ex2
             --deselect test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_ball
             --deselect test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_sdf
-            --deselect test/SWFlow/test_SWFlow.py::TestSWFlow::test_obstacle_flow
-            # Regression from 2d71064a ("Immersed FEM with P1/P2, SCIFEM, and PG (#12)"):
-            # its new `order > 2` guards in equivalent_polynomials.h changed this case.
-            # TO RE-ENABLE: delete this one --deselect line and confirm the test passes,
-            # in the same PR that fixes the guard.
-            --deselect test/levelset/vortex2D/test_vortex2D.py::TestVortex2D::test_vortex2D_exactHeaviside
             # DO NOT deselect test_nse_RANS2P_step.py::test_step_slip_FullRun.
             # It fails an iteration-count assertion (see below), but it is also the
             # PRODUCER of dump_test_1_step2d_1.0par_j_0, which
