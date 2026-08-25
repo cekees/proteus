@@ -33,7 +33,7 @@ class Test_ibm():
                    ]
         for file in FileList:
             if os.path.isfile(file):
-                os.remove(file)
+                pass#os.remove(file)
             else:
                 pass
 
@@ -45,7 +45,7 @@ class Test_ibm():
 
     def test_ex2(self):
         self.compare_name = "T1_ibm_3D_rans2p"
-        self.example_setting("T=0.01 onlySaveFinalSolution=True")
+        self.example_setting("T=0.01 onlySaveFinalSolution=True genMesh=False Refinement=7")
         self.teardown_method(self)
 
 
@@ -89,5 +89,7 @@ class Test_ibm():
 
         actual = h5py.File('cylinder_ibm_T1_ibm_3D_rans2p'+'.h5','r')
         expected_path = 'comparison_files/' + 'comparison_u_t2.csv'
+        #write comparison file
+        #np.array(actual['u_t2']).tofile(os.path.join(self._scriptdir, expected_path),sep=",")
         np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['u_t2']),decimal=10)
         actual.close()

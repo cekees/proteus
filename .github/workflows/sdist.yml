@@ -157,7 +157,6 @@ jobs:
           # only so this workflow's own signal isn't drowned out by known
           # failures. Remove each line as it gets fixed.
           DESELECT_ARGS=(
-            --deselect test/cylinder2D/ibm_rans2p_3D/test_cylinder3D_ibm_rans2p.py::Test_ibm::test_ex2
             --deselect test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_ball
             --deselect test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_sdf
             # DO NOT deselect test_nse_RANS2P_step.py::test_step_slip_FullRun.
