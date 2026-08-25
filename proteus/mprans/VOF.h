@@ -46,7 +46,14 @@ namespace proteus
 namespace proteus
 {
   template<int nSpace, int nP, int nQ, int nEBQ>
-  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nP, nQ, nEBQ>;
+  // The trailing flag is the IFEM gate. It has always been false here -- by
+  // default rather than by statement -- and must stay false: with it set, an
+  // element whose interface passes through an edge or corner node takes the
+  // IFEM branch in Simplex::set_quad, which forces D to 0 and H/ImH to a hard
+  // 0/1 instead of the moment fit. That deletes the interface measure this
+  // model integrates over. Written out so the choice is visible at the call
+  // site and cannot change underneath us if the template default changes.
+  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nP, nQ, nEBQ, false>;
 
   class VOF_base
   {
