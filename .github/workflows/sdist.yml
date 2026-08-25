@@ -157,8 +157,6 @@ jobs:
           # only so this workflow's own signal isn't drowned out by known
           # failures. Remove each line as it gets fixed.
           DESELECT_ARGS=(
-            --deselect test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_ball
-            --deselect test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_sdf
             # DO NOT deselect test_nse_RANS2P_step.py::test_step_slip_FullRun.
             # It fails an iteration-count assertion (see below), but it is also the
             # PRODUCER of dump_test_1_step2d_1.0par_j_0, which

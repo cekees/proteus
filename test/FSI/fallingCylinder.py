@@ -27,8 +27,8 @@ context_options = []
 # physical constants
 context_options += [
     ("densityA", 998.2, "Water density"),
-    ("densityB", 1.004e-6, "Water kinematic viscosity m/sec^2"),
-    ("kinematicViscosityA", 1.205, "Air Densiy"),
+    ("densityB", 1.205, "Air Densiy"),
+    ("kinematicViscosityA", 1.004e-6, "Water kinematic viscosity m/sec^2"),
     ("kinematicViscosityB", 1.5e-5, "Air kinematic viscosity m/sec^2"),
     ("surf_tension_coeff", 0., "Surface tension"),
     ("gravity", (0, -9.81, 0.), "Gravitational acceleration vector"),
@@ -130,12 +130,10 @@ body.setConstraints(free_x=np.array([0., 1., 0.]), free_r=np.array([0., 0., 0.])
 body.setRecordValues(all_values=True)
 
 def sdf(t, x):
-    dist = np.sqrt((x[0]**2+x[1]**2+x[2]**2))
-    if dist < radius:
-        return -(radius-dist), (0., -1., 0.)
-    else:
-        return dist-radius, (0., 1., 0.)
-
+    dist = np.sqrt(x[0]**2 + x[1]**2 + x[2]**2)
+    if dist < 1.0e-8:
+        return -radius, (0., 1., 0.)
+    return dist - radius, (x[0]/dist, x[1]/dist, x[2]/dist)
 
 body.setIBM(True,
             radiusIBM=radius,  # used only when particle are balls
