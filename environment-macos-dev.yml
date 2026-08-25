@@ -1,0 +1,46 @@
+name: proteus-dev-macos
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - pip =26.2.1
+  - compilers =1.11.0
+  - make =4.4.1
+  - setuptools =84.0.0
+  - cython =3.0.11
+  - hdf5 =2.2.0=*mpich*
+  - h5py =3.16.0=*mpich*
+  - metis =5.1.0
+  - mpich =5.0.1
+  - mpich-mpicc =5.0.1
+  - mpich-mpicxx =5.0.1
+  - numpy =2.5.2
+  - openblas =0.3.34
+  - parmetis =4.0.3
+  - petsc4py =3.25.4
+  # =real_* pins the scalar type; see environment-openmpi-dev.yml for why.
+  - petsc =3.25.4=real_*
+  - scorec =4.1.0
+  - superlu =7.0.0
+  - superlu_dist =9.2.1
+  - triangle =1.6
+  - pychrono =10.0.0
+  - gmsh =4.15.0
+  - matplotlib =3.11.1
+  - mpi4py =4.1.2
+  - pytest =9.1.1
+  - pytest-cov =7.1.0
+  - pytest-xdist =3.8.0
+  - pytest-forked
+  - scipy =1.18.0
+  - tetgen =1.6.0
+  - ncurses =6.6
+  - python =3.12.13
+  - xtensor-python =0.29.0
+  - git-lfs =3.7.1
+  - eigen =5.0.1
+  - zoltan =3.901
+  - hypre =3.1.0
+  - mumps-mpi =5.8.2
+  - scalapack =2.2.0
+  - tbb =2023.0.0
