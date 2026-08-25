@@ -21,9 +21,26 @@ dependencies:
   - openblas =0.3.34
   - parmetis =4.0.3
   - petsc4py =3.25.4
-  - petsc =3.25.4
+  # =real_* is the scalar type, not a flavour preference. proteus is a
+  # real-arithmetic code, and conda-forge ships petsc in real_*, complex_*,
+  # cuda*_real_* and cuda*_complex_* variants of the same version. Without the
+  # selector the solver is free to pick complex_*, and it will: the real builds
+  # carry "hypre >=3.1.0,<3.2.0a0" while the complex ones declare no hypre
+  # dependency at all, so once hypre 3.2.0 was published (2026-08-25 00:45 UTC)
+  # every leg that floors these pins solved to petsc-complex + hypre 3.2.0. With
+  # complex scalars every KSP returns a zero correction, so Newton neither
+  # converges nor terminates: 37 tests failed and the elliptic_redist cases spun
+  # 20+ minutes each over 23,000+ Newton iterations, taking linux-64 from 22m to
+  # 2h47m and macOS Intel to 4h45m. The locked py3.13 leg was unaffected only
+  # because its "hypre =3.1.0" excluded 3.2.0.
+  # petsc4py needs no selector: its builds carry "petsc * real_*" themselves.
+  - petsc =3.25.4=real_*
   - scorec >=4.2.1
-  - superlu
+  # Floored, not bare: a bare spec lets the solver reach backwards. Bare
+  # "openblas" selected a 2018 build needing libgfortran.so.3 (0.3.4 sorts
+  # below 0.3.34). >=7.0 rather than >=7.0.1 because osx-64/osx-arm64 have
+  # only 7.0.0, and "superlu =7.0.1" was half of the macOS unsatisfiable core.
+  - superlu >=7.0
   - superlu_dist =9.2.1
   - triangle =1.6
   - pychrono >=10.0.0
@@ -40,7 +57,7 @@ dependencies:
   - python =3.13.15
   - xtensor-python =0.29.0
   - eigen =5.0.1
-  - zoltan
+  - zoltan >=3.901
   - hypre =3.1.0
   - mumps-mpi =5.8.2
   - scalapack =2.2.0

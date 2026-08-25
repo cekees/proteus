@@ -30,7 +30,8 @@ dependencies:
   - openblas >=0.3.20
   - parmetis >=4.0.3
   - petsc4py >=3.25.4
-  - petsc >=3.25.4
+  # =real_* pins the scalar type; see environment-openmpi-dev.yml for why.
+  - petsc >=3.25.4=real_*
   - superlu >=7.0
   - superlu_dist >=9.2.1
   - scorec >=4.2.1

@@ -42,9 +42,14 @@ dependencies:
   - openblas =0.3.34
   - parmetis =4.0.3
   - petsc4py =3.25.4
-  - petsc =3.25.4
+  # =real_* pins the scalar type; see environment-openmpi-dev.yml for why.
+  - petsc =3.25.4=real_*
   - scorec >=4.2.1
-  - superlu
+  # Floored, not bare: a bare spec lets the solver reach backwards. Bare
+  # "openblas" selected a 2018 build needing libgfortran.so.3 (0.3.4 sorts
+  # below 0.3.34). >=7.0 rather than >=7.0.1 because osx-64/osx-arm64 have
+  # only 7.0.0, and "superlu =7.0.1" was half of the macOS unsatisfiable core.
+  - superlu >=7.0
   - superlu_dist =9.2.1
   - triangle =1.6
   - pychrono >=10.0.0
@@ -61,7 +66,7 @@ dependencies:
   - python =3.13.15
   - xtensor-python =0.29.0
   - eigen =5.0.1
-  - zoltan
+  - zoltan >=3.901
   - hypre =3.1.0
   - mumps-mpi =5.8.2
   - scalapack =2.2.0
