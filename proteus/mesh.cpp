@@ -4596,7 +4596,7 @@ extern "C"
 		    break;
 		  }
 	      }
-	    assert(0 <= left_parent_ebN < parentMesh.nElementBoundaries_element);
+	    assert(0 <= left_parent_ebN && left_parent_ebN < parentMesh.nElementBoundaries_element);
 	    int ebN_parent = parentMesh.elementBoundariesArray[eN_left_parent*parentMesh.nElementBoundaries_element + 
 							       left_parent_ebN];       
 	    childMesh.elementBoundaryMaterialTypes[ebN] = parentMesh.elementBoundaryMaterialTypes[ebN_parent];

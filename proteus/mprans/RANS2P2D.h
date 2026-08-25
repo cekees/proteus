@@ -836,7 +836,7 @@ namespace proteus
           if (element_owned)
             {
               particle_surfaceArea[i] += dV * D_s;
-	      particle_volume[i] *= dV * ImH_s;
+	      particle_volume[i] += dV * ImH_s;
               particle_surfaceArea_projected[i] += dV * D_s * fmax(fluid_outward_normal[0]*projection_direction[0] +
 								   fluid_outward_normal[1]*projection_direction[1],0.0);
               particle_netForces[i * 3 + 0] += force_x;

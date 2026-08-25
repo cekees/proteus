@@ -44,6 +44,7 @@ context_options += [
     ]
 # mesh options
 context_options += [
+    ("genMesh", False, "Generate the mesh, otherwise use exect mesh exists"),
     ("he", 1. , "Characteristic element size"),
     ]
 # other options
@@ -76,8 +77,8 @@ water_level=tank_y*2
 tank = st.Tank2D(domain, [tank_x, tank_y])
 
 # MESH PARAMETERS
-domain.MeshOptions.genMesh = False
-domain.MeshOptions.he = he
+domain.MeshOptions.genMesh = opts.genMesh
+domain.MeshOptions.he = opts.he
 
 #  ____                        _                   ____                _ _ _   _
 # | __ )  ___  _   _ _ __   __| | __ _ _ __ _   _ / ___|___  _ __   __| (_) |_(_) ___  _ __  ___
@@ -125,7 +126,6 @@ chbod.SetPos(pos)
 chbod.SetRot(rot)
 chbod.SetMass(mass)
 chbod.SetInertiaXX(inertia)
-# chbod.SetBodyFixed(True)
 body.setConstraints(free_x=np.array([0., 1., 0.]), free_r=np.array([0., 0., 0.]))
 body.setRecordValues(all_values=True)
 
@@ -183,8 +183,6 @@ class AtRest:
 
 
 domain.MeshOptions.use_gmsh = False
-domain.MeshOptions.genMesh = False
-domain.MeshOptions.he = he
 modulepath = os.path.dirname(os.path.abspath(__file__))
 mesh_fileprefix=modulepath+'/meshFallingCylinder'
 domain.MeshOptions.setOutputFiles(mesh_fileprefix)

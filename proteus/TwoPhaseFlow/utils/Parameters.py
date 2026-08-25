@@ -289,7 +289,7 @@ class ParametersModelRANS2P(ParametersModelBase):
             epsFact=epsFact,
             eb_penalty_constant=100.,
             particle_epsFact = 3.,
-            useExact=False#Problem.useExact
+            useExact=ProblemInstance.SystemNumerics.useExact
         )
         scopts = self.n.ShockCapturingOptions
         scopts.shockCapturingFactor = shockCapturingFactor
