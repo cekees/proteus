@@ -16,7 +16,7 @@ ct = Context.Options([
     ("parallel",False,"Use parallel or not"),
     ("dt_fixed",0.005,"fixed time step"),
     ##################################
-    ("Refinement",          6,"refinement"),
+    ("Refinement",          11,"refinement"),
     ("use_sbm",             0,"use sbm instead of imb"),
     ("spaceOrder",          1,"FE space for velocity"),
     ("timeOrder",           2,"1=be or 2=vbdf"),#both works, but 2 gives better cd-cl
@@ -26,6 +26,7 @@ ct = Context.Options([
     ##################################
     ("use_ball_as_particle",1,"1 or 0 == use ball or particle"),
     ("nDTout",100,"output number"),
+    ("genMesh",True,"generate the mesh, else use saved mesh"),
 ], mutable=True)
 
 #===============================================================================
@@ -41,7 +42,7 @@ USE_SBM=ct.use_sbm
 #===============================================================================
 Refinement = ct.Refinement
 sedimentDynamics=False
-genMesh = False#True
+genMesh = ct.genMesh
 movingDomain = False
 applyRedistancing = True
 useOldPETSc = False
@@ -150,7 +151,7 @@ structured = False
 L = [1.5, 0.41, 0.01]
 he = L[0]/(2**Refinement)
 
-he = 0.04
+#he = 0.04
 L[2] = 2*he
 
 import my_domain
@@ -163,14 +164,22 @@ domain,boundaryTags = my_domain.get_pseudo_3D_cylinder_box_domain(L=L,
                                                                  x2=(0.2-0.06,0.2-0.06),x3=(0.2+0.3,0.2+0.06),
                                                                  )
 
-domain.polyfile=os.path.dirname(os.path.abspath(__file__))+"/"+"meshCylinder"
-#domain.writePoly("meshCylinder")
+if ct.genMesh:
+    domain.writePoly("meshCylinder")
+else:
+    domain.polyfile=os.path.dirname(os.path.abspath(__file__))+"/"+"meshCylinder"
 #domain.writePLY("mesh")
 #domain.writeAsymptote("mesh")
 #triangleOptions = "VApq30Dena%8.8f" % ((he ** 2) / 2.0,)
 #triangleOptions = "KVApq10Dena"
 triangleOptions="KVApq1.35q12feena"
-
+domain.MeshOptions.triangleOptions = triangleOptions
+# MeshTools.MeshOptions.genMesh defaults to True, and the PiecewiseLinearComplexDomain
+# branch of generateMesh reads *that* flag, not this module's genMesh -- so without
+# this line tetgen re-runs on every invocation, deleting the committed .ele/.node/.face
+# and replacing them with output that differs by platform (412 nodes on osx-arm64,
+# 422 on linux-64, a segfault on linux-aarch64). Hand it the flag the case actually means.
+domain.MeshOptions.genMesh = ct.genMesh
 logEvent("""Mesh generated using: tetgen -%s %s""" % (triangleOptions, domain.polyfile + ".poly"))
 
 # boundaries = ['left', 'right', 'bottom', 'top', 'front', 'back']

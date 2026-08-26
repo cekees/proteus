@@ -117,7 +117,15 @@ namespace proteus
   }
   
   template<int nSpace, int nP, int nQ, int nEBQ>
-  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nP, nQ, nEBQ>;
+  // false, deliberately: the IFEM support in this file is the old, untested
+  // generation -- its activation macros (IFEMBASIS) are undefined, so the basis
+  // substitution it guards has never compiled. ADR.h carries the working,
+  // tested IFEM path and passes true there. Keeping that distinction explicit
+  // means RANS2P no longer inherits ADR's degenerate-cut behaviour: inside the
+  // gate, an element whose interface passes through an edge or corner node has
+  // D forced to 0 -- the interface measure the Nitsche term integrates over --
+  // and gets a different inside_out and root_node. Nothing here wants that.
+  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nP, nQ, nEBQ, false>;
 
   class RANS2P_base
   {

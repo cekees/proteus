@@ -117,7 +117,15 @@ namespace proteus
   }
   
   template<int nSpace, int nP, int nQ, int nEBQ>
-  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nP, nQ, nEBQ>;
+  // false, deliberately: the IFEM support in this file is the old, untested
+  // generation -- its activation macros (IFEMBASIS) are undefined, so the basis
+  // substitution it guards has never compiled. ADR.h carries the working,
+  // tested IFEM path and passes true there. Keeping that distinction explicit
+  // means RANS2P no longer inherits ADR's degenerate-cut behaviour: inside the
+  // gate, an element whose interface passes through an edge or corner node has
+  // D forced to 0 -- the interface measure the Nitsche term integrates over --
+  // and gets a different inside_out and root_node. Nothing here wants that.
+  using GeneralizedFunctions = equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nP, nP, nQ, nEBQ, false>;
 
   class RANS2P2D_base
   {
@@ -836,7 +844,7 @@ namespace proteus
           if (element_owned)
             {
               particle_surfaceArea[i] += dV * D_s;
-	      particle_volume[i] *= dV * ImH_s;
+	      particle_volume[i] += dV * ImH_s;
               particle_surfaceArea_projected[i] += dV * D_s * fmax(fluid_outward_normal[0]*projection_direction[0] +
 								   fluid_outward_normal[1]*projection_direction[1],0.0);
               particle_netForces[i * 3 + 0] += force_x;

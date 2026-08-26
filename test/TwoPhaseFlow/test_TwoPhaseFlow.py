@@ -34,20 +34,24 @@ class TestTwoPhaseFlow(object):
             else:
                 pass
 
-    def compare_vs_saved_files(self,name,write=False):
+    def compare_vs_saved_files(self,name,write=False,decimal=6):
+        # `decimal` is per-caller because these baselines were generated on one
+        # machine and decimal=6 (agreement below ~5e-7) is tighter than
+        # cross-platform floating-point reproducibility allows for some of them.
+        # Loosen only the cases that need it, rather than the default for all.
         actual = h5py.File(name+'.h5','r')
 
         expected_path = 'comparison_files/' + 'comparison_' + name + '_phi_t2.csv'
         #write comparison file
         if(write):
             np.array(actual['phi_t2']).tofile(os.path.join(self._scriptdir, expected_path),sep=",")
-        np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['phi_t2'][:]).flatten(),decimal=6)
+        np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['phi_t2'][:]).flatten(),decimal=decimal)
 
         expected_path = 'comparison_files/' + 'comparison_' + name + '_velocity_t2.csv'
         #write comparison file
         if(write):
             np.array(actual['velocity_t2']).tofile(os.path.join(self._scriptdir, expected_path),sep=",")
-        np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['velocity_t2']).flatten(),decimal=6)
+        np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['velocity_t2']).flatten(),decimal=decimal)
 
         actual.close()
 
@@ -85,7 +89,18 @@ class TestTwoPhaseFlow(object):
     def test_moses(self):
         os.system("parun --TwoPhaseFlow --path " + self.path + " "
                   "moses.py -l5 -v -C 'final_time=0.1 dt_output=0.1 he=0.5'")
-        self.compare_vs_saved_files("moses")
+        # decimal=5, not the default 6: this baseline was generated against one
+        # BLAS build and does not reproduce to 6 decimals elsewhere. Every
+        # aarch64 environment tested (cekees-spark2 in all 8 install pathways, and
+        # GitHub CI's ubuntu-24.04-arm) disagrees on 2 of 3129 elements by
+        # 2.1e-6 -- about 4x the decimal=6 tolerance of ~5e-7 -- and does so
+        # deterministically: the two machines agree to all 17 printed digits.
+        # linux-x86_64 also fails it under Spack, whose OpenBLAS is built from
+        # source with different kernel selection, while passing under conda and
+        # pip. So the variable is the numeric library, not the architecture.
+        # decimal=5 leaves an order of magnitude of headroom and still catches
+        # anything real. See the audit task on baseline tolerances suite-wide.
+        self.compare_vs_saved_files("moses", decimal=5)
 
     # NOTE: need thorough evaluation -- unskipped this session. The
     # "PUMI is broken" annotation no longer matches reality: verified

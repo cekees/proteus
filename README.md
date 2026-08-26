@@ -19,16 +19,21 @@ For a development installation, you want to install Proteus's dependencies and c
 ```bash
 mamba env create -f environment-openmpi-dev.yml # or environment-mpich-dev.yml; environment-dev-up.yml to try unpinned dependencies
 mamba activate proteus-dev-openmpi              # or proteus-dev-mpich
-pip install -v -e .
+# --no-build-isolation: without it pip builds in a throwaway environment and
+# re-fetches build dependencies from PyPI, so proteus's extensions compile
+# against PyPI numpy's headers while linking this env's numpy at runtime
+# (visible as -I/tmp/pip-build-env-*/overlay/.../numpy/_core/include in the
+# compile lines). The env already provides setuptools/cython/numpy/pybind11.
+pip install --no-build-isolation --no-cache-dir -v -e .
 ```
 
 ## conda / mamba with updated/unpinned dependencies
 
 `environment-openmpi-dev.yml`/`environment-mpich-dev.yml` pin conda-forge
 builds of everything proteus links against (PETSc, MPI, HDF5,
-SuperLU/SuperLU_DIST, METIS/ParMETIS, Chrono, SCOREC, Triangle/TetGen,
+SuperLU/SuperLU_DIST, METIS/ParMETIS, Chrono, PUMI, Triangle/TetGen,
 xtensor, ...), so this is the path to use if you want the optional Chrono
-(multibody/FSI) and SCOREC (mesh adaptation) support built in. Both
+(multibody/FSI) and PUMI (mesh adaptation) support built in. Both
 intentionally exclude the `defaults` channel (`nodefaults`) -- conda-forge
 alone resolves everything here, and `defaults` pulls in `repo.anaconda.com`,
 a commercial channel with its own Terms of Service and registration-gated
@@ -57,8 +62,15 @@ wildcard on every MPI-linked package: `hdf5`, `h5py`, `scorec`, `zoltan`).
   `environment-mpich-dev.yml` for the reproduction and verification details.
   If you hit this, switch to `environment-openmpi-dev.yml`.
 
-On x86_64, both files should resolve equally well and neither known issue
-above has been observed; OpenMPI remains the recommended default there too
+On macOS/arm64 (Apple Silicon), `environment-openmpi-dev.yml` requires
+`scorec >=4.2.1` and will not solve with anything older. conda-forge's `scorec`
+had mpich-only builds on that platform until 4.2.1 build 1
+(conda-forge/scorec-feedstock#32 removed the `skip:`), so an older `scorec` pin
+cannot resolve against OpenMPI there. With the version floor the dependency
+files already carry, both files solve on Apple Silicon and either is fine.
+
+On x86_64 and Linux/aarch64, both files resolve equally well and neither known
+issue above has been observed; OpenMPI remains the recommended default there too
 for consistency.
 
 ## pip
@@ -71,10 +83,10 @@ and `make`) using PETSc's own `--download-x` configure options, exposed to
 its PyPI package via the `PETSC_CONFIGURE_OPTIONS` environment variable.
 This builds everything from source, so expect it to take a while.
 
-The recipe below also builds Chrono (multibody/FSI) and SCOREC (mesh
-adaptation) via PETSc's `--download-chrono`/`--download-scorec` (plus their
+The recipe below also builds Chrono (multibody/FSI) and PUMI (mesh
+adaptation) via PETSc's `--download-chrono`/`--download-pumi` (plus their
 own extra dependencies: `--download-eigen` for Chrono, `--download-zoltan`
-for SCOREC). SCOREC's build additionally needs `libbz2`'s development
+for PUMI). PUMI's build additionally needs `libbz2`'s development
 package on the system already (Debian/Ubuntu: `apt install libbz2-dev`;
 most systems already have the runtime `libbz2` library but not its
 link-time `.so` symlink, which is what's actually needed here). If you'd
@@ -83,6 +95,26 @@ can't install `libbz2-dev`), set `PROTEUS_SKIP_PUMI=1` and/or
 `PROTEUS_SKIP_CHRONO=1` (or `PROTEUS_SKIP_PUMI_CHRONO=1` for both at once)
 before the final `pip install` step below, and drop the corresponding
 `--download-x` options above it.
+
+Three pip flags matter throughout this section, and they are about
+correctness rather than tidiness:
+
+- **`--no-build-isolation`** for anything that links the native stack
+  (`petsc4py`, `h5py`, `proteus` itself). Build isolation gives the build a
+  throwaway environment and re-fetches build dependencies from PyPI, so it does
+  not see -- and will happily rebuild -- the PETSc/HDF5/MPI you just installed.
+  This is why the build dependencies are installed up front instead.
+- **`--no-cache-dir`** for those same installs. pip's locally-built wheel cache
+  is keyed on the requirement URL, its hash, and the interpreter name/version --
+  and *nothing* about the native libraries the wheel linked against. So an
+  `h5py` wheel built earlier against a different HDF5 is a cache hit here and
+  gets reused silently. Note `--no-binary` does not protect against this: it
+  blocks prebuilt wheels from PyPI, not pip's own cached builds of your sdists.
+- **`--no-binary <pkg>`**, scoped per package -- *not* `:all:`. Only the
+  packages that link this stack must be built from source (`h5py`, `petsc4py`,
+  `mpi4py`); h5py's own wheels in particular bundle a private serial HDF5, which
+  silently costs you parallel I/O (`can't use mpio driver`). Using `:all:` would
+  also drag numpy, scipy and cmake into source builds for no correctness gain.
 
 ```bash
 python -m venv proteus-env && source proteus-env/bin/activate
@@ -94,7 +126,12 @@ python -m venv proteus-env && source proteus-env/bin/activate
 # hierarchy ("member 'operator*=' found in multiple base classes of
 # different types" when proteus's mprans kernels use xt::pyarray); 2.13.6
 # is the last known-good 2.x line.
-pip install cython "pybind11==2.13.6" wheel numpy mpi4py "cmake>=3.29" setuptools scipy
+pip install --no-cache-dir cython "pybind11==2.13.6" wheel numpy \
+    "cmake>=3.29" setuptools scipy pkgconfig
+# mpi4py from source: its PyPI wheels are built against one MPI's ABI, and
+# MPICH's and Open MPI's are not interchangeable (MPI_Comm is `int` on MPICH and
+# a pointer on Open MPI), so a wheel can import against the wrong libmpi.
+pip install --no-cache-dir --no-binary mpi4py mpi4py
 
 # xtensor/xtl/xtensor-python aren't in upstream PETSc (proteus's plan is to
 # drop this dependency; until then, install from our fork instead of PyPI's
@@ -104,10 +141,15 @@ pip install cython "pybind11==2.13.6" wheel numpy mpi4py "cmake>=3.29" setuptool
 # --download-hypre: several of proteus's own solver tests configure
 # pc_type=hypre; without this they fail with "PCSetType(): Unknown type".
 # --download-eigen/--download-zoltan: required by --download-chrono/
-# --download-scorec respectively, not optional once those are requested.
-export PETSC_CONFIGURE_OPTIONS="--download-fblaslapack --download-superlu --download-superlu_dist --download-metis --download-parmetis --download-hdf5 --download-triangle --download-triangle-build-exec=1 --download-tetgen --download-tetgen-build-exec=1 --download-xtl --download-xtensor --download-xtensor-python --download-cmake --download-hypre --download-eigen --download-zoltan --download-chrono --download-scorec"
+# --download-pumi respectively, not optional once those are requested.
+export PETSC_CONFIGURE_OPTIONS="--download-fblaslapack --download-superlu --download-superlu_dist --download-metis --download-parmetis --download-hdf5 --download-triangle --download-triangle-build-exec=1 --download-tetgen --download-tetgen-build-exec=1 --download-xtl --download-xtensor --download-xtensor-python --download-cmake --download-hypre --download-eigen --download-zoltan --download-chrono --download-pumi"
 pip install "petsc @ git+https://gitlab.com/cekees/petsc.git@download-proteus-support"
-pip install petsc4py
+# --no-build-isolation is required, not optional: petsc4py declares `petsc` as a
+# build backend dependency, so under isolation pip builds a SECOND petsc from
+# PyPI in a throwaway environment -- discarding the fork build above -- and that
+# build fails ("RuntimeError: 256" in petsc's config, then "Failed to build
+# 'petsc4py' when installing backend dependencies for petsc4py").
+pip install --no-build-isolation --no-cache-dir --no-binary petsc4py petsc4py
 
 # h5py's own PyPI wheels are serial-only; build against the parallel HDF5
 # PETSc just downloaded and compiled above instead:
@@ -117,11 +159,12 @@ PETSC_DIR=$(python -c "import petsc; print(petsc.get_petsc_dir())")
 # h5py's own HDF5 version/config introspection at build time.
 real_hdf5=$(readlink -f "$PETSC_DIR"/lib/libhdf5.so.[0-9]* 2>/dev/null | head -1)
 ln -sf "$(basename "$real_hdf5")" "$PETSC_DIR/lib/libhdf5.so"
-CC=mpicc HDF5_MPI=ON HDF5_DIR="$PETSC_DIR" pip install --no-binary h5py h5py
+CC=mpicc HDF5_MPI=ON HDF5_DIR="$PETSC_DIR" pip install \
+    --no-build-isolation --no-cache-dir --no-binary h5py h5py
 
 export PETSC_ARCH=""
 export PROTEUS_PREFIX="$PETSC_DIR"
-# To skip PUMI/SCOREC and/or Chrono instead of building them (see above),
+# To skip PUMI and/or Chrono instead of building them (see above),
 # uncomment as needed -- and drop the matching --download-x option(s) too:
 # export PROTEUS_SKIP_PUMI=1
 # export PROTEUS_SKIP_CHRONO=1
@@ -130,16 +173,35 @@ export PROTEUS_PREFIX="$PETSC_DIR"
 # CouplingFSI.pyx and several tests) live here, not in site-packages:
 export PYTHONPATH="$PETSC_DIR/share/chrono/python"
 # Only needed if your system's mpicc doesn't put mpi.h somewhere proteus's
-# own build already looks (Debian/Ubuntu's mpich package doesn't; -lmpi
-# itself already resolves fine via the system's default library search
-# path, this is purely about the header):
-export MPI_DIR=$(dirname "$(mpicc -show | grep -o '\-I[^ ]*' | head -1 | cut -c3-)")
+# own build already looks (get_flags('mpi') in proteus/config/default.py
+# expects $MPI_DIR/include/mpi.h specifically). Most OpenMPI/Homebrew
+# installs already have mpi.h under a plain <prefix>/include, so deriving
+# MPI_DIR as the parent of mpicc's own -I flag (the dirname below) works
+# directly. Debian/Ubuntu's mpich package does NOT follow that layout --
+# its mpi.h lives at a multiarch-nested path like
+# /usr/include/x86_64-linux-gnu/mpich/mpi.h, which has no plain
+# "<prefix>/include" ancestor at all; naively taking dirname() of that
+# points MPI_DIR at a directory whose own include/mpi.h doesn't exist,
+# and proteus's build fails with "fatal error: mpi.h: No such file or
+# directory" partway through (confirmed on Ubuntu 22.04/24.04/26.04 with
+# the distro's own mpich package). Detect which layout you're in and, for
+# the nested case, build a small symlink shim so $MPI_DIR/include/mpi.h
+# resolves correctly either way:
+_mpi_inc=$(mpicc -show | grep -o '\-I[^ ]*' | head -1 | cut -c3-)
+if [ "$(basename "$_mpi_inc")" = "include" ]; then
+  export MPI_DIR=$(dirname "$_mpi_inc")
+else
+  mkdir -p "$HOME/.proteus_mpi_dir"
+  ln -sf "$_mpi_inc" "$HOME/.proteus_mpi_dir/include"
+  ln -sf "$(mpicc -show | grep -o '\-L[^ ]*' | head -1 | cut -c3-)" "$HOME/.proteus_mpi_dir/lib"
+  export MPI_DIR="$HOME/.proteus_mpi_dir"
+fi
 # $PETSC_DIR/bin needs to stay on PATH after this point too, not just for
 # the build below -- it's where the `triangle` CLI
 # --download-triangle-build-exec=1 built lives, and some of proteus's own
 # tests shell out to it.
 export PATH="$PETSC_DIR/bin:$PATH"
-pip install --no-build-isolation --no-deps .
+pip install --no-build-isolation --no-cache-dir --no-deps .
 ```
 
 If your PETSc is already built (e.g. by an HPC site, or you don't need
@@ -158,7 +220,7 @@ the more mature fallbacks.
 
 [Spack](https://spack.io) builds proteus and its native dependency chain
 (PETSc, MPI, HDF5, SuperLU, METIS/ParMETIS, xtensor, and optionally
-SCOREC/PUMI) from source, with no conda and no system package manager
+PUMI) from source, with no conda and no system package manager
 beyond a C/C++/Fortran compiler. `py-proteus` isn't in spack-packages
 `develop` yet; until it's merged, add it from the `py-proteus` branch of
 https://github.com/cekees/spack-packages:
@@ -169,13 +231,13 @@ git clone https://github.com/spack/spack.git
 git clone -b py-proteus https://github.com/cekees/spack-packages.git
 spack repo add spack-packages/repos/spack_repo/builtin
 
-spack install py-proteus            # Chrono and SCOREC both disabled
-spack install py-proteus+scorec     # adds PUMI/SCOREC mesh adaptation
+spack install py-proteus            # Chrono and PUMI both disabled
+spack install py-proteus+pumi       # adds PUMI (SCOREC/core) mesh adaptation
 spack load py-proteus
 ```
 
 Chrono has no upstream Spack package yet and stays disabled either way;
-`+scorec` adds `pumi`, `zoltan`, and `parmetis` for mesh adaptation. Like
+`+pumi` adds `pumi`, `zoltan`, and `parmetis` for mesh adaptation. Like
 the pip path above, this one is new -- fall back to conda/mamba or HPC
 `--download-proteus` if something here breaks.
 
@@ -185,7 +247,7 @@ For installation on high performance environments, the recommended path is
 PETSc's own build system, which most HPC sites and module systems already
 support: `git@gitlab.com:cekees/petsc.git`, branch `download-proteus-support`,
 adds a `--download-proteus` PETSc package (plus PETSc packages for proteus's
-optional native dependencies: chrono, scorec, xtensor) so a single
+optional native dependencies: chrono, pumi, xtensor) so a single
 `./configure` + `make` builds PETSc, proteus, and everything in between,
 instead of the separate per-dependency manual build this section used to describe. You will need a user-installable prefix directory, which below is assumed to be a conda environment, but a Python venv should also work.
 
@@ -226,14 +288,14 @@ path pass proteus's full test suite cleanly, modulo a small set of already
 independently-tracked numeric-tolerance and `gmsh`-packaging issues (not
 install-pathway problems). If you're building on a platform other than
 these three and hit trouble, that branch's `README_PROTEUS.md` and the
-comments in `config/BuildSystem/config/packages/proteus.py`/`scorec.py`
+comments in `config/BuildSystem/config/packages/proteus.py`/`pumi.py`
 are the places to start (in particular, a couple of post-install fixups in
 there are known to be macOS/dyld-specific workarounds, not applicable
 elsewhere).
 
 The package definitions themselves are plain PETSc packages and don't
 depend on that specific fork -- if your site already has its own PETSc
-checkout, copying `config/BuildSystem/config/packages/{proteus,chrono,scorec,xtl,xtensor,xtensor-python,numpy,h5py}.py`
+checkout, copying `config/BuildSystem/config/packages/{proteus,chrono,pumi,xtl,xtensor,xtensor-python,numpy,h5py}.py`
 into it works the same way.
 
 See https://github.com/erdc/proteus/wiki/How-to-Build-Proteus for old information on building the entire stack by hand.

@@ -15,7 +15,7 @@
 namespace equivalent_polynomials
 {
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis = false>
   class Regularized
   {
   public:
@@ -93,7 +93,7 @@ namespace equivalent_polynomials
     inline double VB_z(int i) { return -1.0; };
   };
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis = false>
   class Simplex
   {
   public:
@@ -129,13 +129,17 @@ namespace equivalent_polynomials
     {
       assert(q >= 0);
       assert(q < nQ);
-      if (edge == -1 || corner == -1)
+      // The edge/corner special cases are an IFEM addition: pre-IFEM these degenerate
+      // cells still took their H/ImH/D straight from the moment fit, and forcing D = 0
+      // here removes the interface measure that MCorr's mass correction integrates
+      // over (vortex2D_exactHeaviside). Keep them on the IFEM path only.
+      if (useIfemBasis && (edge == -1 || corner == -1))
       {
         _H_q = 0.0;
         _ImH_q = 1.0;
         _D_q = 0.0;
       }
-      else if (edge == 1 || corner == 1)
+      else if (useIfemBasis && (edge == 1 || corner == 1))
       {
         _H_q = 1.0;
         _ImH_q = 0.0;
@@ -176,13 +180,17 @@ namespace equivalent_polynomials
     {
       assert(ebq >= 0);
       assert(ebq < nEBQ);
-      if (edge == -1 || corner == -1)
+      // The edge/corner special cases are an IFEM addition: pre-IFEM these degenerate
+      // cells still took their H/ImH/D straight from the moment fit, and forcing D = 0
+      // here removes the interface measure that MCorr's mass correction integrates
+      // over (vortex2D_exactHeaviside). Keep them on the IFEM path only.
+      if (useIfemBasis && (edge == -1 || corner == -1))
       {
         _H_q = 0.0;
         _ImH_q = 1.0;
         _D_q = 0.0;
       }
-      else if (edge == 1 || corner == 1)
+      else if (useIfemBasis && (edge == 1 || corner == 1))
       {
         _H_q = 1.0;
         _ImH_q = 0.0;
@@ -233,43 +241,65 @@ namespace equivalent_polynomials
     {
       return level_set_normal;
     }
-    bool inside_out, quad_cut;
+    // Value-initialised: gf_f_cache/gf_s_cache in ADR.h are built once with
+    // assign(n, GfType()) and reused, so any entry whose calculate() was not
+    // invoked in the current pass is read with whatever the default-constructed
+    // temporary happened to hold.  edge/corner in particular are *branched on*
+    // in set_quad, which turns indeterminate bytes into a discretely different
+    // H/ImH/D and a discretely different Jacobian.
+    bool inside_out = false, quad_cut = false;
     static const unsigned int nN = nSpace + 1;
-    double phi_dof_corrected[nP_ifem];
+    // Sized for both of its roles: the cut geometry needs one corrected value per
+    // topological vertex (nN), while the P2 IFEM basis needs one per trial dof
+    // (nP_ifem = 6). Non-ADR callers instantiate with nP_ifem < nN -- VOF/MCorr
+    // with 2, RANS3PF with 1 -- so sizing by nP_ifem alone left the vertex entries
+    // past the end of the array, and _calculate_cuts read them back as garbage.
+    static const unsigned int nDOF_phi = (useIfemBasis && nP_ifem > nN) ? nP_ifem : nN;
+    double phi_dof_corrected[nDOF_phi] = {};
     double cut_barycenter[3] = {0., 0., 0.};
-    int edge, corner;
+    int edge = 0, corner = 0;
     bool split = false;
     bool flip_the_cell = false;
 
   private:
-    int P2_ifem_case;
-    double _H_q, _ImH_q, _D_q, _va_q[nP_ifem], _vb_q[nP_ifem],
+    int P2_ifem_case = 0;
+    double _H_q = 0., _ImH_q = 0., _D_q = 0., _va_q[nP_ifem], _vb_q[nP_ifem],
         _va_x_q[nP_ifem], _va_y_q[nP_ifem], _va_z_q[nP_ifem], _vb_x_q[nP_ifem], _vb_y_q[nP_ifem], _vb_z_q[nP_ifem];
-    unsigned int root_node, permutation[nP_ifem];
-    double phi[nP_ifem], nodes[nP_ifem * 3];
-    double _a1[nP_ifem], _a2[nP_ifem], _a3[nP_ifem], _b1[nP_ifem], _b2[nP_ifem], _b3[nP_ifem];
-    double _a4[nP_ifem], _a5[nP_ifem], _a6[nP_ifem], _b4[nP_ifem], _b5[nP_ifem], _b6[nP_ifem];
-    double Jac[nSpace * nSpace], inv_Jac[nSpace * nSpace], det_Jac;
+    // Sized nDOF_phi for the same reason as phi_dof_corrected: the cut geometry
+    // permutes nN topological vertices, while the P2 IFEM basis also permutes its
+    // mid-side dofs (nP_ifem = 6). Sizing by nP_ifem alone left permutation[nN-1]
+    // unwritten for the nP_ifem < nN callers (VOF/MCorr 2, RANS3PF 1), and
+    // _calculate_cuts then indexed phi_dof_corrected with that garbage.
+    unsigned int root_node = 0, permutation[nDOF_phi] = {};
+    // Same nN-vs-nP_ifem split as phi_dof_corrected/permutation: the cut geometry
+    // needs one entry per topological vertex (the Jacobian reads nodes[(1+i)*3+I]
+    // for i < nN-1), while the P2 IFEM basis needs one per trial dof. Sizing by
+    // nP_ifem alone left the last vertex unfilled for nP_ifem < nN callers and the
+    // Jacobian was built from memory past the end of nodes[].
+    double phi[nDOF_phi] = {}, nodes[nDOF_phi * 3] = {};
+    double _a1[nP_ifem] = {}, _a2[nP_ifem] = {}, _a3[nP_ifem] = {}, _b1[nP_ifem] = {}, _b2[nP_ifem] = {}, _b3[nP_ifem] = {};
+    double _a4[nP_ifem] = {}, _a5[nP_ifem] = {}, _a6[nP_ifem] = {}, _b4[nP_ifem] = {}, _b5[nP_ifem] = {}, _b6[nP_ifem] = {};
+    double Jac[nSpace * nSpace] = {}, inv_Jac[nSpace * nSpace] = {}, det_Jac = 0.;
     double level_set_normal[nSpace], X_0[nSpace], phys_nodes_cut[(nN - 1) * 3], THETA_01, THETA_02, THETA_31, THETA_32, phys_nodes_cut_quad_01[3], phys_nodes_cut_quad_02[3], phys_nodes_cut_quad_31[3], phys_nodes_cut_quad_32[3];
     static const unsigned int nDOF = ((nSpace - 1) / 2) * (nSpace - 2) * (nP + 1) * (nP + 2) * (nP + 3) / 6 + (nSpace - 1) * (3 - nSpace) * (nP + 1) * (nP + 2) / 2 + (2 - nSpace) * ((3 - nSpace) / 2) * (nP + 1);
     double Ainv[nDOF * nDOF];
-    double C_H[nDOF], C_ImH[nDOF], C_D[nDOF];
+    double C_H[nDOF] = {}, C_ImH[nDOF] = {}, C_D[nDOF] = {};
     inline int _calculate_permutation(const double *phi_dof, const double *phi_nodes);
     inline void _calculate_cuts();
     inline void _calculate_cuts_quad();
     inline void _calculate_C();
     inline void _correct_phi(const double *phi_dof, const double *phi_nodes);
-    double _H[nQ], _ImH[nQ], _D[nQ], _va[nQ * nP_ifem], _vb[nQ * nP_ifem];
-    double _H_ebq[nEBQ], _ImH_ebq[nEBQ], _D_ebq[nEBQ], _va_ebq[nEBQ * nP_ifem], _vb_ebq[nEBQ * nP_ifem]; // cek hack: this is confusing because we use no suffice for the q arrays and _ebq for the ebq arrays, then use _q above for generic quad point
-    double _va_x[nQ * nP_ifem], _va_y[nQ * nP_ifem], _va_z[nQ * nP_ifem], _vb_x[nQ * nP_ifem], _vb_y[nQ * nP_ifem], _vb_z[nQ * nP_ifem];
-    double _va_x_ebq[nEBQ * nP_ifem], _va_y_ebq[nEBQ * nP_ifem], _va_z_ebq[nEBQ * nP_ifem], _vb_x_ebq[nEBQ * nP_ifem], _vb_y_ebq[nEBQ * nP_ifem], _vb_z_ebq[nEBQ * nP_ifem];
+    double _H[nQ] = {}, _ImH[nQ] = {}, _D[nQ] = {}, _va[nQ * nP_ifem] = {}, _vb[nQ * nP_ifem] = {};
+    double _H_ebq[nEBQ] = {}, _ImH_ebq[nEBQ] = {}, _D_ebq[nEBQ] = {}, _va_ebq[nEBQ * nP_ifem] = {}, _vb_ebq[nEBQ * nP_ifem] = {}; // cek hack: this is confusing because we use no suffice for the q arrays and _ebq for the ebq arrays, then use _q above for generic quad point
+    double _va_x[nQ * nP_ifem] = {}, _va_y[nQ * nP_ifem] = {}, _va_z[nQ * nP_ifem] = {}, _vb_x[nQ * nP_ifem] = {}, _vb_y[nQ * nP_ifem] = {}, _vb_z[nQ * nP_ifem] = {};
+    double _va_x_ebq[nEBQ * nP_ifem] = {}, _va_y_ebq[nEBQ * nP_ifem] = {}, _va_z_ebq[nEBQ * nP_ifem] = {}, _vb_x_ebq[nEBQ * nP_ifem] = {}, _vb_y_ebq[nEBQ * nP_ifem] = {}, _vb_z_ebq[nEBQ * nP_ifem] = {};
     inline void _calculate_basis_coefficients(const double ma, const double mb, const double jf);
     inline void _calculate_basis(const double *xi, double *va, double *vb);
     inline void _calculate_basis_gradients(const double *xi, double *va_x, double *va_y, double *vb_x, double *vb_y);
   };
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
-  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ>::_calculate_C()
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis>
+  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ, useIfemBasis>::_calculate_C()
   {
     double b_H[nDOF], b_ImH[nDOF], b_dH[nDOF * nSpace], b_D[nDOF * nSpace];
     if (quad_cut)
@@ -344,8 +374,8 @@ namespace equivalent_polynomials
     }
   }
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
-  inline int Simplex<nSpace, nP_ifem, nP, nQ, nEBQ>::_calculate_permutation(const double *phi_dof, const double *phi_nodes)
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis>
+  inline int Simplex<nSpace, nP_ifem, nP, nQ, nEBQ, useIfemBasis>::_calculate_permutation(const double *phi_dof, const double *phi_nodes)
   {
     if (flip_the_cell)
     {
@@ -456,21 +486,31 @@ namespace equivalent_polynomials
           corner = 1; // The interface passes through a corner node and element is in + side
           assert(pcount == nN - 1);
           root_node = z_i;
-          inside_out = true; // required for correct P2 ifem basis coefficients (ma/mb swap)
+          // ADR's P2 IFEM basis needs the ma/mb swap here, but pre-IFEM this branch
+          // left inside_out false, and set_quad uses it to exchange H and ImH -- which
+          // inverts the phase fractions MCorr/VOF integrate. IFEM path only.
+          if (useIfemBasis)
+            inside_out = true;
         }
         else if (ncount && !pcount)
         {
           corner = -1; // The interface passes through a corner node and element is in - side
           assert(ncount == nN - 1);
-          root_node = z_i;
+          // Pre-IFEM this rooted at n_i; the IFEM basis wants z_i. Keep the old root for
+          // the non-IFEM callers so their permutation/Jacobian are unchanged.
+          root_node = useIfemBasis ? z_i : n_i;
         }
         else
           assert(false);
       }
       // std::cout << "root_node: " << root_node << "\t inside_out: " << inside_out << "\t quad_cut: " << quad_cut << std::endl;
-      for (unsigned int i = 0; i < nP_ifem; i++)
+      for (unsigned int i = 0; i < nDOF_phi; i++)
       {
-        // Works for both P1 and P2 IFEM. The loop bound is nP_ifem (finite-element DOFs), but
+        // Works for both P1 and P2 IFEM. The loop bound is nDOF_phi = max(nN, nP_ifem):
+        // the geometry always needs all nN corner entries, while P2 IFEM needs its
+        // mid-side dofs on top of them. Bounding by nP_ifem alone left the corner
+        // entries past nP_ifem unwritten whenever nP_ifem < nN (VOF/MCorr 2,
+        // RANS3PF 1), and _calculate_cuts read them back as garbage indices.
         // the cycling modulus is nN (topological vertices): the first nN entries rotate the
         // corner nodes starting at the root, and the P2 mid-side DOFs shadow them at offset nN.
         // The modulus must NOT be a literal 3 -- that is only nN for a triangle, and on a
@@ -483,18 +523,18 @@ namespace equivalent_polynomials
       }
       if (quad_cut)
       {
-        if (phi_dof[permutation[nP_ifem - 1]] > 0.0)
+        if (phi_dof[permutation[nN - 1]] > 0.0)
         {
-          int tmp = permutation[nP_ifem - 1];
-          if (phi_dof[permutation[nP_ifem - 2]] < 0.0)
+          int tmp = permutation[nN - 1];
+          if (phi_dof[permutation[nN - 2]] < 0.0)
           {
-            permutation[nP_ifem - 1] = permutation[nP_ifem - 2];
-            permutation[nP_ifem - 2] = tmp;
+            permutation[nN - 1] = permutation[nN - 2];
+            permutation[nN - 2] = tmp;
           }
-          else if (phi_dof[permutation[nP_ifem - 3]] < 0.0)
+          else if (phi_dof[permutation[nN - 3]] < 0.0)
           {
-            permutation[nP_ifem - 1] = permutation[nP_ifem - 3];
-            permutation[nP_ifem - 3] = tmp;
+            permutation[nN - 1] = permutation[nN - 3];
+            permutation[nN - 3] = tmp;
           }
           else
             assert(false);
@@ -506,7 +546,7 @@ namespace equivalent_polynomials
       }
       // std::cout << "pcount " << pcount << "\t ncount " << ncount << "\t zcount " << zcount << "\t root node = " << root_node << std::endl;
     }
-    for (unsigned int i = 0; i < nP_ifem; i++)
+    for (unsigned int i = 0; i < nDOF_phi; i++)
     {
       phi[i] = phi_dof[permutation[i]];
       // // std::cout << "ref idx: " << i << "\t real idx(permutation[i]): " << permutation[i] << std::endl;
@@ -543,11 +583,11 @@ namespace equivalent_polynomials
       }
       else // flip the last two nodes
       {
-        double tmp = permutation[nP_ifem - 1];
-        permutation[nP_ifem - 1] = permutation[nP_ifem - 2];
-        permutation[nP_ifem - 2] = tmp;
+        double tmp = permutation[nN - 1];
+        permutation[nN - 1] = permutation[nN - 2];
+        permutation[nN - 2] = tmp;
       }
-      for (unsigned int i = 0; i < nP_ifem; i++)
+      for (unsigned int i = 0; i < nDOF_phi; i++)
       {
         phi[i] = phi_dof[permutation[i]];
         for (unsigned int I = 0; I < 3; I++)
@@ -567,13 +607,13 @@ namespace equivalent_polynomials
     return 0;
   }
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
-  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ>::_calculate_cuts()
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis>
+  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ, useIfemBasis>::_calculate_cuts()
   {
     const double eps = 1.0e-8;
     for (unsigned int i = 0; i < nN - 1; i++)
     {
-      if (corner == 1 || corner == -1)
+      if (useIfemBasis && (corner == 1 || corner == -1))
       {
         X_0[i] = 0.0;
         for (unsigned int I = 0; I < 3; I++)
@@ -628,8 +668,8 @@ namespace equivalent_polynomials
     }
   }
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
-  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ>::_calculate_cuts_quad()
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis>
+  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ, useIfemBasis>::_calculate_cuts_quad()
   {
     const double eps = 1.0e-8, Imeps = 1.0 - eps;
     THETA_01 = 0.5 - 0.5 * (phi[1] + phi[0]) / (phi[1] - phi[0]);
@@ -652,8 +692,8 @@ namespace equivalent_polynomials
     }
   }
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
-  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ>::_correct_phi(const double *phi_dof, const double *phi_nodes)
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis>
+  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ, useIfemBasis>::_correct_phi(const double *phi_dof, const double *phi_nodes)
   {
     memset(cut_barycenter, 0, 3 * sizeof(double));
     const double one_by_nNm1 = 1.0 / (nN - 1.0);
@@ -676,7 +716,7 @@ namespace equivalent_polynomials
           cut_barycenter[I] += phys_nodes_cut[i * 3 + I] * one_by_nNm1;
       }
     }
-    for (unsigned int i = 0; i < nP_ifem; i++)
+    for (unsigned int i = 0; i < nDOF_phi; i++)
     {
       phi_dof_corrected[i] = 0.0;
       for (unsigned int I = 0; I < nSpace; I++)
@@ -691,8 +731,8 @@ namespace equivalent_polynomials
     }
   }
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
-  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ>::_calculate_basis_coefficients(const double ma, const double mb, const double jf)
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis>
+  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ, useIfemBasis>::_calculate_basis_coefficients(const double ma, const double mb, const double jf)
   {
     assert(nSpace == 2);
     assert(nN == 3);
@@ -868,8 +908,8 @@ namespace equivalent_polynomials
     }
   }
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
-  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ>::_calculate_basis(const double *xi, double *va, double *vb)
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis>
+  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ, useIfemBasis>::_calculate_basis(const double *xi, double *va, double *vb)
   {
     // Switch on nP_ifem to compute basis functions at given xi
     switch (nP_ifem)
@@ -906,8 +946,8 @@ namespace equivalent_polynomials
     }
   }
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
-  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ>::_calculate_basis_gradients(const double *xi, double *va_x, double *va_y, double *vb_x, double *vb_y)
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis>
+  inline void Simplex<nSpace, nP_ifem, nP, nQ, nEBQ, useIfemBasis>::_calculate_basis_gradients(const double *xi, double *va_x, double *va_y, double *vb_x, double *vb_y)
   {
     // Switch on nP_ifem to compute basis functions gradients at given xi
 
@@ -1003,11 +1043,11 @@ namespace equivalent_polynomials
     }
   }
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
-  inline int Simplex<nSpace, nP_ifem, nP, nQ, nEBQ>::calculate(const double *phi_dof, const double *phi_nodes, const double *xi_r, double ma, double mb, double jf, bool isBoundary, bool scale)
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis>
+  inline int Simplex<nSpace, nP_ifem, nP, nQ, nEBQ, useIfemBasis>::calculate(const double *phi_dof, const double *phi_nodes, const double *xi_r, double ma, double mb, double jf, bool isBoundary, bool scale)
   {
     // initialize phi_dof_corrected -- correction can only be actually computed on cut cells
-    for (unsigned int i = 0; i < nP_ifem; i++)
+    for (unsigned int i = 0; i < nDOF_phi; i++)
       phi_dof_corrected[i] = phi_dof[i];
     int icase = _calculate_permutation(phi_dof, phi_nodes); // permuation, Jac,inv_Jac...
     if (icase == 1)
@@ -1124,11 +1164,13 @@ namespace equivalent_polynomials
       ma_scale = ma;
       mb_scale = mb;
     }
-    // The two-sided IFEM basis is only implemented for 2D simplices (P1 -> nP_ifem 3,
-    // P2 -> 6); _calculate_basis_coefficients asserts nSpace==2 and throws for any other
-    // nP_ifem. Guard the call so the 1D/3D instantiations, which need only the H/ImH/D
-    // moment fit, do not abort.
-    if (nSpace == 2)
+    // The two-sided IFEM basis is only implemented for 2D simplices with a P1
+    // (nP_ifem 3) or P2 (nP_ifem 6) trial space; _calculate_basis_coefficients
+    // asserts nSpace==2 and throws for any other nP_ifem. Every non-ADR caller
+    // aliases GeneralizedFunctions_mix<nSpace, nP, nP, ...>, so VOF/MCorr reach
+    // here with nP_ifem 2 and RANS3PF with 1: they need only the H/ImH/D moment
+    // fit and must not enter the basis solve. Guard on nP_ifem, not just nSpace.
+    if (useIfemBasis)
       _calculate_basis_coefficients(ma_scale, mb_scale, jf);
     // compute the default affine map based on phi_nodes[0]
     double Jac_0[nSpace * nSpace];
@@ -1166,8 +1208,13 @@ namespace equivalent_polynomials
           else if (nSpace == 2)
           {
             _calculate_polynomial_2D<nP>(xi, C_H, C_ImH, C_D, _H[q], _ImH[q], _D[q]);
-            _calculate_basis(xi, &_va[q * nP_ifem], &_vb[q * nP_ifem]);
-            _calculate_basis_gradients(xi, &_va_x[q * nP_ifem], &_va_y[q * nP_ifem], &_vb_x[q * nP_ifem], &_vb_y[q * nP_ifem]);
+            // Only the IFEM instantiations have a two-sided basis; see the guard on
+            // _calculate_basis_coefficients above.
+            if (useIfemBasis)
+            {
+              _calculate_basis(xi, &_va[q * nP_ifem], &_vb[q * nP_ifem]);
+              _calculate_basis_gradients(xi, &_va_x[q * nP_ifem], &_va_y[q * nP_ifem], &_vb_x[q * nP_ifem], &_vb_y[q * nP_ifem]);
+            }
           }
           else if (nSpace == 3)
             _calculate_polynomial_3D<nP>(xi, C_H, C_ImH, C_D, _H[q], _ImH[q], _D[q]);
@@ -1204,26 +1251,36 @@ namespace equivalent_polynomials
         else if (nSpace == 2)
         {
           _calculate_polynomial_2D<nP>(xi, C_H, C_ImH, C_D, _H_ebq[ebq], _ImH_ebq[ebq], _D_ebq[ebq]);
-          _calculate_basis(xi, &_va_ebq[ebq * nP_ifem], &_vb_ebq[ebq * nP_ifem]);
-          _calculate_basis_gradients(xi, &_va_x_ebq[ebq * nP_ifem], &_va_y_ebq[ebq * nP_ifem], &_vb_x_ebq[ebq * nP_ifem], &_vb_y_ebq[ebq * nP_ifem]);
+          // Only the IFEM instantiations have a two-sided basis; see the guard on
+          // _calculate_basis_coefficients above.
+          if (useIfemBasis)
+          {
+            _calculate_basis(xi, &_va_ebq[ebq * nP_ifem], &_vb_ebq[ebq * nP_ifem]);
+            _calculate_basis_gradients(xi, &_va_x_ebq[ebq * nP_ifem], &_va_y_ebq[ebq * nP_ifem], &_vb_x_ebq[ebq * nP_ifem], &_vb_y_ebq[ebq * nP_ifem]);
+          }
         }
         else if (nSpace == 3)
           _calculate_polynomial_3D<nP>(xi, C_H, C_ImH, C_D, _H_ebq[ebq], _ImH_ebq[ebq], _D_ebq[ebq]);
       }
       set_boundary_quad(0);
     }
-    if (inside_out)
+    // IFEM needs the interface normal to follow its own inside_out convention, but
+    // pre-IFEM this flip was deliberately disabled (it sat commented out inside the
+    // old normal_sign block) and every other consumer -- VOF/MCorr/RDLS/RANS* --
+    // still reads get_normal() expecting the unflipped normal. Re-enabling it for
+    // them broke MCorr's mass correction. Gate it with the rest of the IFEM path.
+    if (useIfemBasis && inside_out)
       for (unsigned int I = 0; I < nSpace; I++)
         level_set_normal[I] *= -1.0;
     return icase;
   }
 
-  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ>
+  template <int nSpace, int nP_ifem, int nP, int nQ, int nEBQ, bool useIfemBasis = false>
   class GeneralizedFunctions_mix
   {
   public:
-    Regularized<nSpace, nP_ifem, nP, nQ, nEBQ> regularized;
-    Simplex<nSpace, nP_ifem, nP, nQ, nEBQ> exact;
+    Regularized<nSpace, nP_ifem, nP, nQ, nEBQ, useIfemBasis> regularized;
+    Simplex<nSpace, nP_ifem, nP, nQ, nEBQ, useIfemBasis> exact;
     bool useExact;
     GeneralizedFunctions_mix(bool useExact = true) : useExact(useExact)
     {

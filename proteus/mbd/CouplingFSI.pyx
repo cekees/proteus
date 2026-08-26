@@ -851,6 +851,13 @@ cdef class ProtChBody:
             for flag in self.boundaryFlags:
                 c.particle_sdfList[flag] = self.getDynamicSDF
                 c.particle_velocityList[flag] = lambda x, t: self.getVelocity()
+            # This body has just moved, so the cached level set is stale.
+            # attachModels latches phi_s_isSet so that an expensive *static* sdf is
+            # evaluated once and never again; a Chrono-coupled body is dynamic by
+            # construction, so clear the latch here and let the flow model's preStep
+            # rebuild phi_s at the new position. Static sdf cases never reach this
+            # method, so they keep the latch.
+            c.phi_s_isSet = False
 
     def getDynamicSDF(self, t, x):
         chpos = self.ChBody.GetPos()
