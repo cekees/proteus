@@ -72,6 +72,10 @@ class TwoPhaseFlowProblem(Parameters.FreezableClass):
         nd = self.domain.nd
         for model in self.SystemPhysics.modelDict.values():
             for key in model.p.initialConditions.__dict__.keys():
+                # 'name' is the container's own attribute, not a variable; the
+                # pre-existing loop skipped it and the assert has to as well.
+                if key == 'name':
+                    continue
                 assert model.p.initialConditions[key] is not None, "Provide initial conditions for variable {0} in model {1}".format(key, model.name)
 
     def assert_boundaryConditions(self):
