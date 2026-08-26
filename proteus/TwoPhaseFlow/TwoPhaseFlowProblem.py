@@ -72,10 +72,7 @@ class TwoPhaseFlowProblem(Parameters.FreezableClass):
         nd = self.domain.nd
         for model in self.SystemPhysics.modelDict.values():
             for key in model.p.initialConditions.__dict__.keys():
-                if(key == 'name'):
-                    continue
-                if (model.p.initialConditions[key] is None):
-                    logEvent('*************Need to provide initial conditions for variable '+key+' in model '+model.name+'************')
+                assert model.p.initialConditions[key] is not None, "Provide initial conditions for variable {0} in model {1}".format(key, model.name)
 
     def assert_boundaryConditions(self):
         boundaryConditions = self.SystemPhysics.boundaryConditions

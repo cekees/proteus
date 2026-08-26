@@ -6966,6 +6966,7 @@ bool newestNodeBisect(int eN,
 
   //neighbor of base
   int eN_neig = elementNeighborsArray[nElementBoundaries_element*eN + ib[0]];
+  assert(eN_neig < nElements_global);
   if (eN_neig < 0)
     {
       /**************************************************
@@ -7093,7 +7094,6 @@ bool newestNodeBisect(int eN,
         neighboring element shares the same base
         so refine them both
       **************************************************/
-      assert(eN_neig < nElements_global);
 
       //create new node at center of base
       int newNodeNumber = nNodes_global;
