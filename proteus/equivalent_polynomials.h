@@ -241,7 +241,13 @@ namespace equivalent_polynomials
     {
       return level_set_normal;
     }
-    bool inside_out, quad_cut;
+    // Value-initialised: gf_f_cache/gf_s_cache in ADR.h are built once with
+    // assign(n, GfType()) and reused, so any entry whose calculate() was not
+    // invoked in the current pass is read with whatever the default-constructed
+    // temporary happened to hold.  edge/corner in particular are *branched on*
+    // in set_quad, which turns indeterminate bytes into a discretely different
+    // H/ImH/D and a discretely different Jacobian.
+    bool inside_out = false, quad_cut = false;
     static const unsigned int nN = nSpace + 1;
     // Sized for both of its roles: the cut geometry needs one corrected value per
     // topological vertex (nN), while the P2 IFEM basis needs one per trial dof
@@ -249,44 +255,44 @@ namespace equivalent_polynomials
     // with 2, RANS3PF with 1 -- so sizing by nP_ifem alone left the vertex entries
     // past the end of the array, and _calculate_cuts read them back as garbage.
     static const unsigned int nDOF_phi = (useIfemBasis && nP_ifem > nN) ? nP_ifem : nN;
-    double phi_dof_corrected[nDOF_phi];
+    double phi_dof_corrected[nDOF_phi] = {};
     double cut_barycenter[3] = {0., 0., 0.};
-    int edge, corner;
+    int edge = 0, corner = 0;
     bool split = false;
     bool flip_the_cell = false;
 
   private:
-    int P2_ifem_case;
-    double _H_q, _ImH_q, _D_q, _va_q[nP_ifem], _vb_q[nP_ifem],
+    int P2_ifem_case = 0;
+    double _H_q = 0., _ImH_q = 0., _D_q = 0., _va_q[nP_ifem], _vb_q[nP_ifem],
         _va_x_q[nP_ifem], _va_y_q[nP_ifem], _va_z_q[nP_ifem], _vb_x_q[nP_ifem], _vb_y_q[nP_ifem], _vb_z_q[nP_ifem];
     // Sized nDOF_phi for the same reason as phi_dof_corrected: the cut geometry
     // permutes nN topological vertices, while the P2 IFEM basis also permutes its
     // mid-side dofs (nP_ifem = 6). Sizing by nP_ifem alone left permutation[nN-1]
     // unwritten for the nP_ifem < nN callers (VOF/MCorr 2, RANS3PF 1), and
     // _calculate_cuts then indexed phi_dof_corrected with that garbage.
-    unsigned int root_node, permutation[nDOF_phi];
+    unsigned int root_node = 0, permutation[nDOF_phi] = {};
     // Same nN-vs-nP_ifem split as phi_dof_corrected/permutation: the cut geometry
     // needs one entry per topological vertex (the Jacobian reads nodes[(1+i)*3+I]
     // for i < nN-1), while the P2 IFEM basis needs one per trial dof. Sizing by
     // nP_ifem alone left the last vertex unfilled for nP_ifem < nN callers and the
     // Jacobian was built from memory past the end of nodes[].
-    double phi[nDOF_phi], nodes[nDOF_phi * 3];
-    double _a1[nP_ifem], _a2[nP_ifem], _a3[nP_ifem], _b1[nP_ifem], _b2[nP_ifem], _b3[nP_ifem];
-    double _a4[nP_ifem], _a5[nP_ifem], _a6[nP_ifem], _b4[nP_ifem], _b5[nP_ifem], _b6[nP_ifem];
-    double Jac[nSpace * nSpace], inv_Jac[nSpace * nSpace], det_Jac;
+    double phi[nDOF_phi] = {}, nodes[nDOF_phi * 3] = {};
+    double _a1[nP_ifem] = {}, _a2[nP_ifem] = {}, _a3[nP_ifem] = {}, _b1[nP_ifem] = {}, _b2[nP_ifem] = {}, _b3[nP_ifem] = {};
+    double _a4[nP_ifem] = {}, _a5[nP_ifem] = {}, _a6[nP_ifem] = {}, _b4[nP_ifem] = {}, _b5[nP_ifem] = {}, _b6[nP_ifem] = {};
+    double Jac[nSpace * nSpace] = {}, inv_Jac[nSpace * nSpace] = {}, det_Jac = 0.;
     double level_set_normal[nSpace], X_0[nSpace], phys_nodes_cut[(nN - 1) * 3], THETA_01, THETA_02, THETA_31, THETA_32, phys_nodes_cut_quad_01[3], phys_nodes_cut_quad_02[3], phys_nodes_cut_quad_31[3], phys_nodes_cut_quad_32[3];
     static const unsigned int nDOF = ((nSpace - 1) / 2) * (nSpace - 2) * (nP + 1) * (nP + 2) * (nP + 3) / 6 + (nSpace - 1) * (3 - nSpace) * (nP + 1) * (nP + 2) / 2 + (2 - nSpace) * ((3 - nSpace) / 2) * (nP + 1);
     double Ainv[nDOF * nDOF];
-    double C_H[nDOF], C_ImH[nDOF], C_D[nDOF];
+    double C_H[nDOF] = {}, C_ImH[nDOF] = {}, C_D[nDOF] = {};
     inline int _calculate_permutation(const double *phi_dof, const double *phi_nodes);
     inline void _calculate_cuts();
     inline void _calculate_cuts_quad();
     inline void _calculate_C();
     inline void _correct_phi(const double *phi_dof, const double *phi_nodes);
-    double _H[nQ], _ImH[nQ], _D[nQ], _va[nQ * nP_ifem], _vb[nQ * nP_ifem];
-    double _H_ebq[nEBQ], _ImH_ebq[nEBQ], _D_ebq[nEBQ], _va_ebq[nEBQ * nP_ifem], _vb_ebq[nEBQ * nP_ifem]; // cek hack: this is confusing because we use no suffice for the q arrays and _ebq for the ebq arrays, then use _q above for generic quad point
-    double _va_x[nQ * nP_ifem], _va_y[nQ * nP_ifem], _va_z[nQ * nP_ifem], _vb_x[nQ * nP_ifem], _vb_y[nQ * nP_ifem], _vb_z[nQ * nP_ifem];
-    double _va_x_ebq[nEBQ * nP_ifem], _va_y_ebq[nEBQ * nP_ifem], _va_z_ebq[nEBQ * nP_ifem], _vb_x_ebq[nEBQ * nP_ifem], _vb_y_ebq[nEBQ * nP_ifem], _vb_z_ebq[nEBQ * nP_ifem];
+    double _H[nQ] = {}, _ImH[nQ] = {}, _D[nQ] = {}, _va[nQ * nP_ifem] = {}, _vb[nQ * nP_ifem] = {};
+    double _H_ebq[nEBQ] = {}, _ImH_ebq[nEBQ] = {}, _D_ebq[nEBQ] = {}, _va_ebq[nEBQ * nP_ifem] = {}, _vb_ebq[nEBQ * nP_ifem] = {}; // cek hack: this is confusing because we use no suffice for the q arrays and _ebq for the ebq arrays, then use _q above for generic quad point
+    double _va_x[nQ * nP_ifem] = {}, _va_y[nQ * nP_ifem] = {}, _va_z[nQ * nP_ifem] = {}, _vb_x[nQ * nP_ifem] = {}, _vb_y[nQ * nP_ifem] = {}, _vb_z[nQ * nP_ifem] = {};
+    double _va_x_ebq[nEBQ * nP_ifem] = {}, _va_y_ebq[nEBQ * nP_ifem] = {}, _va_z_ebq[nEBQ * nP_ifem] = {}, _vb_x_ebq[nEBQ * nP_ifem] = {}, _vb_y_ebq[nEBQ * nP_ifem] = {}, _vb_z_ebq[nEBQ * nP_ifem] = {};
     inline void _calculate_basis_coefficients(const double ma, const double mb, const double jf);
     inline void _calculate_basis(const double *xi, double *va, double *vb);
     inline void _calculate_basis_gradients(const double *xi, double *va_x, double *va_y, double *vb_x, double *vb_y);
