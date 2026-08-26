@@ -45,7 +45,7 @@ context_options += [
 # mesh options
 context_options += [
     ("genMesh", False, "Generate the mesh, otherwise use exect mesh exists"),
-    ("he", 1. , "Characteristic element size"),
+    ("he", 0.1, "Characteristic element size"),
     ]
 # other options
 context_options += [
