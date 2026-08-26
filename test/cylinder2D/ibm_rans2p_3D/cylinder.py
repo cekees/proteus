@@ -174,6 +174,12 @@ else:
 #triangleOptions = "KVApq10Dena"
 triangleOptions="KVApq1.35q12feena"
 domain.MeshOptions.triangleOptions = triangleOptions
+# MeshTools.MeshOptions.genMesh defaults to True, and the PiecewiseLinearComplexDomain
+# branch of generateMesh reads *that* flag, not this module's genMesh -- so without
+# this line tetgen re-runs on every invocation, deleting the committed .ele/.node/.face
+# and replacing them with output that differs by platform (412 nodes on osx-arm64,
+# 422 on linux-64, a segfault on linux-aarch64). Hand it the flag the case actually means.
+domain.MeshOptions.genMesh = ct.genMesh
 logEvent("""Mesh generated using: tetgen -%s %s""" % (triangleOptions, domain.polyfile + ".poly"))
 
 # boundaries = ['left', 'right', 'bottom', 'top', 'front', 'back']
