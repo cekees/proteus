@@ -1361,7 +1361,6 @@ public:
           // actually didn't need to do this but it helps with signs
           new_SourceTerm_hu[i] = -mannings * hui * mi;
           new_SourceTerm_hv[i] = -mannings * hvi * mi;
-          assert(false);
         } else {
           double veli_norm = std::sqrt(ui * ui + vi * vi);
           double hi_to_the_gamma = std::pow(fmax(hi, hEps), gamma);
