@@ -734,6 +734,7 @@ void MeshAdaptPUMIDrvr::get_local_error(double &total_error)
 
   double err_est = 0;
   double err_est_total=0;
+  long nLocalSolveFailures=0; //element-local solves that failed outright
   double u_norm_total=0;
   errRho_max = 0;
   while(ent = m->iterate(iter)){ //loop through all elements
@@ -846,6 +847,13 @@ void MeshAdaptPUMIDrvr::get_local_error(double &total_error)
     VecCreate(PETSC_COMM_SELF,&coef);
     VecSetSizes(coef,ndofs,ndofs);
     VecSetUp(coef);
+    // VecSetUp does not define the vector's values. If the local solve below
+    // fails, KSPSolve leaves coef untouched and setErrorField() then reads
+    // uninitialized memory straight into the error field -- observed as
+    // get_local_error() returning 2.98e+21 on one run and 2.24e+98 on the next
+    // (assert errorTotal<1e-14 in test2DgmshLoadAndAdapt). Zero it so a failed
+    // solve contributes nothing rather than noise.
+    VecZeroEntries(coef);
 
     KSP ksp; //initialize solver context
     KSPCreate(PETSC_COMM_SELF,&ksp);
@@ -857,7 +865,19 @@ void MeshAdaptPUMIDrvr::get_local_error(double &total_error)
     KSPSetFromOptions(ksp);
 
     KSPSolve(ksp,F,coef);
-    
+
+    // The local problem is solved with PREONLY+LU, so a singular element matrix
+    // fails outright rather than converging poorly. That was silent: the return
+    // code was discarded and no reason was queried, so a failed factorization
+    // was indistinguishable from a good solve and propagated into the error
+    // estimate. Count the failures and report once after the loop -- an error
+    // estimate computed from a mesh with singular local problems is not
+    // trustworthy, and the user needs to know rather than receive a number.
+    KSPConvergedReason localReason;
+    KSPGetConvergedReason(ksp,&localReason);
+    if(localReason < 0)
+      nLocalSolveFailures++;
+
     KSPDestroy(&ksp); //destroy ksp
 
     setErrorField(estimate,coef,ent,nsd,nshl);
@@ -938,6 +958,12 @@ void MeshAdaptPUMIDrvr::get_local_error(double &total_error)
 
   PCU_Add_Doubles(PCUObj, &err_est_total,1);
   PCU_Add_Doubles(PCUObj, &u_norm_total,1);
+
+  if(nLocalSolveFailures > 0 && comm_rank==0)
+    std::cerr<<"WARNING: "<<nLocalSolveFailures<<" element-local error problems "
+             <<"failed to solve (singular matrix under PREONLY+LU); their "
+             <<"contribution to the error estimate is zero and the estimate "
+             <<"below should not be trusted."<<std::endl;
 
   total_error = sqrt(err_est_total);
   u_norm_total = sqrt(u_norm_total);
