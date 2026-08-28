@@ -623,7 +623,17 @@ void setErrorField(apf::Field* estimate,Vec coef,apf::MeshEntity* ent,int nsd,in
     apf::Adjacent adjedg;
     m->getAdjacent(ent,1,adjedg);
     for(int idx=0;idx<nshl;idx++){
-      double coef_sub[3] ={coef_ez[idx],coef_ez[nshl+idx],coef_ez[nshl*2+idx]};
+      //coef_ez holds nshl*nsd values. The third component only exists in 3D:
+      //in 2D, coef_ez[nshl*2+idx] indexes past the end of the array and reads
+      //whatever the stack frame below happened to leave there. That is a real
+      //out-of-bounds read on every 2D element, and it is why
+      //test2DgmshLoadAndAdapt returned 8.567e-18 on some runs and garbage
+      //(1.2e+122, 2.4e+33, 2.1e+147) on others, host- and build-dependent,
+      //while the 3D case was always stable. A 2D velocity has no third
+      //component, so it contributes zero.
+      double coef_sub[3] ={coef_ez[idx],
+                           coef_ez[nshl+idx],
+                           (nsd > 2) ? coef_ez[nshl*2+idx] : 0.0};
       apf::setVector(estimate,adjedg[idx],0,&coef_sub[0]);
     }
 }
