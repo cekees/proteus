@@ -148,6 +148,66 @@ def initialize_schur_ksp_obj(matrix_A, schur_approx):
     ksp_obj.pc.setUp()
     return ksp_obj
 
+# ---------------------------------------------------------------------------
+# Archived solver inputs.
+#
+# The AMG tests below assert iteration counts, and an iteration count depends on
+# the matrix it is given. Those matrices used to be read by BARE RELATIVE PATH
+# from the working directory -- files NumericalSolution writes only as a side
+# effect of `Profiling.logLevel > 10`, from whichever earlier test in the session
+# happened to run first. So the input to an iteration-count assertion depended on
+# log verbosity, test order and cwd. Observed directly: one pathway's run
+# directory held three such dumps and these tests passed, another held none and
+# 24 tests failed with AttributeError on a None matrix.
+#
+# The matrices are now committed under saved_matrices/ and loaded by an anchored
+# path, matching the convention already used for import_modules/*.bin.
+#
+# They were chosen on measurement rather than convenience. Ten candidate dumps
+# collected across build pathways fall into exactly two clusters by AMG iteration
+# count -- 68/52 and 67/51 (slip/noslip) -- tracking a small difference in
+# assembled nonzeros. The archived pair is from the lower cluster, which is also
+# the one that reproduces the 51 this file's assertions were originally written
+# against; three of the four candidates in that cluster were bit-identical.
+#
+# To regenerate (e.g. after changing the mesh size, or to refresh the archive):
+#
+#     PROTEUS_DUMP_MATRICES=1 pytest test_nse_RANS2P_step.py -k FullRun
+#     PROTEUS_STEP2D_HE=0.025 PROTEUS_DUMP_MATRICES=1 pytest ... -k FullRun
+#
+# The dump is then explicit, rather than a side effect of the log level.
+# ---------------------------------------------------------------------------
+SAVED_MATRIX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'saved_matrices')
+SAVED_MATRICES = {'test_1': 'step2d_slip_par_j.bin',
+                  'test_2': 'step2d_noslip_par_j.bin'}
+DUMP_MATRICES = os.environ.get('PROTEUS_DUMP_MATRICES', '') not in ('', '0')
+STEP2D_HE = os.environ.get('PROTEUS_STEP2D_HE', '0.05')
+
+
+def _dump_saved_matrix(ns, run_name):
+    """Write this run's parallel Jacobian to saved_matrices/ under its canonical
+    name, and drop the large ASCII companion _petsc_view writes beside it."""
+    os.makedirs(SAVED_MATRIX_DIR, exist_ok=True)
+    prefix = os.path.join(SAVED_MATRIX_DIR, run_name + '_regen_')
+    ns.modelList[0].viewJacobian(file_prefix=prefix)
+    produced = prefix + 'par_j_0'
+    target = os.path.join(SAVED_MATRIX_DIR, SAVED_MATRICES[run_name])
+    if os.path.exists(produced):
+        os.replace(produced, target)
+        # The binary viewer leaves two sidecars beside the matrix: ".m", an
+        # ASCII copy roughly 3x the binary's size (15.7 MB against 5.4 MB), and
+        # ".info", PETSc metadata that Mat.load() does not require -- the
+        # archived matrices carry neither and load fine. Drop both so a
+        # regeneration adds exactly one file per matrix.
+        for sidecar in (produced + '.m', produced + '.info'):
+            if os.path.exists(sidecar):
+                os.remove(sidecar)
+        Profiling.logEvent('Regenerated archived matrix %s' % target)
+    else:
+        raise AssertionError('viewJacobian produced no %s' % produced)
+
+
 def runTest(ns, name):
     ns.calculateSolution(name)
     # Profiling.logEvent() only flushes proteus.log when the global
@@ -171,9 +231,11 @@ def test_step_slip_FullRun():
         * he = 0.05
     """
     petsc_options = initialize_petsc_options()
-    context_options_str='he=0.05'
+    context_options_str='he=' + STEP2D_HE
     ns = load_simulation(context_options_str)
     actual_log = runTest(ns,'test_1')
+    if DUMP_MATRICES:
+        _dump_saved_matrix(ns, 'test_1')
 
     L1 = actual_log.get_ksp_resid_it_info([(' step2d ',1.0,0,0)])
     L2 = actual_log.get_ksp_resid_it_info([(' step2d ',1.0,0,1)])
@@ -211,9 +273,11 @@ def test_step_noslip_FullRun():
         * he = 0.05
     """
     petsc_options = initialize_petsc_options()
-    context_options_str="boundary_condition_type='ns'"
+    context_options_str="boundary_condition_type='ns' he=" + STEP2D_HE
     ns = load_simulation(context_options_str)
     actual_log = runTest(ns,'test_2')
+    if DUMP_MATRICES:
+        _dump_saved_matrix(ns, 'test_2')
 
     L1 = actual_log.get_ksp_resid_it_info([(' step2d ',1.0,0,0)])
     L2 = actual_log.get_ksp_resid_it_info([(' step2d ',1.0,0,1)])
@@ -373,19 +437,20 @@ def initialize_velocity_block_petsc_options_3():
 
 def load_matrix_step_slip():
     """
-    Loads a medium sized backwards facing step matrix for studying
-    different AMG preconditioners.
+    Loads the archived backwards-facing-step matrix (free-slip BC) used to study
+    different AMG preconditioners. Anchored to this file's directory: it must not
+    depend on what an earlier test left in the working directory.
     """
-    A = LAT.petsc_load_matrix('dump_test_1_step2d_1.0par_j_0')
-    return A
+    return LAT.petsc_load_matrix(os.path.join(SAVED_MATRIX_DIR,
+                                              SAVED_MATRICES['test_1']))
 
 def load_matrix_step_noslip():
     """
-    Loads a medium sized backwards facing step matrix for studying
-    different AMG preconditioners.
+    Loads the archived backwards-facing-step matrix (no-slip BC) used to study
+    different AMG preconditioners. Anchored, for the reason above.
     """
-    A = LAT.petsc_load_matrix('dump_test_2_step2d_1.0par_j_0')
-    return A
+    return LAT.petsc_load_matrix(os.path.join(SAVED_MATRIX_DIR,
+                                              SAVED_MATRICES['test_2']))
 
 def test_amg_iteration_matrix_noslip():
     mat_A = load_matrix_step_noslip()
