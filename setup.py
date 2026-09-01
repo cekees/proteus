@@ -302,25 +302,16 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'richards.cRichards',
         sources=['proteus/richards/cRichards.cpp'],
-        depends=['proteus/richards/Richards.h',  'proteus/richards/psk_models.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        depends=['proteus/richards/Richards.h',  'proteus/pskRelations.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
         language='c++',
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
     ),
    
     Extension(
-        'mphase_co2.cmphase_co2',
-        sources=['proteus/mphase_co2/cmphase_co2.cpp'],
-        depends=['proteus/mphase_co2/mphase_co2.h', 'proteus/mphase_co2/psk_models.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
-        include_dirs=get_xtensor_include(),
-        language='c++',
-        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
-    ),
-
-    Extension(
         'm_comp_co2.cm_comp_co2',
         sources=['proteus/m_comp_co2/cm_comp_co2.cpp'],
-        depends=['proteus/m_comp_co2/m_comp_co2.h', 'proteus/m_comp_co2/psk_comp.h', 'proteus/m_comp_co2/co2_brine_flash.h', 'proteus/m_comp_co2/co2_brine_eos.h', 'proteus/m_comp_co2/jet2.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        depends=['proteus/m_comp_co2/m_comp_co2.h', 'proteus/pskRelations.h', 'proteus/m_comp_co2/co2_brine_flash.h', 'proteus/m_comp_co2/co2_brine_eos.h', 'proteus/m_comp_co2/jet2.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_xtensor_include(),
         language='c++',
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
@@ -996,8 +987,6 @@ def setup_given_extensions(extensions):
                       'proteus.fenton',
                       'proteus.mprans',
                       'proteus.richards',
-                    #   'proteus.flow',
-                      'proteus.mphase_co2',
                       'proteus.m_comp_co2',
                       'proteus.elastoplastic',
                       'proteus.mbd',

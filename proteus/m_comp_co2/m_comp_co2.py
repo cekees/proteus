@@ -334,7 +334,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  krn_end_types=None,
                  # Residual (trapped) gas saturation S_gr per material type.
                  # Gas-only Brooks-Corey/vGM trapping: k_rn -> 0 for S_g <= S_gr
-                 # (immobile gas), via the Se_trap remap in psk_comp.h.  k_rw and
+                 # (immobile gas), via the Se_trap remap in pskRelations.h.  k_rw and
                  # p_c keep the drainage Se.  Pass a (nMaterialTypes,) array of
                  # imbibition residuals (FluidFlower Sg,i = 0.06..0.14); None ->
                  # all-zeros (no trapping, legacy behavior).
@@ -520,7 +520,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             raise ValueError("STABILIZATION_TYPE must be one of "+str(stabilization_types.keys())+" not "+STABILIZATION_TYPE)
 
         # PSK closure selector: 0 = VGM (van Genuchten-Mualem), 1 = BC (Brooks-Corey-Burdine).
-        # The closure functions for both live in psk_models.h. Every call site
+        # The closure functions for both live in proteus/pskRelations.h, under
+        # namespace proteus::m_comp_co2::psk. Every call site
         # in m_comp_co2.h dispatches on PSK_TYPE_member: if (PSK_TYPE_member == 1)
         # invokes bc_*_from_Se, else vgm_*_from_Se. Both paths are exercised.
         # NOTE: for the BC path the user-supplied vgm_n_types array is reinterpreted

@@ -5,7 +5,7 @@
 #include <valarray>
 #include "CompKernel.h"
 #include "ModelFactory.h"
-#include "psk_models.h"
+#include "../pskRelations.h"
 #include "../mprans/ArgumentsDict.h"
 #include "xtensor-python/pyarray.hpp"
 #define nnz nSpace
@@ -84,7 +84,7 @@ public:
     double thetaW, DthetaW_DpsiC, KWr, DKWr_DpsiC;
     if (PSK_TYPE_member == 1 || PSK_TYPE_member == 2) {
       // Same Brooks-Corey retention curve either way; PSK_TYPE only picks which
-      // k_rw closure supplies the exponent (see psk_models.h).
+      // k_rw closure supplies the exponent (see pskRelations.h).
       proteus::richards::psk::bc_wetting(
           psiC, alpha, n_vg, thetaR, thetaSR,
           thetaW, DthetaW_DpsiC, KWr, DKWr_DpsiC,
@@ -521,23 +521,23 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         //calculate time derivative at quadrature points
         //
         ck.bdf(alphaBDF, q_m_betaBDF.data()[eN_k], m, dm, m_t, dm_t);
-        // //
-        // //calculate subgrid error (strong residual and adjoint)
-        // //
-        // //calculate strong residual
-        // pdeResidual_u = ck.Mass_strong(m_t) + ck.Advection_strong(df, grad_u);
-        // //calculate adjoint
-        // for (int i = 0; i < nDOF_test_element; i++) {
-        //   int i_nSpace = i * nSpace;
-        //   Lstar_u[i]   = ck.Advection_adjoint(df, &u_grad_test_dV[i_nSpace]);
-        // }
-        // //calculate tau and tau*Res
-        // calculateSubgridError_tau(elementDiameter[eN], dm_t, df, cfl[eN_k], tau0);
-        // calculateSubgridError_tau(Ct_sge, G, dm_t, df, tau1, cfl[eN_k]);
+        //
+        //calculate subgrid error (strong residual and adjoint)
+        //
+        //calculate strong residual
+        pdeResidual_u = ck.Mass_strong(m_t) + ck.Advection_strong(df, grad_u);
+        //calculate adjoint
+        for (int i = 0; i < nDOF_test_element; i++) {
+          int i_nSpace = i * nSpace;
+          Lstar_u[i]   = ck.Advection_adjoint(df, &u_grad_test_dV[i_nSpace]);
+        }
+        //calculate tau and tau*Res
+        calculateSubgridError_tau(elementDiameter[eN], dm_t, df, cfl[eN_k], tau0);
+        calculateSubgridError_tau(Ct_sge, G, dm_t, df, tau1, cfl[eN_k]);
 
-        // tau = useMetrics * tau1 + (1.0 - useMetrics) * tau0;
+        tau = useMetrics * tau1 + (1.0 - useMetrics) * tau0;
 
-        // subgridError_u = -tau * pdeResidual_u;
+        subgridError_u = -tau * pdeResidual_u;
         // //
         // //calculate shock capturing diffusion
         // //
@@ -1987,11 +1987,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       globalJacobian.data()[ii] += bc_mask.data()[i] * (MLi * dm / dt + J_ii) + (1.0 - bc_mask.data()[i]);
     }
     if (STABILIZATION_TYPE == STABILIZATION::Implicit_FCT) {
-      //SERIAL ONLY. This runs the limiter inside the residual, where the ghost scatter of Rpos/Rneg
-      //cannot happen, so it is stuck on fct_pass=0 (Python sets that key) and the ratios it reads at a
-      //ghost column are this rank's incomplete ones. Use the post-Newton FCTStep in Richards.py, which
-      //is split across the cut, for parallel runs.
-      FCTStep(args);
+      //FCTStep(args);
       for (int i = 0; i < numDOFs; i++) {
         globalResidual.data()[i] += fluxCorrection.data()[i];
       }

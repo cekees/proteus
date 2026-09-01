@@ -1,9 +1,19 @@
 #ifndef JET2_H
 #define JET2_H
-// Second-order forward-mode AD in two independent variables (p, z).  C++ mirror
-// of jet2.py.  A Jet2 carries (v, dp, dz, dpp, dpz, dzz) -- value plus exact
-// first and second partials -- so threading it through the EOS/flash arithmetic
-// yields machine-precision analytic derivatives with NO finite differencing.
+// Second-order forward-mode AD in two independent variables (p, z).  A Jet2
+// carries (v, dp, dz, dpp, dpz, dzz) -- value plus exact first and second
+// partials -- so threading it through the EOS/flash arithmetic yields
+// machine-precision analytic derivatives with NO finite differencing.
+//
+// References:
+//   Griewank, A. and Walther, A., "Evaluating Derivatives: Principles and
+//     Techniques of Algorithmic Differentiation", 2nd ed., SIAM, Philadelphia,
+//     2008 -- forward mode and the propagation of truncated Taylor (jet)
+//     coefficients that this struct implements for order 2 in two variables.
+//   Fike, J.A. and Alonso, J.J., "The Development of Hyper-Dual Numbers for
+//     Exact Second-Derivative Calculations", AIAA Paper 2011-886, 49th AIAA
+//     Aerospace Sciences Meeting, Orlando, 2011 -- the same second-order
+//     forward-mode idea, specialised to one independent variable.
 #include <cmath>
 
 namespace m_comp_co2 {

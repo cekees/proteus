@@ -275,7 +275,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         # and the relative permeability kr(theta).  Default 'VG' reproduces the
         # existing behaviour exactly: van Genuchten retention with the Mualem
         # kr.  The integer code is handed to the kernel as "PSK_TYPE" and picks
-        # the closure in proteus/richards/psk_models.h.  Under 'BC' the second
+        # the closure in proteus/pskRelations.h.  Under 'BC' the second
         # numeric parameter (vgm_n_types) is read as the pore-size index lambda
         # and vgm_alpha_types as the inverse entry-pressure head 1/p_d.
         #

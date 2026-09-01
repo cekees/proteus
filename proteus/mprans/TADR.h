@@ -588,12 +588,22 @@ inline
           theta_dof_proj.resize(numDOFs,0.0);
           rho_dof_proj.resize(numDOFs,0.0);
           ML_mass_proj.resize(numDOFs,0.0);
+          // ONLY the porosity gets a quadrature->DOF projection: theta lives at
+          // quadrature points and has no nodal representation.  rho and the
+          // conservative variable m are evaluated DIRECTLY at the DOF from
+          // u_dof_old.  Projecting them would apply (M*u)_i/ML_i -- a smoothing
+          // filter, because ML_i is exactly the row sum of the consistent mass
+          // matrix -- so m_dof would NOT equal u_dof_old even at rho=theta=1 and
+          // the scheme would not reduce to the constant-density one.  Evaluating
+          // at the DOF also makes inversevaluateCoefficients(m_dof[i],...) return
+          // u_dof_old[i] exactly, and makes this m^n consistent with the nodal
+          // m^{n+1} = theta_i*rho(c_i)*c_i that the ImplicitEV branch builds
+          // (otherwise ML_i*(m^{n+1}-m^n)/dt is nonzero at steady state).
           for (int eN=0; eN<nElements_global; eN++)
             for (int k=0; k<nQuadraturePoints_element; k++)
               {
-                int eN_k = eN*nQuadraturePoints_element + k,
-                  eN_nDOF_trial_element = eN*nDOF_trial_element;
-                double jac[nSpace*nSpace], jacDet, jacInv[nSpace*nSpace], x, y, z, un_proj=0.0;
+                int eN_k = eN*nQuadraturePoints_element + k;
+                double jac[nSpace*nSpace], jacDet, jacInv[nSpace*nSpace], x, y, z;
                 ck.calculateMapping_element(eN,
                                             k,
                                             mesh_dof.data(),
@@ -605,38 +615,26 @@ inline
                                             jacInv,
                                             x,y,z);
                 const double dV = fabs(jacDet)*dV_ref.data()[k];
-                ck.valFromDOF(u_dof_old.data(),
-                              &u_l2g.data()[eN_nDOF_trial_element],
-                              &u_trial_ref.data()[k*nDOF_trial_element],
-                              un_proj);
                 const double theta_k = q_porosity_old.data()[eN_k];
-                const double rho_k = q_rho_old.data()[eN_k];
-                const double mn_proj = theta_k*rho_k*un_proj;
                 for (int i=0; i<nDOF_test_element; i++)
                   {
                     int eN_i = eN*nDOF_test_element+i;
                     const int gi = u_l2g.data()[eN_i];
                     const double w = u_test_ref.data()[k*nDOF_trial_element+i]*dV;
-                    m_dof[gi] += mn_proj*w;
                     theta_dof_proj[gi] += theta_k*w;
-                    rho_dof_proj[gi] += rho_k*w;
                     ML_mass_proj[gi] += w;
                   }
               }
           for (int i=0; i<numDOFs; i++)
             {
               if (ML_mass_proj[i] > 1.0e-14)
-                {
-                  m_dof[i] /= ML_mass_proj[i];
-                  theta_dof_proj[i] /= ML_mass_proj[i];
-                  rho_dof_proj[i] /= ML_mass_proj[i];
-                }
+                theta_dof_proj[i] /= ML_mass_proj[i];
               else
-                {
-                  m_dof[i] = 0.0;
-                  theta_dof_proj[i] = 1.0;
-                  rho_dof_proj[i] = rho_f;
-                }
+                theta_dof_proj[i] = 1.0;
+              // nodal density and conservative variable at t^n
+              const double un_i = u_dof_old.data()[i];
+              rho_dof_proj[i] = rho_f*(1.0 + eps_rho*un_i);
+              m_dof[i] = theta_dof_proj[i]*rho_dof_proj[i]*un_i;
             }
           // compute entropy and init global_entropy_residual and boundary_integral
           psi.resize(numDOFs,0.0);
@@ -1647,12 +1645,9 @@ inline
               double ith_dissipative_term_mass = 0;
               double ith_low_order_dissipative_term_mass = 0;
               double ith_flux_term_mass = 0;
-              
-              double ith_upwind_flux_term_mass = 0;
-              // Exact row-sum of the low-order upwind operator: the coefficient
-              // of (u_i - u_j) summed over j.  Feeds edge_based_cfl so the time
-              // step bounds precisely the operator that advances uLow.
-              double gamma_sum_i = 0.;
+              // Row sum of the high-order graph viscosity, dLii = -sum_{j!=i} dLij.
+              // Feeds edge_based_cfl below.
+              double dLii = 0.;
 
               // loop over the sparsity pattern of the i-th DOF
               for (int offset=csrRowIndeces_DofLoops.data()[i]; offset<csrRowIndeces_DofLoops.data()[i+1]; offset++)
@@ -1662,33 +1657,10 @@ inline
                   const double theta_j = fmax(theta_dof_proj[j], 1.0e-14);
                   const double uj_mass = inversevaluateCoefficients(mj_mass, theta_j, rho_f, rho_s);
                   double dLowij, dLij, dEVij, dHij;
-                  const double rho_j = fmax(rho_dof_proj[j], rho_f);
-                  const double dmdu_j = theta_j * (rho_j + uj_mass*drho_du);
-                  const double dmdu_ij = 0.5*(dmdu_i + dmdu_j);
-                  const double delta_u_mass = (mj_mass - mi_mass)/fmax(1.0e-14, dmdu_ij);
 
-                                    ith_flux_term_mass += (TransportMatrix[ij] + DiffusionMatrix[ij])*uj_mass;
+                  ith_flux_term_mass += (TransportMatrix[ij] + DiffusionMatrix[ij])*uj_mass;
 
-                  if (i != j) {
-
-                    const double T_ij_val = TransportMatrix[ij];
-                    const double D_ij_val = DiffusionMatrix[ij];
-                    const double delta_u  = uj_mass - ui_mass;
-                    const double T_neg    = fmax(0.0, -T_ij_val);
-                    const double D_neg    = fmax(0.0, -D_ij_val);
-                    const double rho_upwind =
-                      (-T_ij_val * delta_u <= 0.0) ? rho_i : rho_j;
-                    ith_upwind_flux_term_mass +=
-                      -T_neg * (rho_upwind / rho_f) * delta_u
-                      -D_neg * delta_u;
-                    // gamma_ij is exactly the coefficient of (u_i - u_j) in
-                    // the flux line above -- accumulate it (incl. the
-                    // rho_upwind/rho_f density factor and the diffusion part)
-                    // so edge_based_cfl bounds this operator with no proxy gap.
-                    gamma_sum_i += T_neg * (rho_upwind / rho_f) + D_neg;
-                  }
-
-                  if (i != j) 
+                  if (i != j)
                     {
                       double solij = 0.5*(ui_mass+uj_mass);
                       double Compij = cK*fmax(solij*(1.0-solij),0.0)/(fabs(ui_mass-uj_mass)+1E-14);
@@ -1700,30 +1672,33 @@ inline
                         {
                           // high-order (entropy viscosity) dissipative operator
                           dEVij = fmax(fabs(global_entropy_residual[i]),fabs(global_entropy_residual[j]));
-                          // Original EV high-order dissipation (kept for reference):
-                          //   dHij = fmin(dLowij,dEVij) * fmax(1.0-Compij,0.0); // artificial compression
-                          // Option : pure low-order graph dissipation -- gives a
-                          // discrete maximum principle by construction.  Mass-
-                          // conservative (graph dissipation has zero row sums),
-                          // strictly bounded, no clipping needed.  Cost: front more
-                          // diffuse than EV would give.  Compij factor retained so
-                          // resolution at fronts is partially recovered when the
-                          // solution is locally smooth.
-                          dHij = dLowij * fmax(1.0-Compij,0.0);
+                          dHij = fmin(dLowij,dEVij) * fmax(1.0-Compij,0.0); // artificial compression
                         }
                       else // smoothness based indicator
                         {
                           dHij = dLij * fmax(1.0-Compij,0.0); // artificial compression
                         }
-                      //dissipative terms
-                      ith_dissipative_term_mass += dHij*(mj_mass-mi_mass);
-                      ith_low_order_dissipative_term_mass += dLowij*(mj_mass-mi_mass);
+                      // Dissipative terms.  The DIFFERENCES are taken in c, not in
+                      // m: dLow comes from the transport matrix, which already
+                      // carries rho (df/du = (rho + u*drho/du)*v), so dLow*(c_j-c_i)
+                      // is a mass flux, dimensionally consistent with
+                      // ith_flux_term_mass.  Differencing m instead multiplies the
+                      // dissipation by a spurious extra theta*rho (~1e3 in SI).
+                      // Note this pair IS already the monotone upwind operator:
+                      //   sum_j (T+D)_ij c_j - sum_{j!=i} dLow_ij (c_j - c_i)
+                      //     = -sum_{j!=i} (dLow_ij - T_ij - D_ij)(c_j - c_i)
+                      // with dLow_ij - T_ij - D_ij >= 0 because dLow_ij >= |T_ij|,
+                      // i.e. an M-matrix.  It must NOT be replaced by
+                      // -sum max(0,-T_ij)(c_j - c_i): for the skew-symmetric
+                      // advection matrix that is exactly HALF the upwind flux.
+                      ith_dissipative_term_mass += dHij*(uj_mass-ui_mass);
+                      ith_low_order_dissipative_term_mass += dLowij*(uj_mass-ui_mass);
                       //dHij - dLij. This matrix is needed during FCT step
                       dt_times_dH_minus_dL[ij] = dt*(dHij - dLowij);
-                      //std::cout << dLij;
 
+                      dLii -= dLij;
                       dLow[ij] = dLowij;
-                      
+
                     }
                   else //i==j
                     {
@@ -1740,17 +1715,14 @@ inline
               // a=theta*rho*Disp); no dmdu_i lifting is needed.
               const double boundary_integral_mass = boundary_integral[i];
               // compute edge_based_cfl
-              // The low-order step advances the conservative variable
-              // m = theta*rho(c)*c; recovering c divides the mass change by
-              // the storage Jacobian dm/dc = dmdu_i.  gamma_sum_i/mi is only a
-              // mass-rate CFL -- without the 1/dmdu_i factor it badly
-              // under-predicts the stable dt in low-water-content (high gas
-              // saturation) zones where dmdu_i -> 0, so uLow overshoots and c
-              // leaves [0, c_sat].  Dividing by dmdu_i turns this into the
-              // pore-velocity CFL that c actually obeys.  gamma_sum_i is the
-              // exact row-sum of the upwind operator, so this bounds it with
-              // no proxy gap (no density/diffusion under-estimate).
-              edge_based_cfl.data()[i] = 2.*gamma_sum_i/(mi * fmax(dmdu_i, 1.0e-14));
+              // 2|dLii|/mi is the constant-density edge CFL.  The low-order step
+              // advances m = theta*rho(c)*c, so recovering c divides the mass
+              // change by the storage Jacobian dm/dc = dmdu_i; without that
+              // factor the stable dt is over-predicted in low-water-content (high
+              // gas saturation) zones where dmdu_i -> 0, and uLow overshoots out
+              // of [0, c_sat].  dmdu_i = 1 at rho=theta=1, so this reduces to the
+              // original 2|dLii|/mi.
+              edge_based_cfl.data()[i] = 2.*fabs(dLii)/(mi * fmax(dmdu_i, 1.0e-14));
               
               // Stage 3 kinetic dissolution source at node i (mass-rate form):
               //   R_diss_i = theta_w_i * rho_w(u_i) * k_d * S_n_i * (c_sat - u_i)
@@ -1768,8 +1740,9 @@ inline
               const double R_diss_i = theta_i * rho_w_i * k_d * S_n_i
                                     * (c_sat - ui_mass);
 
-              const double mLow_i = mi_mass - dt/mi*(ith_upwind_flux_term_mass
-                                                     + boundary_integral_mass)
+              const double mLow_i = mi_mass - dt/mi*(ith_flux_term_mass
+                                                     + boundary_integral_mass
+                                                     - ith_low_order_dissipative_term_mass)
                                             + dt * R_diss_i;
               uLow[i] = inversevaluateCoefficients(mLow_i, theta_i, rho_f, rho_s);
 
@@ -2732,8 +2705,12 @@ inline
             // COMPUTE THE BOUNDS //
             ////////////////////////
             
-            mini = fmin(mini,uLowj);
-            maxi = fmax(maxi,uLowj);
+            // Explicit paths bound against soln (as VOF.h/VOF3P.h do);
+            // ImplicitEV, whose limiter works on mass, bounds against uLow.
+            const double bound_j =
+              (STABILIZATION_TYPE == STABILIZATION::ImplicitEV) ? uLowj : solnj;
+            mini = fmin(mini,bound_j);
+            maxi = fmax(maxi,bound_j);
             const double theta_j = theta_dof[j];
             double mLowj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowj)*uLowj;
             double solHmj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solH.data()[j])*solH.data()[j];

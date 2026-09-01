@@ -267,7 +267,7 @@ class Coefficients(TC_base):
     from proteus.cfemIntegrals import copyExteriorElementBoundaryValuesFromElementBoundaryValues
     
     def __init__(self,
-                 aOfX,
+                 aOfX=None,
                  LS_model=None,
                  nd=2,
                  V_model=0,
@@ -368,6 +368,15 @@ class Coefficients(TC_base):
         self.alpha_L = alpha_L
         self.alpha_T = alpha_T
         self.Dm = physicalDiffusion if Dm is None else Dm
+        # aOfX (the old interface) is the default: the kernel builds its tensor
+        # from (Dm, alpha_L, alpha_T), so when the caller supplies aOfX and none
+        # of those, LevelModel.__init__ back-fills Dm from the aOfX tensor.  A
+        # caller that names any of them has specified the new dispersion model,
+        # and it wins over aOfX.
+        self.dispersion_specified = (Dm is not None or
+                                     alpha_L != 0.0 or
+                                     alpha_T != 0.0 or
+                                     physicalDiffusion != 0.0)
         self.porosity = porosity
         dispersion_types = {"Constant":0,
                             "PowerLawSaturation":1,
@@ -413,9 +422,12 @@ class Coefficients(TC_base):
         except:
             raise ValueError("STABILIZATION_TYPE must be one of "+str(stabilization_types.keys())+" not "+STABILIZATION_TYPE)
         try:
+            if isinstance(ENTROPY_TYPE, int):
+                ENTROPY_TYPE = [key for key, value in entropy_types.items() if value == ENTROPY_TYPE][0]
+
             self.ENTROPY_TYPE = entropy_types[ENTROPY_TYPE]
         except:
-            raise ValueError("ENTROPY_TYPE must be one of "+str(entropy_types.keys())+" not "+ENTROPY_TYPE)
+            raise ValueError("ENTROPY_TYPE must be one of "+str(entropy_types.keys())+" not "+str(ENTROPY_TYPE))
         self.cE = cE
         self.cMax = cMax
         self.uL = uL
@@ -568,6 +580,12 @@ class Coefficients(TC_base):
             self.q_v[:] = self.vModel.q[('velocity_couple', 0)]
             self.ebqe_v[:] = self.vModel.ebqe[('velocity_couple', 0)]
 
+        if firstStep:
+            # No previous step to lag against, and the lag above ran before the
+            # velocity existed.  Re-seed so velocity_old == velocity on step 1;
+            # STABILIZATION_TYPE 2/3/4 read velocity_old in the low-order flux.
+            self.q_v_old[:] = self.q_v
+
         if self.checkMass:
             self.m_pre = Norms.scalarDomainIntegral(self.model.q['dV_last'],
                                                     self.model.q[('m', 0)],
@@ -681,11 +699,12 @@ class Coefficients(TC_base):
             c[('dm',0,0)] = np.ones_like(c[('u',0)])
             c[('f',0)][:] = v*c[('u',0)]
             c[('df',0,0)][:] = v
-            #c[('a',0,0)][:] = self.physicalDiffusion 
+            #c[('a',0,0)][:] = self.physicalDiffusion
             nd = self.nd
-            for i in range(len(c[('r', 0)].flat)):
-                x_i = c['x'].flat[3*i:3*(i+1)]
-                c[('a', 0, 0)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[0](x_i).flat
+            if self.aOfX is not None:
+                for i in range(len(c[('r', 0)].flat)):
+                    x_i = c['x'].flat[3*i:3*(i+1)]
+                    c[('a', 0, 0)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[0](x_i).flat
                 #print(c[('a', 0, 0)])
             
             # Compute diffusion coefficients at each quadrature point
@@ -1016,8 +1035,9 @@ class LevelModel(OneLevelTransport):
                     a_sd[offset] = a_arr[row, col]
             return a_sd
 
+        if self.coefficients.aOfX is not None:
          #########Dealing with element diffusion coefficient
-        for eN in range(self.mesh.nElements_global):
+         for eN in range(self.mesh.nElements_global):
             for k in range(self.nQuadraturePoints_element):
                 x = self.q['x'][eN, k, :]
                 a_full = self.coefficients.aOfX[0](x)
@@ -1027,11 +1047,11 @@ class LevelModel(OneLevelTransport):
                     self.q[('a', 0, 0)][eN, k, :] = a_val
                 else:
                     raise ValueError(f"Unexpected shape {a_val.shape} for a_val. Expected ({a_rowptr[-1]},)")
-        #self.ebqe[('a',0,0)] = np.zeros((,,self.coefficients.sdInfo[(0,0)][0][-1]),'d')
-        
-        #########Dealing with boundary diffusion coefficient       
-        
-        for ebNE in range(self.mesh.nExteriorElementBoundaries_global):
+         #self.ebqe[('a',0,0)] = np.zeros((,,self.coefficients.sdInfo[(0,0)][0][-1]),'d')
+
+         #########Dealing with boundary diffusion coefficient
+
+         for ebNE in range(self.mesh.nExteriorElementBoundaries_global):
             for kb in range(self.nElementBoundaryQuadraturePoints_elementBoundary):
                 x = self.ebqe['x'][ebNE, kb, :]
                 a_full = self.coefficients.aOfX[0](x)
@@ -1040,6 +1060,23 @@ class LevelModel(OneLevelTransport):
                     self.ebqe[('a', 0, 0)][ebNE, kb, :] = a_val
                 else:
                     raise ValueError(f"Unexpected shape {a_val.shape} for a_val. Expected ({a_rowptr[-1]},)")
+
+         # evaluateCoefficients builds the tensor from (Dm,alpha_L,alpha_T) and no
+         # longer reads q[('a',0,0)], so carry aOfX across into Dm when the caller
+         # gave aOfX alone.  Naming any of the three selects the new dispersion
+         # model instead, and it wins.  Only a constant isotropic aOfX has an
+         # exact (Dm,0,0) equivalent -- the dispersion form is isotropic plus a
+         # rank-1 term along v, so it cannot represent a general tensor.
+         if not self.coefficients.dispersion_specified:
+            a_q = self.q[('a', 0, 0)]
+            a0 = float(a_q.flat[0]) if a_q.size else 0.0
+            if not np.allclose(a_q, a0, rtol=0.0, atol=1.0e-14):
+                raise ValueError(
+                    "TADR: aOfX is not constant isotropic (entries span [%r, %r]) and the "
+                    "kernel builds its tensor from (Dm, alpha_L, alpha_T) only. Pass those "
+                    "explicitly for this case." % (float(a_q.min()), float(a_q.max())))
+            self.coefficients.Dm = a0
+            logEvent("TADR: aOfX given without Dm/alpha_L/alpha_T; taking Dm=%r from it" % (a0,))
 
 
 
@@ -1129,6 +1166,20 @@ class LevelModel(OneLevelTransport):
             else:
                 outside_eN = ebe[ebN * 2 + 1]
             self.isExteriorBoundaryPhysical[ebNE] = 1 if outside_eN < 0 else 0
+
+        # DIAGNOSTIC (remove once resolved): report how many exterior faces the
+        # kernel's "ebFlag <= 0 || !physical || eN_out >= 0" gate will skip.  On a
+        # serial run with a properly tagged mesh this must be 0 skipped.
+        import os as _os
+        if _os.getenv("TADR_BC_GATE_DBG"):
+            _ext = self.mesh.exteriorElementBoundariesArray[:self.mesh.nExteriorElementBoundaries_global]
+            _flags = np.asarray(self.mesh.elementBoundaryMaterialTypes)[_ext]
+            _skip_flag = int((_flags <= 0).sum())
+            _skip_phys = int((self.isExteriorBoundaryPhysical == 0).sum())
+            logEvent("TADR_BC_GATE_DBG: nExteriorFaces=%d  skipped_by_ebFlag<=0=%d  "
+                     "skipped_by_notPhysical=%d  flag_values=%s"
+                     % (self.mesh.nExteriorElementBoundaries_global, _skip_flag,
+                        _skip_phys, np.unique(_flags).tolist()))
 
         #TODO how to handle redistancing calls for calculateCoefficients,calculateElementResidual etc
         self.globalResidualDummy = None
@@ -1241,6 +1292,30 @@ class LevelModel(OneLevelTransport):
             self.degree_polynomial = self.u[0].femSpace.order
         except:
             pass
+        # Defaults for the coefficient-owned auxiliary fields calculateResidual
+        # reads.  Coefficients.attachModels() sets them, but a user subclass that
+        # overrides attachModels() without calling super -- the pattern used
+        # throughout test/ -- never runs it, and the residual then dies on a
+        # missing attribute.  Seed them here (attachModels() runs later and
+        # assigns unconditionally, so it still wins).  q_v/ebqe_v are not seeded:
+        # every attachModels(), overridden or not, sets those.
+        c = self.coefficients
+        if not hasattr(c, 'q_v_old'):
+            c.q_v_old = np.zeros(self.q[('grad(u)', 0)].shape, 'd')
+        if not hasattr(c, 'q_porosity'):
+            c.q_porosity = np.full(self.q[('u', 0)].shape, c.porosity, 'd')
+        if not hasattr(c, 'q_porosity_old'):
+            c.q_porosity_old = c.q_porosity.copy()
+        if not hasattr(c, 'q_rho'):
+            c.q_rho = np.full(self.q[('u', 0)].shape, c.rho_f, 'd')
+        if not hasattr(c, 'q_rho_old'):
+            c.q_rho_old = c.q_rho.copy()
+        if not hasattr(c, 'ebqe_porosity'):
+            c.ebqe_porosity = np.full(self.ebqe[('u', 0)].shape, c.porosity, 'd')
+        if not hasattr(c, 'ebqe_rho'):
+            c.ebqe_rho = np.full(self.ebqe[('u', 0)].shape, c.rho_f, 'd')
+        if not hasattr(c, 'Sn_dof'):
+            c.Sn_dof = np.zeros_like(self.u[0].dof)
 
     # def calculateQuadrature(self):
     #     self.coefficients.initializeElementQuadrature(self.timeIntegration.t, self.q)

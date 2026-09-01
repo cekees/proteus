@@ -1,3 +1,6 @@
+// Two-component (H2O/CO2) compositional two-phase flow kernel.
+//
+// Co-authored-by: Claude Opus 5 <noreply@anthropic.com> and abarua_ce
 #ifndef MPHASE_CO2_H
 #define MPHASE_CO2_H
 #include <cmath>
@@ -8,7 +11,7 @@
 #include "ModelFactory.h"
 #include "../mprans/ArgumentsDict.h"
 #include "xtensor-python/pyarray.hpp"
-#include "psk_comp.h"
+#include "../pskRelations.h"
 // Compositional CO2-brine EOS + analytic (p,z) flash (P3).  Standalone headers
 // in global namespace ::m_comp_co2 (distinct from proteus::m_comp_co2 below);
 // call sites use the fully-qualified ::m_comp_co2::flash:: form.
@@ -75,19 +78,8 @@ class M_comp_co2 : public M_comp_co2_base {
 public:
   const int      nDOF_test_X_trial_element;
   CompKernelType ck;
-  // Per-DOF density projected from q_rho in calculateResidual_entropy_viscosity.
-  // Reused by invert() so the m -> u inversion uses the same variable density
-  // that built the forward mass.
   std::vector<double> rho_dof_member;
-  // Per-DOF phi * rho_n cached from calculateResidual_entropy_viscosity /
-  // calculateMassMatrix. Reused by invert(COMPONENT=1) so the m_n -> u_n
-  // inversion uses the same projected density-porosity product that built
-  // the forward comp-1 mass.
   std::vector<double> rho_n_phi_dof_member;
-  // PSK closure selector: 0 = VGM (van Genuchten-Mualem), 1 = BC (Brooks-Corey-Burdine).
-  // Set by every top-level entry point (calculateResidual / _entropy_viscosity /
-  // calculateJacobian / calculateMassMatrix) from argsDict before any
-  // evaluateCoefficients call. evaluateCoefficients dispatches on this.
   int PSK_TYPE_member = 0;
   // Compositional (p,z) state for the flash.  Isothermal / fixed-salinity per
   // solve.  T_C_member is now wired through argsDict["T_C"] and set (like
@@ -97,22 +89,8 @@ public:
   // (SP2005 salting-out is TODO); wire it the same way if salinity is needed.
   double T_C_member    = 20.0;   // temperature [degC] (default; overwritten from argsDict["T_C"])
   double m_NaCl_member = 0.0;    // salinity [mol/kg] (SP2005 salting-out is TODO)
-  // Immiscible/incompressible verification limit (McWhorter-Sunada).  Set (like
-  // PSK_TYPE_member) at every top-level entry point from argsDict["immiscible"];
-  // forces the flash to Xeq=0, Yeq=1 with constant phase densities.
   bool immiscible_member = false;
   M_comp_co2() : nDOF_test_X_trial_element(nDOF_test_element * nDOF_trial_element), ck() { }
-  // Wetting-equation coefficients in pressure / S_n form.
-  // Primary variables:
-  //   u_w = p_w        (wetting-phase pressure, Pa)
-  //   u_n = S_n = 1 - S_w   (non-wetting saturation, in [0, 1 - S_wr])
-  // beta is the wetting-fluid compressibility in 1/Pa. KWs is the wetting-phase
-  // mobility tensor K/mu_w (units 1/(Pa*s)) -- the caller now passes K/mu_w
-  // rather than the head-form hydraulic conductivity. gravity[I] is the
-  // gravity vector (m/s^2). rho0 is the wetting reference density (kg/m^3),
-  // used only inside the compressibility model. There is no division by rho0
-  // in the gravity term: in pressure form the hydrostatic correction is
-  // (grad p - rho_w g) directly.
   //
   // Closure functions vgm_/bc_*_from_Se expect wetting effective saturation
   //   S_e = (S_w - S_wr)/(1 - S_wr) = (1 - u_n - S_wr)/(1 - S_wr).
@@ -311,7 +289,8 @@ public:
     return o;
   }
 
-  // Inversion routines moved to psk_models.h (vgm_invert_analytic / vgm_invert_newton).
+  // Inversion routines (vgm_invert_analytic / vgm_invert_newton) are not used by
+  // this module; the maintained copies live in proteus/pskRelations.h.
 
   inline void calculateCFL(const double &elementDiameter, const double df[nSpace], double &cfl)
   {
@@ -739,10 +718,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         //calculate time derivative at quadrature points
         //
         ck.bdf(alphaBDF, q_m_betaBDF.data()[eN_k], m, dm, m_t, dm_t);
-        // //
-        // //calculate subgrid error (strong residual and adjoint)
-        // //
-        // //calculate strong residual
+        //
+        //calculate subgrid error (strong residual and adjoint)
+        //
+        //calculate strong residual
         // pdeResidual_u = ck.Mass_strong(m_t) + ck.Advection_strong(df, grad_u);
         // //calculate adjoint
         // for (int i = 0; i < nDOF_test_element; i++) {
@@ -835,14 +814,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         globalResidual.data()[offset_u + stride_u * u_l2g.data()[eN_i]] += elementResidual_u[i];
       } //i
     } //elements
-    //
-    // P3c STATUS: BOUNDARY PORTED. This comp-0 (H2O) exterior loop computes the
-    // compositional trace flux F_0.n = rho_g*(1-Y)*u_g + rho_a*(1-X)*u_a from the
-    // FLASH state (see the F_0.n block below, ~line 940; FD-verified in
-    // boundary0_test.cpp). evaluateCoefficients_from_Se is still called above but
-    // only to populate the water-velocity projection (ebqe_velocity_ext); it no
-    // longer feeds the residual flux. Active in FluidFlower (open `p` Dirichlet
-    // faces) and at the McWhorter-Sunada pressure inlet.
     //
     //loop over exterior element boundaries to calculate surface integrals and load into element and global residuals
     //
@@ -1173,35 +1144,18 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
         // Dissolution is handled thermodynamically by the inline flash (aqueous
         // CO2 = rho_a*X advected in F_1); the old kinetic R_diss sink is removed.
-        // CO2 injection is applied row-sum lumped per node AFTER this QP loop
-        // (see the lumped_w_n accumulation and the assembly block below).
-        // Keeping the source diagonal at the port nodes is important for the
-        // localised disk source: the consistent integration would smear a
-        // fraction of Q_inj onto rim nodes whose k_rn is still zero, exciting
-        // the BC closure nonlinearity and breaking Newton near the front.
         // Residual integration: mass + component CO2 flux (- injection, lumped).
         for (int i = 0; i < nDOF_test_element; i++) {
           const double test_i = u_test_ref.data()[k * nDOF_test_element + i];
           // Mass contribution.
           elementResidual_n[i] += m_n_t * test_i * dV;
-          // CO2 injection is row-sum lumped (applied after the QP loop). The
-          // lumped weight M_lump[i] = int N_i dV is the QP sum of test_i*dV.
           lumped_w_n[i] += test_i * dV;
-          // P3c: component CO2 flux, divergence form  residual -= F_1 . grad N_i dV.
-          // F_1 already bundles the gravity, pressure-gradient and capillary terms
-          // for both phases (gas + aqueous), so this single term replaces the old
-          // separate advection / diffusion / capillary-diffusion contributions.
           for (int I = 0; I < nSpace; I++) {
             elementResidual_n[i] -= F1[I] * u_grad_trial_qp[i * nSpace + I] * dV;
           }
         }
       }
       // Row-sum lumped CO2 injection: subtract Q_inj at port nodes only.
-      // injection_dof carries the per-node source rate (built Python-side and
-      // schedule-gated); zero on every node outside the disk masks. The PDE
-      // sign convention is d(m_n)/dt + div(F_n) + R_diss - Q_inj = 0, so the
-      // residual contribution is -Q_inj * M_lump[i] (same sign as the removed
-      // consistent term, just diagonal instead of integrated).
       for (int i = 0; i < nDOF_test_element; i++) {
         const int gi = u_l2g.data()[eN * nDOF_test_element + i];
         elementResidual_n[i] -= injection_dof.data()[gi] * lumped_w_n[i];
@@ -3084,26 +3038,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     // -------- Comp-1: lumped L2 projections for the upwind potential flux --------
     // rho_n_phi_dof, rho_w_dof: as before -- invert(COMPONENT=1) and R_diss.
     // pc_dof, dpc_dof, krn_dof, dkrn_dof, rho_n_dof: nodal closure values
-    //   used by the new edge-based upwind gas flux (Phi_n = u_w + p_c - rho_n g.x,
-    //   F_ij = tau_ij * lambda_up * delta_Phi_ij where lambda = rho_n k_rn/mu_n).
-    // *_old siblings feed the (1-Theta) part of the edge flux.
-    // krn_dof carries the k_rn/mu_n * k_rn_end scaling (so lambda = rho_n*krn_dof);
-    // dkrn_dof = d(k_rn/mu_n * krn_end)/dS_n. Lumped L2 projection averages
-    // across neighbour elements at material interfaces (same approximation
-    // comp-0 uses at line 3344, "cek hack, only for 1 material").
-    // SIZING: these are all indexed by mesh-node / comp-1 DOF index (gi, i_n,
-    // j_n up to numDOFs_n) in the projection, nodal-eval and edge loops -- NOT
-    // by the comp-0 compact free-DOF index.  They MUST be sized numDOFs_n.
-    // comp-0 has a top p_w Dirichlet BC, so numDOFs_u = nFreeDOF_global[0] is
-    // SMALLER than numDOFs_n = n_mesh_nodes by the top-boundary node count;
-    // sizing these numDOFs_u writes past the end at every top node (heap
-    // overflow) -- a latent bug that "mostly worked" by heap-layout luck until
-    // enough arrays/allocations tipped it into a hard crash.
-    // P1 (compositional): rho_n_phi_dof is REPURPOSED to cache the lumped nodal
-    // phi*N, N = rho_g*S_g + rho_a*S_a (total molar density / pore volume) from the
-    // flash, so the CO2 accumulation is m_c = (phi*N)*z (z = u_n).  (Previously it
-    // held the phase product phi*rho_n.)  invert(COMPONENT=1) divides by this cache
-    // to recover z = m_c/(phi*N).
+    
     std::vector<double> rho_n_phi_dof(numDOFs_n, 0.0);
     // Old-time phi*N for the accumulation old mass m_c_old = (phi*N_old)*z_old.
     std::vector<double> rho_n_phi_dof_old(numDOFs_n, 0.0);
@@ -3121,19 +3056,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     std::vector<double> pc_dof_old(numDOFs_n, 0.0);
     std::vector<double> krn_dof_old(numDOFs_n, 0.0);
     // Uncapped Brooks-Corey p_c (+ dp_c/dS_n and old-time sibling), used ONLY on
-    // material-interface edges for entry-pressure capillary breakthrough. See the
-    // nodal-eval block below for the rationale (capped pc_dof can't reach a strong
-    // seal's entry pressure within the physical saturation range).
+    // material-interface edges for entry-pressure capillary breakthrough. 
     std::vector<double> pc_uncap_dof(numDOFs_n, 0.0);
     std::vector<double> dpc_uncap_dof(numDOFs_n, 0.0);
     std::vector<double> pc_uncap_dof_old(numDOFs_n, 0.0);
     std::vector<double> ML_n(numDOFs_n, 0.0);
-    // OLD-time per-DOF flash gas saturation S_g and dissolved-CO2 mole fraction X,
-    // lumped like the others.  The CO2-free anchor (below) gates on these LAGGED
-    // values (not the current iterate) so its active set is FROZEN during the Newton
-    // solve -- a hard current-iterate gate would flip nodes on/off between Newton
-    // steps (active-set chatter -> stalled convergence).  The set just updates
-    // between time steps, which is fine since CO2-free regions evolve slowly.
     std::vector<double> Sg_dof_old(numDOFs_n, 0.0);
     std::vector<double> X_dof_old(numDOFs_n, 0.0);
     for (int eN = 0; eN < nElements_global; eN++) {
@@ -3179,12 +3106,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           proteus::m_comp_co2::psk::vgm_kr_nonwetting_from_Se(Se_p, alpha_eN_p, n_vg_eN_p, krn_p, dkrn_dSe_p, Se_trap_L3043);
         krn_p             = krn_p * krn_end_p / mu_n;
         const double dkrn_dSn_p = dkrn_dSe_p * krn_end_p * dSe_du_n_p / mu_n;
-        // EOS exponent clamped at 50 (exp(50)~5e21, finite): a bad Newton trial
-        // step can overshoot p_w/p_c and otherwise overflow exp() -> NaN ->
-        // unrecoverable. Clamp keeps the residual finite so the line search can
-        // reject the step. Physical exponent is <1, so this never bites in normal
-        // operation. STOPGAP for the sharp-front Newton divergence; real fix is
-        // bounds-preserving comp-1 FCT.
         const double rho_n_p     = rho_n_compressible ? (rho_n * exp(fmin((u_w_p + pc_p) * inv_p_ref_n, 50.0))) : rho_n;
         const double phi_rho_n_qp = phi_eN * rho_n_p;
         // Old-time-level values for the (1-Theta) part of the edge flux.
@@ -3215,9 +3136,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         // TADR brine density at this QP.
         const int    eN_k_proj    = eN * nQuadraturePoints_element + k;
         const double rho_w_qp_proj = q_rho.data()[eN_k_proj];
-        // P1 (compositional): flash total molar density N = rho_g*S_g + rho_a*S_a
-        // and its (p,z) derivatives, for the CO2 accumulation m_c = phi*N*z
-        // (current + old).  Replaces the phase product phi*rho_n in rho_n_phi_dof.
         const double z_cl_pr     = fmin(fmax(u_n_p,     1.0e-8), 1.0 - 1.0e-8);
         const double p_cl_pr     = fmax(u_w_p, 1.0e2);
         const double z_cl_pr_old = fmin(fmax(u_n_p_old, 1.0e-8), 1.0 - 1.0e-8);
@@ -3674,9 +3592,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         //
         //Calculate Darcy Velocity at external faces
         //
-        //
-        //Calculate Darcy Velocity at external faces
-        //
         
         // double  darcy_velocity_loc_ext[nSpace];
         // for (int I = 0; I < nSpace; I++) { darcy_velocity_loc_ext[I] = 0.0; }
@@ -3699,19 +3614,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           ebqe_velocity_ext.data()[ebNE_kb_nSpace + I] = -acc;
           ebqe_velocity_ext_couple.data()[ebNE_kb_nSpace + I] = -acc;
         }
-
-
-        //
-        // useConsistentFlux selects the EV boundary routing below (kept = false:
-        // consistent flux -> TransportMatrix*, penalty -> globalResidual).  The
-        // useConsistentFlux==true branches are dead but must still compile.
         bool useConsistentFlux=false;
-        // ===== P3c boundary (STAB=2): compositional comp-0 (H2O) flux F_0.n =====
-        // Mirrors the original EV split: the CONSISTENT flux (F_0.n + penalty) ->
-        // flux_ext (fed to TransportMatrix*); only the penalty -> bflux_ext
-        // (globalResidual).  F_0 + its (0,0) Jacobian value/grad blocks mirror the
-        // interior compositional flux (FD-verified, boundary0_test.cpp).  The
-        // per-I value blocks valp_b/valz_b are stored for the Jacobian loop below.
         double grad_u_n_ext_b[nSpace];
         ck.gradFromDOF(u_dof_n.data(), &u_l2g.data()[eN_nDOF_trial_element],
                        u_grad_trial_trace, grad_u_n_ext_b);
@@ -3851,13 +3754,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
               bfluxJacobian_u_u[j] = 0.0;
             }
           }
-          // Time-history flux Jacobian (used by the (1-Theta) part of the
-          // edge loop in TransportMatrixn / TransportMatrixConsistentn).
-          // Build it from the time-n state (asn_ext, dan_ext, dfn_ext) so the
-          // edge loop sees a self-consistent boundary contribution under
-          // partial-Theta schemes. With Theta=1 (default implicit Euler)
-          // this drops out of the residual, but it must be initialised --
-          // previously it was an uninitialised stack array.
           exteriorNumericalFluxJacobian(a_rowptr.data(), a_colind.data(),
               isDOFBoundary_u.data()[ebNE_kb], normal,
               asn_ext, dan_ext, grad_u_ext,
@@ -3895,10 +3791,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     /////////////////////////////////////////////////////////////////
     // NOTE: see NCLS.h for a different but equivalent implementation of this.
     std::vector<double> cflux(numDOFs, 0.0);
-    // bound to numDOFs_u (component 0 only). For i >= numDOFs_u
-    // mesh_dof.data()[i*3+I] reads past the end of mesh_dof (sized N*3) and
-    // produces NaN that propagates through psi[i] / quantDOFs[i] etc. into
-    // the main DOF loop's residual.
     for (int i = 0; i < numDOFs_u; i++) {
       double gi[nSpace], Cij[nSpace], xi[nSpace], etaMaxi, etaMini;
       const int node_i = freeDOFToNode_u.data()[i];
@@ -3995,21 +3887,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       if (POWER_SMOOTHNESS_INDICATOR == 0) psi[i] = 1.0;
       else psi[i] = std::pow(alphai, POWER_SMOOTHNESS_INDICATOR); //NOTE: they use alpha^2 in the paper
     }
-    // =======================================================================
-    // P3c: per-free-DOF H2O closure cache for the compositional comp-0 edge
-    // flux  F_0 = F_g^w + F_a^w (two-phase, molar, H2O-weighted).
-    //   F_g^w = tau * lam_g^w_up * dPhi_g,  lam_g^w = (krn_end/mu_n)*rho_g*(1-Y)*krn
-    //   F_a^w = tau * lam_a^w_up * dPhi_a,  lam_a^w = rho_a*(1-X)*krw
-    //   dPhi_g = d(p + p_c) - rho_g_mass_edge * g.dx,  dPhi_a = dp - rho_a_mass_edge * g.dx
-    // Identical structure to the comp-1 (CO2) closure (FD-verified in eftest with
-    // COMP_CO2 toggled), only the composition weights flip Y->(1-Y), X->(1-X).
-    // tau here is the BARE transmissibility -TransportMatrix[ij]/rho_edge (the
-    // single-phase operator bakes in rho_w via as=rhom*KWs); density and mobility
-    // live in lam^w / dPhi at the edge.  NO capillary entry-pressure gate on the
-    // gas branch: it carries only water vapor (1-Y ~ tiny) and the DOF-graph loop
-    // has no per-element context for the two-sided barrier (see plan P3c).
-    // Indexed by FREE DOF i (numDOFs_u): p = u_free_dof[i], z = u_dof_n[node_i],
-    // rock = freeDOFMaterialTypes[i] (single-nodal-rock, matches the comp-0 skeleton).
     std::vector<double> w_lam_g(numDOFs_u, 0.0),  w_lam_a(numDOFs_u, 0.0);
     std::vector<double> w_dlam_g_dp(numDOFs_u, 0.0), w_dlam_g_dz(numDOFs_u, 0.0);
     std::vector<double> w_dlam_a_dp(numDOFs_u, 0.0), w_dlam_a_dz(numDOFs_u, 0.0);
@@ -4305,36 +4182,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     //   Phi_n   = u_w + p_c(S_n) - rho_n g . x
     //   lambda_n(S_n,p_n) = rho_n(p_n) * k_rn(S_n) / mu_n
     // Darcy, capillary, and buoyancy collapse into the single edge flux.
-    //
-    // Layout (ELEMENT-BASED, two-sided closure):
-    //   1. Per-DOF projections (above): rho_n_phi_dof, dpc_dof -- consumed ONLY
-    //      by the lumped accumulation + its (1,1)/(1,0) mass Jacobian (nodal by
-    //      construction). The transport closure is NOT projected; it is
-    //      evaluated per element-side in the cell loop.
-    //   2. CELL LOOP: each element e contributes, using ITS OWN rock
-    //      (elementMaterialTypes[eN]):
-    //        - lumped row volume elementMass_n + mass time-derivative + R_diss
-    //          + Q_inj (as before);
-    //        - the element-local upwind potential flux
-    //            F^e_ij = Theta     tau^e_ij lambda^e_up     delta_Phi^e_ij
-    //                   + (1-Theta) tau^e_ij lambda^e_up_old delta_Phi^e_old_ij,
-    //          tau^e_ij = max(0, -elementTransport_n[i][j]) (per-element K
-    //          transmissibility), delta_Phi^e and lambda^e built from the
-    //          element rock's k_rn / p_c / rho_n at the element nodes.
-    //      R_n[i] -= sum_{j != i} F^e_ij (scattered with elementResidual_n);
-    //      the Theta-part (1,1)/(1,0) Jacobian goes into elementJacobian_n_n /
-    //      _n_w and rides the existing CSR scatter. Interface nodes receive
-    //      rock-A physics from A-side elements and rock-B physics from B-side
-    //      elements -- the two-sided closure -- so the gas pool spreads
-    //      laterally under a seal (the lateral low-order upwind no longer routes
-    //      single-nodal-rock mobility through seal-tagged interface nodes), and
-    //      delta_Phi and rho_n use ONE consistent p_c per element (no
-    //      capped-vs-uncapped split between the flux residual and its Jacobian).
-    //   3. FCT predictor arrays (mLow_n, mDotLow_n, dLow_n, dEV_n,
-    //      dt_times_fH_minus_fL_n) zeroed/no-op'd so a postStep FCTStep_n call
-    //      scatters limited_solution_n == low-order iterate unchanged.
-    //   4. BOUNDARY LOOP (below, unchanged): consistent flux + Nitsche on
-    //      Dirichlet S_n faces; no-flow otherwise.
     // ============================================================================
 
     // -------- Per-DOF nodal CO2 mass (m_c, mc_old for the lumped mass). --------
@@ -4352,9 +4199,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       quantDOFs_n.data()[i_n] = 0.0;                // reset
     }
 
-    // Net-flux diagnostics accumulated over the element flux pass (Python reads
-    // gas_diag): [2]=sum F (imbalance, ->0 by per-element antisymmetry),
-    // [3]=sum|F|.
     double diag_sumF = 0.0, diag_absF = 0.0;
 
     // Zero the per-node gas-residual budget (6 slots, term-major over numDOFs_n).
@@ -4362,14 +4206,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     if (have_gas_budget)
       for (int s = 0; s < 6 * numDOFs_n; ++s) gas_budget_node.data()[s] = 0.0;
 
-    // z-based smoothness indicator psi_n (Kuzmin alpha^2) on the comp-1 DOF
-    // graph, used to GATE the comp-1 high-order graph viscosity dEV below.
-    // alpha_i =
-    // |sum_j (z_i - z_j)| / (sum_j |z_i - z_j|): ~0 in smooth/linear regions
-    // (so dEV -> 0 and the EV recovers high-order accuracy on smooth problems
-    // like McWhorter-Sunada) and ~1 at sharp z fronts (so the bubble-point
-    // overshoot bound is preserved for FluidFlower). Built from OLD z so dvg
-    // stays a frozen old-time coefficient (exact antisymmetric Jacobian).
     std::vector<double> psi_n(numDOFs_n, 1.0);
     if (STABILIZATION_TYPE == STABILIZATION::EV_Stab) {
       for (int i_n = 0; i_n < numDOFs_n; i_n++) {
@@ -4388,14 +4224,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
                    ? 1.0 : std::pow(alpha_i, POWER_SMOOTHNESS_INDICATOR);
       }
     }
-
-    // P0 (Newton-safe z bound): per-node MATERIAL-INTERFACE flag.  A node is an
-    // interface node if the elements touching it carry >1 material type.  Used to
-    // restore FULL (low-order Rusanov) graph dissipation for the AQUEOUS z-branch
-    // on interface-crossing edges, where the discontinuous K/krw advection is
-    // otherwise under-stabilized (the z-smoothness gate psi -> 0 there) and z
-    // undershoots below 0.  Geometric => constant in Newton (exact Jacobian), and
-    // inert on homogeneous problems (McWhorter-Sunada has no interfaces).
     std::vector<int> node_iface(numDOFs_n, 0);
     {
       std::vector<int> node_mat0(numDOFs_n, -1);
@@ -4408,37 +4236,17 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
       }
     }
-
-    // Map an (i_n, j_n) comp-1 DOF pair to its compact comp-1 CSR offset (the
-    // same indexing as dLow_n / dEV_n / dt_times_fH_minus_fL_n / MC_n).  Used to
-    // SCATTER the element-side antidiffusive predictor onto the edge graph that
-    // FCTStep_n consumes.
     auto comp1_offset = [&](int i_n, int j_n) -> int {
       for (int off = csrRowIndeces_n_DofLoops.data()[i_n];
            off < csrRowIndeces_n_DofLoops.data()[i_n + 1]; ++off)
         if (csrColumnOffsets_n_DofLoops.data()[off] == j_n) return off;
       return -1;
     };
-    // Zero the comp-1 FCT predictor edge arrays BEFORE the element loop -- the
-    // antidiffusive flux below is ACCUMULATED element-by-element (each interior
-    // edge is shared by <=2 element sides), so it must start clean each call.
-    // When FCT_n == 0 nothing accumulates and they stay zero (a stray FCTStep_n
-    // then scatters limited_solution_n == low-order iterate, unchanged).
     for (int off = 0; off < NNZ_n; ++off) {
       dLow_n.data()[off]                 = 0.0;
       dEV_n.data()[off]                  = 0.0;
       dt_times_fH_minus_fL_n.data()[off] = 0.0;
     }
-    // Node-split interface transmissibility: per comp-1 DOF, the K-weighted nodal
-    // conductance sum_eN int K grad N . grad N (the diagonal of elementTransport_n).
-    // Accumulated in the element loop; the interface-pair loop uses the harmonic
-    // mean of the two copies as tau_if (the "assembled transport" Richards uses for
-    // every edge).  Inert when split_z == 0 (no interface pairs).
-    // PARALLEL: the interface pairs are OWNED-node-only, so the interface loop reads
-    // node_Kdiag only at OWNED DOFs; the owner holds the COMPLETE element star of its
-    // owned nodes via the standard ghost overlap (the same "owners hold the correct
-    // complete value (full overlap)" property the gate-array sync in m_comp_co2.py
-    // relies on), so this local sum is complete and needs no ghost exchange.
     std::vector<double> node_Kdiag(numDOFs_n, 0.0);
 
     for (int eN = 0; eN < nElements_global; eN++) {
@@ -4554,12 +4362,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         elementJacobian_n_n[i][i] += elementMass_n[i] * (phiN_i + z_i * dphiN_dz_dof[gi]) / dt;
         // (1,0): dm_c/dp = z*phi*dN/dp.
         elementJacobian_n_w[i][i] += elementMass_n[i] * (z_i * dphiN_dp_dof[gi]) / dt;
-        // (Kinetic R_diss dissolution sink removed -- dissolution is handled
-        // thermodynamically by the inline flash; no lumped sink residual/Jacobian.)
-        // CO2 injection source (legacy LUMPED volumetric disk; inj_point_mode==0).
-        // injection_dof carries the per-node source rate; elementMass_n[i] is
-        // the local volume weight, so summed over the mesh the total injected
-        // equals rate * (nodal volume) -- mass-conservative, parallel-safe.
         if (inj_point_mode == 0) {
           const double Q_inj_n    = injection_dof.data()[gi];
           elementResidual_n[i]   -= elementMass_n[i] * Q_inj_n;
@@ -4568,12 +4370,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
       }
 
-      // CO2 injection source (CONSISTENT / Galerkin point source; inj_point_mode==1).
-      // For the element that contains a port, R^c_i -= Q_port * N_i(x_p), with
-      // N_i the P1 shape functions (barycentric coords) at the port point, built
-      // Python-side.  sum_i N_i = 1 => exact total mass at any resolution, no
-      // lumping.  Only the OWNING rank reports inj_element[p]==eN (others -1), so
-      // it is parallel-safe and contributes exactly once.
       if (inj_point_mode == 1) {
         for (int p = 0; p < inj_n_ports; p++) {
           if (inj_element.data()[p] == eN && inj_rate.data()[p] != 0.0) {
@@ -4590,14 +4386,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
       }
 
-      // -------- Element-local two-sided upwind potential flux. --------
-      // Per element-side closure (k_rn, p_c, rho_n + sensitivities) evaluated
-      // at the element nodes using THIS element's rock (mat_eN), so an
-      // interface node presents rock-A physics to A-side elements and rock-B
-      // physics to B-side elements. delta_Phi and rho_n use ONE consistent p_c
-      // per element -> the flux residual and its Theta-part Jacobian see
-      // identical gas physics (no capped-vs-uncapped split). The (1-Theta) old
-      // part enters the residual only, matching the comp-0 wetting loop.
       {
         const double S_wr_eN     = thetaR.data()[mat_eN] / phi_eN;
         const double one_m_Sr_eN = 1.0 - S_wr_eN;
@@ -4872,47 +4660,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
             const double sj_g = std::fabs(dlg_dz_o[j])*std::fabs(dPhi_g_old)
                               + std::fabs(lam_g_old_e[j])*std::fabs(dpc_dz_o[j]);
             const double sj_a = std::fabs(dla_dz_o[j])*std::fabs(dPhi_a_old);
-            // Smoothness gate (z-based, alpha^2): kills the LED dissipation in
-            // smooth regions so the EV recovers high-order accuracy (McWhorter-
-            // Sunada converges) while keeping it ~full at sharp z fronts (the
-            // FluidFlower bubble-point bound). psi_edge = max over the edge.
             const double psi_edge = fmax(psi_n[zN_e[i]], psi_n[zN_e[j]]);
-            // PHASE 1 -- CONSISTENT FCT=False aqueous dissipation.
-            // The aqueous z-dissipation now uses the SAME smoothness-gated entropy-
-            // viscosity coefficient cE*psi_edge as the gas branch and the interior --
-            // there is NO full-Rusanov (1.0) override on material-interface edges.
-            // The old override (coeff_a = iface_edge ? 1.0 : cE*psi_edge) deposited
-            // O(h) ARTIFICIAL z-diffusion across seal interfaces: it does NOT vanish
-            // under refinement, so it pumped dissolved CO2 into the ESF/FAULT interior
-            // where the flash pinned it to saturation and the low seal mobility
-            // trapped it (~18.5% interior-seal penetration in flow_old.h5, persistent
-            // and non-convergent).  cE*psi_edge -> 0 in smooth z (consistent;
-            // McWhorter-Sunada accuracy unchanged) and stays ~full only at genuine
-            // sharp z fronts, so a seal interface is stabilized by the PHYSICAL EV
-            // amount, not an artificial one -- the consistent discretization.
-            // TRADE-OFF: with FCT off there is no strict z>=0 limiter on this edge,
-            // so the bubble-point lower bound is deferred to the FCT=True path
-            // (separate session).  node_iface (built above) is retained for that work
-            // and for Phase 2 (node-split p_c jump); it is intentionally unused here.
-            // GATE-FREE dissipation: the gas-branch graph viscosity is no longer
-            // multiplied by gate_old (gate deleted).  The seal barrier is carried
-            // by the two-sided p_c flux + node-split, NOT by switching off the
-            // gas-branch stabilization at interfaces.  Both branches use the same
-            // smoothness-gated EV coefficient cE*psi_edge (consistent; -> 0 in
-            // smooth z so McWhorter-Sunada accuracy is unchanged).
             const double dEV = tau * ( cE*psi_edge*fmax(si_g,sj_g)
                                      + cE*psi_edge*fmax(si_a,sj_a) );
-            // dLow = FULL low-order Rusanov dissipation (EV down-scale -> 1), both
-            // branches ungated.  dLow >= dEV by construction, so f^A below has the
-            // right sign and FCT only ever REMOVES dissipation.
             const double dLow = tau * ( fmax(si_g,sj_g) + fmax(si_a,sj_a) );
             const double dHi  = fmin(dEV, dLow);   // high-order target, clamped <= dLow
-            // TADR-style defect-correction (see the FCT comment block above): with
-            // FCT requested, Newton solves the LOW-order operator (dLow) cleanly and
-            // the post-step Zalesak limiter adds back the bounded antidiffusion
-            //     f^A_ij = dt * (dLow - dHi) * (z_j - z_i).
-            // With FCT off the residual keeps the EV dissipation dEV directly, so
-            // the FCT-off solve is byte-for-byte the legacy scheme.
             const double dResid = (FCT_n == 1) ? dLow : dEV;
             if (dResid > 0.0) {
               const double Fv = dResid*(u_dof_n.data()[zN_e[j]] - u_dof_n.data()[zN_e[i]]);
@@ -4920,10 +4672,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
               elementJacobian_n_n[i][i] += dResid;
               elementJacobian_n_n[i][j] -= dResid;
             }
-            // Scatter the antidiffusive predictor onto the compact comp-1 CSR edge.
-            // dLow,dHi are symmetric in (i,j) and the (z_j - z_i) factor is
-            // antisymmetric, so summing the <=2 element sides sharing an edge keeps
-            // f^A_ij = -f^A_ji  =>  global CO2 mass is conserved by the limiter.
             if (FCT_n == 1) {
               const int off_n = comp1_offset(zN_e[i], zN_e[j]);
               if (off_n >= 0) {
@@ -4953,12 +4701,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
               += elementJacobian_n_n[i][j];
           globalJacobian.data()[csrRowIndeces_n_w.data()[eN_i] + csrColumnOffsets_n_w.data()[eN_i_j]]
               += elementJacobian_n_w[i][j];
-          // P1: comp-0 (H2O) water-flux Jacobian -- (0,0) and (0,1) blocks via
-          // the framework's dedicated CSR maps (Richards-style direct scatter,
-          // mirrors the (1,1)/(1,0) writes above).  The (0,0) flux diagonal adds
-          // to the per-DOF water mass diagonal (globalJacobian[ii]) in the SAME
-          // flat slot; the (0,1) off-diagonal water<-neighbor-z coupling now
-          // always lands (was dropped by the old Full-CSR search).
           globalJacobian.data()[csrRowIndeces_w_w.data()[eN_i] + csrColumnOffsets_w_w.data()[eN_i_j]]
               += elementJacobian_w_w[i][j];
           globalJacobian.data()[csrRowIndeces_w_n.data()[eN_i] + csrColumnOffsets_w_n.data()[eN_i_j]]
@@ -4966,51 +4708,14 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
       }
     }
-    // ============================================================================
-    // Comp-1 FCT per-DOF predictor.
-    //
-    // The gas/aqueous flux and its (1,1)/(1,0) Jacobian are assembled
-    // element-by-element in the cell loop above (two-sided per-element-side
-    // closure); that loop also SCATTERED the per-edge antidiffusive predictor
-    // dt_times_fH_minus_fL_n (= dt*(dLow-dEV)*dz) onto the compact comp-1 CSR.
-    // Here we only finish the per-DOF predictor: mLow_n is the converged
-    // low-order CO2 mass m_c = (phi*N)*z (under FCT_n==1 the Newton residual IS
-    // the low-order operator, so the converged iterate is exactly the bounded
-    // low-order solution), and mDotLow_n its lumped time derivative.  FCTStep_n
-    // (postStep) then limits mLow_n + ML^{-1} sum_j L_ij f^A_ij toward the
-    // high-order solution while enforcing the local discrete-maximum-principle
-    // bounds on m_c.
-    // ============================================================================
+
     for (int i_n = 0; i_n < numDOFs_n; i_n++) {
       mLow_n.data()[i_n]    = m_n_DOF[i_n];
       mDotLow_n.data()[i_n] = (m_n_DOF[i_n] - mn_n.data()[i_n]) / dt;
     }
 
-    // ===================== NODE-SPLIT interface-pair coupling =====================
-    // The gate-free seal barrier.  At a facies interface the coarse copy z_a and the
-    // seal copy z_b of a split node share NO element, so the element loop above can't
-    // couple them; this loop adds the one coupling it misses -- the genuine two-sided
-    // capillary-pressure gas flux + Fickian D_m between the copies (verified gate-free
-    // form, nodesplit_iface_realclosure_test.cpp).  Geometry: the copies are coincident
-    // (single continuous mesh-node pressure u_dof[nodeN], dx == 0), so the aqueous
-    // ADVECTIVE potential vanishes and the coupling is gas two-sided p_c + Fickian D_m.
-    //   F(a->b) = tau_if * lam_g_up * (p_c(S_g,a) - p_c(S_g,b))   [gas, NO gate]
-    //           + D_m * tau_if * (rho_a*X|a - rho_a*X|b)          [Fickian]
-    // The van Duijn entry condition is automatic: when the seal is dry lam_g_up = 0
-    // (gas blocked); gas crosses only when p_c,coarse > p_c,seal.  Antisymmetric
-    // (R_a += F, R_b -= F) => CO2 conserved.  tau_if = harmonic K-conductance of the
-    // two copies (assembled transport, the same kind Richards puts on every edge).
-    // Residual + diagonal tangent scatter directly into globalResidual / globalJacobian
-    // (Richards DOF-graph style) via comp1_full_offsets; the z_a<->z_b off-diagonal is
-    // written only if the sparsity already carries that slot (else treated explicitly).
     if (split_z != 0) {
       const double mu_n_loc = mu_n;
-      // Sanity counters: number of interface tangents that could NOT be scattered
-      // because their matrix slot is absent.  cab/cba (z_a<->z_b off-diagonal) MUST
-      // be present (allocated by getExtraSparsityElements in Transport.py) for a
-      // consistent Jacobian; comp10 (z<->p_node) lives in the standard (1,0) cross
-      // block so it should always be present.  A nonzero count => stale/incomplete
-      // sparsity -> degraded Newton; reported once after the loop.
       int n_drop_offdiag = 0, n_drop_pcol = 0;
       for (int ip = 0; ip < n_interface_pairs; ip++) {
         const int nodeN = interface_pairs.data()[5 * ip + 0];   // shared mesh node (for p)
@@ -5018,9 +4723,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const int mc[2] = { interface_pairs.data()[5 * ip + 2], interface_pairs.data()[5 * ip + 4] };
         const double p_node = u_dof.data()[nodeN];
         double pc2[2], dpc_dz2[2], lam_g2[2], dlam_g_dz2[2], C2[2], dC_dz2[2];
-        // (1,0) pressure partials: F is built from flashPZ(p_node, z), so pc / lam_g /
-        // C all depend on the shared pressure DOF.  Same flash chain rule the boundary
-        // loop (~line 5178) uses, evaluated at the interface node.
         double dpc_dp2[2], dlam_g_dp2[2], dC_dp2[2];
         for (int s = 0; s < 2; s++) {
           const int    mat     = mc[s];
@@ -5117,53 +4819,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
                   << std::endl;
       }
     }
-    // ============================================================================
-    // CO2-FREE ANCHOR (CONSERVATIVE + bound-preserving).  In a CO2-free pocket every
-    // PHYSICAL comp-1 coupling vanishes (gas mobility ~ S_g -> 0, Fickian ~ X -> 0, EV
-    // dissipation ~ S_g -> 0) and the comp-1 mass is lumped (diagonal), so a node's z
-    // is held by nothing but its own accumulation -> an isolated DOF (especially a
-    // node-split fine copy) drifts z unbounded with no spatial reference (the
-    // top-right z->3.19 runaway).  The legacy fix was an ABSOLUTE pin
-    // R_z[i] += lam*(z_i - z_floor): it bounds z but is a one-sided SINK (the removed
-    // CO2 lands nowhere), so it BLEEDS mass -- including off the genuine dispersing
-    // dissolved-CO2 fringe whenever the gate momentarily fires there (tightening X_tol
-    // only delays the sink, never removes it).
-    //
-    // This replaces the pin with a CONSERVATIVE anchor that is ALSO bound-preserving,
-    // built from two ANTISYMMETRIC (mass-telescoping) couplings -- never a sink:
-    //
-    //   LAYER 1 (graph-Laplacian over the compact comp-1 DOF graph).  Between two
-    //   CO2-free neighbour DOFs i,j add the diffusive flux
-    //       F_ij = lam_ij*(z_i - z_j),   lam_ij = alpha * min(cap_i,cap_j)/dt,
-    //       cap  = (phi*N)_old * V_node = rho_n_phi_dof_old * ML_n   [mol].
-    //   R_z[i] += F_ij is scattered on row i ONLY; row j adds lam_ji*(z_j - z_i) =
-    //   -F_ij when the loop reaches j (lam symmetric in i,j), so the pair telescopes
-    //   to 0 => CO2 conserved exactly.  By the discrete maximum principle the
-    //   Laplacian can only pull z_i toward [min_j z_j, max_j z_j], never outside, so z
-    //   is BOUNDED; for a closed CO2-free pocket conservation pins the MEAN and the
-    //   Laplacian pins the SPREAD.  Gated on BOTH sides (only smooths within genuinely
-    //   CO2-free rock) so the dispersing fringe (X >= X_tol) is never touched -> no
-    //   fringe mass loss.
-    //
-    //   LAYER 2 (fine<->coarse spring on the split-interface pairs).  A single
-    //   decoupled fine z-copy on a facies interface may have NO CO2-free compact-graph
-    //   neighbour to diffuse into (Layer 1 has nothing to work with); couple it
-    //   conservatively to its coarse copy z_a<->z_b:
-    //       F_s = lam_s*(z_a - z_b),   lam_s = alpha * min(cap_a,cap_b)/dt,
-    //   R_a += F_s, R_b -= F_s (antisymmetric => conserved).  The coarse copy reaches
-    //   live bulk, so this hands the fine copy an absolute reference WITHOUT a sink.
-    //   Inert when split_z == 0 (n_interface_pairs == 0).
-    //
-    // Both layers freeze lam at the OLD time (constant in z during Newton) => EXACT
-    // Jacobian: Layer 1 scatters +lam_ij on (i,i) and -lam_ij on (i,j) (the symmetric
-    // (j,j)/(j,i) halves land when the loop reaches j); Layer 2 scatters +lam_s on the
-    // (z_a,z_a)/(z_b,z_b) diagonals and -lam_s on the dedicated z_a<->z_b interface
-    // off-diagonal slots (comp1_iface_offsets, allocated by getExtraSparsityElements).
-    // The gate uses the LAGGED flash (frozen active set, no in-Newton on/off chatter).
-    // alpha = split_anchor_alpha; alpha = 0 -> inactive (byte-identical legacy).
-    // PARALLEL: Sg_dof_old/X_dof_old are the same lagged sensors the EV path uses;
-    // the antisymmetric scatter conserves on the owned-node pattern (a ghost row's
-    // -F is recomputed by its owner), the standard Richards DOF-graph behaviour.
     if (split_anchor_alpha > 0.0 && dt > 0.0) {
       const double Sg_tol = split_anchor_Sg_tol;   // S_g below this => no free gas
       const double X_tol  = split_anchor_X_tol;    // dissolved-CO2 mole frac below this => no CO2
@@ -5341,18 +4996,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         const double bc_u_n_ext_b = isDir_n * ebqe_bc_u_n_ext.data()[ebNE_kb]
                                   + (1 - isDir_n) * u_n_ext_b;
 
-        // ====================================================================
-        // P3c boundary (STAB=2): compositional comp-1 (CO2) trace flux F_1.n.
-        // Mirrors the interior element flux F_1 = rho_g*Y*u_g + rho_a*X*u_a
-        // (calculateResidual / calculateJacobian), recomputing every saturation-
-        // dependent property from the FLASH saturation S_g(p,z) -- slot 1 is z,
-        // NOT S_n.  The surface term from integrating div(F_1) by parts is
-        // +(F_1.n) N_i dS, so the residual adds +F_1.n*test_i and the Jacobian
-        // mirrors the interior chain rule with gradN_i replaced by the normal.
-        // Consistent flux is applied only on Dirichlet-z faces (isDir_n); a
-        // Nitsche penalty drives z at the trace toward bc_u_n_ext_b (= z_BC).
-        // No-flow faces contribute nothing (closed-box conservation).
-        // ====================================================================
+        
         const double z_clb = fmin(fmax(u_n_ext_b, 1.0e-8), 1.0 - 1.0e-8);
         const double p_clb = fmax(u_w_ext_b, 1.0e2);
         ::m_comp_co2::flash::FlashState fsb =
@@ -5525,39 +5169,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
       }
     } // ebNE
-
-    // The Zalesak FCT limiter is NOT called here. It runs as a Python-
-    // orchestrated post-step (Coefficients.postStep -> LevelModel.FCTStep):
-    // FCTStep(component, pass=1) -> ghost-scatter Rpos/Rneg -> FCTStep(pass=2),
-    // the requirement for MPI-parallel mass conservation. This routine just
-    // leaves the comp-0 and comp-1 FCT predictor arrays (mLow, mDotLow,
-    // dt_times_fH_minus_fL, dLow, dEV, min/max_m_bc, ...) populated from the
-    // converged iterate.
   }
 
-  // ============================================================================
-  // invert(): m -> u inversion for the FCT pipeline.
-  //
-  // COMPONENT:
-  //   0 -> wetting eq: NOT SUPPORTED in the (p_w, S_n) formulation.
-  //        Reason: the wetting mass is
-  //                  m_w = rho_w(p_w) * phi * theta_w(1 - u_n)
-  //        which carries information about BOTH p_w and u_n. Inverting m_w to
-  //        recover p_w alone is ill-posed (and degenerate when beta = 0, where
-  //        m_w doesn't depend on p_w at all). The retention-curve legacy
-  //        inverse was meaningful only for single-phase Richards and is now
-  //        removed; calling invert(COMPONENT=0) throws.
-  //
-  //   1 -> non-wetting eq: m_n -> u_n = S_n via
-  //          u_n = clamp(m_n / (phi*rho_n), 0, 1 - S_wr)
-  //        Uses rho_n_phi_dof_member cached by calculateResidual_entropy_viscosity
-  //        / calculateMassMatrix. Output written to 'u_dof_n' (if provided) or
-  //        falls back to 'u_dof'.
-  //
-  // The Python Coefficients class rejects STABILIZATION_TYPE='Implicit_FCT'
-  // up front, so a properly-configured run never reaches COMPONENT=0 here.
-  // The throw is a load-bearing safety net for misconfigured callers.
-  // ============================================================================
   void invert(arguments_dict &args)
   {
     xt::pyarray<int>    &a_rowptr             = args.array<int>("a_rowptr");
@@ -5958,33 +5571,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     rho_n_phi_dof_member = rho_n_phi_mm;
   } //computeMassMatrix
 
-  // Local-equilibrium dissolution flash (the k_d -> inf limit of the kinetic
-  // R_diss).  Runs ONCE per step, after BOTH the flow (S_n) and transport (c)
-  // solves, as an algebraic gas<->brine CO2 exchange at every nodal DOF.  It
-  // replaces the in-residual kinetic sink, which -- because the gas mass
-  // m_n = phi*rho_n*S_n carries the tiny rho_n scale while R_diss removed mass
-  // at the rho_w~1 scale -- dissolved the gas ~rho_w/rho_n ~ 555x too fast and
-  // let it vanish before it could pool/spread.
-  //
-  // PART 1 (nodal exchange).  Conserved per-node CO2 per pore volume (rho_w
-  // units):  M = rho_n*S_n + (X_sat/c_sat)*(1-S_n)*c, where c=c_sat <=> the
-  // physical dissolved-CO2 mass fraction X_sat.  Two outcomes per node:
-  //   * M <= X_sat : brine absorbs all gas        -> S_n=0,    c=M*c_sat/X_sat
-  //   * else       : brine saturates, gas remains -> c=c_sat,  S_n=(M-X_sat)/(rho_n-X_sat)
-  // Requires 0 < X_sat < rho_n for any free gas to remain.  Sn_dof aliases the
-  // flow model's u[1].dof and c_dof the transport model's u[0].dof (both
-  // zero-copy), so BOTH are mutated in place.
-  //
-  // PART 2 (TADR old-mass rebuild).  The transport BDF time derivative reads
-  // the old mass m_last (<- m_tmp == TADR q[('m',0)], copied by the framework's
-  // end-of-step updateTimeHistory which runs AFTER the postStep that calls
-  // this).  So we rebuild that quadrature mass from the FLASHED c AND S_n,
-  // using the SAME valFromDOF / l2g / phi convention as calculateResidual --
-  // m = thetaW*rho*c with thetaW = phi*(1-S_n), phi = thetaR+thetaSR (per
-  // material), rho = rho_f*(1+eps*c), eps = (rho_s-rho_f)/rho_f.  Without this
-  // the next step's m_t = (m(c) - m_old)/dt cancels the flash increment and the
-  // dissolved CO2 is not conserved.  (The flow gas old-mass is nodal --
-  // u_dof_n_old -- and is repaired in Python.)
   void dissolutionFlash(arguments_dict &args)
   {
     xt::pyarray<double> &c_dof   = args.array<double>("c_dof");    // c   (in/out)
@@ -5997,18 +5583,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     const int    numDOFs         = args.scalar<int>("numDOFs");
     if (X_sat <= 0.0 || k_d <= 0.0)
       return;                                    // dissolution disabled
-    // --- PART 1: FINITE-RATE IMPLICIT nodal dissolution toward local equilib.
-    // Per node, the gas-limited equilibrium concentration is
-    //   c_eq = min(M/a, c_sat),   a = X_sat/c_sat,   M = rho_n*S_n + a*(1-S_n)*c
-    // (the instantaneous-flash target).  We relax c toward c_eq with an
-    // IMPLICIT-EULER step of the linear-driving-force ODE dc/dt = k_d*S_n*(c_eq-c):
-    //   frac = r/(1+r),  r = k_d*S_n*dt   (always < 1 -> unconditionally stable)
-    // then recover S_n from EXACT M-conservation.  k_d -> inf gives frac -> 1
-    // (the instantaneous local-equilibrium flash); k_d -> 0 gives no transfer.
-    // The finite rate is what lets the free-gas plume RISE (structural trapping)
-    // before it dissolves over a slower timescale (solubility trapping), instead
-    // of the instantaneous flash dissolving it in place.  Because dissolution is
-    // now rate-limited, the PHYSICAL X_sat (~rho_n) can be kept.
     const double a = X_sat / c_sat;              // dissolved CO2 per unit c
     for (int i = 0; i < numDOFs; i++)
       {
@@ -6070,12 +5644,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
   //   Sg = free-gas saturation               (FlashState.S_g)
   //   X  = CO2 mole fraction dissolved in brine  (FlashState.X)
   //   c  = brine CO2 MASS concentration [kg/m^3] = rho_a * X * M_CO2
-  // This uses the SAME flashPZ the residual uses (T_C_member/m_NaCl_member
-  // defaults, immiscible from argsDict), so the exported fields are exactly the
-  // solver's internal compositional state -- not an external numpy replica.
-  // Called once per completed step from Python's
-  // calculateAuxiliaryQuantitiesAfterStep, so the values archived for a time
-  // level match that level's (p,z).
   void calculateFlashFields(arguments_dict &args)
   {
     xt::pyarray<double> &p_dof  = args.array<double>("p_dof");   // comp-0 (pressure) [Pa]
@@ -6084,16 +5652,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &X_dof  = args.array<double>("X_dof");   // out: CO2 mole frac in brine
     xt::pyarray<double> &c_dof  = args.array<double>("c_dof");   // out: brine CO2 mass conc [kg/m^3]
     const int numDOFs           = args.scalar<int>("numDOFs");
-    // NODE-SPLIT (split_z): the OUTPUT fields are MESH-NODE quantities (one value
-    // per node, plotted through comp-0's continuous node space), so this loop
-    // runs over the numDOFs == nnode mesh nodes -- NOT the nz split comp-1 DOFs.
-    // p_dof is already mesh-node indexed; z_dof is SPLIT-DOF indexed, so we pull
-    // each node's z through node2zdof (mesh node -> primary split z-DOF).  Without
-    // this the flash would pair p[node i] with z[split-DOF i] (different physical
-    // nodes once any interface node is split) and scatter bogus Sg/X/c across the
-    // field (the "speckle"), AND the split-ordered array would be archived against
-    // the mesh-node space.  Python passes node2zdof == arange(nnode) when split_z
-    // == 0, so the byte-identical path is i -> i.
     xt::pyarray<int>    &node2zdof = args.array<int>("node2zdof");
     immiscible_member = (args.scalar<int>("immiscible") != 0);
     T_C_member        = args.scalar<double>("T_C");      // temperature [degC] from input
