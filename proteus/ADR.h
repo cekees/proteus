@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iostream>
 #include <set>
+#include <stdexcept>
 #include <map>
 #include <valarray>
 #include <vector>
@@ -1390,7 +1391,7 @@ namespace proteus
 						{
 							double jac_t[nSpace * nSpace], jacDet_t, jacInv_t[nSpace * nSpace],
 								   bJac_t[nSpace * (nSpace - 1)], mT_t[(nSpace - 1) * (nSpace - 1)],
-								   mTDS_t, nrm_t[2], xt_, yt_, zt_;
+								   mTDS_t, nrm_t[2], xt_ = 0.0, yt_ = 0.0, zt_ = 0.0;
 							ck.calculateMapping_elementBoundary(eN_s[s], ebN_local_s[s], kb,
 																ebN_local_s[s] * nQuadraturePoints_elementBoundary + kb,
 																mesh_dof.data(), mesh_l2g.data(),
@@ -1400,19 +1401,44 @@ namespace proteus
 																xt_, yt_, zt_);
 							xq[s][kb][0] = xt_; xq[s][kb][1] = yt_; xq[s][kb][2] = zt_;
 						}
+					// edge diameter: the length scale for the pairing tolerance just below,
+					// and for the interior-penalty scaling further down (same measure the
+					// cutfem ghost penalty uses); note gamma/h here for a VALUE jump, vs
+					// gamma*h there for a gradient jump.
+					const double h_edge = elementBoundaryDiameter.data()[ebN];
+					// Match over nSpace components only: a component the mapping does not
+					// define contributes nothing but noise to the distance, and the paired
+					// points agree EXACTLY in the components it does define, so the winning
+					// distance is 0 and the runner-up is a full quadrature spacing away.
+					// Verify that outcome rather than trust it -- a mis-pick here silently
+					// differences u at two different points, and assert() is compiled out by
+					// the -DNDEBUG that reaches these translation units.
 					int kmap[2][nQuadraturePoints_elementBoundary];
+					bool kmap_used[nQuadraturePoints_elementBoundary] = {};
 					for (int k = 0; k < nQuadraturePoints_elementBoundary; k++)
 					{
 						kmap[0][k] = k;
-						int best = 0;
-						double bestd = 1.0e300;
+						int best = -1;
+						double bestd = 1.0e300, nextd = 1.0e300;
 						for (int j = 0; j < nQuadraturePoints_elementBoundary; j++)
 						{
 							double d = 0.0;
-							for (int I = 0; I < 3; I++)
+							for (int I = 0; I < nSpace; I++)
 								d += std::fabs(xq[1][j][I] - xq[0][k][I]);
-							if (d < bestd) { bestd = d; best = j; }
+							if (d < bestd) { nextd = bestd; bestd = d; best = j; }
+							else if (d < nextd) { nextd = d; }
 						}
+						if (best < 0 || kmap_used[best] || bestd >= 1.0e-8 * h_edge || nextd <= 2.0 * bestd)
+						{
+							std::cerr << "ADR immersedSCIFEM: quadrature points on face " << ebN
+									  << " between elements " << eN_s[0] << " and " << eN_s[1]
+									  << " do not pair up (k=" << k << ", best=" << best
+									  << ", d=" << bestd << ", runner-up=" << nextd
+									  << ", h=" << h_edge << "); the mesh is non-conforming or the"
+									  << " boundary mapping is inconsistent." << std::endl;
+							throw std::runtime_error("ADR immersedSCIFEM: face quadrature pairing failed");
+						}
+						kmap_used[best] = true;
 						kmap[1][k] = best;
 					}
 
@@ -1439,10 +1465,6 @@ namespace proteus
 					}
 					double C_H_edge[nP_edge + 1];
 					equivalent_polynomials::calculate_edge_H<nP_edge>(phi_edge[0], phi_edge[1], C_H_edge);
-					// edge diameter for the interior-penalty scaling (same measure the cutfem ghost
-					// penalty uses); note gamma/h here for a VALUE jump, vs gamma*h there for a
-					// gradient jump.
-					const double h_edge = elementBoundaryDiameter.data()[ebN];
 					double edge_vec[3];
 					double edge_len2 = 0.0;
 					for (int I = 0; I < 3; I++)
@@ -2610,7 +2632,7 @@ namespace proteus
 						{
 							double jac_t[nSpace * nSpace], jacDet_t, jacInv_t[nSpace * nSpace],
 								   bJac_t[nSpace * (nSpace - 1)], mT_t[(nSpace - 1) * (nSpace - 1)],
-								   mTDS_t, nrm_t[2], xt_, yt_, zt_;
+								   mTDS_t, nrm_t[2], xt_ = 0.0, yt_ = 0.0, zt_ = 0.0;
 							ck.calculateMapping_elementBoundary(eN_s[s], ebN_local_s[s], kb,
 																ebN_local_s[s] * nQuadraturePoints_elementBoundary + kb,
 																mesh_dof.data(), mesh_l2g.data(),
@@ -2620,19 +2642,44 @@ namespace proteus
 																xt_, yt_, zt_);
 							xq[s][kb][0] = xt_; xq[s][kb][1] = yt_; xq[s][kb][2] = zt_;
 						}
+					// edge diameter: the length scale for the pairing tolerance just below,
+					// and for the interior-penalty scaling further down (same measure the
+					// cutfem ghost penalty uses); note gamma/h here for a VALUE jump, vs
+					// gamma*h there for a gradient jump.
+					const double h_edge = elementBoundaryDiameter.data()[ebN];
+					// Match over nSpace components only: a component the mapping does not
+					// define contributes nothing but noise to the distance, and the paired
+					// points agree EXACTLY in the components it does define, so the winning
+					// distance is 0 and the runner-up is a full quadrature spacing away.
+					// Verify that outcome rather than trust it -- a mis-pick here silently
+					// differences u at two different points, and assert() is compiled out by
+					// the -DNDEBUG that reaches these translation units.
 					int kmap[2][nQuadraturePoints_elementBoundary];
+					bool kmap_used[nQuadraturePoints_elementBoundary] = {};
 					for (int k = 0; k < nQuadraturePoints_elementBoundary; k++)
 					{
 						kmap[0][k] = k;
-						int best = 0;
-						double bestd = 1.0e300;
+						int best = -1;
+						double bestd = 1.0e300, nextd = 1.0e300;
 						for (int j = 0; j < nQuadraturePoints_elementBoundary; j++)
 						{
 							double d = 0.0;
-							for (int I = 0; I < 3; I++)
+							for (int I = 0; I < nSpace; I++)
 								d += std::fabs(xq[1][j][I] - xq[0][k][I]);
-							if (d < bestd) { bestd = d; best = j; }
+							if (d < bestd) { nextd = bestd; bestd = d; best = j; }
+							else if (d < nextd) { nextd = d; }
 						}
+						if (best < 0 || kmap_used[best] || bestd >= 1.0e-8 * h_edge || nextd <= 2.0 * bestd)
+						{
+							std::cerr << "ADR immersedSCIFEM: quadrature points on face " << ebN
+									  << " between elements " << eN_s[0] << " and " << eN_s[1]
+									  << " do not pair up (k=" << k << ", best=" << best
+									  << ", d=" << bestd << ", runner-up=" << nextd
+									  << ", h=" << h_edge << "); the mesh is non-conforming or the"
+									  << " boundary mapping is inconsistent." << std::endl;
+							throw std::runtime_error("ADR immersedSCIFEM: face quadrature pairing failed");
+						}
+						kmap_used[best] = true;
 						kmap[1][k] = best;
 					}
 
@@ -2659,10 +2706,6 @@ namespace proteus
 					}
 					double C_H_edge[nP_edge + 1];
 					equivalent_polynomials::calculate_edge_H<nP_edge>(phi_edge[0], phi_edge[1], C_H_edge);
-					// edge diameter for the interior-penalty scaling (same measure the cutfem ghost
-					// penalty uses); note gamma/h here for a VALUE jump, vs gamma*h there for a
-					// gradient jump.
-					const double h_edge = elementBoundaryDiameter.data()[ebN];
 					double edge_vec[3];
 					double edge_len2 = 0.0;
 					for (int I = 0; I < 3; I++)

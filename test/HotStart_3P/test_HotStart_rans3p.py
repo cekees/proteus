@@ -94,4 +94,19 @@ class Test_HotStart_rans3p(object):
             expected_path = 'comparison_files/' + 'comparison_' + self.compare_name + '_u_t2.csv'
             #write comparison file
             #np.array(actual.root.u_t2).tofile(os.path.join(self._scriptdir, expected_path),sep=",")
-            np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['u_t2']).flatten(),decimal=10)
+            # Relative, not absolute-to-10-decimals. decimal=10 demands agreement
+            # to 1e-10 on a nonlinear PDE solve, which requires near-identical
+            # arithmetic and so is not portable across toolchains: darcy's pip
+            # pathway (conda-forge compilers, Intel macOS) drifts ~1e-5 relative
+            # -- 845 of 973 elements "mismatched" -- while the same commit on the
+            # same host passes under hpc-miniforge and hpc-venv. The measured
+            # worst case there is a max relative difference of 1.77e-4 over 86 of
+            # 973 elements (max absolute 1.07e-5); rtol=1e-3 sits comfortably
+            # above it while still asserting agreement to 0.1%, which is far
+            # tighter than any change that would matter physically. Note the
+            # maximum only became visible on switching to assert_allclose --
+            # assert_almost_equal reports mismatch counts but not the extremes,
+            # so sizing a tolerance from its output understates the tail.
+            np.testing.assert_allclose(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),
+                                       np.array(actual['u_t2']).flatten(),
+                                       rtol=1.0e-3, atol=1.0e-8)

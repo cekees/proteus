@@ -263,8 +263,13 @@ namespace equivalent_polynomials
 
   private:
     int P2_ifem_case = 0;
-    double _H_q = 0., _ImH_q = 0., _D_q = 0., _va_q[nP_ifem], _vb_q[nP_ifem],
-        _va_x_q[nP_ifem], _va_y_q[nP_ifem], _va_z_q[nP_ifem], _vb_x_q[nP_ifem], _vb_y_q[nP_ifem], _vb_z_q[nP_ifem];
+    // These eight are the arrays VA()/VB()/VA_x()/... hand straight back to the
+    // caller, so they are the read path for the SCIFEM facet terms in ADR.h.
+    // 3567c2a3 initialised the storage arrays (_va, _va_ebq, _a*, _b*) but left
+    // this scratch row alone -- only the three scalars ahead of it got values.
+    double _H_q = 0., _ImH_q = 0., _D_q = 0., _va_q[nP_ifem] = {}, _vb_q[nP_ifem] = {},
+        _va_x_q[nP_ifem] = {}, _va_y_q[nP_ifem] = {}, _va_z_q[nP_ifem] = {},
+        _vb_x_q[nP_ifem] = {}, _vb_y_q[nP_ifem] = {}, _vb_z_q[nP_ifem] = {};
     // Sized nDOF_phi for the same reason as phi_dof_corrected: the cut geometry
     // permutes nN topological vertices, while the P2 IFEM basis also permutes its
     // mid-side dofs (nP_ifem = 6). Sizing by nP_ifem alone left permutation[nN-1]

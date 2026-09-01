@@ -31,7 +31,6 @@ static double CurrentTime(void)
 #define REAL double
 #define REAL_LOCAL
 #endif
-#include PROTEUS_TRIANGLE_H
 #ifdef REAL_LOCAL
 #undef REAL
 #endif
@@ -4871,114 +4870,6 @@ int writeElements(std::ostream& meshFile, const Mesh& mesh)
       meshFile<<endl;
     }
   return 0;
-}
-
-
-int setFromTriangleElements(triangulateio* trimesh, Mesh& mesh, int base)
-{
-  int failed = 0;
-  assert(trimesh); assert(trimesh->trianglelist);
-  //assume mesh hasn't been allocated
-  assert(mesh.nElements_global == 0);
-
-  mesh.nNodes_element = 3;
-  mesh.nElements_global = trimesh->numberoftriangles;
-  mesh.elementNodesArray = new int[mesh.nElements_global*mesh.nNodes_element];
-  mesh.elementMaterialTypes = new int[mesh.nElements_global];
-  //copy material types now, copy first attribute of triangle
-  if (trimesh->triangleattributelist)
-    {
-      for (int eN = 0; eN < trimesh->numberoftriangles; eN++)
-	mesh.elementMaterialTypes[eN] = trimesh->triangleattributelist[eN*trimesh->numberoftriangleattributes+0]; 
-    }
-  else
-    memset(mesh.elementMaterialTypes,DEFAULT_ELEMENT_MATERIAL,mesh.nElements_global*sizeof(int));
-
-  for (int eN = 0; eN < mesh.nElements_global; eN++)
-    {
-      //copy onl vertices even if triangle stores "nonlinear" (6pt) triangle 
-      for (int ebN = 0; ebN < mesh.nNodes_element; ebN++)
-	{
-	  mesh.elementNodesArray[eN*mesh.nNodes_element+ebN] = 
-	    trimesh->trianglelist[eN*trimesh->numberofcorners+ebN]-base;
-	}    
-     
-    }
-
-  return failed;
-}
-
-int setFromTriangleNodes(triangulateio* trimesh, Mesh& mesh, int base)
-{
-  int failed = 0;
-  assert(trimesh); assert(trimesh->pointlist);
-  //assume mesh hasn't been allocated
-  assert(mesh.nNodes_global == 0);
-  mesh.nNodes_global = trimesh->numberofpoints;
-
-  assert(!mesh.nodeArray);
-  mesh.nodeArray = new double[3*mesh.nNodes_global];
-  memset(mesh.nodeArray,0,3*mesh.nNodes_global*sizeof(double));
-
-  assert(!mesh.nodeMaterialTypes);
-  mesh.nodeMaterialTypes = new int[mesh.nNodes_global];
-  //copy point markers, note triangle saves markers for nodes but
-  //just general attributes for triangles (also has attributes for points too)
-  if (trimesh->pointmarkerlist)
-    {
-      for (int nN = 0; nN < trimesh->numberofpoints; nN++)
-	mesh.nodeMaterialTypes[nN] = trimesh->pointmarkerlist[nN]; 
-    }
-  else
-    memset(mesh.nodeMaterialTypes,DEFAULT_NODE_MATERIAL,mesh.nNodes_global*sizeof(int));
-    
-  for (int nN = 0; nN < mesh.nNodes_global; nN++)
-    {
-      
-      mesh.nodeArray[nN*3 + 0] = 
-	trimesh->pointlist[nN*2+0];
-      mesh.nodeArray[nN*3 + 1] = 
-	trimesh->pointlist[nN*2+1];
-      mesh.nodeArray[nN*3 + 2] = 0.0;//any better idea?
-
-    }
-
-  return failed;
-}
-
-int copyElementBoundaryMaterialTypesFromTriangle(triangulateio* trimesh, Mesh& mesh, int base)
-{
-  int failed = 0;
-  assert(trimesh); 
-  if (!trimesh->edgelist)
-    return failed;
-  if (!trimesh->edgemarkerlist)
-    return failed;
-  if (trimesh->numberofedges != mesh.nElementBoundaries_global)
-    {
-      failed = 1; 
-      return failed;
-    }
-  std::map<NodeTuple<2>,int> triangleEdgeMarker;
-  for (int ebN = 0; ebN < trimesh->numberofedges; ebN++)
-    {
-      int nodes[2];
-      nodes[0] = trimesh->edgelist[ebN*2+0]-base;
-      nodes[1] = trimesh->edgelist[ebN*2+1]-base;
-      NodeTuple<2> ebt(nodes);
-      triangleEdgeMarker[ebt] = trimesh->edgemarkerlist[ebN];
-    }
-  //now copy over
-  for (int ebN = 0; ebN < mesh.nElementBoundaries_global; ebN++)
-    {
-      int nodes[2];
-      nodes[0] = mesh.elementBoundaryNodesArray[ebN*2+0];
-      nodes[1] = mesh.elementBoundaryNodesArray[ebN*2+1];
-      NodeTuple<2> ebt(nodes);
-      mesh.elementBoundaryMaterialTypes[ebN]= triangleEdgeMarker[ebt];
-    }
-  return failed;
-  
 }
 
 int readTriangleMesh(Mesh& mesh, const char* filebase, int triangleIndexBase)

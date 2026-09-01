@@ -95,6 +95,8 @@ class TestStokes(proteus.test_utils.TestTools.SimulationTest):
                                             self.so.sList,
                                             opts)
         self.ns.calculateSolution('stokes')
+        if DUMP_MATRICES:
+            _dump_saved_matrix(self.ns)
         actual = h5py.File('drivenCavityStokesTrial.h5','r')
         expected_path = 'comparison_files/' + 'comparison_' + 'drivenCavityStokes' + '_velocity_t1.csv'
         #write comparison file
@@ -174,10 +176,53 @@ def initialize_schur_ksp_obj(matrix_A, schur_approx):
     ksp_obj.pc.setUp()
     return ksp_obj
 
+# ---------------------------------------------------------------------------
+# Archived solver input. Same problem as in test_nse_RANS2P_step.py: the test
+# below asserts an EXACT iteration count (`its == 89`) against a matrix that was
+# read by bare relative path from the working directory. Nothing in the suite
+# writes that file -- NumericalSolution only emits it as a side effect of
+# `Profiling.logLevel > 10` -- so the assertion's input depended on log
+# verbosity, test order and cwd, and the test errored outright wherever the file
+# was absent ("Cannot locate file: dump_stokes_drivenCavityStokesTrial...").
+#
+# Unlike the AMG matrices, this one turns out to be completely reproducible:
+# the dumps from ten different build pathways (conda-dev x3, published, pip,
+# spack x2, and the three PETSc-built HPC prefixes) are BIT-IDENTICAL and all
+# yield its=89. That is expected -- the Stokes problem is linear, so its
+# Jacobian does not inherit the toolchain sensitivity a nonlinear solve has --
+# and it means the exact assertion below is sound once the input is pinned.
+#
+# Regenerate with:
+#     PROTEUS_DUMP_MATRICES=1 pytest test_stokesDC_TH_2D.py -k FullRun
+# ---------------------------------------------------------------------------
+SAVED_MATRIX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'saved_matrices')
+SAVED_CAVITY_MATRIX = 'stokes_cavity_par_j.bin'
+DUMP_MATRICES = os.environ.get('PROTEUS_DUMP_MATRICES', '') not in ('', '0')
+
+
+def _dump_saved_matrix(ns):
+    """Write this run's parallel Jacobian to saved_matrices/ under its canonical
+    name, dropping the ".m" and ".info" sidecars the PETSc viewer leaves."""
+    os.makedirs(SAVED_MATRIX_DIR, exist_ok=True)
+    prefix = os.path.join(SAVED_MATRIX_DIR, 'stokes_regen_')
+    ns.modelList[0].viewJacobian(file_prefix=prefix)
+    produced = prefix + 'par_j_1'
+    target = os.path.join(SAVED_MATRIX_DIR, SAVED_CAVITY_MATRIX)
+    if not os.path.exists(produced):
+        raise AssertionError('viewJacobian produced no %s' % produced)
+    os.replace(produced, target)
+    for sidecar in (produced + '.m', produced + '.info'):
+        if os.path.exists(sidecar):
+            os.remove(sidecar)
+
+
 @pytest.fixture()
 def load_nse_cavity_matrix(request):
-    """Loads a Navier-Stokes matrix drawn from the MPRANS module. """
-    A = LAT.petsc_load_matrix('dump_stokes_drivenCavityStokesTrial_1.0par_j_1')
+    """Loads the archived driven-cavity matrix. Anchored to this file's
+    directory: it must not depend on what an earlier test left in cwd."""
+    A = LAT.petsc_load_matrix(os.path.join(SAVED_MATRIX_DIR,
+                                           SAVED_CAVITY_MATRIX))
     yield A
 
 @pytest.fixture()

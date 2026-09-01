@@ -486,8 +486,7 @@ EXTENSIONS_TO_BUILD = [
     Extension("cmeshTools",
               sources=['proteus/cmeshTools.pyx', 'proteus/mesh.cpp', 'proteus/meshio.cpp'],
               language='c++',
-              define_macros=[('PROTEUS_TRIANGLE_H',PROTEUS_TRIANGLE_H),
-                             ('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
+              define_macros=[('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
                              ('CMRVEC_BOUNDS_CHECK',1),
                              ('MV_VECTOR_BOUNDS_CHECK',1),
                              ('PETSCVEC_BOUNDS_CHECK',1),
@@ -498,7 +497,6 @@ EXTENSIONS_TO_BUILD = [
                             str(get_pybind_include()),
                             str(get_pybind_include(user=True)),
                             PROTEUS_SUPERLU_INCLUDE_DIR,
-                            PROTEUS_TRIANGLE_INCLUDE_DIR,
                             PROTEUS_HDF5_INCLUDE_DIR] + \
               PROTEUS_PETSC_INCLUDE_DIRS + \
               PROTEUS_MPI_INCLUDE_DIRS,
@@ -625,8 +623,7 @@ EXTENSIONS_TO_BUILD = [
                        "proteus/densityRelations.h",
                        "proteus/twophaseDarcyCoefficients.pxd",
                        "proteus/twophaseDarcyCoefficients.h"],
-              define_macros=[('PROTEUS_TRIANGLE_H',PROTEUS_TRIANGLE_H),
-                             ('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
+              define_macros=[('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
                              ('CMRVEC_BOUNDS_CHECK',1),
                              ('MV_VECTOR_BOUNDS_CHECK',1),
                              ('PETSCVEC_BOUNDS_CHECK',1),
@@ -635,7 +632,6 @@ EXTENSIONS_TO_BUILD = [
               include_dirs=['proteus',
                             numpy.get_include(),
                             PROTEUS_SUPERLU_INCLUDE_DIR,
-                            PROTEUS_TRIANGLE_INCLUDE_DIR,
                             PROTEUS_HDF5_INCLUDE_DIR] + \
               PROTEUS_PETSC_INCLUDE_DIRS + \
               PROTEUS_MPI_INCLUDE_DIRS,
@@ -649,8 +645,7 @@ EXTENSIONS_TO_BUILD = [
               sources=["proteus/cSubsurfaceTransportCoefficients.pyx","proteus/SubsurfaceTransportCoefficients.cpp"],
               depends=["proteus/SubsurfaceTransportCoefficients.pxd",
                        "proteus/SubsurfaceTransportCoefficients.h"],
-              define_macros=[('PROTEUS_TRIANGLE_H',PROTEUS_TRIANGLE_H),
-                             ('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
+              define_macros=[('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
                              ('CMRVEC_BOUNDS_CHECK',1),
                              ('MV_VECTOR_BOUNDS_CHECK',1),
                              ('PETSCVEC_BOUNDS_CHECK',1),
@@ -659,7 +654,6 @@ EXTENSIONS_TO_BUILD = [
               include_dirs=['proteus',
                             numpy.get_include(),
                             PROTEUS_SUPERLU_INCLUDE_DIR,
-                            PROTEUS_TRIANGLE_INCLUDE_DIR,
                             PROTEUS_HDF5_INCLUDE_DIR] + \
               PROTEUS_PETSC_INCLUDE_DIRS + \
               PROTEUS_MPI_INCLUDE_DIRS,
@@ -673,8 +667,7 @@ EXTENSIONS_TO_BUILD = [
               sources=["proteus/cpskRelations.pyx"],
               depends=["proteus/pskRelations.pxd",
                        "proteus/pskRelations.h"],
-              define_macros=[('PROTEUS_TRIANGLE_H',PROTEUS_TRIANGLE_H),
-                             ('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
+              define_macros=[('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
                              ('CMRVEC_BOUNDS_CHECK',1),
                              ('MV_VECTOR_BOUNDS_CHECK',1),
                              ('PETSCVEC_BOUNDS_CHECK',1),
@@ -683,7 +676,6 @@ EXTENSIONS_TO_BUILD = [
               include_dirs=['proteus',
                             numpy.get_include(),
                             PROTEUS_SUPERLU_INCLUDE_DIR,
-                            PROTEUS_TRIANGLE_INCLUDE_DIR,
                             PROTEUS_HDF5_INCLUDE_DIR] + \
               PROTEUS_PETSC_INCLUDE_DIRS + \
               PROTEUS_MPI_INCLUDE_DIRS,
@@ -705,8 +697,7 @@ EXTENSIONS_TO_BUILD = [
                        "proteus/mesh.h",
                        'proteus/mesh.cpp',
                        'proteus/meshio.cpp'],
-              define_macros=[('PROTEUS_TRIANGLE_H',PROTEUS_TRIANGLE_H),
-                             ('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
+              define_macros=[('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
                              ('CMRVEC_BOUNDS_CHECK',1),
                              ('MV_VECTOR_BOUNDS_CHECK',1),
                              ('PETSCVEC_BOUNDS_CHECK',1),
@@ -717,7 +708,6 @@ EXTENSIONS_TO_BUILD = [
                             str(get_pybind_include()),
                             str(get_pybind_include(user=True)),
                             PROTEUS_SUPERLU_INCLUDE_DIR,
-                            PROTEUS_TRIANGLE_INCLUDE_DIR,
                             PROTEUS_HDF5_INCLUDE_DIR] +
               PROTEUS_PETSC_INCLUDE_DIRS + PROTEUS_MPI_INCLUDE_DIRS,
               language="c++",
@@ -729,8 +719,7 @@ EXTENSIONS_TO_BUILD = [
     # Extension("flcbdfWrappers",["proteus/flcbdfWrappers.pyx"],
     #           language="c++",
     #           depends=["proteus/flcbdfWrappers.pxd"],
-    #           define_macros=[('PROTEUS_TRIANGLE_H',PROTEUS_TRIANGLE_H),
-    #                          ('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
+    #           define_macros=[('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
     #                          ('CMRVEC_BOUNDS_CHECK',1),
     #                          ('MV_VECTOR_BOUNDS_CHECK',1),
     #                          ('PETSCVEC_BOUNDS_CHECK',1),
@@ -739,7 +728,6 @@ EXTENSIONS_TO_BUILD = [
     #           include_dirs=['proteus',
     #                         numpy.get_include(),
     #                         PROTEUS_SUPERLU_INCLUDE_DIR,
-    #                         PROTEUS_TRIANGLE_INCLUDE_DIR,
     #                         PROTEUS_DAETK_INCLUDE_DIR,
     #                         PROTEUS_HDF5_INCLUDE_DIR] + \
     #           PROTEUS_PETSC_INCLUDE_DIRS + \

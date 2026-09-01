@@ -1,4 +1,4 @@
-name: proteus-dev-up-240912
+name: proteus-dev-up-260829
 # Every dependency carries a minimum version. This file is the "track the latest"
 # environment -- it deliberately does not pin exact versions -- but unconstrained
 # is not the same as latest: the solver is free to satisfy an awkward constraint by

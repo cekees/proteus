@@ -1000,7 +1000,11 @@ public:
 				     normal_ref,
 				     normal,
 				     x,
-				     y);  
+				     y);
+    //A 2D mapping has no z component, but z is an OUTPUT parameter the caller will
+    //read, so it must be assigned: leaving it alone hands back whatever the caller's
+    //stack slot happened to hold.
+    z=0.0;
   }
   inline void calculateMappingVelocity_elementBoundary(const int eN,
 						       const int ebN_local,
@@ -1336,7 +1340,11 @@ public:
 				     metricTensorDetSqrt,
 				     normal_ref,
 				     normal,
-				     x);  
+				     x);
+    //likewise for a 1D mapping: y and z have no counterpart in the mapping but are
+    //outputs the caller will read.
+    y=0.0;
+    z=0.0;
   }
   inline void calculateMappingVelocity_elementBoundary(const int eN,
 						       const int ebN_local,
