@@ -1,0 +1,256 @@
+"""The archive's in-HDF5 grid metadata, including under real MPI.
+
+Phase 2 of the YMF I/O campaign replaced the XML fragments that
+``allGatherIncremental`` used to stash in the HDF5 file with YAML
+describing ymf grid dicts, and made the final document be assembled from
+those rather than from an accumulating ElementTree.
+
+The parallel behaviour is the part that most needs a test and had none:
+the dataset holding per-rank metadata is created collectively, so every
+rank must agree on its width, and the width depends on data only some
+ranks have. These tests run the real thing under ``mpiexec`` at several
+rank counts, with deliberately different grid sizes per rank so that an
+agreement bug shows up as a truncated payload rather than passing by
+luck.
+
+Run directly (``pytest``) they cover the serial path; the MPI cases
+re-invoke themselves through ``mpiexec`` as subprocesses.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+
+import pytest
+
+h5py = pytest.importorskip("h5py")
+pytest.importorskip("proteus.Archiver")
+
+MPIEXEC = shutil.which("mpiexec")
+
+# The body run inside each MPI rank. Kept as source text rather than a
+# module so the rank count and mode can be varied without a fixture file
+# per combination, and so a failure inside a rank surfaces as that rank's
+# traceback on stderr.
+RANK_SCRIPT = textwrap.dedent(
+    '''
+    import os, shutil, sys
+    from xml.etree.ElementTree import SubElement
+    import numpy as np
+
+    from proteus import Comm
+    Comm.init()
+    comm = Comm.get()
+    rank, size = comm.rank(), comm.size()
+
+    global_sync = os.environ["GLOBAL_SYNC"] == "1"
+    datadir = os.environ["DATADIR"]
+    if rank == 0:
+        shutil.rmtree(datadir, ignore_errors=True)
+        os.makedirs(datadir, exist_ok=True)
+    comm.barrier()
+
+    from proteus import Archiver
+
+    ar = Archiver.XdmfArchive(datadir, "mpitest", useGlobalXMF=True,
+                              global_sync=global_sync)
+    ar.domain = SubElement(ar.tree.getroot(), "Domain")
+
+    # Sizes differ per rank on purpose: the metadata dataset is fixed-width
+    # and created collectively, so if the width agreement is wrong the
+    # longest rank's YAML is silently truncated.
+    n_elements, n_nodes = 4 + rank, 6 + rank
+    collection = SubElement(ar.domain, "Grid",
+                            {"Name": "Mesh Spatial_Domain",
+                             "GridType": "Collection",
+                             "CollectionType": "Temporal"})
+
+    for tCount, t in enumerate([0.0, 0.5]):
+        grid, _ = ar.write_grid(collection, "Grid_p%d" % rank, t, tCount)
+        ar.write_topology(grid, "Triangle", n_elements, [n_elements, 3],
+                          "elements_p%d_t%d" % (rank, tCount),
+                          "elements%d" % tCount)
+        ar.write_geometry(grid, [n_nodes, 3],
+                          "nodes_p%d_t%d" % (rank, tCount),
+                          "nodes%d" % tCount)
+        ar.write_field(grid, "u", np.arange(n_nodes, dtype="d"), tCount,
+                       dimensions=[n_nodes],
+                       sync_offsets=np.array([0, n_nodes]),
+                       sync_data=np.arange(n_nodes, dtype="d"))
+        ar.sync()
+
+    ar.close()
+    comm.barrier()
+    '''
+)
+
+
+def run_ranks(tmp_path, n_ranks, global_sync):
+    """Run the rank script under mpiexec (or directly for one rank)."""
+    datadir = str(tmp_path / "archive")
+    env = dict(os.environ, GLOBAL_SYNC="1" if global_sync else "0",
+               DATADIR=datadir)
+    cmd = [sys.executable, "-c", RANK_SCRIPT]
+    if n_ranks > 1:
+        cmd = [MPIEXEC, "-n", str(n_ranks)] + cmd
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300,
+                            env=env)
+    assert result.returncode == 0, (
+        "rank script failed with %d ranks:\nSTDOUT:\n%s\nSTDERR:\n%s"
+        % (n_ranks, result.stdout[-2000:], result.stderr[-4000:]))
+    return datadir
+
+
+def read_domain(datadir):
+    from ymf.archive import read_ymf
+
+    return read_ymf(os.path.join(datadir, "mpitest.ymf"))[0]
+
+
+# --------------------------------------------------------------------------
+# serial
+# --------------------------------------------------------------------------
+
+
+def test_serial_per_rank_archive_is_written_as_ymf(tmp_path):
+    domain = read_domain(run_ranks(tmp_path, 1, global_sync=False))
+    (collection,) = domain["TimeCollections"]
+    assert collection["Name"] == "Mesh Spatial_Domain"
+    assert len(collection["Data"]) == 2
+    assert [s["Time"] for s in collection["Data"]] == [0.0, 0.5]
+
+
+def test_serial_global_sync_archive_has_uniform_steps(tmp_path):
+    domain = read_domain(run_ranks(tmp_path, 1, global_sync=True))
+    (collection,) = domain["TimeCollections"]
+    for step in collection["Data"]:
+        assert "SpatialCollection" not in step
+        assert step["Topology"]["Type"] == "Triangle"
+
+
+def test_metadata_is_yaml_not_xml(tmp_path):
+    datadir = run_ranks(tmp_path, 1, global_sync=False)
+    with h5py.File(os.path.join(datadir, "mpitest.h5"), "r") as f:
+        (name,) = [k for k in f if k.startswith("Mesh_Spatial_Domain_0")]
+        payload = f[name][0].decode("utf-8")
+    assert not payload.lstrip().startswith("<"), "metadata is still XML"
+    from ymf.archive import load_grid
+
+    grid = load_grid(payload)
+    assert grid["Topology"]["Type"] == "Triangle"
+
+
+def test_the_metadata_format_version_is_recorded(tmp_path):
+    from proteus.Archiver import AR_base
+
+    datadir = run_ranks(tmp_path, 1, global_sync=False)
+    with h5py.File(os.path.join(datadir, "mpitest.h5"), "r") as f:
+        assert int(f.attrs[AR_base.METADATA_VERSION_ATTR]) == \
+            AR_base.METADATA_FORMAT_VERSION
+
+
+def test_an_archive_without_the_version_marker_is_refused(tmp_path):
+    """A pre-YMF archive must fail with an explanation, not a parse error.
+
+    Version 1 metadata was XML in datasets with the same names, so without
+    this check the YAML loader would be handed XML and fail somewhere
+    unhelpful.
+    """
+    from proteus.Archiver import AR_base
+
+    datadir = run_ranks(tmp_path, 1, global_sync=False)
+    path = os.path.join(datadir, "mpitest.h5")
+    with h5py.File(path, "a") as f:
+        del f.attrs[AR_base.METADATA_VERSION_ATTR]
+
+    ar = AR_base.__new__(AR_base)
+    ar.hdfFilename = "mpitest.h5"
+    with h5py.File(path, "r") as f:
+        ar.hdfFile = f
+        with pytest.raises(ValueError, match="pre-YMF layout"):
+            ar._check_metadata_version()
+
+
+def test_a_future_version_marker_is_refused(tmp_path):
+    from proteus.Archiver import AR_base
+
+    datadir = run_ranks(tmp_path, 1, global_sync=False)
+    path = os.path.join(datadir, "mpitest.h5")
+    with h5py.File(path, "a") as f:
+        f.attrs[AR_base.METADATA_VERSION_ATTR] = 99
+
+    ar = AR_base.__new__(AR_base)
+    ar.hdfFilename = "mpitest.h5"
+    with h5py.File(path, "r") as f:
+        ar.hdfFile = f
+        with pytest.raises(ValueError, match="format version 99"):
+            ar._check_metadata_version()
+
+
+# --------------------------------------------------------------------------
+# parallel
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("n_ranks", [2, 3])
+def test_every_rank_contributes_a_grid_to_each_step(tmp_path, n_ranks):
+    domain = read_domain(run_ranks(tmp_path, n_ranks, global_sync=False))
+    (collection,) = domain["TimeCollections"]
+    assert len(collection["Data"]) == 2
+    for step in collection["Data"]:
+        subs = step["SpatialCollection"]
+        assert len(subs) == n_ranks
+        assert [g["Name"] for g in subs] == [
+            "Grid_p%d" % r for r in range(n_ranks)
+        ]
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("n_ranks", [2, 3])
+def test_differently_sized_ranks_are_not_truncated(tmp_path, n_ranks):
+    """The collective width agreement must fit the *longest* rank.
+
+    Each rank writes n_elements = 4 + rank, so the YAML payloads differ in
+    length. A width agreed from only one rank's view would truncate the
+    others and their topology counts would come back wrong or unparseable.
+    """
+    domain = read_domain(run_ranks(tmp_path, n_ranks, global_sync=False))
+    (collection,) = domain["TimeCollections"]
+    for step in collection["Data"]:
+        counts = [g["Topology"]["NumberOfElements"]
+                  for g in step["SpatialCollection"]]
+        assert counts == [4 + r for r in range(n_ranks)]
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+def test_parallel_archive_validates_as_a_ymf_document(tmp_path):
+    from ymf.archive import validate_domain
+
+    validate_domain(read_domain(run_ranks(tmp_path, 2, global_sync=False)))
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+def test_the_derived_xmf_holds_every_ranks_grid(tmp_path):
+    """The .xmf must be derived from the same domain, not from a stale tree.
+
+    Regression test: the legacy code wrote ``self.treeGlobal`` to this same
+    file handle at the end of gatherAndWriteTimes. Once the grids stopped
+    accumulating in that tree, that write truncated the file back to an
+    empty temporal collection -- the .ymf was complete and the .xmf was a
+    stub.
+    """
+    from xml.etree.ElementTree import parse
+
+    datadir = run_ranks(tmp_path, 2, global_sync=False)
+    root = parse(os.path.join(datadir, "mpitest.xmf")).getroot()
+    temporal = root.find("Domain").find("Grid")
+    assert temporal.attrib["CollectionType"] == "Temporal"
+    steps = temporal.findall("Grid")
+    assert len(steps) == 2, "expected one spatial collection per timestep"
+    for step in steps:
+        assert step.attrib["CollectionType"] == "Spatial"
+        assert step.find("Time") is not None
+        assert len(step.findall("Grid")) == 2

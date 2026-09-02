@@ -51,9 +51,10 @@ def test_minModelStep_stepExactTrue():
     ns.calculateSolution('ladr_minModelStep_stepExactTrue')
     assert ns.tCount + 1 == len(so.tnList), "wrong number of archvie steps "+repr(ns.tCount)
     assert ns.modelList[0].solver.solverList[0].solveCalls == 40, "wrong number of steps "+repr(ns.modelList[0].solver.solverList[0].solveCalls)
-    archiveTimes=[]
-    for t in ns.ar[0].treeGlobal.iter('Time'):
-        archiveTimes.append(t.attrib['Value'])
+    # The archive's own record of what it wrote. This used to count <Time>
+    # elements in ns.ar[0].treeGlobal; since the YMF campaign's Phase 2 the
+    # archive assembles a ymf domain instead of accumulating that XML tree.
+    archiveTimes = ns.ar[0].archived_times
     archiveTimesCorrect = so.tnList
     npt.assert_almost_equal(np.array(archiveTimes,'d'), np.array(archiveTimesCorrect,'d'))
     del ns
@@ -78,9 +79,10 @@ def test_minModelStep_stepExactFalse():
     ns.calculateSolution('ladr_minModelStep_stepExactFalse')
     assert ns.tCount + 1 == len(so.tnList), "wrong number of archvie steps " +repr(ns.tCount)
     assert ns.modelList[0].solver.solverList[0].solveCalls == 34, "wrong number of steps "+repr(ns.modelList[0].solver.solverList[0].solveCalls)
-    archiveTimes=[]
-    for t in ns.ar[0].treeGlobal.iter('Time'):
-        archiveTimes.append(t.attrib['Value'])
+    # The archive's own record of what it wrote. This used to count <Time>
+    # elements in ns.ar[0].treeGlobal; since the YMF campaign's Phase 2 the
+    # archive assembles a ymf domain instead of accumulating that XML tree.
+    archiveTimes = ns.ar[0].archived_times
     archiveTimesCorrect = ['0.0', '0.029516097303', '0.0516531702802', '0.0811692675832', '0.10330634056', '0.125443413538', '0.154959510841', '0.177096583818', '0.206612681121', '0.228749754098', '0.250886827075']
     npt.assert_almost_equal(np.array(archiveTimes,'d'), np.array(archiveTimesCorrect,'d'))
     del ns
@@ -106,9 +108,10 @@ def test_fixedStep_stepExactFalse():
     ns.calculateSolution('ladr_minModelStep_stepExactFalse')
     assert ns.tCount + 1 == len(so.tnList), "wrong number of archvie steps " +repr(ns.tCount)
     assert ns.modelList[0].solver.solverList[0].solveCalls == 25, "wrong number of steps "+repr(ns.modelList[0].solver.solverList[0].solveCalls)
-    archiveTimes=[]
-    for t in ns.ar[0].treeGlobal.iter('Time'):
-        archiveTimes.append(t.attrib['Value'])
+    # The archive's own record of what it wrote. This used to count <Time>
+    # elements in ns.ar[0].treeGlobal; since the YMF campaign's Phase 2 the
+    # archive assembles a ymf domain instead of accumulating that XML tree.
+    archiveTimes = ns.ar[0].archived_times
     archiveTimesCorrect = []
     interval=0
     step=0
@@ -143,9 +146,10 @@ def test_fixedStep_stepExactTrue():
     ns.calculateSolution('ladr_minModelStep_stepExactFalse')
     assert ns.tCount + 1 == len(so.tnList), "wrong number of archvie steps " +repr(ns.tCount)
     assert ns.modelList[0].solver.solverList[0].solveCalls == 30, "wrong number of steps "+repr(ns.modelList[0].solver.solverList[0].solveCalls)
-    archiveTimes=[]
-    for t in ns.ar[0].treeGlobal.iter('Time'):
-        archiveTimes.append(t.attrib['Value'])
+    # The archive's own record of what it wrote. This used to count <Time>
+    # elements in ns.ar[0].treeGlobal; since the YMF campaign's Phase 2 the
+    # archive assembles a ymf domain instead of accumulating that XML tree.
+    archiveTimes = ns.ar[0].archived_times
     archiveTimesCorrect = so.tnList
     npt.assert_almost_equal(np.array(archiveTimes,'d'), np.array(archiveTimesCorrect,'d'))
     del ns
@@ -171,9 +175,10 @@ def test_fixedStep_stepSimple():
     ns.calculateSolution('ladr_minModelStep_stepExactFalse')
     assert ns.tCount + 1 == len(so.tnList), "wrong number of archvie steps " +repr(ns.tCount)
     assert ns.modelList[0].solver.solverList[0].solveCalls == len(so.tnList)-1, "wrong number of steps "+repr(ns.modelList[0].solver.solverList[0].solveCalls)
-    archiveTimes=[]
-    for t in ns.ar[0].treeGlobal.iter('Time'):
-        archiveTimes.append(t.attrib['Value'])
+    # The archive's own record of what it wrote. This used to count <Time>
+    # elements in ns.ar[0].treeGlobal; since the YMF campaign's Phase 2 the
+    # archive assembles a ymf domain instead of accumulating that XML tree.
+    archiveTimes = ns.ar[0].archived_times
     archiveTimesCorrect = so.tnList
     npt.assert_almost_equal(np.array(archiveTimes,'d'), np.array(archiveTimesCorrect,'d'))
     del ns

@@ -55,6 +55,7 @@ class AR_base(object):
         self.hdfFileGlb=None # The global XDMF file for hotStarts
         self.readOnly = readOnly
         self.n_datasets = 0
+        self.archived_domain = None
         import datetime
         #filename += datetime.datetime.now().isoformat()
         self.global_sync = global_sync
@@ -168,31 +169,141 @@ class AR_base(object):
                 self.dataItemFormat="XML"
         #
         self.gatherAtClose = gatherAtClose
+    #: Bumped when the in-archive metadata layout changes incompatibly.
+    #: Written as an attribute on the HDF5 root by
+    #: :meth:`allGatherIncremental` and checked by
+    #: :meth:`gatherAndWriteTimes`, so reading an archive written by an
+    #: incompatible proteus fails with a clear message rather than a
+    #: parse error deep inside the reader.
+    METADATA_FORMAT_VERSION = 2
+    #: HDF5 root attribute holding :data:`METADATA_FORMAT_VERSION`.
+    METADATA_VERSION_ATTR = "ymf_archive_metadata_version"
+
+    def _check_metadata_version(self):
+        """Refuse an archive whose metadata layout this code cannot read.
+
+        Version 1 was XML fragments stored as fixed-width bytes; version 2
+        is YAML. Both live in datasets named ``<collection>_<n>``, so a
+        version 1 archive read by this code would hand XML text to a YAML
+        parser and fail somewhere unhelpful.
+        """
+        found = self.hdfFile.attrs.get(self.METADATA_VERSION_ATTR)
+        if found is None:
+            raise ValueError(
+                "%s has no %r attribute, so its grid metadata is XML "
+                "fragments (the pre-YMF layout). This proteus reads and "
+                "writes version %d, which is YAML. Convert the archive or "
+                "read it with an older proteus."
+                % (self.hdfFilename, self.METADATA_VERSION_ATTR,
+                   self.METADATA_FORMAT_VERSION))
+        if int(found) != self.METADATA_FORMAT_VERSION:
+            raise ValueError(
+                "%s holds grid metadata in format version %d; this proteus "
+                "reads and writes version %d"
+                % (self.hdfFilename, int(found), self.METADATA_FORMAT_VERSION))
+
+    @property
+    def archived_times(self):
+        """The times recorded in the archive, in the order written.
+
+        Reads the assembled ymf domain rather than the in-memory XML tree.
+        Before Phase 2 of the YMF campaign, ``gatherAndWriteTimes`` filled
+        ``self.treeGlobal`` from the HDF5 metadata and callers counted
+        ``<Time>`` elements in it; the domain dict is the representation
+        now, and that tree is on its way out.
+
+        Empty until :meth:`gatherAndWriteTimes` has run, i.e. until the
+        archive is closed.
+        """
+        domain = getattr(self, "archived_domain", None)
+        if domain is None:
+            return []
+        times = []
+        for collection in domain.get("TimeCollections", []):
+            for step in collection["Data"]:
+                times.append(step["Time"])
+            #every collection covers the same instants, so one is enough
+            break
+        return times
+
+    def _metadata_dataset_name(self, collection_name, index):
+        """Name of the HDF5 dataset holding one collection's step metadata."""
+        return (collection_name + "_" + str(index)).replace(" ", "_")
+
     def gatherAndWriteTimes(self):
+        """Assemble the whole archive document and write it out.
+
+        Reads back the per-step, per-rank grid metadata that
+        :meth:`allGatherIncremental` stashed in the HDF5 file as YAML,
+        builds a single ymf domain from it, and writes that domain as both
+        the ``.ymf`` archive of record and an ``.xmf`` for viewers.
+
+        This is where the campaign's "one dict, three serializations" shape
+        actually lands: the domain dict is assembled once here and both
+        output files are derived from it, rather than the XML tree being
+        the thing that gets written and the data model being an
+        afterthought.
         """
-        Pull all the time steps into the global tree and write
-        """
+        from ymf.archive import (load_grid, new_domain, write_ymf,
+                                 add_collection, add_spatial_step, add_uniform_step)
+        from ymf.xdmf import build_xdmf_tree, XDMF_HEADER
+
         XDMF = self.treeGlobal.getroot()
         Domain = XDMF[0]
+
+        domain = None
         if self.hdfFile is not None:
-            for TemporalGridCollection in Domain:
+            self._check_metadata_version()
+            for ci, TemporalGridCollection in enumerate(Domain):
+                collection_name = TemporalGridCollection.attrib['Name']
+                if domain is None:
+                    domain = new_domain(collection_name)
+                    collection = domain["TimeCollections"][0]
+                else:
+                    collection = add_collection(domain, collection_name)
                 for i in range(self.n_datasets):
-                    dataset_name = TemporalGridCollection.attrib['Name']+"_"+str(i)
-                    dataset_name = dataset_name.replace(" ","_")
-                    grid_array = self.hdfFile["/"+dataset_name]
+                    dataset_name = self._metadata_dataset_name(collection_name, i)
+                    if dataset_name not in self.hdfFile:
+                        continue
+                    grid_array = self.hdfFile[dataset_name]
+                    t = float(grid_array.attrs['Time'])
+                    grids = [load_grid(grid_array[j].decode("utf-8"))
+                             for j in range(grid_array.shape[0])]
                     if self.global_sync:
-                        TemporalGridCollection.append(fromstring(grid_array[0]))
+                        #one already-global grid; its pieces are the archive
+                        g = grids[0]
+                        add_uniform_step(domain, t, g["Topology"], g["Geometry"],
+                                         g.get("Attributes", []),
+                                         collection=ci)
                     else:
-                        SpatialCollection=SubElement(TemporalGridCollection,"Grid",{"GridType":"Collection",
-                                                                                    "CollectionType":"Spatial"})
-                        time = SubElement(SpatialCollection,"Time",{"Value":grid_array.attrs['Time'],"Name":"%i" % (i,)})
-                        for j in range(self.size):
-                            Grid = fromstring(grid_array[j])
-                            SpatialCollection.append(Grid)
+                        #one grid per rank, presented as a single instant
+                        add_spatial_step(domain, t, grids, collection=ci)
+
+        #keep the assembled domain: it is the archive's representation now,
+        #and callers that used to inspect self.treeGlobal want this instead
+        self.archived_domain = domain
+
         self.clear_xml()
-        self.xmlFileGlobal.write(bytes(self.xmlHeader,"utf-8"))
-        indentXML(self.treeGlobal.getroot())
-        self.treeGlobal.write(self.xmlFileGlobal,encoding="utf-8")
+        if domain is not None:
+            ymf_path = os.path.join(self.dataDir, self.filename + ".ymf")
+            write_ymf(domain, ymf_path)
+            logEvent("Wrote YMF archive " + ymf_path)
+            #The .xmf is derived from the same domain, for viewers, and is
+            #written through the handle opened in __init__ -- the legacy
+            #path wrote self.treeGlobal here, and since the grids no longer
+            #accumulate in that tree it would truncate this file back to an
+            #empty collection. Phase 4 replaces this with an on-demand
+            #converter and drops the .xmf from the write path entirely.
+            tree = build_xdmf_tree(domain)
+            indentXML(tree.getroot())
+            self.xmlFileGlobal.write(XDMF_HEADER)
+            tree.write(self.xmlFileGlobal, encoding="utf-8")
+        else:
+            #no HDF5 metadata to assemble from (text-archive mode): fall
+            #back to whatever the in-memory tree holds
+            self.xmlFileGlobal.write(bytes(self.xmlHeader,"utf-8"))
+            indentXML(self.treeGlobal.getroot())
+            self.treeGlobal.write(self.xmlFileGlobal,encoding="utf-8")
     def clear_xml(self):
         if not self.useGlobalXMF:
             self.xmlFile.seek(0)
@@ -249,8 +360,37 @@ class AR_base(object):
             f.close()
         logEvent("Done Gathering Archive")
     def allGatherIncremental(self):
+        """Stash this timestep's grid metadata in the HDF5 file.
+
+        Each rank turns its own ``<Grid>`` element into a ymf grid dict,
+        serializes it to YAML, and the collection of them is written into a
+        dataset named ``<collection>_<step>``.
+        :meth:`gatherAndWriteTimes` reads them back at close and assembles
+        the whole document.
+
+        Three things changed here relative to the XML version:
+
+        * The payload is YAML describing a ymf grid dict, not an XDMF
+          fragment. Parsing an element into a dict at this boundary is a
+          bridge -- the writers still build elements (Phase 1 of the
+          campaign is unfinished), and when they build dicts directly this
+          parse disappears.
+        * Grids cross MPI as dicts rather than as pickled
+          ``ElementTree.Element`` objects.
+        * The collective agreement on the dataset width is an
+          ``allreduce(MAX)`` over each rank's own encoded length, not a
+          ``Bcast`` of a maximum only master could compute. Master no
+          longer needs every grid in hand before the dataset can be sized.
+          A fixed width is still required: parallel HDF5 rejects
+          variable-length datatypes outright ("Parallel IO does not support
+          writing VL or region reference datatypes yet"), so
+          ``h5py.string_dtype()`` is not an option here.
+        """
         import copy
         from mpi4py import MPI
+        from ymf.archive import dump_grid
+        from ymf.xdmf import parse_grid_element
+
         logEvent("Gathering Archive Time step")
         self.comm.barrier()
         XDMF =self.tree.getroot()
@@ -266,64 +406,59 @@ class AR_base(object):
                     del TemporalGridCollectionGlobal[:]
             else:
                 DomainGlobal = XDMFGlobal[-1]
-        #gather the latest grids in each collection onto master
-        if  not self.global_sync:
-            comm_world = self.comm.comm.tompi4py()
-            for i, TemporalGridCollection in enumerate(Domain):
-                GridLocal = TemporalGridCollection[-1]
-                TimeAttrib = GridLocal[0].attrib['Value']
-                Grids = comm_world.gather(GridLocal)
-                max_grid_string_len = 0
+
+        comm_world = self.comm.comm.tompi4py()
+        if self.hdfFile is not None:
+            self.hdfFile.attrs[self.METADATA_VERSION_ATTR] = \
+                self.METADATA_FORMAT_VERSION
+
+        for i, TemporalGridCollection in enumerate(Domain):
+            GridLocal = TemporalGridCollection[-1]
+            time_elem = GridLocal.find("Time")
+            TimeAttrib = time_elem.attrib['Value'] if time_elem is not None else "0.0"
+            local_grid = parse_grid_element(GridLocal)
+
+            if not self.global_sync:
+                grid_dicts = comm_world.gather(local_grid)
+                #the master's own XML tree still gets the spatial collection,
+                #so the per-rank .xmf files keep their current shape
                 if self.comm.isMaster():
                     TemporalGridCollectionGlobal = DomainGlobal[i]
-                    SpatialCollection=SubElement(TemporalGridCollectionGlobal,"Grid",{"GridType":"Collection",
-                                                                                      "CollectionType":"Spatial"})
+                    SpatialCollection=SubElement(TemporalGridCollectionGlobal,"Grid",
+                                                 {"GridType":"Collection",
+                                                  "CollectionType":"Spatial"})
                     SpatialCollection.append(GridLocal[0])#append Time in Spatial Collection
-                    for Grid in Grids:
-                        del Grid[0]#Time
-                        SpatialCollection.append(Grid) #append Grid without Time
-                        element_string = tostring(Grid, encoding="utf-8")
-                        max_grid_string_len = max(len(element_string),
-                                                  max_grid_string_len)
-                max_grid_string_len_array = numpy.array(max_grid_string_len,'i')
-                comm_world.Bcast([max_grid_string_len_array,MPI.INT], root=0)
-                max_grid_string_len = int(max_grid_string_len_array)
-                dataset_name = TemporalGridCollection.attrib['Name']+"_"+ \
-                    str(self.n_datasets)
-                dataset_name = dataset_name.replace(" ","_")
-                if self.hdfFile is not None:
-                    xml_data  = self.hdfFile.create_dataset(name  = dataset_name,
-                                                            shape = (self.size,),
-                                                            dtype = '|S'+str(max_grid_string_len))
-                    xml_data.attrs['Time'] = TimeAttrib
-                    if self.comm.isMaster():
-                        for j, Grid in enumerate(Grids):
-                            xml_data[j] = tostring(Grid, encoding="utf-8")
-        else:
-            comm_world = self.comm.comm.tompi4py()
-            for i, TemporalGridCollection in enumerate(Domain):
-                GridLocal = TemporalGridCollection[-1]
-                max_grid_string_len = 0
+                payloads = [dump_grid(g).encode("utf-8")
+                            for g in grid_dicts] if self.comm.isMaster() else []
+                n_rows = self.size
+            else:
                 if self.comm.isMaster():
                     TemporalGridCollectionGlobal = DomainGlobal[i]
-                    TemporalGridCollectionGlobal.append(GridLocal) #append Grid without Time
-                    element_string = tostring(GridLocal, encoding="utf-8")
-                    max_grid_string_len = len(element_string)
-                max_grid_string_len_array = numpy.array(max_grid_string_len,'i')
-                comm_world.Bcast([max_grid_string_len_array,MPI.INT], root=0)
-                max_grid_string_len = int(max_grid_string_len_array)
-                dataset_name = TemporalGridCollection.attrib['Name']+"_"+ \
-                    str(self.n_datasets)
-                dataset_name = dataset_name.replace(" ","_")
-                if self.hdfFile is not None:
-                    try:
-                        xml_data  = self.hdfFile.create_dataset(name  = dataset_name,
-                                                                shape = (1,),
-                                                                dtype = '|S'+str(max_grid_string_len))
-                    except:
-                        xml_data = self.hdfFile[dataset_name]
-                    if self.comm.isMaster():
-                        xml_data[0] = tostring(GridLocal, encoding="utf-8")
+                    TemporalGridCollectionGlobal.append(GridLocal)
+                payloads = [dump_grid(local_grid).encode("utf-8")] \
+                    if self.comm.isMaster() else []
+                n_rows = 1
+
+            #every rank must create the dataset with the same width, so agree
+            #on it collectively. Each rank contributes the length it knows.
+            local_width = max((len(pl) for pl in payloads), default=0)
+            width = comm_world.allreduce(local_width, op=MPI.MAX)
+            width = max(int(width), 1)
+
+            dataset_name = self._metadata_dataset_name(
+                TemporalGridCollection.attrib['Name'], self.n_datasets)
+            if self.hdfFile is not None:
+                try:
+                    grid_data = self.hdfFile.create_dataset(
+                        name  = dataset_name,
+                        shape = (n_rows,),
+                        dtype = '|S'+str(width))
+                except (ValueError, RuntimeError, OSError):
+                    grid_data = self.hdfFile[dataset_name]
+                grid_data.attrs['Time'] = TimeAttrib
+                if self.comm.isMaster():
+                    for j, payload in enumerate(payloads):
+                        grid_data[j] = payload
         self.n_datasets += 1
         logEvent("Done Gathering Archive Time Step")
     def sync(self):
