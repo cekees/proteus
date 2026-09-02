@@ -1472,7 +1472,7 @@ class XdmfWriter(object):
                 ar.create_dataset_async(name+"_dof"+"_p"+str(ar.rank)+"_t"+str(tCount), data = u.dof)
             else:
                 numpy.savetxt(ar.textDataDir+"/"+name+"_dof"+str(tCount)+".txt",u.dof)
-                SubElement(values,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+name+"_dof"+str(tCount)+".txt"})
+                SubElement(values_dof,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+name+"_dof"+str(tCount)+".txt"})
 
     def writeVectorFunctionXdmf_nodal(self,ar,uList,components,vectorName,spaceSuffix,tCount=0,init=True):
         nDOF_global = uList[components[0]].nDOF_global
