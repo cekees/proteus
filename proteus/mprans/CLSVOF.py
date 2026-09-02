@@ -223,6 +223,22 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
     def evaluate(self,t,c):
         pass
 
+    def archiveFields(self, lm):
+        """Archive the VOF field the CLSVOF level set implies.
+
+        Previously reached by ``if 'clsvof' in model.name:`` in
+        ``NumericalSolution.py`` -- the generic driver identifying a model by
+        substring of its name. Declaring it on the CLSVOF coefficients makes
+        that test unnecessary. See :mod:`proteus.ArchiveFields`.
+
+        The DOFs live on the level model, not here, because that is where
+        CLSVOF computes them.
+        """
+        from ..ArchiveFields import ArchiveField
+
+        yield from super().archiveFields(lm)
+        yield ArchiveField("vof", lm.vofDOFs)
+
 class LevelModel(proteus.Transport.OneLevelTransport):
     nCalls=0
     def __init__(self,

@@ -1017,6 +1017,30 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                 np.savetxt(self.history_file, np.vstack((self.ball_center,self.ball_velocity, self.ball_angular_velocity)))
                 self.history_file.flush()
 
+    def archiveFields(self, lm):
+        """Archive the solid-phase signed distance alongside the solution.
+
+        Previously written from ``NumericalSolution.py`` through
+        ``archiveFiniteElementResiduals`` -- phi_s is not a residual -- inside
+        a bare ``try/except: pass`` that also swallowed a ``NameError`` on
+        every call. See :mod:`proteus.ArchiveFields`.
+
+        ``phi_s`` is allocated in :meth:`initializeMesh`, which runs during
+        model setup and so before any archiving. The guard is here only
+        because this method must not raise for a model that somehow archives
+        before its mesh is initialized; unlike the code it replaces, it says
+        so in the log rather than passing silently.
+        """
+        from ..ArchiveFields import ArchiveField
+
+        yield from super().archiveFields(lm)
+        phi_s = getattr(self, "phi_s", None)
+        if phi_s is None:
+            logEvent("phi_s is not allocated yet; not archiving it "
+                     "(initializeMesh should have run first)", level=1)
+        else:
+            yield ArchiveField("phi_s", phi_s)
+
 class LevelModel(proteus.Transport.OneLevelTransport):
     nCalls = 0
 

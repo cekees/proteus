@@ -1124,74 +1124,12 @@ class NS_base(object):  # (HasTraits):
                 model.levelModelList[-1].archiveExteriorElementBoundaryQuadratureValues(self.ar[index],self.tnList[0],self.tCount,
                                                                                         scalarKeys=scalarKeys,vectorKeys=vectorKeys,tensorKeys=tensorKeys,
                                                                                         initialPhase=True,meshChanged=True)
-            try:
-                phi_s = {}
-                phi_s[0] = model.levelModelList[-1].coefficients.phi_s
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       phi_s,
-                                                                       res_name_base='phi_s')
-                logEvent("Writing initial phi_s at DOFs for = "+model.name+" at time t="+str(t),level=3)
-            except:
-                pass
-            try:
-                phi_sp = {}
-                phi_sp[0] = model.levelModelList[-1].coefficients.phi_sp
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       phi_sp,
-                                                                       res_name_base='phi_sp')
-                logEvent("Writing initial phi_sp at DOFs for = "+model.name+" at time t="+str(self.tnList[0]),level=3)
-            except:
-                pass
-            if 'clsvof' in model.name:
-                vofDOFs = {}
-                vofDOFs[0] = model.levelModelList[-1].vofDOFs
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       vofDOFs,
-                                                                       res_name_base='vof')
-                logEvent("Writing initial vof from clsvof at time t="+str(0),level=3)
-            #For aux quantity of interest (MQL)
-            try:
-                if model.levelModelList[-1].coefficients.outputQuantDOFs==True:
-                    quantDOFs = {}
-                    quantDOFs[0] = model.levelModelList[-1].quantDOFs
-                    model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                           self.tnList[0],
-                                                                           self.tCount,
-                                                                           quantDOFs,
-                                                                           res_name_base='quantDOFs_for_'+model.name)
-                    logEvent("Writing initial quantity of interest at DOFs for = "+model.name+" at time t="+str(0),level=3)
-            except:
-                pass
-            #Write bathymetry for Shallow water equations (MQL)
-            try:
-                bathymetry = {}
-                bathymetry[0] = model.levelModelList[-1].coefficients.b.dof
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       bathymetry,
-                                                                       res_name_base='bathymetry')
-                logEvent("Writing bathymetry for = "+model.name,level=3)
-            except:
-                pass
-            #write eta=h+bathymetry for SWEs (MQL)
-            try:
-                eta = {}
-                eta[0] = model.levelModelList[-1].coefficients.b.dof+model.levelModelList[-1].u[0].dof
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       eta,
-                                                                       res_name_base='eta')
-                logEvent("Writing bathymetry for = "+model.name,level=3)
-            except:
-                pass
+            #Fields the model's coefficients declare for themselves. Replaces
+            #six hand-rolled try/except-pass blocks; see proteus.ArchiveFields.
+            model.levelModelList[-1].archiveDeclaredFields(self.ar[index],
+                                                           self.tnList[0],
+                                                           self.tCount,
+                                                           model_name=model.name)
             #for nonlinear POD
             if self.archive_pod_residuals[index] == True:
                 res_space = {}; res_mass = {}
@@ -1258,76 +1196,13 @@ class NS_base(object):  # (HasTraits):
                 model.levelModelList[-1].archiveExteriorElementBoundaryQuadratureValues(self.ar[index],t,self.tCount,
                                                                                         scalarKeys=scalarKeys,vectorKeys=vectorKeys,tensorKeys=tensorKeys,
                                                                                         initialPhase=False,meshChanged=True)
+            #Fields the model's coefficients declare for themselves. Replaces
+            #six hand-rolled try/except-pass blocks; see proteus.ArchiveFields.
             if self.fastArchive==False:
-                try:
-                    phi_s = {}
-                    phi_s[0] = model.levelModelList[-1].coefficients.phi_s
-                    model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                           self.tnList[0],
-                                                                           self.tCount,
-                                                                           phi_s,
-                                                                           res_name_base='phi_s')
-                    logEvent("Writing phi_s at DOFs for = "+model.name+" at time t="+str(t),level=3)
-                except:
-                    pass
-                try:
-                    phi_sp = {}
-                    phi_sp[0] = model.levelModelList[-1].coefficients.phi_sp
-                    model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                           t,
-                                                                           self.tCount,
-                                                                           phi_sp,
-                                                                           res_name_base='phi_sp')
-                    logEvent("Writing phi_sp at DOFs for = "+model.name+" at time t="+str(t),level=3)
-                except:
-                    pass
-            if 'clsvof' in model.name and self.fastArchive==False:
-                vofDOFs = {}
-                vofDOFs[0] = model.levelModelList[-1].vofDOFs
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       vofDOFs,
-                                                                       res_name_base='vof')
-                logEvent("Writing initial vof from clsvof at time t="+str(t),level=3)
-            if self.fastArchive==False:
-                try:
-                    if model.levelModelList[-1].coefficients.outputQuantDOFs==True:
-                        quantDOFs = {}
-                        quantDOFs[0] = model.levelModelList[-1].quantDOFs
-                        model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                               self.tnList[0],
-                                                                               self.tCount,
-                                                                               quantDOFs,
-                                                                               res_name_base='quantDOFs_for_'+model.name)
-                        logEvent("Writing quantity of interest at DOFs for = "+model.name+" at time t="+str(t),level=3)
-                except:
-                    pass
-            #Write bathymetry for Shallow water equations (MQL)
-            if self.fastArchive==False:
-                try:
-                    bathymetry = {}
-                    bathymetry[0] = model.levelModelList[-1].coefficients.b.dof
-                    model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                           self.tnList[0],
-                                                                           self.tCount,
-                                                                           bathymetry,
-                                                                           res_name_base='bathymetry')
-                    logEvent("Writing bathymetry for = "+model.name,level=3)
-                except:
-                    pass
-                #write eta=h+bathymetry for SWEs (MQL)
-                try:
-                    eta = {}
-                    eta[0] = model.levelModelList[-1].coefficients.b.dof+model.levelModelList[-1].u[0].dof
-                    model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                           self.tnList[0],
-                                                                           self.tCount,
-                                                                           eta,
-                                                                           res_name_base='eta')
-                    logEvent("Writing bathymetry for = "+model.name,level=3)
-                except:
-                    pass
+                model.levelModelList[-1].archiveDeclaredFields(self.ar[index],
+                                                               t,
+                                                               self.tCount,
+                                                               model_name=model.name)
 
             #for nonlinear POD
             if self.archive_pod_residuals[index] == True and self.fastArchive==False:

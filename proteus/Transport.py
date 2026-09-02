@@ -38,6 +38,27 @@ class StorageSet(set):
         for k in self:
             storageDict[k] = numpy.zeros(self.shape,self.storageType)
 
+class _DeclaredFieldFunction(object):
+    """Adapts an :class:`~proteus.ArchiveFields.ArchiveField` to the shape
+    ``FemSpace.writeFunctionXdmf`` expects: ``.dof``, ``.name``,
+    ``.femSpace``.
+
+    ``archiveFiniteElementResiduals`` defines an equivalent ``dummy`` class
+    inline. That inline class is why every auxiliary field in Proteus got
+    written through a function named "residuals": it was the only adapter
+    available. This one is named for what it does and carries the field's
+    metadata along, so it can be the general path.
+    """
+
+    __slots__ = ("dof", "name", "femSpace", "field")
+
+    def __init__(self, field, name, femSpace):
+        self.field = field
+        self.dof = field.value
+        self.name = name
+        self.femSpace = femSpace
+
+
 class OneLevelTransport(NonlinearEquation):
     r""" A class for finite element discretizations of multicomponent
     advective-diffusive-reactive transport on a single spatial mesh.
@@ -5611,6 +5632,45 @@ class OneLevelTransport(NonlinearEquation):
                 self.femSpace=femSpace
         for ci in res_dict.keys():
             self.u[ci].femSpace.writeFunctionXdmf(archive,dummy(ci,res_dict[ci],self.u[ci].femSpace),tCount)
+
+    def archiveDeclaredFields(self, archive, t, tCount, model_name=None):
+        """Write every field this model's coefficients declare.
+
+        Replaces the sixteen hand-rolled ``try/except: pass`` blocks that
+        used to live in ``NumericalSolution.py`` -- see
+        :mod:`proteus.ArchiveFields` for what was wrong with them.
+
+        Errors are deliberately not caught. A field that was declared and
+        silently not written is exactly the failure this replaces; if a
+        declaration is broken, the run should say so.
+
+        ``model_name`` is the owning multilevel model's name; it expands
+        ``{model}`` in field names, which matters when several models share
+        one archive. Defaults to this level model's own name.
+
+        ASSUMES archiveFiniteElementSolutions has already been called for
+        ``t``/``tCount`` -- the mesh and grid elements for this timestep
+        must exist before fields can be attached to them.
+        """
+        from .ArchiveFields import archive_fields_for, ArchiveFieldError
+
+        for field in archive_fields_for(self, model_name or getattr(self, "name", None)):
+            femSpace = field.resolve_fem_space(self)
+            name = field.archive_name
+            try:
+                femSpace.writeFunctionXdmf(
+                    archive, _DeclaredFieldFunction(field, name, femSpace), tCount
+                )
+            except Exception as exc:
+                raise ArchiveFieldError(
+                    "failed writing archive field %r at t=%s (tCount=%s): %s"
+                    % (name, t, tCount, exc)
+                ) from exc
+            logEvent(
+                "Wrote archive field %s for model %s at t=%s"
+                % (name, getattr(self, "name", "?"), t),
+                level=3,
+            )
 
     def initializeMassJacobian(self):
         """

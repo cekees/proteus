@@ -479,6 +479,25 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
     def postStep(self, t, firstStep=False):
         pass
 
+    def archiveFields(self, lm):
+        """Archive bathymetry and free-surface elevation with the solution.
+
+        Both were previously written from ``NumericalSolution.py`` through
+        ``archiveFiniteElementResiduals`` -- neither is a residual -- inside
+        bare ``try/except: pass`` blocks whose real purpose was "only if this
+        model has a bathymetry". Declaring them here says that structurally:
+        this class is the one that has one. See
+        :mod:`proteus.ArchiveFields`.
+
+        ``eta`` is computed at write time rather than stored, so it always
+        reflects the current water depth.
+        """
+        from ..ArchiveFields import ArchiveField
+
+        yield from super().archiveFields(lm)
+        yield ArchiveField("bathymetry", self.b.dof)
+        yield ArchiveField("eta", self.b.dof + lm.u[0].dof)
+
 class LevelModel(proteus.Transport.OneLevelTransport):
     nCalls = 0
 
