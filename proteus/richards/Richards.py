@@ -227,6 +227,11 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  PSK_type='VG',
                  diagonal_conductivity=True,
                  getSeepageFace=None,
+                 # WEAK (IIPG) DIRICHLET PENALTY
+                 # Overrides NumericalFlux.Richards_IIPG_exterior's class default
+                 # for this model only; None leaves the numerical flux alone.
+                 penalty_constant=None,
+                 penalty_power=None,
                  density_model=None,
                  DENSITY_MODEL=None,
                 # FOR EDGE BASED EV
@@ -264,6 +269,10 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         reaction={0:{0:'linear'}}
         hamiltonian={}
         self.getSeepageFace=getSeepageFace
+        # Read back in LevelModel.__init__ right after the numerical flux is
+        # built, before ebq_global['penalty']/ebqe['penalty'] are filled.
+        self.penalty_constant=penalty_constant
+        self.penalty_power=penalty_power
         self.gravity=gravity
         self.rho = density
         self.beta=beta
@@ -404,48 +413,48 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             self.model.ebqe['rho'][:] = ebqe_rho
 
         # ---- coupling diagnostic: MPI-reduced, print on rank 0 ----
-        from mpi4py import MPI
-        comm = MPI.COMM_WORLD
-
-        def _global_stats(local):
-            a = np.asarray(local)
-            lo = comm.allreduce(float(a.min()) if a.size else float('inf'), op=MPI.MIN)
-            hi = comm.allreduce(float(a.max()) if a.size else float('-inf'), op=MPI.MAX)
-            ssum = comm.allreduce(float(a.sum()), op=MPI.SUM)
-            n = comm.allreduce(int(a.size), op=MPI.SUM)
-            return lo, hi, (ssum / n if n > 0 else float('nan'))
-
-        if q_rho is not None and 'rho' in self.model.q:
-            src = np.asarray(q_rho)
-            dst = np.asarray(self.model.q['rho'])
-            local_diff = float(np.max(np.abs(src - dst))) if src.shape == dst.shape else float('nan')
-            diff = comm.allreduce(local_diff, op=MPI.MAX)
-            s_lo, s_hi, s_mn = _global_stats(src)
-            d_lo, d_hi, d_mn = _global_stats(dst)
-            if comm.Get_rank() == 0:
-                logEvent(
-                    "[Coupling rho q] Richards.preStep t={:.6e} firstStep={} "
-                    "TADR.q_rho (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
-                    "Richards.q['rho'] (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
-                    "max|src-dst|={:.3e}".format(
-                        float(t), firstStep, s_lo, s_hi, s_mn,
-                        d_lo, d_hi, d_mn, diff),
-                    level=2)
-        if ebqe_rho is not None and 'rho' in self.model.ebqe:
-            src_b = np.asarray(ebqe_rho)
-            dst_b = np.asarray(self.model.ebqe['rho'])
-            local_diff_b = float(np.max(np.abs(src_b - dst_b))) if src_b.shape == dst_b.shape else float('nan')
-            diff_b = comm.allreduce(local_diff_b, op=MPI.MAX)
-            s_lo, s_hi, s_mn = _global_stats(src_b)
-            d_lo, d_hi, d_mn = _global_stats(dst_b)
-            if comm.Get_rank() == 0:
-                logEvent(
-                    "[Coupling rho ebqe] Richards.preStep t={:.6e} "
-                    "TADR.ebqe_rho (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
-                    "Richards.ebqe['rho'] (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
-                    "max|src-dst|={:.3e}".format(
-                        float(t), s_lo, s_hi, s_mn, d_lo, d_hi, d_mn, diff_b),
-                    level=2)
+        # from mpi4py import MPI
+        # comm = MPI.COMM_WORLD
+        #
+        # def _global_stats(local):
+        #     a = np.asarray(local)
+        #     lo = comm.allreduce(float(a.min()) if a.size else float('inf'), op=MPI.MIN)
+        #     hi = comm.allreduce(float(a.max()) if a.size else float('-inf'), op=MPI.MAX)
+        #     ssum = comm.allreduce(float(a.sum()), op=MPI.SUM)
+        #     n = comm.allreduce(int(a.size), op=MPI.SUM)
+        #     return lo, hi, (ssum / n if n > 0 else float('nan'))
+        #
+        # if q_rho is not None and 'rho' in self.model.q:
+        #     src = np.asarray(q_rho)
+        #     dst = np.asarray(self.model.q['rho'])
+        #     local_diff = float(np.max(np.abs(src - dst))) if src.shape == dst.shape else float('nan')
+        #     diff = comm.allreduce(local_diff, op=MPI.MAX)
+        #     s_lo, s_hi, s_mn = _global_stats(src)
+        #     d_lo, d_hi, d_mn = _global_stats(dst)
+        #     if comm.Get_rank() == 0:
+        #         logEvent(
+        #             "[Coupling rho q] Richards.preStep t={:.6e} firstStep={} "
+        #             "TADR.q_rho (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
+        #             "Richards.q['rho'] (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
+        #             "max|src-dst|={:.3e}".format(
+        #                 float(t), firstStep, s_lo, s_hi, s_mn,
+        #                 d_lo, d_hi, d_mn, diff),
+        #             level=2)
+        # if ebqe_rho is not None and 'rho' in self.model.ebqe:
+        #     src_b = np.asarray(ebqe_rho)
+        #     dst_b = np.asarray(self.model.ebqe['rho'])
+        #     local_diff_b = float(np.max(np.abs(src_b - dst_b))) if src_b.shape == dst_b.shape else float('nan')
+        #     diff_b = comm.allreduce(local_diff_b, op=MPI.MAX)
+        #     s_lo, s_hi, s_mn = _global_stats(src_b)
+        #     d_lo, d_hi, d_mn = _global_stats(dst_b)
+        #     if comm.Get_rank() == 0:
+        #         logEvent(
+        #             "[Coupling rho ebqe] Richards.preStep t={:.6e} "
+        #             "TADR.ebqe_rho (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
+        #             "Richards.ebqe['rho'] (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
+        #             "max|src-dst|={:.3e}".format(
+        #                 float(t), s_lo, s_hi, s_mn, d_lo, d_hi, d_mn, diff_b),
+        #             level=2)
         return {}
 
 
@@ -519,10 +528,10 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                                                                c[('da',0,0,0)],
                                                                vol_frac)
          # Log grad(u) for debugging
-        if ('grad(u)', 0) in c:
-            logEvent(f"Richards grad(u): mean={c[('grad(u)', 0)].mean()}, min={c[('grad(u)', 0)].min()}, max={c[('grad(u)', 0)].max()}")
-        else:
-            logEvent("Warning: grad(u) is not available in Richards coefficients.")
+        # if ('grad(u)', 0) in c:
+        #     logEvent(f"Richards grad(u): mean={c[('grad(u)', 0)].mean()}, min={c[('grad(u)', 0)].min()}, max={c[('grad(u)', 0)].max()}")
+        # else:
+        #     logEvent("Warning: grad(u) is not available in Richards coefficients.")
         
         # Add logging for grad(u)
         # print "Picard---------------------------------------------------------------"
@@ -1043,6 +1052,17 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                                                        options.periodicDirichletConditions)
         else:
             self.numericalFlux = None
+        #per-model weak Dirichlet penalty, set from the Coefficients
+        #(penalty_constant=...), so a problem can stiffen or relax the IIPG
+        #boundary term without editing the shared NumericalFlux class default.
+        #Has to run before the penalty arrays below are filled.
+        if self.numericalFlux is not None:
+            if getattr(self.coefficients,'penalty_constant',None) is not None:
+                self.numericalFlux.penalty_constant = float(self.coefficients.penalty_constant)
+            if getattr(self.coefficients,'penalty_power',None) is not None:
+                self.numericalFlux.penalty_power = float(self.coefficients.penalty_power)
+            logEvent("Richards weak Dirichlet penalty: constant=%e power=%e" % (self.numericalFlux.penalty_constant,
+                                                                               self.numericalFlux.penalty_power),level=2)
         #set penalty terms
         #cek todo move into numerical flux initialization
         if 'penalty' in self.ebq_global:
@@ -1715,50 +1735,17 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["csrColumnOffsets_u_u"] = self.csrColumnOffsets[(0,0)]
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0,0)]
         #argsDict["q_grad_psi"] = self.q[('velocity', 0)] 
-        #print(anb_seepage_flux)
         #argsDict["anb_seepage_flux_n"] = self.coefficients.anb_seepage_flux_n
-        #if np.sum(anb_seepage_flux_n)>0:
-
-        #logEvent("Hi, this is Arnob", self.anb_seepage_flux_n[0])
-        #print("Seepage Flux from Python file",  np.sum(self.anb_seepage_flux_n))
-        #seepage_text_variable= np.sum(self.anb_seepage_flux_n)
-        #t_now = float(self.timeIntegration.t)
-        #s_now = float(np.sum(self.anb_seepage_flux_n))
-
-        #with open("seepage_stab_0.txt", "a") as f:
-        #    f.write(f"t={t_now:.6f}, s={s_now:.6e}\n")
-        #with open('seepage_stab_0.txt',"a" ) as f:
-            #f.write("\n Time"+ ",\t" +"Seepage\n")
-        #    f.write(f"{self.timeIntegration.t:.6f},\t{float(seepage_text_variable):.6e}\n")
-#            f.write(repr(self.coefficients.t)+ ",\t" +repr(seepage_text_variable), "\n")
-            #f.write(repr(seepage_text_variable)+ "\n")
         
-        from mpi4py import MPI
-        comm = MPI.COMM_WORLD
-        rank = comm.Get_rank()
-
-        seepage_flux_value = np.sum(self.anb_seepage_flux_n)
-        if seepage_flux_value > 0.0:
-        # Each processor writes its own flux with its rank
-            with open("seepage_flux_try.txt", "a") as f:
-                f.write(f"Rank {rank}:, {self.timeIntegration.t:.6f}, {seepage_flux_value:.8f}\n")
-       
-        # seepage_flux_value = np.sum(self.anb_seepage_flux_n) #self.anb_seepage_flux_n[0]
-        
-        # with open("seepage_flux_try.txt", "a") as f:
-        #    f.write(f"{seepage_flux_value:.8f}\n")
-                          
-        #seepage_flux.append(seepage_flux_value)
-        
-        # comm = Comm.get()
-        # if comm.isMaster():
+        # from mpi4py import MPI
+        # comm = MPI.COMM_WORLD
+        # rank = comm.Get_rank()
+        #
+        # seepage_flux_value = np.sum(self.anb_seepage_flux_n)
+        # if seepage_flux_value > 0.0:
+        # # Each processor writes its own flux with its rank
         #     with open("seepage_flux_try.txt", "a") as f:
-        #         f.write(f"{seepage_flux_value:.6f}\n")
-                
-            #seepage_flux_value = np.sum(self.anb_seepage_flux_n) #self.anb_seepage_flux_n[0]
-            #logEvent(f"Seepage flux at t={self.timeIntegration.t:.6f} is {seepage_flux_value:.6e}", level=2)
-#            with open("seepage_flux_vs_time.txt", "a") as f:
-#                f.write(f"{self.timeIntegration.t:.6f}, {seepage_flux_value:.6f}\n")
+        #         f.write(f"Rank {rank}:, {self.timeIntegration.t:.6f}, {seepage_flux_value:.8f}\n")
 
         if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
             self.calculateResidual = self.richards.calculateResidual
@@ -1770,16 +1757,16 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         if self.delta_x_ij is None:
             self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
         self.calculateResidual(argsDict)
-        if getattr(self, "_theta_log_count", 0) < 5:
-            q_theta = self.q[('theta',0)]
-            ebqe_theta = self.ebqe[('theta',0)]
-            logEvent("[Richards q_theta] t={:.6e} q(min,max,mean)=({:.6e},{:.6e},{:.6e}) ebqe(min,max,mean)=({:.6e},{:.6e},{:.6e}) q_zero_count={} ebqe_zero_count={}".format(
-                     self.timeIntegration.t,
-                     float(np.min(q_theta)), float(np.max(q_theta)), float(np.mean(q_theta)),
-                     float(np.min(ebqe_theta)), float(np.max(ebqe_theta)), float(np.mean(ebqe_theta)),
-                     int(np.count_nonzero(q_theta == 0.0)), int(np.count_nonzero(ebqe_theta == 0.0))),
-                     level=2)
-            self._theta_log_count = getattr(self, "_theta_log_count", 0) + 1
+        # if getattr(self, "_theta_log_count", 0) < 5:
+        #     q_theta = self.q[('theta',0)]
+        #     ebqe_theta = self.ebqe[('theta',0)]
+        #     logEvent("[Richards q_theta] t={:.6e} q(min,max,mean)=({:.6e},{:.6e},{:.6e}) ebqe(min,max,mean)=({:.6e},{:.6e},{:.6e}) q_zero_count={} ebqe_zero_count={}".format(
+        #              self.timeIntegration.t,
+        #              float(np.min(q_theta)), float(np.max(q_theta)), float(np.mean(q_theta)),
+        #              float(np.min(ebqe_theta)), float(np.max(ebqe_theta)), float(np.mean(ebqe_theta)),
+        #              int(np.count_nonzero(q_theta == 0.0)), int(np.count_nonzero(ebqe_theta == 0.0))),
+        #              level=2)
+        #     self._theta_log_count = getattr(self, "_theta_log_count", 0) + 1
         
 
 

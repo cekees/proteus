@@ -1166,21 +1166,7 @@ class LevelModel(OneLevelTransport):
             else:
                 outside_eN = ebe[ebN * 2 + 1]
             self.isExteriorBoundaryPhysical[ebNE] = 1 if outside_eN < 0 else 0
-
-        # DIAGNOSTIC (remove once resolved): report how many exterior faces the
-        # kernel's "ebFlag <= 0 || !physical || eN_out >= 0" gate will skip.  On a
-        # serial run with a properly tagged mesh this must be 0 skipped.
-        import os as _os
-        if _os.getenv("TADR_BC_GATE_DBG"):
-            _ext = self.mesh.exteriorElementBoundariesArray[:self.mesh.nExteriorElementBoundaries_global]
-            _flags = np.asarray(self.mesh.elementBoundaryMaterialTypes)[_ext]
-            _skip_flag = int((_flags <= 0).sum())
-            _skip_phys = int((self.isExteriorBoundaryPhysical == 0).sum())
-            logEvent("TADR_BC_GATE_DBG: nExteriorFaces=%d  skipped_by_ebFlag<=0=%d  "
-                     "skipped_by_notPhysical=%d  flag_values=%s"
-                     % (self.mesh.nExteriorElementBoundaries_global, _skip_flag,
-                        _skip_phys, np.unique(_flags).tolist()))
-
+        self.elementBoundaryMaterialTypes = self.mesh.elementBoundaryMaterialTypes
         #TODO how to handle redistancing calls for calculateCoefficients,calculateElementResidual etc
         self.globalResidualDummy = None
         compKernelFlag = 0
@@ -1192,12 +1178,9 @@ class LevelModel(OneLevelTransport):
                              self.nElementBoundaryQuadraturePoints_elementBoundary,
                              compKernelFlag)
 
-        self.forceStrongConditions = bool(getattr(self.coefficients,
-                                                  "forceStrongConditions",
-                                                  False))
+        self.forceStrongConditions = bool(getattr(self.coefficients,"forceStrongConditions",False))
         if self.forceStrongConditions:
             self.dirichletConditionsForceDOF = DOFBoundaryConditions(self.u[0].femSpace, dofBoundaryConditionsSetterDict[0], weakDirichletConditions=False)
-
         if self.movingDomain:
             self.MOVING_DOMAIN = 1.0
         else:
@@ -1219,14 +1202,6 @@ class LevelModel(OneLevelTransport):
         if self.coefficients.STABILIZATION_TYPE == 5:
             assert getattr(self.timeIntegration, 'isSSP', False) == False, \
                 "If STABILIZATION_TYPE==5 (ImplicitEV), use an implicit (non-SSP) timeIntegration, e.g. BackwardEuler"
-            # FCT is OPTIONAL for ImplicitEV: FCT=False -> pure (monotone) implicit
-            # upwind; FCT=True -> the implicit upwind solution is taken as the
-            # low-order uLow and the explicit FCTStep (Kuzmin antidiffusion) is
-            # applied as a post-step (see calculateAuxiliaryQuantitiesAfterStep).
-            # ImplicitEV needs a genuine implicit Newton solve.  The explicit
-            # lumped-mass "solvers" only do one flux update and distribute uLow
-            # (which the ImplicitEV residual never populates), so they would
-            # leave the implicit system unsolved -- reject them explicitly.
             if 'levelNonlinearSolver' in dir(options):
                 assert options.levelNonlinearSolver not in (ExplicitLumpedMassMatrix,
                                                             ExplicitConsistentMassMatrixForVOF), \
@@ -1637,7 +1612,7 @@ class LevelModel(OneLevelTransport):
         argsDict["globalResidual"] = r
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
-        argsDict["elementBoundaryMaterialTypes"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["elementBoundaryMaterialTypes"] = self.elementBoundaryMaterialTypes
         argsDict["isExteriorBoundaryPhysical"] = self.isExteriorBoundaryPhysical
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
         argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
@@ -1832,7 +1807,7 @@ class LevelModel(OneLevelTransport):
         argsDict["globalJacobian"] = jacobian.getCSRrepresentation()[2]
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
-        argsDict["elementBoundaryMaterialTypes"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["elementBoundaryMaterialTypes"] = self.elementBoundaryMaterialTypes
         argsDict["isExteriorBoundaryPhysical"] = self.isExteriorBoundaryPhysical
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray

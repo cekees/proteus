@@ -1007,17 +1007,7 @@ inline
                         {
                           element_entropy_residual[i] += DENTROPY_un*aux_entropy_residual*u_test_dV[i];
                         }
-                      // NOTE (ImplicitEV): this (u-un) lumped-mass element residual is
-                      // distributed below but then OVERWRITTEN by the implicit edge
-                      // loop (globalResidual[i] = R_i), so it does not double count.
                       elementResidual_u[i] += (u-un)*u_test_dV[i];
-
-                      // ImplicitEV is backward Euler, so the advective flux must
-                      // be evaluated at the CURRENT time level.  mphase_co2 solves
-                      // before TADR in the sequential split, so q_v (hence df,
-                      // built from velocity + the current iterate u) IS the new-
-                      // time velocity -- use it.  The explicit edge-based types
-                      // (2,3,4) keep the lagged dfn (velocity_old, u_old).
                       double* adv_df = (STABILIZATION_TYPE==STABILIZATION::ImplicitEV) ? df : dfn;
                       for(int j=0;j<nDOF_trial_element;j++)
                         {
@@ -1058,11 +1048,7 @@ inline
                         ck.Mass_weak(m_t,u_test_dV[i]) +
                         ck.Advection_weak(f,&u_grad_test_dV[i_nSpace])+
                         ck.Diffusion_weak(a_rowptr.data(),a_colind.data(),a,grad_u,&u_grad_test_dV[i_nSpace]);
-
-                        //std::cout << "elementResidual_u[" << i << "]: " << elementResidual_u[i] << std::endl;
-                        //  +
-                        
-
+                        //  +                       
                         // ck.NumericalDiffusion(physicalDiffusion,//todo add full sparse diffusion terms
                         //                       grad_u,
                         //                       &u_grad_test_dV[i_nSpace]);
@@ -1347,26 +1333,8 @@ inline
               double boundary_flow = 0.0;
               for (int I=0; I<nSpace; I++)
                 boundary_flow += normal[I]*df_ext[I];
-              // logBoundaryFluxState("boundaryFluxResidual",
-              //                      ebNE,
-              //                      kb,
-              //                      x_ext,
-              //                      y_ext,
-              //                      z_ext,
-              //                      isDOFBoundary_u.data()[ebNE_kb],
-              //                      u_ext,
-              //                      bc_u_ext,
-              //                      boundary_flow,
-              //                      flux_ext,
-              //                      flux_adv_ext,
-              //                      flux_diff_ext);
-
-               //std::cout<<"Advection EXT"<<flux_ext<<std::endl;
-               //std::cout<<"Diffusion  Ext"<<flux_diff_ext<<std::endl;
+              
               ebqe_flux.data()[ebNE_kb] = flux_ext;
-              // Dirichlet boundaries should contribute the prescribed trace to
-              // the limiter bounds even on advective outflow. For non-Dirichlet
-              // faces, use the advective upwind state based on n·df/du.
               if (isDOFBoundary_u.data()[ebNE_kb] == 1)
                 ebqe_u.data()[ebNE_kb] = bc_u_ext;
               else if (boundary_flow >= 0.0)
@@ -1384,23 +1352,11 @@ inline
               //
               //update residuals
               //
-              //cek todo, these are brought in from EV residual and are not correct
-              //the element residual should be updated and the global residual and transport updated
-              //after the closure of the quadrature loop
               for (int i=0;i<nDOF_test_element;i++)
                 {
-                  if (STABILIZATION_TYPE == STABILIZATION::Galerkin or
-                      STABILIZATION_TYPE == STABILIZATION::VMS or
-                      STABILIZATION_TYPE == STABILIZATION::TaylorGalerkinEV or
-                      STABILIZATION_TYPE == STABILIZATION::ImplicitEV)
+                  if (STABILIZATION_TYPE == STABILIZATION::Galerkin or STABILIZATION_TYPE == STABILIZATION::VMS or
+                      STABILIZATION_TYPE == STABILIZATION::TaylorGalerkinEV or STABILIZATION_TYPE == STABILIZATION::ImplicitEV)
                       {
-                    // ImplicitEV: consistent boundary flux (advective+diffusive)
-                    // at the CURRENT solution + IIPG diffusion adjoint, exactly
-                    // like Galerkin/VMS.  flux_ext is NOT dt-scaled for
-                    // ImplicitEV (only TaylorGalerkinEV scales it above).  This
-                    // is distributed to boundary_integral below (the implicit
-                    // edge loop adds + boundary_integral[i] to the residual);
-                    // its Jacobian is assembled in calculateJacobian.
                     elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i])+
                                             ck.ExteriorElementBoundaryDiffusionAdjoint(isDOFBoundary_u.data()[ebNE_kb],
                                                                                             isDiffusiveFluxBoundary_u.data()[ebNE_kb],

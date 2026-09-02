@@ -4903,6 +4903,7 @@ class Richards_IIPG_exterior(NF_base):
                  getDiffusiveFluxBoundaryConditions)
         self.epsSeepage = 3.0
         self.hasInterior=False
+        #per-problem override: Richards.Coefficients(...,penalty_constant=1.0e4)
         self.penalty_constant = 100.0
         self.penalty_power = 1.0
     def setDirichletValues(self, ebqe):
