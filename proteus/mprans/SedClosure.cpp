@@ -1,16 +1,4 @@
-#define FORCE_IMPORT_ARRAY
 #include "SedClosure.h"
-
-#if defined(__GNUC__) && !defined(__clang__)
-    namespace workaround
-    {
-        inline void define_allocators()
-        {
-            std::allocator<int> a0;
-            std::allocator<double> a1;
-        }
-    }
-#endif
 
 namespace py = pybind11;
 
@@ -18,7 +6,7 @@ PYBIND11_MODULE(SedClosure, m)
 {
     using proteus::cppHsuSedStress2D; 
 
-    xt::import_numpy();
+    proteus::import_numpy();
 
     py::class_<cppHsuSedStress2D>(m, "HsuSedStress")
         .def(py::init<double, double, double, double, double, double, double, double,

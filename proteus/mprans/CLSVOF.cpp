@@ -1,19 +1,7 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl_bind.h"
 
-#define FORCE_IMPORT_ARRAY
 #include "CLSVOF.h"
-
-#if defined(__GNUC__) && !defined(__clang__)
-    namespace workaround
-    {
-        inline void define_allocators()
-        {
-            std::allocator<int> a0;
-            std::allocator<double> a1;
-        }
-    }
-#endif
 
 namespace py = pybind11;
 using proteus::CLSVOF_base;
@@ -21,7 +9,7 @@ using py::return_value_policy;
 
 PYBIND11_MODULE(cCLSVOF, m)
 {
-    xt::import_numpy();
+    proteus::import_numpy();
 
     py::class_<CLSVOF_base>(m, "cCLSVOF_base")
         .def(py::init(&proteus::newCLSVOF))
