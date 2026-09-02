@@ -5658,9 +5658,31 @@ class OneLevelTransport(NonlinearEquation):
             femSpace = field.resolve_fem_space(self)
             name = field.archive_name
             try:
-                femSpace.writeFunctionXdmf(
-                    archive, _DeclaredFieldFunction(field, name, femSpace), tCount
-                )
+                if field.on_mesh_nodes:
+                    #A field defined on the mesh itself, not on a solution
+                    #space: write it straight onto the mesh's own grid. Same
+                    #shape as the nodal writer in FemTools -- the DataItem
+                    #covers the global node count while each rank
+                    #contributes the nodes it owns.
+                    mesh = femSpace.mesh
+                    if archive.global_sync:
+                        owned = mesh.globalMesh.nodeOffsets_subdomain_owned
+                        rank = archive.comm.rank()
+                        archive.write_field(
+                            mesh.arGrid, name, field.value, tCount,
+                            center=field.center, rank=field.rank,
+                            dimensions=[mesh.globalMesh.nNodes_global],
+                            sync_offsets=owned,
+                            sync_data=field.value[:(owned[rank+1] - owned[rank])])
+                    else:
+                        archive.write_field(
+                            mesh.arGrid, name, field.value, tCount,
+                            center=field.center, rank=field.rank,
+                            dimensions=[mesh.nNodes_global])
+                else:
+                    femSpace.writeFunctionXdmf(
+                        archive, _DeclaredFieldFunction(field, name, femSpace), tCount
+                    )
             except Exception as exc:
                 raise ArchiveFieldError(
                     "failed writing archive field %r at t=%s (tCount=%s): %s"

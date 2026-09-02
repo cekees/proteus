@@ -290,3 +290,47 @@ def test_phi_sp_is_not_declared_anywhere():
         c.phi_s = np.zeros(N_DOF)
         lm = StubLevelModel(c, quantDOFs=np.zeros(N_DOF), vofDOFs=np.zeros(N_DOF))
         assert "phi_sp" not in names(lm)
+
+
+# --------------------------------------------------------------------------
+# on_mesh_nodes -- fields defined on the mesh, not on a solution space
+# --------------------------------------------------------------------------
+
+
+def test_phi_s_is_declared_on_the_mesh_nodes_not_the_solution_space():
+    """phi_s is a vertex field and must say so.
+
+    It is allocated as numpy.ones(mesh.nodeArray.shape[0]) -- one value per
+    mesh vertex. Routed through the model's own solution space it was
+    written by writeFunctionXdmf_C0P2Lagrange, which declares that space's
+    DOF count: for a C0P2 velocity that put 25 values into a DataItem
+    claiming 81. Verified against a real archive from before this change:
+    NS_convergence_ev.h5 holds phi_s0_t0 with shape (81,) because phi_s was
+    then sized to the space; once it became vertex-sized the declaration
+    stopped matching the data and nothing noticed.
+    """
+    for module in (RANS2P, RANS3PF):
+        c = blank(module.Coefficients)
+        c.phi_s = np.ones(N_DOF)
+        lm = StubLevelModel(c)
+        (field,) = list(archive_fields_for(lm, "m"))
+        assert field.archive_name == "phi_s"
+        assert field.on_mesh_nodes is True, (
+            "%s must declare phi_s with on_mesh_nodes=True, or it is written "
+            "against a solution space whose DOF count it does not match"
+            % module.__name__
+        )
+
+
+def test_fields_default_to_the_solution_space():
+    # on_mesh_nodes is opt-in; a normal DOF field keeps dispatching through
+    # its finite element space.
+    assert ArchiveField("u", np.zeros(3)).on_mesh_nodes is False
+
+
+def test_bathymetry_and_eta_stay_on_the_solution_space():
+    # These are genuine DOF vectors of the SWE solution space, unlike phi_s.
+    c = blank(SW2DCV.Coefficients)
+    c.b = StubBathymetry()
+    for f in archive_fields_for(StubLevelModel(c), "m"):
+        assert f.on_mesh_nodes is False, f.archive_name

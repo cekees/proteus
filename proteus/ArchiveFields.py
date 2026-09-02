@@ -111,6 +111,13 @@ class ArchiveField(object):
         migrated from the old code wanted.
     component : int
         Which solution component's FEM space to default to.
+    on_mesh_nodes : bool
+        Write the field onto the base mesh's grid, one value per mesh
+        vertex, instead of dispatching through a finite element space.
+        Use it for fields defined on the mesh itself rather than on a
+        solution space -- a solid-phase indicator sized
+        ``mesh.nodeArray.shape[0]`` belongs on the mesh's nodes, not on a
+        quadratic space's degrees of freedom.
     units, std_name : str, optional
         Carried into the archive as metadata for the YMF front-end and
         CSDMS interop. **Not validated here** -- per the campaign's trust
@@ -128,6 +135,7 @@ class ArchiveField(object):
         "units",
         "std_name",
         "model_name",
+        "on_mesh_nodes",
     )
 
     def __init__(
@@ -140,6 +148,7 @@ class ArchiveField(object):
         component=0,
         units=None,
         std_name=None,
+        on_mesh_nodes=False,
     ):
         if not name:
             raise ArchiveFieldError("an ArchiveField needs a non-empty name")
@@ -167,6 +176,7 @@ class ArchiveField(object):
         self.component = component
         self.units = units
         self.std_name = std_name
+        self.on_mesh_nodes = on_mesh_nodes
         self.model_name = None
 
     @property

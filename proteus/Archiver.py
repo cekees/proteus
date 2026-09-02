@@ -485,6 +485,75 @@ class AR_base(object):
                        {"parse": "text", "href": item["Include"]})
         return values
 
+    def write_grid(self, collection, grid_name, t, tCount):
+        """Create the ``Grid``/``Time`` pair for one timestep of a mesh.
+
+        Returns ``(grid, time)``. The ten ``writeMeshXdmf_*`` methods in
+        :class:`XdmfWriter` each open with this same pair, spelled either
+        ``"%e" % (t,)``/``str(tCount)`` or
+        ``"{0:e}".format(t)``/``"{0:d}".format(tCount)`` depending on the
+        method -- both produce identical strings, so one spelling serves.
+        """
+        grid = SubElement(collection, "Grid",
+                          {"Name": grid_name, "GridType": "Uniform"})
+        time = SubElement(grid, "Time",
+                          {"Value": "{0:e}".format(t),
+                           "Name": "{0:d}".format(tCount)})
+        return grid, time
+
+    def write_topology(self, grid, topology_type, n_elements, dimensions,
+                       dataset, text_stem, nodes_per_element=None,
+                       data_type="Int", precision=None):
+        """Write a ``Topology`` and its ``DataItem``. Returns the DataItem.
+
+        The array reference is filled in here, but the array itself is
+        **not** written: mesh datasets are only created when ``init or
+        meshChanged``, while the reference is written on every pass. The
+        caller keeps that decision, and the data preparation that goes with
+        it, because it differs at every call site (element-to-node maps,
+        DG node duplication, particle index ranges).
+        """
+        attrs = {"Type": topology_type, "NumberOfElements": str(n_elements)}
+        if nodes_per_element is not None:
+            attrs["NodesPerElement"] = str(nodes_per_element)
+        topology = SubElement(grid, "Topology", attrs)
+        return self._mesh_data_item(topology, dimensions, dataset, text_stem,
+                                    data_type, precision)
+
+    def write_geometry(self, grid, dimensions, dataset, text_stem,
+                       geometry_type="XYZ", data_type="Float", precision=8):
+        """Write a ``Geometry`` and its ``DataItem``. Returns the DataItem.
+
+        Same division of labour as :meth:`write_topology`.
+        """
+        geometry = SubElement(grid, "Geometry", {"Type": geometry_type})
+        return self._mesh_data_item(geometry, dimensions, dataset, text_stem,
+                                    data_type, precision)
+
+    def _mesh_data_item(self, parent, dimensions, dataset, text_stem,
+                        data_type, precision):
+        """The DataItem shared by :meth:`write_topology`/:meth:`write_geometry`.
+
+        Unlike :meth:`write_field` this cannot read the dtype off an array,
+        because the array often does not exist yet at this point -- the
+        reference is written on every pass and the data only when the mesh
+        changed. So ``data_type``/``precision`` are stated by the caller.
+        """
+        attrs = {"Format": self.dataItemFormat,
+                 "DataType": data_type,
+                 "Dimensions": " ".join(str(d) for d in dimensions)}
+        if precision is not None:
+            attrs["Precision"] = str(precision)
+        item = SubElement(parent, "DataItem", attrs)
+        if self.hdfFile is not None:
+            item.text = "{0:s}:/{1:s}".format(self.hdfFilename, dataset)
+        else:
+            SubElement(item, "xi:include",
+                       {"parse": "text",
+                        "href": "./{0:s}/{1:s}.txt".format(self.textDataDir,
+                                                           text_stem)})
+        return item
+
 XdmfArchive=AR_base
 
 ########################################################################
@@ -1044,87 +1113,72 @@ class XdmfWriter(object):
                 Xdmf_ElementTopology = "Tri_6"
             elif spaceDim == 3:
                 Xdmf_ElementTopology = "Tet_10"
+            lagrangeNodesArray = dofMap.lagrangeNodesArray
+
+            #the synchronized case describes the assembled global arrays and
+            #names its datasets without a rank; the per-rank case describes
+            #this subdomain and carries the rank in the dataset name. Sidecar
+            #names omit the rank in both.
             if ar.global_sync:
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"Name":gridName,"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":"%e" % (t,),"Name":"%i" % (tCount,)})
-                lagrangeNodesArray = dofMap.lagrangeNodesArray
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (mesh.globalMesh.nElements_global,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
-                                       "Dimensions":"%i %i" % (mesh.globalMesh.nElements_global,dofMap.l2g.shape[-1])})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                allNodes    = SubElement(geometry,"DataItem",
-                                         {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
-                                          "Dimensions":"%i %i" % (dofMap.nDOF_all_processes,3)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+spaceSuffix+str(tCount)
-                    allNodes.text = ar.hdfFilename+":/nodes"+spaceSuffix+str(tCount)
-                    import copy
-                    if spaceDim == 3:
-                        elements=copy.deepcopy(dofMap.l2g)
-                        for eN in range(mesh.nElements_global):
-                            elements[eN,4+2] = dofMap.l2g[eN,4+3]
-                            elements[eN,4+3] = dofMap.l2g[eN,4+5]
-                            elements[eN,4+5] = dofMap.l2g[eN,4+2]
-                    else:
-                        elements=dofMap.l2g
-                    if init or meshChanged:
-                        ar.create_dataset_sync('elements'+spaceSuffix+str(tCount),
-                                               offsets = mesh.globalMesh.elementOffsets_subdomain_owned,
-                                               data = dofMap.subdomain2global[elements[:mesh.nElements_owned]])
-                        ar.create_dataset_sync('nodes'+spaceSuffix+str(tCount),
-                                               offsets = dofMap.dof_offsets_subdomain_owned,
-                                               data = lagrangeNodesArray[:dofMap.dof_offsets_subdomain_owned[ar.rank+1]-dofMap.dof_offsets_subdomain_owned[ar.rank]])
-                else:
-                    assert False, "global_sync no implemented for text heavy data"
+                n_elements       = mesh.globalMesh.nElements_global
+                elements_dims    = [n_elements, dofMap.l2g.shape[-1]]
+                nodes_dims       = [dofMap.nDOF_all_processes, 3]
+                elements_dataset = 'elements'+spaceSuffix+str(tCount)
+                nodes_dataset    = 'nodes'+spaceSuffix+str(tCount)
             else:
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"Name":gridName,"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":"%e" % (t,),"Name":"%i" % (tCount,)})
-                lagrangeNodesArray = dofMap.lagrangeNodesArray
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (mesh.nElements_global,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
-                                       "Dimensions":"%i %i" % dofMap.l2g.shape})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                allNodes    = SubElement(geometry,"DataItem",
-                                         {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
-                                          "Dimensions":"%i %i" % (dofMap.nDOF,3)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+str(ar.rank)+spaceSuffix+str(tCount)
-                    allNodes.text = ar.hdfFilename+":/nodes"+str(ar.rank)+spaceSuffix+str(tCount)
-                    import copy
-                    if spaceDim == 3:#
-                        #parallel
-                        elements=copy.deepcopy(dofMap.l2g)
-                        #proteus stores 3d dof as
-                        #|n0,n1,n2,n3|(n0,n1),(n1,n2),(n2,n3)|(n0,n2),(n1,n3)|(n0,n3)|
-                        #looks like xdmf wants them as
-                        #|n0,n1,n2,n3|(n0,n1),(n1,n2),(n0,n2) (n0,n3),(n1,n3) (n2,n3)|
-                        for eN in range(mesh.nElements_global):
-                            elements[eN,4+2] = dofMap.l2g[eN,4+3]
-                            elements[eN,4+3] = dofMap.l2g[eN,4+5]
-                            elements[eN,4+5] = dofMap.l2g[eN,4+2]
-                    else:
-                        elements=dofMap.l2g
-                    if init or meshChanged:
-                        ar.create_dataset_async('elements'+str(ar.rank)+spaceSuffix+str(tCount), data = elements)
-                        ar.create_dataset_async('nodes'+str(ar.rank)+spaceSuffix+str(tCount), data = lagrangeNodesArray)
+                n_elements       = mesh.nElements_global
+                elements_dims    = list(dofMap.l2g.shape)
+                nodes_dims       = [dofMap.nDOF, 3]
+                elements_dataset = 'elements'+str(ar.rank)+spaceSuffix+str(tCount)
+                nodes_dataset    = 'nodes'+str(ar.rank)+spaceSuffix+str(tCount)
+            elements_stem = 'elements'+spaceSuffix+str(tCount)
+            nodes_stem    = 'nodes'+spaceSuffix+str(tCount)
+
+            self.arGrid, self.arTime = ar.write_grid(self.arGridCollection,
+                                                     gridName, t, tCount)
+            ar.write_topology(self.arGrid, Xdmf_ElementTopology, n_elements,
+                              elements_dims, elements_dataset, elements_stem)
+            ar.write_geometry(self.arGrid, nodes_dims,
+                              nodes_dataset, nodes_stem)
+
+            if ar.hdfFile is None:
+                assert not ar.global_sync, \
+                    "global_sync is not implemented for text heavy data"
+                if init or meshChanged:
+                    numpy.savetxt(ar.textDataDir+"/"+elements_stem+".txt",
+                                  dofMap.l2g,fmt='%d')
+                    numpy.savetxt(ar.textDataDir+"/"+nodes_stem+".txt",
+                                  lagrangeNodesArray)
+                return self.arGrid
+
+            if spaceDim == 3:
+                #proteus stores 3d dof as
+                #|n0,n1,n2,n3|(n0,n1),(n1,n2),(n2,n3)|(n0,n2),(n1,n3)|(n0,n3)|
+                #xdmf wants them as
+                #|n0,n1,n2,n3|(n0,n1),(n1,n2),(n0,n2) (n0,n3),(n1,n3) (n2,n3)|
+                import copy
+                element_nodes = copy.deepcopy(dofMap.l2g)
+                for eN in range(mesh.nElements_global):
+                    element_nodes[eN,4+2] = dofMap.l2g[eN,4+3]
+                    element_nodes[eN,4+3] = dofMap.l2g[eN,4+5]
+                    element_nodes[eN,4+5] = dofMap.l2g[eN,4+2]
+            else:
+                element_nodes = dofMap.l2g
+
+            #references were written above on every pass; the arrays only when
+            #the mesh actually changed
+            if init or meshChanged:
+                if ar.global_sync:
+                    owned = dofMap.dof_offsets_subdomain_owned
+                    ar.create_dataset_sync(elements_dataset,
+                                           offsets = mesh.globalMesh.elementOffsets_subdomain_owned,
+                                           data = dofMap.subdomain2global[element_nodes[:mesh.nElements_owned]])
+                    ar.create_dataset_sync(nodes_dataset,
+                                           offsets = owned,
+                                           data = lagrangeNodesArray[:owned[ar.rank+1]-owned[ar.rank]])
                 else:
-                    SubElement(elements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt"})
-                    SubElement(allNodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+spaceSuffix+str(tCount)+".txt"})
-                    if init or meshChanged:
-                        numpy.savetxt(ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt",dofMap.l2g,fmt='%d')
-                        numpy.savetxt(ar.textDataDir+"/nodes"+spaceSuffix+str(tCount)+".txt",lagrangeNodesArray)
+                    ar.create_dataset_async(elements_dataset, data = element_nodes)
+                    ar.create_dataset_async(nodes_dataset, data = lagrangeNodesArray)
         return self.arGrid
 
     def writeMeshXdmf_C0Q2Lagrange(self,ar,name,mesh,spaceDim,dofMap,t=0.0,init=False,meshChanged=False,arGrid=None,tCount=0):
@@ -1337,8 +1391,11 @@ class XdmfWriter(object):
                            sync_offsets=owned,
                            sync_data=u.dof[:owned[ar.rank+1] - owned[ar.rank]])
         else:
-            ar.write_field(self.arGrid, u.name, u.dof, tCount,
-                           dimensions=[u.nDOF_global])
+            #Dimensions comes from the array rather than u.nDOF_global: the
+            #DataItem describes exactly what is written, and the two differ
+            #when the caller passed a foreign array through the residual
+            #adapter (phi_s is a vertex field, not a DOF vector of this space)
+            ar.write_field(self.arGrid, u.name, u.dof, tCount)
 
     def writeFunctionXdmf_DGP2Lagrange(self,ar,u,tCount=0,init=True, dofMap=None):
         #this writer predates the <name>_p<rank>_t<tCount> dataset
@@ -1354,9 +1411,11 @@ class XdmfWriter(object):
                            sync_offsets=owned,
                            sync_data=u.dof[:owned[ar.rank+1] - owned[ar.rank]])
         else:
+            #Dimensions from the array, not u.nDOF_global -- see
+            #writeFunctionXdmf_DGP1Lagrange
             ar.write_field(self.arGrid, u.name, u.dof, tCount,
-                           dataset=dataset,
-                           dimensions=[u.nDOF_global])
+                           dataset=dataset)
+
     def writeFunctionXdmf_CrouzeixRaviartP1(self,ar,u,tCount=0,init=True, dofMap=None):
         if ar.global_sync:
             Xdmf_NumberOfElements = u.femSpace.mesh.globalMesh.nElements_global
@@ -1990,8 +2049,11 @@ class XdmfWriter(object):
                            sync_offsets=owned,
                            sync_data=u.dof[:(owned[ar.rank+1] - owned[ar.rank])])
         else:
-            ar.write_field(self.arGrid, u.name, u.dof, tCount,
-                           dimensions=[u.nDOF_global])
+            #Dimensions comes from the array rather than u.nDOF_global: the
+            #DataItem describes exactly what is written, and the two differ
+            #when the caller passed a foreign array through the residual
+            #adapter (phi_s is a vertex field, not a DOF vector of this space)
+            ar.write_field(self.arGrid, u.name, u.dof, tCount)
 
     def writeVectorFunctionXdmf_P1Bubble(self,ar,uList,components,vectorName,spaceSuffix,tCount=0,init=True):
         if ar.global_sync:
@@ -2049,7 +2111,6 @@ class XdmfWriter(object):
         """
         write out arbitrary set of points on a mesh
         """
-        #spaceSuffix = "_particles"
         #write out basic geometry if not already done?
         mesh.writeMeshXdmf(ar,"Spatial_Domain",t,init,meshChanged,tCount=tCount)
         #now try to write out a mesh that is a collection of points per element
@@ -2057,59 +2118,34 @@ class XdmfWriter(object):
         gridName = self.setGridCollectionAndGridElements(init,ar,arGrid,t,spaceSuffix)
         nPoints = numpy.cumprod(x.shape)[-2]
         if self.arGrid is None or self.arTime.get('Value') != "{0:e}".format(t):
-            Xdmf_ElementTopology = "Polyvertex"
-            Xdmf_NumberOfElements= nPoints
             Xdmf_NodesPerElement = 1
-            Xdmf_NodesGlobal     = nPoints
+            #the dataset names carry the rank before the space suffix while the
+            #sidecar names omit it; both predate write_field's convention
+            elements_dataset = 'elements'+str(ar.rank)+spaceSuffix+str(tCount)
+            nodes_dataset    = 'nodes'+str(ar.rank)+spaceSuffix+str(tCount)
+            elements_stem    = 'elements'+spaceSuffix+str(tCount)
+            nodes_stem       = 'nodes'+spaceSuffix+str(tCount)
 
-            self.arGrid = SubElement(self.arGridCollection,"Grid",{"Name":gridName,"GridType":"Uniform"})
-            self.arTime = SubElement(self.arGrid,"Time",{"Value":"%e" % (t,),"Name":str(tCount)})
-            topology    = SubElement(self.arGrid,"Topology",
-                                     {"Type":Xdmf_ElementTopology,
-                                      "NumberOfElements":str(Xdmf_NumberOfElements),
-                                      "NodesPerElement":str(Xdmf_NodesPerElement)})
-            elements    = SubElement(topology,"DataItem",
-                                     {"Format":ar.dataItemFormat,
-                                      "DataType":"Int",
-                                      "Dimensions":"%i %i" % (Xdmf_NumberOfElements,Xdmf_NodesPerElement)})
-            geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-            nodes       = SubElement(geometry,"DataItem",
-                                     {"Format":ar.dataItemFormat,
-                                      "DataType":"Float",
-                                      "Precision":"8",
-                                      "Dimensions":"%i %i" % (Xdmf_NodesGlobal,3)})
-            if ar.hdfFile is not None:
-                elements.text = ar.hdfFilename+":/elements"+str(ar.rank)+spaceSuffix+str(tCount)
-                nodes.text    = ar.hdfFilename+":/nodes"+str(ar.rank)+spaceSuffix+str(tCount)
-                if init or meshChanged:
-                    #this will fail if elements_dgp1 already exists
-                    #q_l2g = numpy.zeros((Xdmf_NumberOfElements,Xdmf_NodesPerElement),'i')
-                    #brute force to start
-                    #for eN in range(Xdmf_NumberOfElements):
-                    #    for nN in range(Xdmf_NodesPerElement):
-                    #        q_l2g[eN,nN] = eN*Xdmf_NodesPerElement + nN
-                    #
-                    q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype='i').reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
-                    ar.create_dataset_async('elements'+str(ar.rank)+spaceSuffix+str(tCount), data = q_l2g)
-                    ar.create_dataset_async('nodes'+str(ar.rank)+spaceSuffix+str(tCount), data = x.flat[:])
-            else:
-                SubElement(elements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt"})
-                SubElement(nodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+spaceSuffix+str(tCount)+".txt"})
-                if init or meshChanged:
-                    #this will fail if elements_dgp1 already exists
-                    #q_l2g = numpy.zeros((Xdmf_NumberOfElements,Xdmf_NodesPerElement),'i')
-                    #brute force to start
-                    #for eN in range(Xdmf_NumberOfElements):
-                    #    for nN in range(Xdmf_NodesPerElement):
-                    #        q_l2g[eN,nN] = eN*Xdmf_NodesPerElement + nN
-                    #
-                    q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype='i').reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
-                    numpy.savetxt(ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt",q_l2g,fmt='%d')
-                    numpy.savetxt(ar.textDataDir+"/nodes"+spaceSuffix+str(tCount)+".txt",x.flat[:])
+            self.arGrid, self.arTime = ar.write_grid(self.arGridCollection,
+                                                     gridName, t, tCount)
+            ar.write_topology(self.arGrid, "Polyvertex", nPoints,
+                              [nPoints, Xdmf_NodesPerElement],
+                              elements_dataset, elements_stem,
+                              nodes_per_element=Xdmf_NodesPerElement)
+            ar.write_geometry(self.arGrid, [nPoints, 3],
+                              nodes_dataset, nodes_stem)
 
-                #
-            #hdfile
-        #need to write a grid
+            #the references above are written every pass; the arrays only when
+            #the mesh actually changed
+            if init or meshChanged:
+                q_l2g = numpy.arange(nPoints*Xdmf_NodesPerElement,
+                                     dtype='i').reshape((nPoints,Xdmf_NodesPerElement))
+                if ar.hdfFile is not None:
+                    ar.create_dataset_async(elements_dataset, data = q_l2g)
+                    ar.create_dataset_async(nodes_dataset, data = x.flat[:])
+                else:
+                    numpy.savetxt(ar.textDataDir+"/"+elements_stem+".txt",q_l2g,fmt='%d')
+                    numpy.savetxt(ar.textDataDir+"/"+nodes_stem+".txt",x.flat[:])
         return self.arGrid
     #def
     def writeScalarXdmf_particles(self,ar,u,name,tCount=0,init=True):

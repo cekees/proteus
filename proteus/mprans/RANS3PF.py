@@ -1122,7 +1122,12 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             logEvent("phi_s is not allocated yet; not archiving it "
                      "(initializeMesh should have run first)", level=1)
         else:
-            yield ArchiveField("phi_s", phi_s)
+            #phi_s is sized mesh.nodeArray.shape[0] -- one value per
+            #mesh vertex -- so it belongs on the base mesh grid. Routing
+            #it through this model's solution space declared that space's
+            #DOF count instead: with a C0P2 velocity that wrote 25 values
+            #into a DataItem claiming 81, which a viewer reads as garbage.
+            yield ArchiveField("phi_s", phi_s, on_mesh_nodes=True)
 
 
 class LevelModel(proteus.Transport.OneLevelTransport):

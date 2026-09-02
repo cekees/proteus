@@ -62,3 +62,20 @@ dependencies:
   - cffi >=1.17.1
   - jupyterlab >=4.6
   - llvm-openmp >=22.1
+  # proteus.Archiver now builds its XDMF/YMF metadata through ymf.archive,
+  # so pyyaml is a runtime requirement rather than an incidental one. It must
+  # be a build with the libyaml C extension: ymf.archive.require_libyaml()
+  # errors without it, because the pure-Python dumper is ~3.2x slower and the
+  # archive is written every timestep. conda-forge's pyyaml is built with it.
+  - pyyaml >=6.0.2
+  # ymf itself has no conda-forge feedstock yet, so it is installed from git
+  # until one exists. Only ymf.archive is imported by proteus -- its only
+  # dependency is pyyaml above -- and the strictyaml/pint validation stack
+  # stays behind the ymf[spec] and ymf[units] extras, which proteus does not
+  # install. Replace this pip entry with a plain "- ymf" dependency once the
+  # feedstock lands.
+  #
+  # NOTE: the repository is still named ydmf on GitHub; the rename to ymf is
+  # pending. The distribution it installs is called ymf regardless.
+  - pip:
+    - git+https://github.com/cekees/ydmf.git@master
