@@ -3985,40 +3985,20 @@ class C0_AffineLinearOnSimplexWithNodalBasis(ParametricFiniteElementSpace):
                                                title=filename))
     def writeFunctionXdmf(self,ar,u,tCount=0,init=True):
         if ar.global_sync:
-            attribute = SubElement(self.mesh.arGrid,"Attribute",{"Name":u.name,
-                                                     "AttributeType":"Scalar",
-                                                     "Center":"Node"})
-            values    = SubElement(attribute,"DataItem",
-                                   {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Precision":"8",
-                                    "Dimensions":"%i" % (self.mesh.globalMesh.nNodes_global,)})
-            if ar.hdfFile is not None:
-                values.text = ar.hdfFilename+":/"+u.name+"_t{0:d}".format(tCount)
-                comm = Comm.get()
-                ar.create_dataset_sync(u.name+"_t{0:d}".format(tCount),
-                                       #need to use the mesh node offsets due to parallel periodic case
-                                       #offsets = self.dofMap.dof_offsets_subdomain_owned,
-                                       #data = u.dof[:(self.dofMap.dof_offsets_subdomain_owned[comm.rank()+1] -self.dofMap.dof_offsets_subdomain_owned[comm.rank()])])
-                                       offsets=self.mesh.globalMesh.nodeOffsets_subdomain_owned,
-                                       data = u.dof[:(self.mesh.globalMesh.nodeOffsets_subdomain_owned[comm.rank()+1] -self.mesh.globalMesh.nodeOffsets_subdomain_owned[comm.rank()])])
-            else:
-                assert False, "global_sync not supported with text heavy data"
+            #the DataItem describes the global array while each rank
+            #contributes only the nodes it owns, so Dimensions is the global
+            #count rather than the shape of the slice written. Use the mesh
+            #node offsets rather than the dof offsets: they differ in the
+            #parallel periodic case.
+            comm = Comm.get()
+            owned = self.mesh.globalMesh.nodeOffsets_subdomain_owned
+            ar.write_field(self.mesh.arGrid, u.name, u.dof, tCount,
+                           dimensions=[self.mesh.globalMesh.nNodes_global],
+                           sync_offsets=owned,
+                           sync_data=u.dof[:(owned[comm.rank()+1] - owned[comm.rank()])])
         else:
-            attribute = SubElement(self.mesh.arGrid,"Attribute",{"Name":u.name,
-                                                                 "AttributeType":"Scalar",
-                                                                 "Center":"Node"})
-            values    = SubElement(attribute,"DataItem",
-                                   {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Precision":"8",
-                                    "Dimensions":"%i" % (self.mesh.nNodes_global,)})
-            if ar.hdfFile is not None:
-                values.text = ar.hdfFilename+":/"+u.name+"_p"+repr(ar.comm.rank())+"_t{0:d}".format(tCount)
-                ar.create_dataset_async(u.name+"_p"+repr(ar.comm.rank())+"_t{0:d}".format(tCount), data = u.dof)
-            else:
-                numpy.savetxt(ar.textDataDir+"/"+"{0:s}{1:d}".format(u.name, tCount)+".txt",u.dof)
-                SubElement(values,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"{0:s}{1:d}".format(u.name, tCount)+".txt"})
+            ar.write_field(self.mesh.arGrid, u.name, u.dof, tCount,
+                           dimensions=[self.mesh.nNodes_global])
     def readFunctionXdmf(self,ar,u,tCount=0):
         if ar.hdfFile is not None:
             if ar.hdfFileGlb is not None:
@@ -4043,71 +4023,30 @@ class C0_AffineLinearOnSimplexWithNodalBasis(ParametricFiniteElementSpace):
             #numpy.savetxt(ar.textDataDir+"/"+"{0:s}{0:d}".format(u.name, tCount)+".txt",u.dof)
             #SubElement(values,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"{0:s}{0:d}".format(u.name, tCount)+".txt"})
     def writeVectorFunctionXdmf(self,ar,uList,components,vectorName,tCount=0,init=True):
-        concatNow=True
-        if concatNow:
-            if ar.global_sync:
-                attribute = SubElement(self.mesh.arGrid,"Attribute",{"Name":vectorName,
-                                                                     "AttributeType":"Vector",
-                                                                     "Center":"Node"})
-                values    = SubElement(attribute,"DataItem",
-                                       {"Format":ar.dataItemFormat,
-                                        "DataType":"Float",
-                                        "Precision":"8",
-                                        "Dimensions":"%i %i" % (self.mesh.globalMesh.nNodes_global,3)})
-                u_dof = uList[components[0]].dof
-                if len(components) < 2:
-                    v_dof = numpy.zeros(u_dof.shape,dtype='d')
-                else:
-                    v_dof = uList[components[1]].dof
-                if len(components) < 3:
-                    w_dof = numpy.zeros(u_dof.shape,dtype='d')
-                else:
-                    w_dof = uList[components[2]].dof
-                velocity = numpy.column_stack((u_dof,v_dof,w_dof))
-                if ar.hdfFile is not None:
-                    values.text = ar.hdfFilename+":/"+vectorName+"_t{0:d}".format(tCount)
-                    ar.create_dataset_sync(vectorName+"_t{0:d}".format(tCount),
-                                           offsets=self.mesh.globalMesh.nodeOffsets_subdomain_owned,
-                                           data = velocity[:self.mesh.nNodes_owned,:])
-            else:
-                attribute = SubElement(self.mesh.arGrid,"Attribute",{"Name":vectorName,
-                                                                     "AttributeType":"Vector",
-                                                                     "Center":"Node"})
-                values    = SubElement(attribute,"DataItem",
-                                       {"Format":ar.dataItemFormat,
-                                        "DataType":"Float",
-                                        "Precision":"8",
-                                        "Dimensions":"%i %i" % (self.mesh.nNodes_global,3)})
-                u_dof = uList[components[0]].dof
-                if len(components) < 2:
-                    v_dof = numpy.zeros(u_dof.shape,dtype='d')
-                else:
-                    v_dof = uList[components[1]].dof
-                if len(components) < 3:
-                    w_dof = numpy.zeros(u_dof.shape,dtype='d')
-                else:
-                    w_dof = uList[components[2]].dof
-                velocity = numpy.column_stack((u_dof,v_dof,w_dof))
-                if ar.hdfFile is not None:
-                    values.text = ar.hdfFilename+":/"+vectorName+"_p"+repr(ar.comm.rank())+"_t{0:d}".format(tCount)
-                    ar.create_dataset_async(vectorName+"_p"+repr(ar.comm.rank())+"_t{0:d}".format(tCount), data = velocity)
+        #XDMF vectors are always 3-component, so a 1D or 2D problem pads the
+        #components it doesn't have with zeros. This was duplicated verbatim
+        #in the global_sync and per-rank branches.
+        u_dof = uList[components[0]].dof
+        if len(components) < 2:
+            v_dof = numpy.zeros(u_dof.shape,dtype='d')
         else:
-            attribute = SubElement(self.mesh.arGrid,"Attribute",{"Name":vectorName,
-                                                        "AttributeType":"Vector",
-                                                        "Center":"Node"})
-            if len(components) == 2:
-                values    = SubElement(attribute,"DataItem",
-                                       {"ItemType":"Function",
-                                        "Function":"JOIN($0 , $1 , (0.0 * $1 ))",
-                                        "Dimensions":"%i %i" % (self.mesh.nNodes_global,3)})
-            elif len(components) == 3:
-                values    = SubElement(attribute,"DataItem",
-                                       {"ItemType":"Function",
-                                        "Function":"JOIN($0 , $1 , $2)",
-                                        "Dimensions":"%i %i" % (self.mesh.nNodes_global,3)})
-            for ci in components:
-                ReferenceString="/Xdmf/Domain/Grid/Grid[%i]/Attribute[%i]/DataItem" % (tCount+1,ci+1)
-                component = SubElement(values,"DataItem",{"Reference":ReferenceString})
+            v_dof = uList[components[1]].dof
+        if len(components) < 3:
+            w_dof = numpy.zeros(u_dof.shape,dtype='d')
+        else:
+            w_dof = uList[components[2]].dof
+        velocity = numpy.column_stack((u_dof,v_dof,w_dof))
+
+        if ar.global_sync:
+            ar.write_field(self.mesh.arGrid, vectorName, velocity, tCount,
+                           rank="Vector",
+                           dimensions=[self.mesh.globalMesh.nNodes_global,3],
+                           sync_offsets=self.mesh.globalMesh.nodeOffsets_subdomain_owned,
+                           sync_data=velocity[:self.mesh.nNodes_owned,:])
+        else:
+            ar.write_field(self.mesh.arGrid, vectorName, velocity, tCount,
+                           rank="Vector",
+                           dimensions=[self.mesh.nNodes_global,3])
     def writeFunctionEnsight(self,u,filename,append=False,firstVariable=True,case_filename=None):
         if case_filename is None:
             case_filename = filename
@@ -4296,125 +4235,43 @@ class C0_AffineLinearOnCubeWithNodalBasis(ParametricFiniteElementSpace):
     def writeFunctionXdmf(self,ar,u,tCount=0,init=True):
         comm = Comm.get()
         if ar.global_sync:
-            attribute = SubElement(self.mesh.arGrid,"Attribute",{"Name":u.name,
-                                                                 "AttributeType":"Scalar",
-                                                                 "Center":"Node"})
-            values    = SubElement(attribute,"DataItem",
-                                   {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Precision":"8",
-                                    "Dimensions":"%i" % (self.mesh.globalMesh.nNodes_global,)})
-            if ar.hdfFile is not None:
-                values.text = ar.hdfFilename+":/"+u.name+"_t{0:d}".format(tCount)
-                ar.create_dataset_sync(u.name+"_t{0:d}".format(tCount),
-                                       #need to use the mesh node offsets due to parallel periodic case
-                                       #offsets = self.dofMap.dof_offsets_subdomain_owned,
-                                       #data = u.dof[:(self.dofMap.dof_offsets_subdomain_owned[comm.rank()+1] - self.dofMap.dof_offsets_subdomain_owned[comm.rank()])],
-                                       offsets=self.mesh.globalMesh.nodeOffsets_subdomain_owned,
-                                       data = u.dof[:(self.mesh.globalMesh.nodeOffsets_subdomain_owned[comm.rank()+1] -self.mesh.globalMesh.nodeOffsets_subdomain_owned[comm.rank()])])
-            else:
-                assert False, "global_sync not supported with text heavy data"
+            #Dimensions is the global node count while each rank writes only
+            #the nodes it owns. Use the mesh node offsets rather than the dof
+            #offsets: they differ in the parallel periodic case.
+            owned = self.mesh.globalMesh.nodeOffsets_subdomain_owned
+            ar.write_field(self.mesh.arGrid, u.name, u.dof, tCount,
+                           dimensions=[self.mesh.globalMesh.nNodes_global],
+                           sync_offsets=owned,
+                           sync_data=u.dof[:(owned[comm.rank()+1] - owned[comm.rank()])])
         else:
-            attribute = SubElement(self.mesh.arGrid,"Attribute",{"Name":u.name,
-                                                                 "AttributeType":"Scalar",
-                                                                 "Center":"Node"})
-            values    = SubElement(attribute,"DataItem",
-                                   {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Precision":"8",
-                                    "Dimensions":"%i" % (self.mesh.nNodes_global,)})
-            if ar.hdfFile is not None:
-                values.text = ar.hdfFilename+":/"+u.name+"_p"+repr(ar.comm.rank())+"_t{0:d}".format(tCount)
-                ar.create_dataset_async(u.name+"_p"+repr(ar.comm.rank())+"_t{0:d}".format(tCount), data = u.dof)
-            else:
-                numpy.savetxt(ar.textDataDir+"/"+"{0:s}{1:d}".format(u.name, tCount)+".txt",u.dof)
-                SubElement(values,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"{0:s}{1:d}".format(u.name, tCount)+".txt"})
+            ar.write_field(self.mesh.arGrid, u.name, u.dof, tCount,
+                           dimensions=[self.mesh.nNodes_global])
 
     def writeVectorFunctionXdmf(self,ar,uList,components,vectorName,tCount=0,init=True):
-        concatNow=True
-        if concatNow:
-            if ar.global_sync:
-                attribute = SubElement(self.mesh.arGrid,"Attribute",{"Name":vectorName,
-                                                                     "AttributeType":"Vector",
-                                                                     "Center":"Node"})
-                values    = SubElement(attribute,"DataItem",
-                                       {"Format":ar.dataItemFormat,
-                                        "DataType":"Float",
-                                        "Precision":"8",
-                                        "Dimensions":"%i %i" % (self.mesh.globalMesh.nNodes_global,3)})
-                u_dof = uList[components[0]].dof
-                if len(components) < 2:
-                    v_dof = numpy.zeros(u_dof.shape,dtype='d')
-                else:
-                    v_dof = uList[components[1]].dof
-                if len(components) < 3:
-                    w_dof = numpy.zeros(u_dof.shape,dtype='d')
-                else:
-                    w_dof = uList[components[2]].dof
-                velocity = numpy.column_stack((u_dof,v_dof,w_dof))
-                if ar.hdfFile is not None:
-                    values.text = ar.hdfFilename+":/"+vectorName+"_t{0:d}".format(tCount)
-                    ar.create_dataset_sync(vectorName+"_t{0:d}".format(tCount),
-                                           offsets =self.mesh.globalMesh.nodeOffsets_subdomain_owned,
-                                           data = velocity[:self.mesh.nNodes_owned,:])
-            else:
-                attribute = SubElement(self.mesh.arGrid,"Attribute",{"Name":vectorName,
-                                                                     "AttributeType":"Vector",
-                                                                     "Center":"Node"})
-                values    = SubElement(attribute,"DataItem",
-                                       {"Format":ar.dataItemFormat,
-                                        "DataType":"Float",
-                                        "Precision":"8",
-                                        "Dimensions":"%i %i" % (self.mesh.nNodes_global,3)})
-                u_dof = uList[components[0]].dof
-                if len(components) < 2:
-                    v_dof = numpy.zeros(u_dof.shape,dtype='d')
-                else:
-                    v_dof = uList[components[1]].dof
-                if len(components) < 3:
-                    w_dof = numpy.zeros(u_dof.shape,dtype='d')
-                else:
-                    w_dof = uList[components[2]].dof
-                velocity = numpy.column_stack((u_dof,v_dof,w_dof))
-                if ar.hdfFile is not None:
-                    values.text = ar.hdfFilename+":/"+vectorName+"_p"+repr(ar.comm.rank())+"_t{0:d}".format(tCount)
-                    ar.create_dataset_async(vectorName+"_p"+repr(ar.comm.rank())+"_t{0:d}".format(tCount), data = velocity)
-
+        #XDMF vectors are always 3-component, so a 1D or 2D problem pads the
+        #components it doesn't have with zeros. This was duplicated verbatim
+        #in the global_sync and per-rank branches.
+        u_dof = uList[components[0]].dof
+        if len(components) < 2:
+            v_dof = numpy.zeros(u_dof.shape,dtype='d')
         else:
-            if ar.global_sync:
-                attribute = SubElement(self.mesh.arGrid,"Attribute",{"Name":vectorName,
-                                                            "AttributeType":"Vector",
-                                                            "Center":"Node"})
-                if len(components) == 2:
-                    values    = SubElement(attribute,"DataItem",
-                                           {"ItemType":"Function",
-                                            "Function":"JOIN($0 , $1 , (0.0 * $1 ))",
-                                            "Dimensions":"%i %i" % (self.mesh.globalMesh.nNodes_global,3)})
-                elif len(components) == 3:
-                    values    = SubElement(attribute,"DataItem",
-                                           {"ItemType":"Function",
-                                            "Function":"JOIN($0 , $1 , $2)",
-                                            "Dimensions":"%i %i" % (self.mesh.globalMesh.nNodes_global,3)})
-                for ci in components:
-                    ReferenceString="/Xdmf/Domain/Grid/Grid[%i]/Attribute[%i]/DataItem" % (tCount+1,ci+1)
-                    component = SubElement(values,"DataItem",{"Reference":ReferenceString})
-            else:
-                attribute = SubElement(self.mesh.arGrid,"Attribute",{"Name":vectorName,
-                                                                     "AttributeType":"Vector",
-                                                                     "Center":"Node"})
-                if len(components) == 2:
-                    values    = SubElement(attribute,"DataItem",
-                                           {"ItemType":"Function",
-                                            "Function":"JOIN($0 , $1 , (0.0 * $1 ))",
-                                            "Dimensions":"%i %i" % (self.mesh.nNodes_global,3)})
-                elif len(components) == 3:
-                    values    = SubElement(attribute,"DataItem",
-                                           {"ItemType":"Function",
-                                            "Function":"JOIN($0 , $1 , $2)",
-                                            "Dimensions":"%i %i" % (self.mesh.nNodes_global,3)})
-                for ci in components:
-                    ReferenceString="/Xdmf/Domain/Grid/Grid[%i]/Attribute[%i]/DataItem" % (tCount+1,ci+1)
-                    component = SubElement(values,"DataItem",{"Reference":ReferenceString})
+            v_dof = uList[components[1]].dof
+        if len(components) < 3:
+            w_dof = numpy.zeros(u_dof.shape,dtype='d')
+        else:
+            w_dof = uList[components[2]].dof
+        velocity = numpy.column_stack((u_dof,v_dof,w_dof))
+
+        if ar.global_sync:
+            ar.write_field(self.mesh.arGrid, vectorName, velocity, tCount,
+                           rank="Vector",
+                           dimensions=[self.mesh.globalMesh.nNodes_global,3],
+                           sync_offsets=self.mesh.globalMesh.nodeOffsets_subdomain_owned,
+                           sync_data=velocity[:self.mesh.nNodes_owned,:])
+        else:
+            ar.write_field(self.mesh.arGrid, vectorName, velocity, tCount,
+                           rank="Vector",
+                           dimensions=[self.mesh.nNodes_global,3])
 
 P1 = C0_AffineLinearOnSimplexWithNodalBasis
 

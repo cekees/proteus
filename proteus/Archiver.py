@@ -378,6 +378,95 @@ class AR_base(object):
                 raise e
         dataset[offsets[self.rank]:offsets[self.rank+1]] = data
 
+    def write_field(self, grid, name, data, tCount,
+                    center="Node", rank="Scalar", dimensions=None,
+                    sync_offsets=None, sync_data=None):
+        """Attach one field to ``grid`` and write its array. Returns the DataItem.
+
+        This is the single place an ``Attribute`` + ``DataItem`` pair gets
+        built. Before it existed, that eight-line block was written out by
+        hand at roughly fifty call sites across Archiver.py, FemTools.py and
+        MeshTools.py, each repeating the same four-way branch on
+        ``global_sync`` and ``hdfFile``. Two consequences of that
+        duplication worth knowing about:
+
+        * ``DataType`` and ``Precision`` were hardcoded per call site --
+          usually ``Float``/``8``. A ``float32`` field was therefore
+          described to consumers as 8-byte, which a viewer reads as
+          garbage. Here they come from the array's own dtype via
+          :func:`ymf.archive.data_item_for`, so they cannot disagree with
+          the data.
+        * The ``xi:include`` for the text fallback had to be attached to the
+          right ``DataItem`` by hand, and at ``Archiver.py:1475`` it wasn't
+          -- the reference for one field landed on another field's
+          DataItem. Here the include is attached to the DataItem this call
+          just created, so that class of bug is not expressible.
+
+        Parameters
+        ----------
+        grid : Element
+            The XDMF ``Grid`` element to attach the Attribute to.
+        name : str
+            Field name, used for both the Attribute and the dataset.
+        data : numpy.ndarray
+            The values to write. In the ``global_sync`` case this is the
+            full local array and ``sync_data`` is the owned slice actually
+            written; ``data`` is still used for its dtype.
+        dimensions : sequence of int, optional
+            The logical shape to declare. Required when it differs from
+            ``data.shape``, which it does for ``global_sync`` writes: the
+            DataItem describes the *global* array while each rank
+            contributes only the part it owns.
+        sync_offsets, sync_data :
+            Passed to :meth:`create_dataset_sync` for ``global_sync``
+            writes.
+        """
+        from ymf.archive import data_item_for
+
+        if self.global_sync:
+            dataset_name = "{0:s}_t{1:d}".format(name, tCount)
+        else:
+            dataset_name = "{0:s}_p{1:s}_t{2:d}".format(
+                name, repr(self.comm.rank()), tCount)
+
+        item = data_item_for(
+            data,
+            data="{0:s}:/{1:s}".format(self.hdfFilename, dataset_name)
+            if self.hdfFile is not None else None,
+            include="./{0:s}/{1:s}{2:d}.txt".format(self.textDataDir, name, tCount)
+            if self.hdfFile is None else None,
+            dimensions=list(data.shape) if dimensions is None else dimensions,
+        )
+
+        attribute = SubElement(grid, "Attribute",
+                               {"Name": name,
+                                "AttributeType": rank,
+                                "Center": center})
+        values = SubElement(attribute, "DataItem",
+                            {"Format": self.dataItemFormat,
+                             "DataType": item["DataType"],
+                             "Precision": str(item["Precision"]),
+                             "Dimensions": " ".join(
+                                 str(d) for d in item["Dimensions"])})
+
+        if self.hdfFile is not None:
+            values.text = item["Data"]
+            if self.global_sync:
+                self.create_dataset_sync(dataset_name,
+                                         offsets=sync_offsets,
+                                         data=sync_data)
+            else:
+                self.create_dataset_async(dataset_name, data=data)
+        else:
+            assert not self.global_sync, \
+                "global_sync is not supported with text heavy data"
+            numpy.savetxt("{0:s}/{1:s}{2:d}.txt".format(
+                self.textDataDir, name, tCount), data)
+            # Attached to the DataItem this call created -- see the note above.
+            SubElement(values, "xi:include",
+                       {"parse": "text", "href": item["Include"]})
+        return values
+
 XdmfArchive=AR_base
 
 ########################################################################
