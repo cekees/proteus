@@ -270,3 +270,65 @@ def test_text_mode_with_global_sync_is_refused():
     ar = StubArchive(hdf=False, global_sync=True)
     with pytest.raises(AssertionError, match="text heavy data"):
         ar.write_field(grid(), "u", np.zeros(4), 0, dimensions=[4])
+
+
+# --------------------------------------------------------------------------
+# textDataDir is conditional on how the archive was opened
+# --------------------------------------------------------------------------
+
+
+def test_hdf_mode_never_touches_text_data_dir():
+    """AR_base only sets textDataDir when useTextArchive=True.
+
+    Regression test: an earlier version of write_field built the sidecar
+    path unconditionally, which raised AttributeError on every HDF5 write.
+    The stub above always defines textDataDir, so it did not catch that --
+    hence a stub that behaves like a real HDF5 archive and lacks it.
+    """
+    ar = StubArchive()
+    del ar.textDataDir
+    g = grid()
+    ar.write_field(g, "u", np.zeros(4), 0, dimensions=[4])
+    assert g.find("Attribute").find("DataItem").text == "out.h5:/u_p0_t0"
+
+
+def test_hdf_mode_with_global_sync_never_touches_text_data_dir():
+    ar = StubArchive(global_sync=True)
+    del ar.textDataDir
+    g = grid()
+    ar.write_field(g, "u", np.zeros(4), 0, dimensions=[4],
+                   sync_offsets=np.array([0, 4]), sync_data=np.zeros(4))
+    assert g.find("Attribute").find("DataItem").text == "out.h5:/u_t0"
+
+
+# --------------------------------------------------------------------------
+# dataset / text_stem overrides
+# --------------------------------------------------------------------------
+
+
+def test_an_explicit_dataset_name_overrides_the_convention():
+    # writeFunctionXdmf_DGP2Lagrange predates the _p<rank>_t<tCount>
+    # convention and must keep naming its dataset <name><tCount>, or
+    # converting it would rename datasets inside existing archives.
+    ar = StubArchive(rank=2)
+    g = grid()
+    ar.write_field(g, "u", np.zeros(4), 7, dimensions=[4], dataset="u7")
+    assert g.find("Attribute").find("DataItem").text == "out.h5:/u7"
+    assert ar.async_calls[0][0] == "u7"
+
+
+def test_an_explicit_dataset_name_also_applies_under_global_sync():
+    ar = StubArchive(global_sync=True)
+    g = grid()
+    ar.write_field(g, "u", np.zeros(4), 7, dimensions=[4], dataset="u7",
+                   sync_offsets=np.array([0, 4]), sync_data=np.zeros(4))
+    assert ar.sync_calls[0][0] == "u7"
+
+
+def test_text_stem_overrides_the_sidecar_filename(_no_real_savetxt):
+    ar = StubArchive(hdf=False)
+    g = grid()
+    ar.write_field(g, "u", np.zeros(4), 3, text_stem="custom")
+    include = list(g.find("Attribute").find("DataItem"))[0]
+    assert include.attrib["href"] == "./out_Data/custom.txt"
+    assert _no_real_savetxt[0][0] == "out_Data/custom.txt"
