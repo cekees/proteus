@@ -971,7 +971,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["MONOLITHIC"] =0#cek hack self.coefficients.MONOLITHIC
         argsDict["anb_seepage_flux_n"]= self.anb_seepage_flux_n
-        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes,
+        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
         self.richards.FCTStep(argsDict)
         old_dof = self.u[0].dof.copy()
         self.invert(u=limited_solution, ulow=self.u[0].dof)
@@ -1267,6 +1267,13 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             degree_polynomial = self.u[0].femSpace.order
         except:
             pass
+        # Must be allocated before argsDict is populated below, not after --
+        # this guard used to sit just above self.calculateResidual(argsDict) at
+        # the end of the method, by which point argsDict["delta_x_ij"] had
+        # already been handed the initial None. invert() and getJacobian() both
+        # allocate before building their argsDict; match them.
+        if self.delta_x_ij is None:
+            self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["bc_mask"] = self.bc_mask
         argsDict["dt"] = self.timeIntegration.dt
@@ -1293,7 +1300,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["nElements_global"] = self.mesh.nElements_global
         argsDict["ebqe_penalty_ext"] = self.ebqe['penalty']
-        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes,
+        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
         argsDict["isSeepageFace"] = self.coefficients.isSeepageFace
         argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
@@ -1466,8 +1473,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.calculateResidual = self.richards.calculateResidual_entropy_viscosity
             self.calculateJacobian = self.richards.calculateMassMatrix
         
-        if self.delta_x_ij is None:
-            self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
         self.calculateResidual(argsDict)
         
 
@@ -1655,7 +1660,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["nElements_global"] = self.mesh.nElements_global
         argsDict["ebqe_penalty_ext"] = self.ebqe['penalty']
-        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes,
+        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
         argsDict["isSeepageFace"] = self.coefficients.isSeepageFace
         argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
