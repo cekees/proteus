@@ -50,6 +50,47 @@ for _cfg_vars in (cfg_vars, _stdlib_sysconfig.get_config_vars()):
         if isinstance(_cfg_vars.get(key), str):
             _cfg_vars[key] = _dedup_rpath_tokens(_cfg_vars[key])
 
+# '-partition=none' is a *mangled* '-flto-partition=none'. conda-forge's
+# python recipe strips its own build-time LTO flags back out of the installed
+# _sysconfigdata, and a substring removal of '-flto' turns
+# '-flto-partition=none' into '-partition=none' -- which no gcc/g++ accepts
+# ("unrecognized command-line option '-partition=none'; did you mean
+# '-flto-partition=none'?"). The token sits in the interpreter's own
+# sysconfig CFLAGS, so every extension this interpreter builds inherits it
+# and the whole wheel build dies at the first compile, before any of
+# proteus's own sources are even parsed.
+#
+# This is per python *build*, not per version, which is why the same source
+# builds locally and fails in CI: linux-64 python 3.13.15 from
+# python-split_1786366211553 has the LTO flags cleanly removed (blank gaps in
+# CFLAGS where they were), while 3.13.15 from python-split_1788361500653 --
+# the build the sdist.yml "linux-64 / py3.13 (locked)" leg resolves, since
+# the environment files pin the version but not the build string -- carries
+# the mangled token. Dropping it is safe rather than a workaround for a flag
+# we want: the '-flto' it was an option to is already gone, and the
+# '-fuse-linker-plugin'/'-ffat-lto-objects' left beside it are valid options
+# that are inert without it.
+#
+# Patched over *both* config dicts for the same reason the rpath dedup above
+# is: depending on the setuptools version the compiler is customized from the
+# stdlib `sysconfig` cache rather than `distutils.sysconfig`'s, and pip's
+# build isolation installs its own newer setuptools regardless of what the
+# conda environment pins -- the failing CI compile lines still carry the
+# leading '-Wall' that the distutils-only rewrite at the top of this file
+# replaces with '-w', which is direct evidence that under an isolated build
+# it is the stdlib dict, not that one, that reaches the compiler.
+for _cfg_vars in (cfg_vars, _stdlib_sysconfig.get_config_vars()):
+    for key, value in _cfg_vars.items():
+        if isinstance(value, str) and '-partition=none' in value:
+            _cfg_vars[key] = value.replace('-partition=none', '')
+
+# setuptools appends the *environment's* CFLAGS/CXXFLAGS/CPPFLAGS/LDFLAGS to
+# each compile and link line on top of whatever sysconfig supplies, so scrub
+# those too in case an activation script re-exports the same broken flags.
+for _env_var in ('CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS'):
+    if '-partition=none' in os.environ.get(_env_var, ''):
+        os.environ[_env_var] = os.environ[_env_var].replace('-partition=none', '')
+
 from distutils.core import setup
 from Cython.Build import cythonize
 from Cython.Distutils.extension import Extension

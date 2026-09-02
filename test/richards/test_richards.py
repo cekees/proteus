@@ -112,6 +112,51 @@ def _comparison_path(case):
     return COMPARISON_DIR / "richards_{0}.csv".format(case)
 
 
+# How many mismatching nodes to list before truncating.  The meshes are 41, 101
+# and 11 nodes, so this shows the whole story on test_1 and test_3 and the head
+# of it on test_2_HYDRUS; the worst node is reported either way.
+MAX_REPORTED = 20
+
+
+def _assert_probes(case, scheme, name, x, expected, computed):
+    """assert_almost_equal over the profile, naming the node behind every miss.
+
+    numpy prints the flat array position and the first five misses in index
+    order, which does not say where in the column the two runs parted or how
+    far apart they ended up.  Each mismatch is probed against its mesh node and
+    coordinate here, in node order, so the drift can be read straight off a CI
+    log: on a wetting front the differences grow from round-off ahead of the
+    front to O(0.1) at it, and that shape is the diagnosis.
+    """
+    # The threshold assert_almost_equal itself applies:
+    # abs(desired - actual) < 1.5 * 10**(-decimal).
+    tolerance = 1.5 * 10.0 ** (-DECIMALS[scheme])
+    difference = np.abs(computed - expected)
+    violations = np.nonzero(difference > tolerance)[0]
+    if violations.size == 0:
+        return
+
+    worst = int(difference.argmax())
+    lines = [
+        "",
+        "{0} {1}: {2} of {3} nodes differ by more than {4:g} (decimal={5})"
+        .format(case, name, violations.size, difference.size, tolerance,
+                DECIMALS[scheme]),
+        "  {0:>4s} {1:>9s} {2:>21s} {3:>21s} {4:>12s}".format(
+            "node", "x", "computed", "expected", "|difference|"),
+    ]
+    for node in violations[:MAX_REPORTED]:
+        lines.append("  {0:4d} {1:9.5g} {2:21.15g} {3:21.15g} {4:12.3e}".format(
+            int(node), x[node], computed[node], expected[node],
+            difference[node]))
+    if violations.size > MAX_REPORTED:
+        lines.append("  ... {0} further nodes not listed".format(
+            violations.size - MAX_REPORTED))
+    lines.append("  worst |difference| {0:.3e} at node {1} (x={2:g})".format(
+        difference[worst], worst, x[worst]))
+    raise AssertionError("\n".join(lines))
+
+
 def _read_comparison(case):
     """Return {column name: np.ndarray} for one case, or {} if not written yet."""
     path = _comparison_path(case)
@@ -264,10 +309,7 @@ def _compare(case, scheme, archive):
             "{0} has no column {1}; regenerate with PROTEUS_SAVE_COMPARISON=1"
             .format(_comparison_path(case).name, name)
         )
-        np.testing.assert_almost_equal(
-            columns[name], values, decimal=DECIMALS[scheme],
-            err_msg="{0} {1}".format(case, name),
-        )
+        _assert_probes(case, scheme, name, x, columns[name], values)
 
 
 class TestRichards:
