@@ -1266,8 +1266,6 @@ public:
     xt::pyarray<double> &heta_max = args.array<double>("heta_max");
     xt::pyarray<double> &kin_max = args.array<double>("kin_max");
     const xt::pyarray<double> &x_values = args.array<double>("x_values");
-    const double x_min = args.scalar<double>("x_min");
-    const double x_max = args.scalar<double>("x_min");
     const xt::pyarray<double> &inverse_mesh =
         args.array<double>("inverse_mesh");
     const double h0_max = args.scalar<double>("h0_max");
