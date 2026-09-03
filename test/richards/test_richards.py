@@ -101,7 +101,7 @@ CASE_SCHEMES = {
 # bound can flip sides under a tiny cross-build arithmetic difference; the
 # unlimited schemes reproduce to round-off.  Same reasoning as the
 # STABILIZATION_TYPE=4 note in test/TADR/test_tadr.py.
-DECIMALS = {"stab_0": 8, "stab_2": 8, "FCT": 3} 
+DECIMALS = {"stab_0": 8, "stab_2": 8, "FCT": 8} 
 
 
 def _column(scheme, frame):
