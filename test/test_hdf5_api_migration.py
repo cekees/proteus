@@ -219,3 +219,146 @@ def test_rectangular_grid_node_accessor_is_spelled_correctly():
     used = _attribute_names_used(os.path.join(SCRIPTS, "readFun.py"))
     assert "getNode" in used
     assert "get_node" not in used
+
+
+# --------------------------------------------------------------------------
+# scripts/clearh5.py -- truncating an archive
+# --------------------------------------------------------------------------
+
+
+def _write_archive(path_base, n_steps=5, collections=("Mesh Spatial_Domain",
+                                                      "Mesh_c0p2_Lagrange")):
+    """A .ymf + .h5 pair shaped like a real proteus archive."""
+    from ymf.archive import (add_collection, add_uniform_step, attribute,
+                             data_item, geometry, new_domain, topology,
+                             write_ymf)
+
+    domain = None
+    datasets = {}
+    for ci, name in enumerate(collections):
+        suffix = "" if ci == 0 else "_c0p2"
+        if domain is None:
+            domain = new_domain(name)
+        else:
+            add_collection(domain, name)
+        for step in range(n_steps):
+            e = "elements%s%d" % (suffix, step)
+            n = "nodes%s%d" % (suffix, step)
+            u = "u%s_t%d" % (suffix, step)
+            datasets[e] = np.zeros((2, 3), dtype="i")
+            datasets[n] = np.zeros((4, 3), dtype="d")
+            datasets[u] = np.zeros(4, dtype="d")
+            add_uniform_step(
+                domain, float(step),
+                topology("Triangle", 2,
+                         data_item([2, 3], "%s.h5:/%s" % (path_base, e),
+                                   data_type="Int")),
+                geometry(data_item([4, 3], "%s.h5:/%s" % (path_base, n),
+                                   precision=8)),
+                [attribute("u", data_item([4], "%s.h5:/%s" % (path_base, u),
+                                          precision=8))],
+                collection=ci)
+    write_ymf(domain, path_base + ".ymf")
+    with h5py.File(path_base + ".h5", "w") as f:
+        for name, data in datasets.items():
+            f[name] = data
+        f.attrs["ymf_archive_metadata_version"] = 2
+        f.attrs["ymf_archive_collections"] = "\n".join(collections)
+    return len(datasets)
+
+
+@pytest.fixture
+def clearh5_module():
+    sys.path.insert(0, SCRIPTS)
+    try:
+        import clearh5
+    finally:
+        sys.path.remove(SCRIPTS)
+    return clearh5
+
+
+def test_clearh5_truncates_every_collection(tmp_path, monkeypatch, clearh5_module):
+    """Truncation must apply to all collections, not just the first.
+
+    The previous version removed grids from Domain[0] whichever collection
+    they came from, so truncating an archive with a quadratic space
+    corrupted it.
+    """
+    monkeypatch.chdir(tmp_path)
+    _write_archive("run", n_steps=5)
+    clearh5_module.clearh5("run", tCount=3)
+
+    from ymf.archive import read_ymf
+
+    domain, _ = read_ymf("run_clean.ymf")
+    assert [(c["Name"], len(c["Data"])) for c in domain["TimeCollections"]] == [
+        ("Mesh Spatial_Domain", 3), ("Mesh_c0p2_Lagrange", 3)]
+
+
+def test_clearh5_keeps_only_the_referenced_datasets(tmp_path, monkeypatch,
+                                                    clearh5_module):
+    monkeypatch.chdir(tmp_path)
+    total = _write_archive("run", n_steps=5)
+    clearh5_module.clearh5("run", tCount=2)
+    with h5py.File("run_clean.h5", "r") as f:
+        kept = set(f.keys())
+    # 2 collections x 2 steps x 3 datasets
+    assert len(kept) == 12
+    assert len(kept) < total
+    assert "u_t4" not in kept and "u_t0" in kept
+
+
+def test_clearh5_leaves_no_dangling_reference(tmp_path, monkeypatch,
+                                              clearh5_module):
+    """Every reference the truncated archive keeps must still resolve."""
+    monkeypatch.chdir(tmp_path)
+    _write_archive("run", n_steps=4)
+    clearh5_module.clearh5("run", tCount=2)
+
+    from ymf.archive import read_ymf
+
+    domain, _ = read_ymf("run_clean.ymf")
+    with h5py.File("run_clean.h5", "r") as f:
+        for collection in domain["TimeCollections"]:
+            for step in collection["Data"]:
+                for grid in step.get("SpatialCollection", [step]):
+                    nodes = [grid["Topology"], grid["Geometry"]]
+                    nodes += grid.get("Attributes", [])
+                    for node in nodes:
+                        ref = node["DataItem"]["Data"].split(":/")[-1]
+                        assert ref in f, ref
+
+
+def test_clearh5_carries_the_archive_attributes_across(tmp_path, monkeypatch,
+                                                       clearh5_module):
+    # otherwise the truncated copy is a bag of datasets rather than a
+    # readable archive
+    monkeypatch.chdir(tmp_path)
+    _write_archive("run", n_steps=3)
+    clearh5_module.clearh5("run", tCount=2)
+    with h5py.File("run_clean.h5", "r") as f:
+        assert int(f.attrs["ymf_archive_metadata_version"]) == 2
+        assert "Mesh_c0p2_Lagrange" in f.attrs["ymf_archive_collections"]
+
+
+def test_clearh5_requires_a_positive_tcount(tmp_path, monkeypatch, clearh5_module):
+    monkeypatch.chdir(tmp_path)
+    _write_archive("run", n_steps=2)
+    with pytest.raises(SystemExit, match="positive"):
+        clearh5_module.clearh5("run", tCount=-1)
+
+
+def test_clearh5_no_longer_matches_digits_out_of_dataset_names(clearh5_module):
+    """It decided what to keep with int(re.search(r'\\d+', name).group()).
+
+    That reads the first digit group of a name like ``u_p0_t12`` -- the
+    rank, not the step -- and raises on any name with no digits at all.
+    Datasets to keep now come from the archive's own references.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(clearh5_module.clearh5))
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Attribute) and n.attr == "search"]
+    assert not calls, "clearh5 still pattern-matches dataset names"
