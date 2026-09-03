@@ -1,84 +1,84 @@
 #!/usr/bin/env python
-import numpy
-import os
-from xml.etree.ElementTree import *
-from proteus import Comm
-comm = Comm.init()
-#rather than import proteus
-def indentXML(elem, level=0):
-    i = "\n" + level*"  "
-    if len(elem):
-        if not elem.text or not elem.text.strip():
-            elem.text = i + "  "
-        for e in elem:
-            indentXML(e, level+1)
-            if not e.tail or not e.tail.strip():
-                e.tail = i + "  "
-        if not e.tail or not e.tail.strip():
-            e.tail = i
-    else:
-        if level and (not elem.tail or not elem.tail.strip()):
-            elem.tail = i
+"""Rebuild an archive's document from the HDF5 file it belongs to.
 
-def gatherTimes(filename,dataDir='.',addname="_complete", tCount=None, global_sync=True):
+For when a run's ``.ymf``/``.xmf`` is missing, truncated, or was never
+written because the job died before the archive closed. The heavy data is
+already in the ``.h5``, and so is the per-step grid metadata, so the
+document can be regenerated without re-running anything.
+
+The ``.h5`` is self-describing: it records the metadata format version, the
+time-collection names, and whether the run wrote global arrays or one grid
+per subdomain. So this needs no ``.xmf`` to seed from and no flags telling
+it which layout to expect -- the previous version required both, opening
+``<name>.xmf`` for its Domain skeleton and taking ``--no-global-sync`` on
+trust.
+
+Writes ``<name><addname>.ymf`` (the archive of record) and a matching
+``.xmf`` for viewers. ``ymf2xdmf`` does the second step alone if that is
+all that is wanted.
+"""
+import os
+
+
+def gatherTimes(filename, dataDir='.', addname="_complete", tCount=None,
+                global_sync=True):
+    """Regenerate the document for ``<dataDir>/<filename>.h5``.
+
+    ``tCount`` and ``global_sync`` are accepted for command-line
+    compatibility. Both are now read from the archive itself: the step
+    count by discovering the metadata that is present, and the layout from
+    the attribute the writer records.
     """
-    in case archiving failed to collect results from all times
-    """
-    import h5py
-    xmlFile = open(filename+".xmf","rb")
-    h5File = h5py.File(filename+".h5","r")
-    tree = ElementTree(file=xmlFile)
-    xmlFile.close()
-    XDMF = tree.getroot()
-    Domain = XDMF[0]
-    for TemporalGridCollection in Domain:
-        if tCount == -1:
-            if global_sync:
-                tCount = int(TemporalGridCollection[0][0].attrib['Name'])+1
-            else:
-                SpatialCollection = TemporalGridCollection[-1]
-                Grids = SpatialCollection[:]
-                tCount = int(Grids[0].attrib['Name'])+1
-            del TemporalGridCollection[:]
-        for i in range(tCount):
-            dataset_name = TemporalGridCollection.attrib['Name']+"_"+repr(i)
-            dataset_name = dataset_name.replace(" ","_")
-            grid_array = h5File["/"+dataset_name]
-            if global_sync:
-                Grid = fromstring(grid_array[0])
-                TemporalGridCollection.append(Grid)
-            else:
-                size = grid_array.shape[0]
-                SpatialCollection=SubElement(TemporalGridCollection,"Grid",{"GridType":"Collection",
-                                                                            "CollectionType":"Spatial"})
-                time = SubElement(SpatialCollection,"Time",{"Value":grid_array.attrs['Time'],"Name":str(i)})
-                for j in range(size):
-                    Grid = fromstring(grid_array[j])
-                    SpatialCollection.append(Grid)
-    xmlFile = open(filename+addname+".xmf","wb")
-    indentXML(tree.getroot())
-    tree.write(xmlFile)
-    xmlFile.close()
+    from proteus.Archiver import readArchiveDomain
+    from ymf.archive import write_ymf
+    from ymf.xdmf import write_xdmf
+
+    domain = readArchiveDomain(filename, dataDir=dataDir)
+    if not domain:
+        raise SystemExit(
+            "gatherTimes: %s holds no grid metadata to rebuild from"
+            % (os.path.join(dataDir, filename + ".h5"),))
+
+    for collection in domain.get("TimeCollections", []):
+        steps = collection["Data"]
+        if tCount is not None and tCount >= 0 and len(steps) > tCount:
+            print("%s: keeping %d of %d step(s)"
+                  % (collection["Name"], tCount, len(steps)))
+            collection["Data"] = steps[:tCount]
+        else:
+            print("%s: %d step(s)" % (collection["Name"], len(steps)))
+
+    out_base = os.path.join(dataDir, filename + addname)
+    write_ymf(domain, out_base + ".ymf")
+    print("wrote %s.ymf" % (out_base,))
+    write_xdmf(domain, out_base + ".xmf")
+    print("wrote %s.xmf" % (out_base,))
+
 
 if __name__ == '__main__':
     from optparse import OptionParser
     usage = "usage: %prog [options] filename"
     parser = OptionParser(usage=usage)
     parser.add_option("-t","--tCount",
-                      help="number of time steps",
+                      help="keep only this many time steps (default: all)",
                       action="store",
                       type="int",
                       dest="tCount",
                       default="-1")
     parser.add_option("-n","--no-global-sync",
-                      help="assume hdf5 has partitioned mesh",
+                      help="accepted for compatibility; the archive records "
+                           "its own layout",
                       action="store_true",
                       dest="not_global_sync",
                       default=False)
 
     (opts,args) = parser.parse_args()
-    if args[0][-3:] == 'xmf':
-        filebase = args[0][:-4]
-    else:
-        filebase = args[0]
-    gatherTimes(filebase,tCount = opts.tCount, global_sync = not opts.not_global_sync)
+    if not args:
+        parser.error("give the archive's base name (or its .xmf/.ymf/.h5)")
+    filebase = args[0]
+    for suffix in (".xmf", ".ymf", ".h5"):
+        if filebase.endswith(suffix):
+            filebase = filebase[:-len(suffix)]
+            break
+    gatherTimes(filebase, tCount=opts.tCount,
+                global_sync=not opts.not_global_sync)

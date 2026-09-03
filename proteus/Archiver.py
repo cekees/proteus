@@ -170,6 +170,12 @@ class AR_base(object):
     #: HDF5 root attribute holding the time-collection names, newline
     #: separated, in the order they were written.
     COLLECTIONS_ATTR = "ymf_archive_collections"
+    #: HDF5 root attribute recording whether the archive was written as
+    #: global arrays (1) or one grid per subdomain (0). Recorded so a
+    #: reader need not be told: at one rank the two layouts produce
+    #: metadata of the same shape but different XDMF, so it cannot be
+    #: inferred from the data.
+    GLOBAL_SYNC_ATTR = "ymf_archive_global_sync"
 
     def _check_metadata_version(self):
         """Refuse an archive whose metadata layout this code cannot read.
@@ -254,6 +260,13 @@ class AR_base(object):
             raw = raw.decode("utf-8")
         collection_names = [name for name in raw.split("\n") if name]
 
+        #Prefer the mode the archive recorded. A reader has no way to infer
+        #it: at one rank a global write and a per-subdomain write both
+        #leave metadata of shape (1,), but the first means a uniform step
+        #and the second a spatial collection holding one grid.
+        recorded = self.hdfFile.attrs.get(self.GLOBAL_SYNC_ATTR)
+        global_sync = self.global_sync if recorded is None else bool(int(recorded))
+
         domain = None
         for ci, collection_name in enumerate(collection_names):
             if domain is None:
@@ -272,7 +285,7 @@ class AR_base(object):
                 t = float(grid_array.attrs['Time'])
                 grids = [load_grid(grid_array[j].decode("utf-8"))
                          for j in range(grid_array.shape[0])]
-                if self.global_sync:
+                if global_sync:
                     #one already-global grid: its pieces are the archive
                     g = grids[0]
                     add_uniform_step(domain, t, g["Topology"], g["Geometry"],
@@ -511,6 +524,8 @@ class AR_base(object):
             #rank with the same value, since attribute writes are collective.
             self.hdfFile.attrs[self.COLLECTIONS_ATTR] = "\n".join(
                 c.attrib['Name'] for c in Domain)
+            self.hdfFile.attrs[self.GLOBAL_SYNC_ATTR] = \
+                1 if self.global_sync else 0
 
         for i, TemporalGridCollection in enumerate(Domain):
             GridLocal = TemporalGridCollection[-1]
@@ -800,6 +815,33 @@ class AR_base(object):
                         "href": "./{0:s}/{1:s}.txt".format(self.textDataDir,
                                                            text_stem)})
         return item
+
+def readArchiveDomain(filename, dataDir='.'):
+    """The ymf domain of an existing archive, read from its HDF5 file.
+
+    For tools that hold a filename rather than a live archive object. The
+    ``.h5`` is self-describing -- it carries the metadata format version,
+    the time-collection names and whether the run wrote global arrays or
+    one grid per subdomain -- so no ``.xmf`` or ``.ymf`` sidecar is needed
+    and no flags have to be supplied.
+
+    That is what makes the sidecars recoverable: an archive whose ``.ymf``
+    or ``.xmf`` was lost or truncated can be rebuilt from the ``.h5``
+    alone.
+    """
+    import h5py
+
+    base = os.path.join(dataDir, filename)
+    archive = AR_base.__new__(AR_base)
+    archive.hdfFilename = filename + ".h5"
+    archive.global_sync = True          # overridden by the recorded value
+    archive.archived_domain = None
+    with h5py.File(base + ".h5", "r") as hdfFile:
+        archive.hdfFile = hdfFile
+        domain = archive.assemble_domain()
+    archive.hdfFile = None
+    return domain
+
 
 XdmfArchive=AR_base
 

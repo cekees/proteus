@@ -459,3 +459,121 @@ def test_the_pytables_hot_start_path_is_gone():
                 continue
             assert "get_node(" not in stripped, line
             assert "ar.hdfFileGlb" not in stripped, line
+
+
+# --------------------------------------------------------------------------
+# rebuilding the document from the .h5 alone
+# --------------------------------------------------------------------------
+
+
+def load_gather_times():
+    """scripts/gatherTimes has no .py suffix, so import it by path."""
+    import importlib.machinery
+    import importlib.util
+
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts", "gatherTimes")
+    loader = importlib.machinery.SourceFileLoader("gatherTimes", path)
+    module = importlib.util.module_from_spec(
+        importlib.util.spec_from_loader("gatherTimes", loader))
+    loader.exec_module(module)
+    return module
+
+
+def test_the_archive_records_which_layout_it_used(tmp_path):
+    """A reader cannot infer the layout, so the writer records it.
+
+    At one rank a global write and a per-subdomain write both leave
+    metadata of shape (1,), but the first means a uniform step and the
+    second a spatial collection holding one grid.
+    """
+    from proteus.Archiver import AR_base
+
+    for global_sync in (True, False):
+        datadir = run_ranks(tmp_path / str(global_sync), 1,
+                            global_sync=global_sync)
+        with h5py.File(os.path.join(datadir, "mpitest.h5"), "r") as f:
+            recorded = int(f.attrs[AR_base.GLOBAL_SYNC_ATTR])
+        assert recorded == (1 if global_sync else 0)
+
+
+@pytest.mark.parametrize("global_sync", [True, False])
+def test_the_domain_can_be_read_from_the_h5_alone(tmp_path, global_sync):
+    """No .xmf or .ymf sidecar, and no flags supplied by the caller."""
+    from proteus.Archiver import readArchiveDomain
+
+    datadir = run_ranks(tmp_path, 1, global_sync=global_sync)
+    os.remove(os.path.join(datadir, "mpitest.ymf"))
+    domain = readArchiveDomain("mpitest", dataDir=datadir)
+    (collection,) = domain["TimeCollections"]
+    assert len(collection["Data"]) == 2
+    # the recorded layout decides the shape, not a caller's guess
+    has_spatial = "SpatialCollection" in collection["Data"][0]
+    assert has_spatial == (not global_sync)
+
+
+def test_gather_times_rebuilds_both_sidecars_from_the_h5(tmp_path):
+    """The recovery path: a run whose .ymf/.xmf was lost or never written.
+
+    Also a regression test. Phase 2 changed the in-HDF5 metadata from XML
+    fragments to YAML, and gatherTimes still called fromstring() on it --
+    ParseError on every invocation. Nothing caught it because the scripts
+    have no tests.
+    """
+    datadir = run_ranks(tmp_path, 1, global_sync=True)
+    for suffix in (".ymf", ".xmf"):
+        path = os.path.join(datadir, "mpitest" + suffix)
+        if os.path.exists(path):
+            os.remove(path)
+    assert sorted(os.listdir(datadir)) == ["mpitest.h5"]
+
+    load_gather_times().gatherTimes("mpitest", dataDir=datadir, tCount=-1)
+
+    from ymf.archive import read_ymf
+
+    domain, _ = read_ymf(os.path.join(datadir, "mpitest_complete.ymf"))
+    assert len(domain["TimeCollections"][0]["Data"]) == 2
+    from xml.etree.ElementTree import parse
+
+    root = parse(os.path.join(datadir, "mpitest_complete.xmf")).getroot()
+    assert root.tag == "Xdmf"
+    assert len(root.find("Domain").find("Grid").findall("Grid")) == 2
+
+
+def test_gather_times_can_truncate_while_rebuilding(tmp_path):
+    datadir = run_ranks(tmp_path, 1, global_sync=True)
+    load_gather_times().gatherTimes("mpitest", dataDir=datadir, tCount=1)
+
+    from ymf.archive import read_ymf
+
+    domain, _ = read_ymf(os.path.join(datadir, "mpitest_complete.ymf"))
+    assert len(domain["TimeCollections"][0]["Data"]) == 1
+
+
+def test_gather_times_needs_no_xmf_to_seed_from(tmp_path):
+    """The previous version opened <name>.xmf for its Domain skeleton.
+
+    So it could not recover an archive whose .xmf was the missing part --
+    which is the case it exists for.
+    """
+    import ast
+    import inspect
+
+    # It does *write* an .xmf, so a text search for ".xmf" proves nothing.
+    # What matters is that it never parses one: no ElementTree, no open().
+    tree = ast.parse(inspect.getsource(load_gather_times().gatherTimes))
+    called = {node.func.id for node in ast.walk(tree)
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    assert "open" not in called, "gatherTimes still opens a file itself"
+    assert "ElementTree" not in called, "gatherTimes still parses XML"
+
+
+def test_h5toxmf_script_is_gone():
+    """Deleted: uninstalled, unreferenced, PyTables-based, and duplicating
+    a function extractSolution.py already defines internally. gatherTimes
+    is the supported way to regenerate a document from an .h5."""
+    scripts = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
+    assert not os.path.exists(os.path.join(scripts, "H5toXMF.py"))
+    assert os.path.exists(os.path.join(scripts, "gatherTimes"))
