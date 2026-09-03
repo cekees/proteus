@@ -1,6 +1,17 @@
 from proteus import *
 from proteus.default_p import *
 from proteus.richards import Richards
+from proteus import Context
+
+# Scheme selection.  The defaults are the FCT scheme; the other one is
+#   entropy viscosity     -C "STABILIZATION_TYPE=2 FCT=False"
+# test_richards.py drives both through Context.contextOptionsString.  Galerkin
+# is not run for this benchmark: on the dz = 50 cm grid it undershoots to
+# psi = -10.87 m against an initial condition of -7.5 m.
+ct = Context.Options([
+    ("STABILIZATION_TYPE", 2, "0: Galerkin (no stabilization), 2: entropy viscosity"),
+    ("FCT", True, "apply the flux-corrected-transport limiter"),
+], mutable=True)
 
 # Szymkiewicz (2009), Water Resour. Res. 45, W10403 -- Test Problem 1:
 # infiltration into a 5 m deep dry sand column, soil 5 of Table 1.
@@ -21,7 +32,7 @@ analyticalSolution = None
 viscosity     = 8.9e-4  #kg/(m*s)
 density       = 998.2   #kg/m^3
 gravity       = 9.8     #m/s^2
-beta          = 0.0#density*gravity*4.524e-10
+beta          = 0.0     #same for every scheme, so the comparison is controlled
 m_per_s_by_m_per_d = 1.1574074e-5
 permeability  = (5.04*m_per_s_by_m_per_d)*viscosity/(gravity*density)  #Ks = 21 cm/h = 5.04 m/d
 thetaS        = 0.43   #-
@@ -88,10 +99,10 @@ coefficients = Richards.Coefficients(nd,
                                      # 'BC' would give Burdine, eta = 6.38.
                                      PSK_type='BC_MUALEM',
                                      diagonal_conductivity=True,
-                                     STABILIZATION_TYPE=2,
+                                     STABILIZATION_TYPE=ct.STABILIZATION_TYPE,
                                      ENTROPY_TYPE=1,
                                      LUMPED_MASS_MATRIX=False,
-                                     FCT= True,
+                                     FCT=ct.FCT,
                                      MONOLITHIC=False,
                                      num_fct_iter=1,
                                          # FOR ENTROPY VISCOSITY

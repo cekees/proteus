@@ -56,7 +56,7 @@ elementBoundaryQuadrature = SimplexGaussQuadrature(nd-1,4)
 #
 #elementBoundaryQuadrature = SimplexLobattoQuadrature(nd-1,1)
 
-nnx= 161
+nnx= ct.nnx
 #nny=161
 nLevels = 1
 triangleFlag = 0

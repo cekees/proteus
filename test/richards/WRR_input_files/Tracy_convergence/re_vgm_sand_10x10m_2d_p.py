@@ -1,6 +1,18 @@
 from proteus import *
 from proteus.default_p import *
 from proteus.richards import Richards
+from proteus import Context
+
+# Scheme selection.  The defaults are the FCT scheme; the other two are
+#   Galerkin              -C "STABILIZATION_TYPE=0 FCT=False"
+#   entropy viscosity     -C "STABILIZATION_TYPE=2 FCT=False"
+# nnx drives the spatial refinement (used in the _n.py file).
+ct = Context.Options([
+    ("STABILIZATION_TYPE", 2, "0: Galerkin (no stabilization), 2: entropy viscosity"),
+    ("FCT", True, "apply the flux-corrected-transport limiter"),
+    ("nnx", 161, "nodes per side: 41/81/161/321/641 = ref_2../ref_6"),
+], mutable=True)
+
 nd = 2
 
 L=(10.0,10.0,1.0)
@@ -60,10 +72,11 @@ coefficients = Richards.Coefficients(nd,
                                      density=dimensionless_density,
                                      beta=0.0, #0.0001,
                                      diagonal_conductivity=True,
-                                     STABILIZATION_TYPE=2, #2, #2,#0 for galerkin, 2 for Low-order monotone and FCT
+                                     PSK_type='Gardner',
+                                     STABILIZATION_TYPE=ct.STABILIZATION_TYPE,
                                      ENTROPY_TYPE=1,
                                      LUMPED_MASS_MATRIX=False,
-                                     FCT=True,#True,
+                                     FCT=ct.FCT,
                                      num_fct_iter=0,
                                      # FOR ENTROPY VISCOSITY
                                      cE=1.0,

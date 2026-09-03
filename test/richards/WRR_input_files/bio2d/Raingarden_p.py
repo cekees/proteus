@@ -1,7 +1,22 @@
+"""bio2d -- 3 x 5 m two-dimensional bioswale: trapezoidal swale cut into a
+three-material profile, with a rectangular drain running through it.
+
+Three materials (regionFlags of domain_rg.py):
+    1  native soil    Ks = 1.06 m/d
+    2  swale trapezoid Ks = 7.128 m/d
+    3  upper layer    Ks = 5.0 m/d
+
+Ponding at psi = +0.5 m is imposed on the middle third of the top boundary;
+everything else is no-flux, and the IC is a uniform psi = -3 m, which is what
+the HYDRUS reference in HYDRUS/Domain.dat starts from.
+
+The scheme and the mesh resolution come from the context options declared in
+domain_rg.py (`he`, `STABILIZATION_TYPE`, `FCT`), which this file imports.
+"""
 from proteus import *
 from proteus.default_p import *
 from proteus.richards import Richards
-from domain_rg import *
+from domain_rg import *          # brings in the domain AND the context object ct
 
 analyticalSolution = None
 
@@ -98,7 +113,14 @@ for i in range(nMediaTypes+1):
     #    KsTypes[i,:]    = [dimensionless_conductivity4,dimensionless_conductivity4]#m/d?
 
 galerkin = False
-useSeepageFace = True
+
+#Drain treatment.  useSeepageFace=False leaves the drain wall no-flux, and the
+#ponding Dirichlet value is then imposed strongly (forceStrongConditions below).
+#That is the configuration of every figure and table in this directory, and the
+#one the HYDRUS reference is run in.  Setting it True turns the drain into a
+#seepage face, which also needs `getSeepageFace=getSeepageFace` passed to the
+#coefficients -- see the commented line in the constructor call.
+useSeepageFace = False
 
 def getSeepageFace(flag):
     if useSeepageFace:
@@ -121,12 +143,13 @@ coefficients = Richards.Coefficients(nd,
                                      thetaSRtypes,
                                      gravity=dimensionless_gravity,
                                      density=dimensionless_density,
+                                     forceStrongConditions = True,
                                      beta=0.0001,
                                      diagonal_conductivity=True,
-                                     STABILIZATION_TYPE=2,
+                                     STABILIZATION_TYPE=ct.STABILIZATION_TYPE,
                                      ENTROPY_TYPE=1,
                                      LUMPED_MASS_MATRIX= False ,
-                                     FCT=True,
+                                     FCT=ct.FCT,
                                      num_fct_iter=0,
                                      # FOR ENTROPY VISCOSITY
                                      cE=1.0,
@@ -135,8 +158,8 @@ coefficients = Richards.Coefficients(nd,
                                      # FOR ARTIFICIAL COMPRESSION
                                      cK=1.0,
                                      # OUTPUT quantDOFs
-                                     outputQuantDOFs=False,
-                                     getSeepageFace=getSeepageFace)
+                                     outputQuantDOFs=False) #,
+#                                     getSeepageFace=getSeepageFace)
 
 #G= [1.8, 1.2,1]
 
@@ -145,6 +168,7 @@ galerkin = False
 G=[3.0,5.0,1.0]
 
 pondingPressure= 0.5
+initialPressureHead= -3.0 #m, uniform, matches the HYDRUS run
 def getDBC_2D_Richards_Shock(x,flag):
     if x[1] == L[1]:
         if (x[0] >= L[0]/3.0 and
@@ -166,7 +190,7 @@ class ShockIC_2D_Richards:
         if bc != None:
             return bc(x,t)
         else:
-            return x[1]*dimensionless_gravity[1]*dimensionless_density
+            return initialPressureHead
 
 initialConditions  = {0:ShockIC_2D_Richards()}
 

@@ -1,6 +1,16 @@
 from proteus import *
 from proteus.default_p import *
 from proteus.richards import Richards
+from proteus import Context
+
+# Scheme selection.  The defaults are the FCT scheme; the other one is
+#   entropy viscosity     -C "STABILIZATION_TYPE=2 FCT=False"
+# test_richards.py drives both through Context.contextOptionsString.  Galerkin
+# is not run for this benchmark.
+ct = Context.Options([
+    ("STABILIZATION_TYPE", 2, "0: Galerkin (no stabilization), 2: entropy viscosity"),
+    ("FCT", True, "apply the flux-corrected-transport limiter"),
+], mutable=True)
 
 nd = 1
 
@@ -12,7 +22,7 @@ analyticalSolution = None
 viscosity     = 8.9e-4  #kg/(m*s)
 density       = 998.2   #kg/m^3
 gravity       = 9.8     #m/s^2
-beta          = 0. #0.0#density*gravity*4.524e-10
+beta          = 0.0     #same for every scheme, so the comparison is controlled
 m_per_s_by_m_per_d = 1.1574074e-5
 #HYDRUS water flow parameters: Ks = 0.297 m/hour = 7.128 m/d
 permeability  = (7.128*m_per_s_by_m_per_d)*viscosity/(gravity*density)  #m^2
@@ -67,10 +77,14 @@ coefficients = Richards.Coefficients(nd,
                                      density=dimensionless_density,
                                      beta=beta,
                                      diagonal_conductivity=True,
-                                     STABILIZATION_TYPE=2,
+                                     # stiff weak Dirichlet: the ponding BC at the top face
+                                     # is only imposed to O(1/penalty), and 100 leaves it
+                                     # visibly short of the imposed head on this mesh
+                                     penalty_constant=1.0e4,
+                                     STABILIZATION_TYPE=ct.STABILIZATION_TYPE,
                                      ENTROPY_TYPE=1,
                                      LUMPED_MASS_MATRIX=False,
-                                     FCT=True,
+                                     FCT=ct.FCT,
                                      MONOLITHIC=False,
                                      num_fct_iter=1,
                                          # FOR ENTROPY VISCOSITY
@@ -139,5 +153,5 @@ T = 48.0/24.0/timeScale   #48 hours, in days; column wets through at ~26 h
 #T = 0.35/timeScale
 
 #global water-balance diagnostic; writes mass_balance.txt, serial runs only
-import mass_balance_hook
-mass_balance_hook.attach(coefficients, outfile='mass_balance.txt')
+#import mass_balance_hook
+#mass_balance_hook.attach(coefficients, outfile='mass_balance.txt')

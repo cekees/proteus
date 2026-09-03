@@ -21,17 +21,17 @@ if not galerkin:
     timeIntegration = Richards.ThetaScheme
 timeOrder = 1
 #stepController = Min_dt_controller
-nonlinearIterationsFloor = 4
-nonlinearIterationsCeil  = 8 # 8
+nonlinearIterationsFloor = 10
+nonlinearIterationsCeil  = 20 # 8
 dtNLgrowFactor = 2
 dtNLreduceFactor = 0.5
 dtNLfailureReduceFactor = 0.5
 useInitialGuessPredictor= True
 stepExact = True
-T = 0.5
-nDTout = 201
+T = 0.21
+nDTout = 210 #7 HYDRUS output times x 30, so every 30th step lands on one
 DT = T/nDTout
-tnList = [0.0,1.0e-8,2.0e-8]+[i*DT for i in range(1,nDTout+2)]
+tnList = [0.0,1.0e-8,2.0e-8]+[i*DT for i in range(1,nDTout+1)]
 atol_u[0] = 1.0e-3
 rtol_u[0] = 1.0e-3
 
@@ -69,10 +69,10 @@ fullNewtonFlag = True
 
 tolFac = 0.0
 
-nl_atol_res = 1.0e-7
+nl_atol_res = 1.0e-8
 
 maxNonlinearIts = 50#1001
-maxLineSearches =10
+maxLineSearches = 5
 
 matrix = SparseMatrix
 

@@ -1,7 +1,16 @@
 from proteus import *
 from proteus.default_p import *
 from proteus.richards import Richards
+from proteus import Context
 from domain_rg import *
+
+# Scheme selection.  The defaults are the FCT scheme; the other two are
+#   Galerkin              -C "STABILIZATION_TYPE=0 FCT=False"
+#   entropy viscosity     -C "STABILIZATION_TYPE=2 FCT=False"
+ct = Context.Options([
+    ("STABILIZATION_TYPE", 2, "0: Galerkin (no stabilization), 2: entropy viscosity"),
+    ("FCT", True, "apply the flux-corrected-transport limiter"),
+], mutable=True)
 
 analyticalSolution = None
 
@@ -104,10 +113,11 @@ coefficients = Richards.Coefficients(nd,
                                      density=dimensionless_density,
                                      beta=0.0001,
                                      diagonal_conductivity=True,
-                                     STABILIZATION_TYPE=2,
+                                     penalty_constant=1.0e2,
+                                     STABILIZATION_TYPE=ct.STABILIZATION_TYPE,
                                      ENTROPY_TYPE=1,
                                      LUMPED_MASS_MATRIX= False ,
-                                     FCT=False,
+                                     FCT=ct.FCT,
                                      num_fct_iter=0,
                                      # FOR ENTROPY VISCOSITY
                                      cE=1.0,
@@ -141,13 +151,16 @@ def getDBC_2D_Richards_Shock(x,flag):
 
 dirichletConditions = {0:getDBC_2D_Richards_Shock}
 
+#Uniform IC, matching the HYDRUS run (Domain.dat column h is -5 m at every node).
+initialPressureHead = -5.0
+
 class ShockIC_2D_Richards:
     def uOfXT(self,x,t):
         bc=getDBC_2D_Richards_Shock(x,0)
         if bc != None:
             return bc(x,t)
         else:
-            return x[1]*dimensionless_gravity[1]*dimensionless_density
+            return initialPressureHead
 
 initialConditions  = {0:ShockIC_2D_Richards()}
 

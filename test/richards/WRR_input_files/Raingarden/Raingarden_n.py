@@ -28,7 +28,7 @@ dtNLreduceFactor = 0.5
 dtNLfailureReduceFactor = 0.5
 useInitialGuessPredictor= True
 stepExact = True
-T = 0.5
+T = 0.75
 nDTout = 201
 DT = T/nDTout
 tnList = [0.0,1.0e-8,2.0e-8]+[i*DT for i in range(1,nDTout+2)]
@@ -69,10 +69,10 @@ fullNewtonFlag = True
 
 tolFac = 0.0
 
-nl_atol_res = 1.0e-8
+nl_atol_res = 1.0e-7
 
 maxNonlinearIts = 50#1001
-maxLineSearches =10
+maxLineSearches = 5
 
 matrix = SparseMatrix
 
