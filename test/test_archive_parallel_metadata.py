@@ -200,12 +200,14 @@ def test_the_metadata_format_version_is_recorded(tmp_path):
             AR_base.METADATA_FORMAT_VERSION
 
 
-def test_an_archive_without_the_version_marker_is_refused(tmp_path):
-    """A pre-YMF archive must fail with an explanation, not a parse error.
+def test_an_archive_without_the_version_marker_is_read_as_version_one(tmp_path):
+    """A missing marker means proteus <= 1.9.x wrote it, and it is readable.
 
-    Version 1 metadata was XML in datasets with the same names, so without
-    this check the YAML loader would be handed XML and fail somewhere
-    unhelpful.
+    This started out as a refusal. The campaign gained an objective after
+    the fact -- preserve the XDMF consumer pathways, since 1.9.x is being
+    released and its archives will be around -- so the absence of the
+    attribute is now a version rather than an error. See
+    test_archive_v1_compat.py for reading both v1 layouts.
     """
     from proteus.Archiver import AR_base
 
@@ -218,11 +220,11 @@ def test_an_archive_without_the_version_marker_is_refused(tmp_path):
     ar.hdfFilename = "mpitest.h5"
     with h5py.File(path, "r") as f:
         ar.hdfFile = f
-        with pytest.raises(ValueError, match="pre-YMF layout"):
-            ar._check_metadata_version()
+        assert ar._metadata_version() == 1
 
 
 def test_a_future_version_marker_is_refused(tmp_path):
+    """Older layouts are read; newer ones cannot be guessed at."""
     from proteus.Archiver import AR_base
 
     datadir = run_ranks(tmp_path, 1, global_sync=False)
@@ -234,8 +236,8 @@ def test_a_future_version_marker_is_refused(tmp_path):
     ar.hdfFilename = "mpitest.h5"
     with h5py.File(path, "r") as f:
         ar.hdfFile = f
-        with pytest.raises(ValueError, match="format version 99"):
-            ar._check_metadata_version()
+        with pytest.raises(ValueError, match="version 99"):
+            ar._metadata_version()
 
 
 # --------------------------------------------------------------------------

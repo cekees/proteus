@@ -177,28 +177,60 @@ class AR_base(object):
     #: inferred from the data.
     GLOBAL_SYNC_ATTR = "ymf_archive_global_sync"
 
-    def _check_metadata_version(self):
-        """Refuse an archive whose metadata layout this code cannot read.
+    def _metadata_version(self):
+        """Which metadata layout this archive uses.
 
-        Version 1 was XML fragments stored as fixed-width bytes; version 2
-        is YAML. Both live in datasets named ``<collection>_<n>``, so a
-        version 1 archive read by this code would hand XML text to a YAML
-        parser and fail somewhere unhelpful.
+        Version 1 is XDMF ``<Grid>`` fragments, written by proteus up to
+        and including 1.9.x. Version 2 is YAML describing a ymf grid dict.
+        Both live in datasets named ``<collection>_<step>``, and a version 1
+        archive carries no version attribute at all -- its absence is the
+        marker.
+
+        Version 1 is **read**, not refused: an existing XDMF archive must
+        stay hot-startable and stay usable with the scripts. Only version 2
+        is written.
         """
         found = self.hdfFile.attrs.get(self.METADATA_VERSION_ATTR)
         if found is None:
-            raise ValueError(
-                "%s has no %r attribute, so its grid metadata is XML "
-                "fragments (the pre-YMF layout). This proteus reads and "
-                "writes version %d, which is YAML. Convert the archive or "
-                "read it with an older proteus."
-                % (self.hdfFilename, self.METADATA_VERSION_ATTR,
-                   self.METADATA_FORMAT_VERSION))
-        if int(found) != self.METADATA_FORMAT_VERSION:
+            return 1
+        version = int(found)
+        if version > self.METADATA_FORMAT_VERSION:
             raise ValueError(
                 "%s holds grid metadata in format version %d; this proteus "
-                "reads and writes version %d"
-                % (self.hdfFilename, int(found), self.METADATA_FORMAT_VERSION))
+                "reads up to version %d"
+                % (self.hdfFilename, version, self.METADATA_FORMAT_VERSION))
+        return version
+
+    def _check_metadata_version(self):
+        """Kept for callers that only want the refusal on a future version."""
+        self._metadata_version()
+
+    def _discover_metadata_datasets(self):
+        """Group the metadata datasets by collection, ordered by step.
+
+        Needed for a version 1 archive, which records no collection names.
+        Rather than pattern-matching names -- a collection name can itself
+        contain underscores and digits, as Mesh_c0p2_Lagrange does -- a
+        candidate is confirmed by what it *is*: a one-dimensional array of
+        byte strings. Field data is numeric, so nothing else in the file
+        looks like this.
+
+        Returns ``{collection_name: [dataset_name_by_step, ...]}``.
+        """
+        import re
+
+        pattern = re.compile(r"^(.+)_(\d+)$")
+        found = {}
+        for key, value in self.hdfFile.items():
+            if getattr(value, "ndim", None) != 1 or value.dtype.kind != "S":
+                continue
+            match = pattern.match(key)
+            if match is None:
+                continue
+            found.setdefault(match.group(1), []).append(
+                (int(match.group(2)), key))
+        return {name: [key for _, key in sorted(steps)]
+                for name, steps in found.items()}
 
     @property
     def archived_times(self):
@@ -248,22 +280,24 @@ class AR_base(object):
 
         if self.hdfFile is None:
             return None
-        self._check_metadata_version()
+        version = self._metadata_version()
 
         raw = self.hdfFile.attrs.get(self.COLLECTIONS_ATTR)
-        if raw is None:
-            raise ValueError(
-                "%s has no %r attribute, so its time-collection names are "
-                "unknown. It was written by a proteus predating that "
-                "attribute." % (self.hdfFilename, self.COLLECTIONS_ATTR))
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8")
-        collection_names = [name for name in raw.split("\n") if name]
+        if raw is not None:
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            collection_names = [name for name in raw.split("\n") if name]
+            datasets = {name: None for name in collection_names}
+        else:
+            #A version 1 archive records no names; find them from the file.
+            datasets = self._discover_metadata_datasets()
+            collection_names = sorted(datasets)
 
-        #Prefer the mode the archive recorded. A reader has no way to infer
-        #it: at one rank a global write and a per-subdomain write both
-        #leave metadata of shape (1,), but the first means a uniform step
-        #and the second a spatial collection holding one grid.
+        #Prefer the mode the archive recorded. A version 2 reader has no way
+        #to infer it: at one rank a global write and a per-subdomain write
+        #both leave metadata of shape (1,), but the first means a uniform
+        #step and the second a spatial collection holding one grid. Version 1
+        #records nothing, so there it *is* inferred -- see _v1_grids.
         recorded = self.hdfFile.attrs.get(self.GLOBAL_SYNC_ATTR)
         global_sync = self.global_sync if recorded is None else bool(int(recorded))
 
@@ -273,19 +307,30 @@ class AR_base(object):
                 domain = new_domain(collection_name)
             else:
                 add_collection(domain, collection_name)
+            keys = datasets.get(collection_name)
             step = 0
             while n_steps is None or step < n_steps:
-                dataset_name = self._metadata_dataset_name(collection_name, step)
-                if dataset_name not in self.hdfFile:
-                    if n_steps is None:
-                        break      # discovered the end
-                    step += 1
-                    continue       # writer knows the count; tolerate a gap
+                if keys is not None:
+                    if step >= len(keys):
+                        break
+                    dataset_name = keys[step]
+                else:
+                    dataset_name = self._metadata_dataset_name(
+                        collection_name, step)
+                    if dataset_name not in self.hdfFile:
+                        if n_steps is None:
+                            break      # discovered the end
+                        step += 1
+                        continue       # writer knows the count; tolerate a gap
                 grid_array = self.hdfFile[dataset_name]
-                t = float(grid_array.attrs['Time'])
-                grids = [load_grid(grid_array[j].decode("utf-8"))
-                         for j in range(grid_array.shape[0])]
-                if global_sync:
+                if version == 1:
+                    t, grids, step_is_global = self._v1_grids(grid_array)
+                else:
+                    t = float(grid_array.attrs['Time'])
+                    grids = [load_grid(grid_array[j].decode("utf-8"))
+                             for j in range(grid_array.shape[0])]
+                    step_is_global = global_sync
+                if step_is_global:
                     #one already-global grid: its pieces are the archive
                     g = grids[0]
                     add_uniform_step(domain, t, g["Topology"], g["Geometry"],
@@ -295,6 +340,35 @@ class AR_base(object):
                     add_spatial_step(domain, t, grids, collection=ci)
                 step += 1
         return domain
+
+    def _v1_grids(self, grid_array):
+        """Read one step out of a version 1 (XDMF fragment) archive.
+
+        Returns ``(time, grids, global_sync)``. Both the time and the
+        layout are recovered from the fragments themselves, because
+        proteus <= 1.9.x recorded neither reliably:
+
+        * The dataset's ``Time`` attribute was set only on the
+          per-subdomain path, so for a global archive the time has to come
+          from the ``<Time>`` element inside the fragment.
+        * That same asymmetry identifies the layout. The per-subdomain
+          writer moved ``<Time>`` out of each grid before storing it, so a
+          fragment that still has one was written globally. Shape alone is
+          not enough -- both layouts give shape (1,) at a single rank.
+        """
+        from xml.etree.ElementTree import fromstring
+
+        from ymf.xdmf import parse_grid_element
+
+        elements = [fromstring(grid_array[j])
+                    for j in range(grid_array.shape[0])]
+        first_time = elements[0].find("Time")
+        global_sync = first_time is not None
+        if first_time is not None:
+            t = float(first_time.attrib["Value"])
+        else:
+            t = float(grid_array.attrs["Time"])
+        return t, [parse_grid_element(e) for e in elements], global_sync
 
     def load_archived_domain(self):
         """The archive's domain, assembling it from HDF5 on first use.
