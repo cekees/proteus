@@ -23,12 +23,29 @@ import subprocess
 import sys
 import textwrap
 
+import numpy as np
 import pytest
 
 h5py = pytest.importorskip("h5py")
 pytest.importorskip("proteus.Archiver")
 
-MPIEXEC = shutil.which("mpiexec")
+def _find_mpiexec():
+    """The launcher that matches this interpreter's mpi4py, not just any.
+
+    A mismatched launcher does not fail -- it starts N independent
+    single-rank jobs, so a test asking for 3 ranks quietly exercises 1 and
+    passes for the wrong reason. On this machine PATH resolves mpiexec to
+    Homebrew's OpenMPI while mpi4py is built against conda's MPICH, which
+    is exactly that situation. Prefer the launcher installed beside
+    sys.executable.
+    """
+    beside = os.path.join(os.path.dirname(sys.executable), "mpiexec")
+    if os.path.exists(beside):
+        return beside
+    return shutil.which("mpiexec")
+
+
+MPIEXEC = _find_mpiexec()
 
 # The body run inside each MPI rank. Kept as source text rather than a
 # module so the rank count and mode can be varied without a fixture file
@@ -67,22 +84,41 @@ RANK_SCRIPT = textwrap.dedent(
                              "GridType": "Collection",
                              "CollectionType": "Temporal"})
 
+    # global_sync describes one assembled global array, so the metadata
+    # carries global counts and each rank contributes only the slice it owns.
+    comm_world = comm.comm.tompi4py()
+    node_offsets = np.concatenate(
+        ([0], np.cumsum(comm_world.allgather(n_nodes)))).astype("i")
+    n_nodes_global = int(node_offsets[-1])
+    n_elements_global = int(sum(comm_world.allgather(n_elements)))
+
     for tCount, t in enumerate([0.0, 0.5]):
         grid, _ = ar.write_grid(collection, "Grid_p%d" % rank, t, tCount)
-        ar.write_topology(grid, "Triangle", n_elements, [n_elements, 3],
-                          "elements_p%d_t%d" % (rank, tCount),
-                          "elements%d" % tCount)
-        ar.write_geometry(grid, [n_nodes, 3],
-                          "nodes_p%d_t%d" % (rank, tCount),
-                          "nodes%d" % tCount)
-        ar.write_field(grid, "u", np.arange(n_nodes, dtype="d"), tCount,
-                       dimensions=[n_nodes],
-                       sync_offsets=np.array([0, n_nodes]),
-                       sync_data=np.arange(n_nodes, dtype="d"))
+        if global_sync:
+            ar.write_topology(grid, "Triangle", n_elements_global,
+                              [n_elements_global, 3],
+                              "elements_t%d" % tCount, "elements%d" % tCount)
+            ar.write_geometry(grid, [n_nodes_global, 3],
+                              "nodes_t%d" % tCount, "nodes%d" % tCount)
+            ar.write_field(grid, "u", np.arange(n_nodes, dtype="d"), tCount,
+                           dimensions=[n_nodes_global],
+                           sync_offsets=node_offsets,
+                           sync_data=np.arange(n_nodes, dtype="d"))
+        else:
+            ar.write_topology(grid, "Triangle", n_elements, [n_elements, 3],
+                              "elements_p%d_t%d" % (rank, tCount),
+                              "elements%d" % tCount)
+            ar.write_geometry(grid, [n_nodes, 3],
+                              "nodes_p%d_t%d" % (rank, tCount),
+                              "nodes%d" % tCount)
+            ar.write_field(grid, "u", np.arange(n_nodes, dtype="d"), tCount,
+                           dimensions=[n_nodes])
         ar.sync()
 
     ar.close()
     comm.barrier()
+    if rank == 0:
+        print("OBSERVED_SIZE=%d" % size)
     '''
 )
 
@@ -100,6 +136,19 @@ def run_ranks(tmp_path, n_ranks, global_sync):
     assert result.returncode == 0, (
         "rank script failed with %d ranks:\nSTDOUT:\n%s\nSTDERR:\n%s"
         % (n_ranks, result.stdout[-2000:], result.stderr[-4000:]))
+    # Refuse to pass on a degraded run: a mismatched launcher yields N
+    # independent single-rank jobs rather than an error.
+    observed = [line for line in result.stdout.splitlines()
+                if line.startswith("OBSERVED_SIZE=")]
+    assert observed, (
+        "rank 0 never reported its communicator size; stdout:\n%s"
+        % result.stdout[-2000:])
+    got = int(observed[0].split("=")[1])
+    assert got == n_ranks, (
+        "asked for %d ranks but the job ran with a communicator of %d -- the "
+        "launcher %s does not match this interpreter's mpi4py, so this test "
+        "would otherwise pass while exercising a single rank"
+        % (n_ranks, got, MPIEXEC))
     return datadir
 
 
@@ -254,3 +303,59 @@ def test_the_derived_xmf_holds_every_ranks_grid(tmp_path):
         assert step.attrib["CollectionType"] == "Spatial"
         assert step.find("Time") is not None
         assert len(step.findall("Grid")) == 2
+
+
+# --------------------------------------------------------------------------
+# mode (a): global arrays, with the decomposition invisible to a consumer
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("n_ranks", [2, 3])
+def test_global_sync_hides_the_decomposition(tmp_path, n_ranks):
+    """The point of global_sync: a consumer sees one undivided mesh.
+
+    Each rank writes only the nodes it owns into one collectively-sized
+    global array, and the metadata describes that global array. So the
+    archive must hold uniform steps -- no spatial collection, no per-rank
+    grids -- carrying the global counts.
+    """
+    domain = read_domain(run_ranks(tmp_path, n_ranks, global_sync=True))
+    (collection,) = domain["TimeCollections"]
+    expected_nodes = sum(6 + r for r in range(n_ranks))
+    expected_elements = sum(4 + r for r in range(n_ranks))
+    for step in collection["Data"]:
+        assert "SpatialCollection" not in step, \
+            "the decomposition leaked into a global archive"
+        assert step["Topology"]["NumberOfElements"] == expected_elements
+        assert step["Geometry"]["DataItem"]["Dimensions"] == [expected_nodes, 3]
+        (attr,) = step["Attributes"]
+        assert attr["DataItem"]["Dimensions"] == [expected_nodes]
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("n_ranks", [2, 3])
+def test_global_sync_assembles_every_ranks_contribution(tmp_path, n_ranks):
+    """The global array must actually contain every rank's values.
+
+    A collective write with wrong offsets produces an array of the right
+    shape with holes in it, which no amount of metadata checking catches.
+    """
+    datadir = run_ranks(tmp_path, n_ranks, global_sync=True)
+    with h5py.File(os.path.join(datadir, "mpitest.h5"), "r") as f:
+        u = f["u_t0"][:]
+    expected = np.concatenate([np.arange(6 + r, dtype="d")
+                               for r in range(n_ranks)])
+    assert u.shape == expected.shape
+    np.testing.assert_array_equal(u, expected)
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+def test_global_sync_datasets_carry_no_rank_in_their_names(tmp_path):
+    # A consumer of a global archive should not need to know how many ranks
+    # produced it.
+    datadir = run_ranks(tmp_path, 2, global_sync=True)
+    with h5py.File(os.path.join(datadir, "mpitest.h5"), "r") as f:
+        names = [k for k in f if not k.startswith("Mesh_")]
+    assert names, "no data datasets were written"
+    assert not [n for n in names if "_p" in n], names

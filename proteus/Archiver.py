@@ -590,6 +590,18 @@ class AR_base(object):
             if self.hdfFile is not None else None,
             include="./" + text_path if self.hdfFile is None else None,
             dimensions=list(data.shape) if dimensions is None else dimensions,
+            #On a genuinely parallel collective write the DataItem
+            #describes the assembled global array while `data` is this
+            #rank's slice, present only for its dtype, so the declared
+            #dimensions are larger than the array by design and checking
+            #them would reject a correct write.
+            #
+            #The check stays on for size==1, where global and local
+            #coincide: that is the case where a declared size that does not
+            #match the data means a genuinely malformed archive, and it is
+            #how the phi_s corruption was found. Narrowing rather than
+            #disabling keeps that safety net for the common serial run.
+            check=not (self.global_sync and self.size > 1),
         )
 
         attribute = SubElement(grid, "Attribute",

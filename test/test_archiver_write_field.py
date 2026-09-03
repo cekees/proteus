@@ -31,8 +31,9 @@ class StubArchive(AR_base):
     Bypasses __init__ deliberately -- see the module docstring.
     """
 
-    def __init__(self, hdf=True, global_sync=False, rank=0):
+    def __init__(self, hdf=True, global_sync=False, rank=0, size=1):
         self.global_sync = global_sync
+        self.size = size
         self.comm = StubComm(rank)
         self.hdfFile = object() if hdf else None
         self.hdfFilename = "out.h5"
@@ -332,3 +333,49 @@ def test_text_stem_overrides_the_sidecar_filename(_no_real_savetxt):
     include = list(g.find("Attribute").find("DataItem"))[0]
     assert include.attrib["href"] == "./out_Data/custom.txt"
     assert _no_real_savetxt[0][0] == "out_Data/custom.txt"
+
+
+# --------------------------------------------------------------------------
+# the declared-vs-actual dimension check, and where it must not apply
+# --------------------------------------------------------------------------
+
+
+def test_a_declared_size_that_disagrees_with_the_data_is_rejected_in_serial():
+    """The check that caught the phi_s corruption must stay on in serial.
+
+    A DataItem claiming more values than the dataset behind it produces an
+    archive that opens and shows garbage. With one rank there is no reason
+    for global and local to differ, so a disagreement is a real defect.
+    """
+    from ymf.archive import YmfArchiveError
+
+    ar = StubArchive(global_sync=True, size=1)
+    with pytest.raises(YmfArchiveError, match="Dimensions"):
+        ar.write_field(grid(), "phi_s", np.zeros(25), 0, dimensions=[81],
+                       sync_offsets=np.array([0, 25]), sync_data=np.zeros(25))
+
+
+def test_a_larger_declared_size_is_accepted_on_a_parallel_collective_write():
+    """...and must be off once ranks genuinely hold slices.
+
+    Under global_sync with several ranks the DataItem covers the assembled
+    global array while this rank holds its own piece, so declared > local
+    is correct by construction. Checking it here would reject every correct
+    parallel write -- which it did, until the real MPI tests caught it.
+    """
+    ar = StubArchive(global_sync=True, size=4)
+    g = grid()
+    ar.write_field(g, "u", np.zeros(6), 0, dimensions=[26],
+                   sync_offsets=np.array([0, 6, 13, 19, 26]),
+                   sync_data=np.zeros(6))
+    assert g.find("Attribute").find("DataItem").attrib["Dimensions"] == "26"
+
+
+def test_the_per_rank_path_keeps_the_check_at_any_size():
+    # Without global_sync each rank's DataItem describes exactly its own
+    # array, so a disagreement is a defect however many ranks there are.
+    from ymf.archive import YmfArchiveError
+
+    ar = StubArchive(global_sync=False, size=8)
+    with pytest.raises(YmfArchiveError, match="Dimensions"):
+        ar.write_field(grid(), "u", np.zeros(10), 0, dimensions=[99])
