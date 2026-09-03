@@ -14,7 +14,8 @@ import pytest
 
 pytest.importorskip("proteus.mprans.SW2DCV", reason="needs built extensions")
 
-from proteus.ArchiveFields import ArchiveField, archive_fields_for  # noqa: E402
+from proteus.ArchiveFields import (ArchiveField, ArchiveFieldError,  # noqa: E402
+                                   archive_fields_for)
 from proteus.TransportCoefficients import TC_base  # noqa: E402
 from proteus.mprans import CLSVOF, GN_SW2DCV, RANS2P, RANS3PF, SW2DCV  # noqa: E402
 
@@ -334,3 +335,66 @@ def test_bathymetry_and_eta_stay_on_the_solution_space():
     c.b = StubBathymetry()
     for f in archive_fields_for(StubLevelModel(c), "m"):
         assert f.on_mesh_nodes is False, f.archive_name
+
+
+# --------------------------------------------------------------------------
+# archive_scalar_dofs -- derived nodal scalars a model hangs off coefficients
+# --------------------------------------------------------------------------
+
+
+def test_archive_scalar_dofs_are_declared():
+    """Arrived on main (1.9.0) as another try/except loop in the driver.
+
+    m_comp_co2 computes flash fields Sg/X/c_brine after each step and
+    exposes them as coefficients.archive_scalar_dofs = {name: array}. That
+    is a declaration, so it is served by the hook rather than by a loop in
+    NumericalSolution.py.
+    """
+    c = blank(TC_base)
+    c.archive_scalar_dofs = {"Sg": np.full(N_DOF, 0.25),
+                             "X": np.full(N_DOF, 0.5),
+                             "c_brine": np.full(N_DOF, 0.75)}
+    lm = StubLevelModel(c)
+    fields = {f.archive_name: f for f in archive_fields_for(lm, "m")}
+    assert sorted(fields) == ["Sg", "X", "c_brine"]
+    np.testing.assert_array_equal(fields["Sg"].value, np.full(N_DOF, 0.25))
+
+
+def test_archive_scalar_dofs_go_on_component_zeros_space():
+    """They are sized to u[0].dof and written through component 0.
+
+    m_comp_co2 says so explicitly: under its node split the component 1
+    DOFs are renumbered, so a split-sized array archived against the mesh
+    nodes comes out speckled.
+    """
+    c = blank(TC_base)
+    c.archive_scalar_dofs = {"Sg": np.zeros(N_DOF)}
+    lm = StubLevelModel(c)
+    (field,) = list(archive_fields_for(lm, "m"))
+    assert field.component == 0
+    assert field.on_mesh_nodes is False
+    assert field.resolve_fem_space(lm) is lm.u[0].femSpace
+
+
+def test_no_archive_scalar_dofs_is_the_normal_case():
+    c = blank(TC_base)
+    assert names(StubLevelModel(c)) == []
+    c.archive_scalar_dofs = {}
+    assert names(StubLevelModel(c)) == []
+
+
+def test_archive_scalar_dofs_compose_with_quant_dofs():
+    c = blank(TC_base)
+    c.outputQuantDOFs = True
+    c.archive_scalar_dofs = {"Sg": np.zeros(N_DOF)}
+    lm = StubLevelModel(c, quantDOFs=np.zeros(N_DOF))
+    assert names(lm) == ["quantDOFs_for_mymodel", "Sg"]
+
+
+def test_a_broken_scalar_dof_declaration_is_reported_not_skipped():
+    """The version on main wrapped this in a bare except, so a wrong-shaped
+    or absent array was written as nothing at all, silently."""
+    c = blank(TC_base)
+    c.archive_scalar_dofs = {"Sg": None}
+    with pytest.raises(ArchiveFieldError, match="Sg"):
+        list(archive_fields_for(StubLevelModel(c), "m"))

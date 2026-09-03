@@ -1,6 +1,7 @@
 #ifndef TADR_H
 #define TADR_H
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <valarray>
 #include "CompKernel.h"
@@ -25,8 +26,15 @@ namespace py = pybind11;
 
 namespace proteus
 {
-  enum class STABILIZATION : int { Galerkin=-1, VMS=0, TaylorGalerkinEV=1, EntropyViscosity=2, SmoothnessIndicator=3, Kuzmin=4};
+  // ImplicitEV=5: backward-Euler implicit edge-based scheme (low-order graph
+  // dissipation, no FCT) modeled on Richards STABILIZATION_TYPE==2.  Unlike the
+  // explicit edge-based types (2,3,4) the advection/diffusion are evaluated at
+  // the current Newton iterate and contribute to the Jacobian, so it is NOT
+  // CFL-limited.  The Jacobian is assembled in calculateJacobian (a separate
+  // function), NOT inside calculateResidual as Richards does.
+  enum class STABILIZATION : int { Galerkin=-1, VMS=0, TaylorGalerkinEV=1, EntropyViscosity=2, SmoothnessIndicator=3, Kuzmin=4, ImplicitEV=5};
   enum class ENTROPY : int { POWER=0, LOG=1};
+  enum class DISPERSION : int { Constant=0, PowerLawSaturation=1, VelocityBased=2};
   // Power entropy //
   inline double EPOWER(const double& phi, const double& phiL, const double& phiR)
   {
@@ -57,10 +65,12 @@ namespace proteus
     std::valarray<double> FluxCorrectionMatrix;
     std::valarray<double> TransportMatrix, DiffusionMatrix, TransposeTransportMatrix;
     std::valarray<double> psi, eta, global_entropy_residual, boundary_integral;
+    std::valarray<double> m_dof, theta_dof_proj, rho_dof_proj, ML_mass_proj;
     std::valarray<double> maxVel,maxEntRes;
     virtual ~TADR_base(){}
     virtual void calculateResidual(arguments_dict& args)=0;
     virtual void calculateJacobian(arguments_dict& args)=0;
+    virtual void invert(arguments_dict& args)=0;
     virtual void FCTStep(arguments_dict& args)=0;
   };
 
@@ -81,6 +91,8 @@ namespace proteus
       ck()
     {}
 
+      
+
     inline
     void calculateCFL(const double& elementDiameter,
                       const double df[nSpace],
@@ -95,89 +107,81 @@ namespace proteus
       cfl = nrm_v/h;
     }
 
+    
+
     inline
-// void evaluateCoefficients(const int rowptr[nSpace],
-// 				                      const int colind[nnz],
-//                               const double v[nSpace],
-//                               const double* q_a,
-//                               const double& u,
-//                               double& m,
-//                               double& dm,
-//                               double f[nSpace],
-//                               double df[nSpace], 
-//                               double a[nnz],
-//                               double da[nnz])
-//     {
-//       m = u;
-//       dm= 1.0;
-//       for (int I=0; I < nSpace; I++)
-//         {
-//           f[I] = v[I]*u;
-//           df[I] = v[I];
-//            for (int ii = rowptr[I]; ii < rowptr[I + 1]; ii++)
-//         {
-//             a[ii] = q_a[ii];
-//             da[ii] = 0.0;
-//         }
+void evaluateCoefficients(const int rowptr[nSpace],
+				                      const int colind[nnz],
+                              const double v[nSpace],
+                              const double alpha_L,
+                              const double alpha_T,
+                              const double Dm,
+                              const double thetaW,
+                              const double rho_f,
+                              const double rho_s,
+                              const double& u,
+                              double& rho_out,
+                              double& m,
+                              double& dm,
+                              double f[nSpace],
+                              double df[nSpace], 
+                              double a[nnz],
+                              double da[nnz])
+    {
+      const double epsilon = (rho_s - rho_f)/rho_f;
+      rho_out = rho_f*(1.0 + epsilon*u);
+      const double drho_du = rho_f*epsilon;
+      const double rho_transport = rho_out;
+      m = thetaW*rho_transport*u;
+      dm = thetaW*(rho_transport + u*drho_du);
+      double v_mag = 0.0;
+      for (int I=0; I<nSpace; I++)
+        v_mag += v[I]*v[I];
+      v_mag = std::sqrt(v_mag);
+      const double v_pore_mag = (thetaW > 1.0e-8) ? v_mag / thetaW : 0.0;
 
-//         } 
-//     }
+      double alpha_L_eff = alpha_L;
+      double alpha_T_eff = alpha_T;
+      double v_unit[nSpace] = {0.0};
+      if (v_mag > 1.0e-10)
+        for (int I=0; I<nSpace; I++)
+          v_unit[I] = v[I]/v_mag;
 
-
-void evaluateCoefficients(const int rowptr[nSpace], 
-      const int colind[nnz],
-      const double v[nSpace],
-      const double alpha_L,
-      const double alpha_T,
-      const double Dm, // Molecular diffusion term
-      //const double* q_a,
-      const double& u,
-      double& m,
-      double& dm,
-      double f[nSpace],
-      double df[nSpace], 
-      double a[nnz],
-      double da[nnz])
-{
-    m = u;
-    dm = 1.0;
-
-// Compute velocity magnitude
-    double v_mag = 0.0;
-    for (int I = 0; I < nSpace; I++) {
-    v_mag += v[I] * v[I];
-    }
-    v_mag = std::sqrt(v_mag);
-
-// Compute unit velocity vector
-    double v_unit[nSpace] = {0.0};
-    if (v_mag > 1e-10) { // Avoid division by zero
-      for (int I = 0; I < nSpace; I++) {
-          v_unit[I] = v[I] / v_mag;
+      for (int I=0; I < nSpace; I++)
+        {
+          f[I] = rho_transport*v[I]*u;
+          df[I] = (rho_transport + u*drho_du)*v[I];
+          for (int ii = rowptr[I]; ii < rowptr[I + 1]; ii++)
+            {
+              const int J = colind[ii];
+              const double deltaIJ = (I == J) ? 1.0 : 0.0;
+              const double dispersion_tensor =
+                Dm*deltaIJ +
+                alpha_L_eff*v_unit[I]*v_unit[J]*v_pore_mag +
+                alpha_T_eff*v_pore_mag*(deltaIJ - v_unit[I]*v_unit[J]);
+              a[ii] = thetaW*rho_transport*dispersion_tensor;
+              da[ii] = thetaW*drho_du*dispersion_tensor;
             }
-      }
 
-    for (int I = 0; I < nSpace; I++) {
-    f[I] = v[I] * u;
-    df[I] = v[I];
-
-    for (int ii = rowptr[I]; ii < rowptr[I + 1]; ii++) {
-    int J = colind[ii]; // Column index
-    double deltaIJ = (I == J) ? 1.0 : 0.0;
-
-    // Compute dispersion tensor elements, incorporating molecular diffusion (Dm)
-    double dispersion_ij = 
-    Dm * deltaIJ +  // Molecular diffusion (isotropic contribution)
-    alpha_L * v_unit[I] * v_unit[J] * v_mag +  // Longitudinal dispersion
-    alpha_T * v_mag * (deltaIJ - v_unit[I] * v_unit[J]);  // Transverse dispersion
-
-    a[ii] = dispersion_ij;
-    da[ii] = 0.0; // Assuming no dependency of dispersion on u
-      }
-      }
+        }
     }
-
-
+inline
+double inversevaluateCoefficients(const double storage,
+                             const double porosity,
+                             const double rho_f,
+                             const double rho_s) 
+    {
+      const double mass_scale = std::max(porosity*rho_f, 1.0e-14);
+      const double epsilon = (rho_s - rho_f)/rho_f;
+      const double rhs = storage/mass_scale;
+      if (std::fabs(epsilon) < 1.0e-14)
+        return rhs;
+      const double discriminant = std::max(1.0 + 4.0*epsilon*rhs, 0.0);
+      const double sqrt_discriminant = std::sqrt(discriminant);
+      if (epsilon > 0.0)
+        return 2.0*rhs/(1.0 + sqrt_discriminant);
+      return (-1.0 + sqrt_discriminant)/(2.0*epsilon);
+    }
 
 inline
     void exteriorNumericalDiffusiveFlux(int* rowptr,
@@ -321,35 +325,28 @@ inline
     inline
     void exteriorNumericalAdvectiveFlux(const int& isDOFBoundary_u,
                                         const int& isFluxBoundary_u,
+                                        const int& forceStrongConditions,
                                         const double n[nSpace],
-                                        const double& bc_u,
                                         const double& bc_flux_u,
-                                        const double& u,
+                                        const double f[nSpace],
+                                        const double bc_f[nSpace],
                                         const double velocity[nSpace],
                                         double& flux)
     {
-    //   // Debug: Print input values
-    // std:: cout << "Exterior Numerical Advective Flux Function"<< std::endl;
-    // std::cout << "isDOFBoundary_u: " << isDOFBoundary_u << ", isFluxBoundary_u: " << isFluxBoundary_u << std::endl;
-    // std::cout << "bc_u: " << bc_u << ", bc_flux_u: " << bc_flux_u << ", u: " << u << std::endl;
-    // std::cout << "velocity: [" << velocity[0] << ", " << velocity[1] << ", " << velocity[2] << "]" << std::endl;
-    // std::cout << "Normal: [" << n[0] << ", " << n[1] << ", " << n[2] << "]\n";
-    // std ::cout <<"End Line"<< "\n";
-
+      
       double flow=0.0;
       for (int I=0; I < nSpace; I++)
         flow += n[I]*velocity[I];
 
       if (isDOFBoundary_u == 1)
         {
-          if (flow >= 0.0)
-            {
-              flux = u*flow;
-            }
+          flux = 0.0;
+          if (forceStrongConditions == 1)
+            for (int I=0; I < nSpace; I++) flux += n[I]*bc_f[I];
+          else if (flow >= 0.0)
+            for (int I=0; I < nSpace; I++) flux += n[I]*f[I];
           else
-            {
-              flux = bc_u*flow;
-            }
+            for (int I=0; I < nSpace; I++) flux += n[I]*bc_f[I];
         }
       else if (isFluxBoundary_u == 1)
         {
@@ -357,22 +354,17 @@ inline
         }
       else
         {
+          flux = 0.0;
           if (flow >= 0.0)
-            {
-              flux = u*flow;
-            }
-          else
-            {
-              //std::cout<<"warning: TADR open boundary with no external trace, setting to zero for inflow"<<std::endl;
-              flux = 0.0;
-            }
-
+            for (int I=0; I < nSpace; I++) flux += n[I]*f[I];
+          // else: open boundary with inflow, no external trace — flux = 0
         }
     }
 
     inline
     void exteriorNumericalAdvectiveFluxDerivative(const int& isDOFBoundary_u,
                                                   const int& isFluxBoundary_u,
+                                                  const int& forceStrongConditions,
                                                   const double n[nSpace],
                                                   const double velocity[nSpace],
                                                   double& dflux)
@@ -384,7 +376,11 @@ inline
       dflux=0.0;//default to no flux
       if (isDOFBoundary_u == 1)
         {
-          if (flow >= 0.0)
+          if (forceStrongConditions == 1)
+            {
+              dflux = 0.0;
+            }
+          else if (flow >= 0.0)
             {
               dflux = flow;
             }
@@ -405,7 +401,7 @@ inline
             }
         }
     }
-    inline
+inline
 
   void exteriorNumericalDiffusiveFluxDerivative(const int& isDOFBoundary,
                                                 const int& isDiffusiveFluxBoundary,
@@ -416,19 +412,21 @@ inline
                                                 const double da[nnz],
                                                 const double grad_psi[nSpace],
                                                 const double grad_v[nSpace],
-                                                const double v[nSpace],
+                                                const double& v,
                                                 const double penalty,
                                                 double& fluxJacobian)
 {
     if (isDiffusiveFluxBoundary == 0 && isDOFBoundary == 1)
     {
         fluxJacobian = 0.0;
+        double max_a = 0.0;
         for (int I = 0; I < nSpace; I++) {
-            fluxJacobian += penalty * v[I];
             for(int m=rowptr[I]; m<rowptr[I+1]; m++)
         {
-            fluxJacobian -= (a[m] * grad_v[colind[m]] + da[m] * v[I] * grad_psi[colind[m]]) * n[I];
+            max_a = fmax(max_a, a[m]);
+            fluxJacobian -= (a[m] * grad_v[colind[m]] + da[m] * v * grad_psi[colind[m]]) * n[I];
         }
+            fluxJacobian += max_a * penalty * v;
         }
     }
     else
@@ -437,6 +435,7 @@ inline
     }
 }
 
+    
  void calculateResidual(arguments_dict& args)
     {
       double dt = args.scalar<double>("dt");
@@ -474,14 +473,27 @@ inline
       xt::pyarray<double>& u_dof = args.array<double>("u_dof");
       xt::pyarray<double>& u_dof_old = args.array<double>("u_dof_old");
       xt::pyarray<double>& velocity = args.array<double>("velocity");
+      xt::pyarray<double>& velocity_old = args.array<double>("velocity_old");
       xt::pyarray<double>& q_m = args.array<double>("q_m");
       xt::pyarray<double>& q_u = args.array<double>("q_u");
+      xt::pyarray<double>& q_porosity = args.array<double>("q_porosity");
+      xt::pyarray<double>& q_porosity_old = args.array<double>("q_porosity_old");
+      xt::pyarray<double>& q_rho = args.array<double>("q_rho");
+      xt::pyarray<double>& q_rho_old = args.array<double>("q_rho_old");
 
-      xt::pyarray<double>& q_a = args.array<double>("q_a");
       xt::pyarray<double>& q_r = args.array<double>("q_r");
-      xt::pyarray<double>& ebqe_a = args.array<double>("ebq_a");
-      
-
+      const double alpha_L = args.scalar<double>("alpha_L");
+      const double alpha_T = args.scalar<double>("alpha_T");
+      const double Dm = args.scalar<double>("Dm");
+      // const int dispersion_type_int = args.scalar<int>("dispersion_type");
+      // const double theta_s = args.scalar<double>("theta_s");
+      // const double theta_r = args.scalar<double>("theta_r");
+      // const double power_law_exponent = args.scalar<double>("power_law_exponent");
+      // const double velocity_exponent = args.scalar<double>("velocity_exponent");
+      const double rho_f = args.scalar<double>("rho_f");
+      const double rho_s = args.scalar<double>("rho_s");
+      int forceStrongConditions = args.scalar<int>("forceStrongConditions");
+      // DISPERSION DISPERSION_TYPE = static_cast<DISPERSION>(dispersion_type_int);
       xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
       xt::pyarray<double>& q_dV = args.array<double>("q_dV");
       xt::pyarray<double>& q_dV_last = args.array<double>("q_dV_last");
@@ -494,6 +506,8 @@ inline
       xt::pyarray<double>& globalResidual = args.array<double>("globalResidual");
       int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
       xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
+      xt::pyarray<int>& elementBoundaryMaterialTypes = args.array<int>("elementBoundaryMaterialTypes");
+      xt::pyarray<int>& isExteriorBoundaryPhysical = args.array<int>("isExteriorBoundaryPhysical");
       xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
       xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
       xt::pyarray<double>& ebqe_velocity_ext = args.array<double>("ebqe_velocity_ext");
@@ -502,6 +516,8 @@ inline
       xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
       xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
       xt::pyarray<double>& ebqe_bc_diffusiveFlux_u_ext = args.array<double>("ebqe_bc_diffusiveFlux_u_ext");
+      xt::pyarray<double>& ebqe_porosity = args.array<double>("ebqe_porosity");
+      xt::pyarray<double>& ebqe_rho = args.array<double>("ebqe_rho");
       
       double epsFact = args.scalar<double>("epsFact");
       xt::pyarray<double>& ebqe_u = args.array<double>("ebqe_u");
@@ -532,6 +548,13 @@ inline
       xt::pyarray<double>& min_u_bc = args.array<double>("min_u_bc");
       xt::pyarray<double>& max_u_bc = args.array<double>("max_u_bc");
       xt::pyarray<double>& quantDOFs = args.array<double>("quantDOFs");
+      // Stage 3 (kinetic dissolution).  Adds R_diss = k_d * S_n * S_w *
+      // (c_sat - c) per DOF to the mass update, scaled by theta_w * rho_w
+      // (so it has mass-rate units).  When the flow model is single-phase
+      // (Richards), Sn_dof is zeros and R_diss vanishes.
+      xt::pyarray<double>& Sn_dof = args.array<double>("Sn_dof");
+      const double k_d   = args.scalar<double>("k_d");
+      const double c_sat = args.scalar<double>("c_sat");
       /////////////////////////////////////////////////////////////////////////
       xt::pyarray<int>& a_rowptr = args.array<int>("a_rowptr");
       xt::pyarray<int>& a_colind = args.array<int>("a_colind");
@@ -545,22 +568,74 @@ inline
       //////////////////////////////////////////////////////////////////////////
       double physicalDiffusion = args.scalar<double>("physicalDiffusion");
       const double eb_adjoint_sigma = args.scalar<double>("eb_adjoint_sigma");
-      // Extract alpha_L, alpha_T, and Dm from args
-      const double alphaL_val = args.scalar<double>("alpha_L"); // Longitudinal dispersion coefficient
-      const double alphaT_val = args.scalar<double>("alpha_T"); // Transverse dispersion coefficient
-      const double Dm_val = args.scalar<double>("Dm");         // Molecular diffusion coefficient
-
+      
       double meanEntropy = 0., meanOmega = 0., maxEntropy = -1E10, minEntropy = 1E10;
+      const double eps_rho = (rho_s - rho_f)/rho_f;
+      const double zL_mass = uL + eps_rho*uL*uL;
+      const double zR_mass = uR + eps_rho*uR*uR;
       maxVel.resize(nElements_global, 0.0);
       maxEntRes.resize(nElements_global, 0.0);
       double Ct_sge = 4.0;
-      if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity or 
-          STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or 
-          STABILIZATION_TYPE==STABILIZATION::Kuzmin)
+      if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity or
+          STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or
+          STABILIZATION_TYPE==STABILIZATION::Kuzmin or
+          STABILIZATION_TYPE==STABILIZATION::ImplicitEV)
         {
           TransportMatrix.resize(NNZ,0.0);
           DiffusionMatrix.resize(NNZ,0.0);
           TransposeTransportMatrix.resize(NNZ,0.0);
+          m_dof.resize(numDOFs,0.0);
+          theta_dof_proj.resize(numDOFs,0.0);
+          rho_dof_proj.resize(numDOFs,0.0);
+          ML_mass_proj.resize(numDOFs,0.0);
+          // ONLY the porosity gets a quadrature->DOF projection: theta lives at
+          // quadrature points and has no nodal representation.  rho and the
+          // conservative variable m are evaluated DIRECTLY at the DOF from
+          // u_dof_old.  Projecting them would apply (M*u)_i/ML_i -- a smoothing
+          // filter, because ML_i is exactly the row sum of the consistent mass
+          // matrix -- so m_dof would NOT equal u_dof_old even at rho=theta=1 and
+          // the scheme would not reduce to the constant-density one.  Evaluating
+          // at the DOF also makes inversevaluateCoefficients(m_dof[i],...) return
+          // u_dof_old[i] exactly, and makes this m^n consistent with the nodal
+          // m^{n+1} = theta_i*rho(c_i)*c_i that the ImplicitEV branch builds
+          // (otherwise ML_i*(m^{n+1}-m^n)/dt is nonzero at steady state).
+          for (int eN=0; eN<nElements_global; eN++)
+            for (int k=0; k<nQuadraturePoints_element; k++)
+              {
+                int eN_k = eN*nQuadraturePoints_element + k;
+                double jac[nSpace*nSpace], jacDet, jacInv[nSpace*nSpace], x, y, z;
+                ck.calculateMapping_element(eN,
+                                            k,
+                                            mesh_dof.data(),
+                                            mesh_l2g.data(),
+                                            mesh_trial_ref.data(),
+                                            mesh_grad_trial_ref.data(),
+                                            jac,
+                                            jacDet,
+                                            jacInv,
+                                            x,y,z);
+                const double dV = fabs(jacDet)*dV_ref.data()[k];
+                const double theta_k = q_porosity_old.data()[eN_k];
+                for (int i=0; i<nDOF_test_element; i++)
+                  {
+                    int eN_i = eN*nDOF_test_element+i;
+                    const int gi = u_l2g.data()[eN_i];
+                    const double w = u_test_ref.data()[k*nDOF_trial_element+i]*dV;
+                    theta_dof_proj[gi] += theta_k*w;
+                    ML_mass_proj[gi] += w;
+                  }
+              }
+          for (int i=0; i<numDOFs; i++)
+            {
+              if (ML_mass_proj[i] > 1.0e-14)
+                theta_dof_proj[i] /= ML_mass_proj[i];
+              else
+                theta_dof_proj[i] = 1.0;
+              // nodal density and conservative variable at t^n
+              const double un_i = u_dof_old.data()[i];
+              rho_dof_proj[i] = rho_f*(1.0 + eps_rho*un_i);
+              m_dof[i] = theta_dof_proj[i]*rho_dof_proj[i]*un_i;
+            }
           // compute entropy and init global_entropy_residual and boundary_integral
           psi.resize(numDOFs,0.0);
           eta.resize(numDOFs,0.0);
@@ -571,7 +646,14 @@ inline
               // NODAL ENTROPY //
               if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) //EV stab
                 {
-                  eta[i] = ENTROPY_TYPE == ENTROPY::POWER ? EPOWER(u_dof_old.data()[i],uL,uR) : ELOG(u_dof_old.data()[i],uL,uR);
+                  if (ENTROPY_TYPE == ENTROPY::POWER)
+                    eta[i] = EPOWER(m_dof[i],uL,uR);
+                  else
+                    {
+                      const double mass_scale_i = fmax(theta_dof_proj[i]*rho_f, 1.0e-14);
+                      const double z_i = m_dof[i]/mass_scale_i;
+                      eta[i] = ELOG(z_i,zL_mass,zR_mass);
+                    }
                   global_entropy_residual[i]=0.;
                 }
               boundary_integral[i]=0.;
@@ -600,9 +682,10 @@ inline
             {
               elementResidual_u[i]=0.0;
             }//i
-          if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity or 
-              STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or 
-              STABILIZATION_TYPE==STABILIZATION::Kuzmin)
+          if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity or
+              STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or
+              STABILIZATION_TYPE==STABILIZATION::Kuzmin or
+              STABILIZATION_TYPE==STABILIZATION::ImplicitEV)
             {
               for (int i=0;i<nDOF_test_element;i++)
                 {
@@ -627,6 +710,7 @@ inline
                 entVisc_minus_artComp,
                 u=0.0,un=0.0,
                 grad_u[nSpace],grad_u_old[nSpace],grad_uTilde[nSpace],
+                rho_out=0.0,rho_out_old=0.0,
                 m=0.0,dm=0.0,mn=0.0,dmn=0.0,
                 H=0.0,Hn=0.0,HTilde=0.0,
                 f[nSpace],fn[nSpace],df[nSpace],dfn[nSpace],
@@ -709,31 +793,36 @@ inline
               //
               //calculate pde coefficients at quadrature points
 
-              //const double* q_a_ptr = &q_a[eN_k * a_rowptr[nSpace]];
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &velocity.data()[eN_k_nSpace],
-                                   alphaL_val, alphaT_val, Dm_val, 
-                                   //q_a_ptr, //&q_a.data()[eN_k*a_rowptr.data()[nSpace]],//[eN_k*nnz],
+                                   alpha_L,
+                                   alpha_T,
+                                   Dm,
+                                   q_porosity.data()[eN*nQuadraturePoints_element+k],
+                                   rho_f,
+                                   rho_s,
                                    u,
+                                   rho_out,
                                    m,
                                    dm,
                                    f,
                                    df,
                                    a,
                                    da);
+              q_rho.data()[eN_k] = rho_out;
 
-            //D.data()[eN * nQuadraturePoints_element * nnz + k * nnz] calculates 
-            //the correct starting index for D for the current element eN and 
-            //quadrature point k, considering nnz as the number of non-zero entries for the sparse matrix. This ensures that the values for D are accessed correctly based on the element and quadrature point.
-
-              //cek todo, this should be velocity_old
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
-                                   &velocity.data()[eN_k_nSpace],
-                                   alphaL_val, alphaT_val, Dm_val, 
-                                   //q_a_ptr, //&q_a.data()[eN_k*a_rowptr.data()[nSpace]],//[eN_k*a_rowptr.data()[nSpace]],//[eN_k*nnz],
+                                   &velocity_old.data()[eN_k_nSpace],
+                                   alpha_L,
+                                   alpha_T,
+                                   Dm,
+                                   q_porosity_old.data()[eN*nQuadraturePoints_element+k],
+                                   rho_f,
+                                   rho_s,
                                    un,
+                                   rho_out_old,
                                    mn,
                                    dmn,
                                    fn,
@@ -770,6 +859,10 @@ inline
                      m_t,
                      dm_t);
 
+              const double thetaW_k = std::max(q_porosity_old.data()[eN_k], 1.0e-8);
+              double dfn_pore[nSpace];
+              for (int I=0; I<nSpace; I++) dfn_pore[I] = dfn[I] / thetaW_k;
+
               if (STABILIZATION_TYPE==STABILIZATION::TaylorGalerkinEV)
                 {
                   double normVel=0., norm_grad_un=0.;
@@ -786,7 +879,7 @@ inline
                   norm_grad_un = std::sqrt(norm_grad_un)+1E-10;
 
                   // calculate CFL
-                  calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
+                  calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn_pore,cfl.data()[eN_k]);
 
 
                   // compute max velocity at cell
@@ -850,18 +943,24 @@ inline
                 }
               else if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity)
               {
+                aux_entropy_residual = m_t;
                 for (int I=0;I<nSpace;I++)
                   aux_entropy_residual += dfn[I]*grad_u_old[I];
-                DENTROPY_un = ENTROPY_TYPE==ENTROPY::POWER ? DEPOWER(un,uL,uR) : DELOG(un,uL,uR);
-                calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
+                if (ENTROPY_TYPE==ENTROPY::POWER)
+                  DENTROPY_un = DEPOWER(mn,uL,uR);
+                else
+                  {
+                    const double mass_scale_k = fmax(q_porosity_old.data()[eN_k]*rho_f, 1.0e-14);
+                    const double z_n = mn/mass_scale_k;
+                    DENTROPY_un = DELOG(z_n,zL_mass,zR_mass)/mass_scale_k;
+                  }
+                calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn_pore,cfl.data()[eN_k]);
               }
               else
-                calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn,cfl.data()[eN_k]);
+                calculateCFL(elementDiameter.data()[eN]/degree_polynomial,dfn_pore,cfl.data()[eN_k]);
 
               for(int i=0;i<nDOF_test_element;i++)
                 {
-                  //int eN_k_i=eN_k*nDOF_test_element+i,
-                  //eN_k_i_nSpace = eN_k_i*nSpace,
                   int i_nSpace=i*nSpace;
                   if (STABILIZATION_TYPE==STABILIZATION::TaylorGalerkinEV)
                     {
@@ -898,31 +997,24 @@ inline
                                               grad_u,
                                               &u_grad_test_dV[i_nSpace]);
                     }
-                  else if(STABILIZATION_TYPE==STABILIZATION::EntropyViscosity or 
-                          STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or 
-                          STABILIZATION_TYPE==STABILIZATION::Kuzmin)
+                  else if(STABILIZATION_TYPE==STABILIZATION::EntropyViscosity or
+                          STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or
+                          STABILIZATION_TYPE==STABILIZATION::Kuzmin or
+                          STABILIZATION_TYPE==STABILIZATION::ImplicitEV)
                     {
-                      // VECTOR OF ENTROPY RESIDUAL //
                       int eN_i=eN*nDOF_test_element+i;
                       if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) // EV stab
                         {
-                          int gi = offset_u+stride_u*u_l2g.data()[eN_i]; //global i-th index
-                          DENTROPY_uni = ENTROPY_TYPE == ENTROPY::POWER ? DEPOWER(u_dof_old.data()[gi],uL,uR) : DELOG(u_dof_old.data()[gi],uL,uR);
-                          element_entropy_residual[i] += (DENTROPY_un - DENTROPY_uni)*aux_entropy_residual*u_test_dV[i];
+                          element_entropy_residual[i] += DENTROPY_un*aux_entropy_residual*u_test_dV[i];
                         }
                       elementResidual_u[i] += (u-un)*u_test_dV[i];
-                      ///////////////
-                      // j-th LOOP // To construct transport matrices
-                      ///////////////
+                      double* adv_df = (STABILIZATION_TYPE==STABILIZATION::ImplicitEV) ? df : dfn;
                       for(int j=0;j<nDOF_trial_element;j++)
                         {
                           int j_nSpace = j*nSpace;
                           int i_nSpace = i*nSpace;
-                          //cek todo, see if we really need elementTransposeTransport
-                          // (can we just swap indices on local transport matrix?)
-                          //or event TransposeTransportMatrix (can we just use pointers?)
                           elementTransport[i][j] +=
-                            ck.AdvectionJacobian_weak(dfn,
+                            ck.AdvectionJacobian_weak(adv_df,
                                                       u_trial_ref.data()[k*nDOF_trial_element+j],
                                                       &u_grad_test_dV[i_nSpace])
                                                       +
@@ -931,21 +1023,21 @@ inline
                                                             a,
                                                             &u_grad_trial[j_nSpace],
                                                             &u_grad_test_dV[i_nSpace]);
-                                                      
 
 
-                                               
+
+
                            elementDiffusion[i][j] += ck.NumericalDiffusionJacobian(physicalDiffusion,
                                                                                    &u_grad_trial[j_nSpace],
                                                                                    &u_grad_test_dV[i_nSpace]);
-                          elementTransposeTransport[i][j] += ck.AdvectionJacobian_weak(dfn,
+                          elementTransposeTransport[i][j] += ck.AdvectionJacobian_weak(adv_df,
                                                                                        u_trial_ref.data()[k*nDOF_trial_element+i],
                                                                                        &u_grad_test_dV[j_nSpace])+
                                                              ck.SimpleDiffusionJacobian_weak(a_rowptr.data(),
                                                                                               a_colind.data(),
                                                                                               a,
                                                                                               &u_grad_trial[j_nSpace],
-                                                                                              &u_grad_test_dV[i_nSpace]);                          
+                                                                                              &u_grad_test_dV[i_nSpace]);
                                                                                        
                                                             
                                                           }
@@ -956,11 +1048,7 @@ inline
                         ck.Mass_weak(m_t,u_test_dV[i]) +
                         ck.Advection_weak(f,&u_grad_test_dV[i_nSpace])+
                         ck.Diffusion_weak(a_rowptr.data(),a_colind.data(),a,grad_u,&u_grad_test_dV[i_nSpace]);
-
-                        //std::cout << "elementResidual_u[" << i << "]: " << elementResidual_u[i] << std::endl;
-                        //  +
-                        
-
+                        //  +                       
                         // ck.NumericalDiffusion(physicalDiffusion,//todo add full sparse diffusion terms
                         //                       grad_u,
                         //                       &u_grad_test_dV[i_nSpace]);
@@ -971,6 +1059,8 @@ inline
               //
               q_u.data()[eN_k] = u;
               q_m.data()[eN_k] = m;
+              //logInteriorState("storeQuadrature", eN, k, x, y, z, u, m, f, a);
+        
               }//k
           //
           //load element into global residual and save element residual
@@ -980,11 +1070,12 @@ inline
               int eN_i=eN*nDOF_test_element+i;
               int gi = offset_u+stride_u*u_l2g.data()[eN_i]; //global i-th index
               globalResidual.data()[gi] += elementResidual_u[i];
-              if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity or 
-                  STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or 
-                  STABILIZATION_TYPE==STABILIZATION::Kuzmin)
+              if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity or
+                  STABILIZATION_TYPE==STABILIZATION::SmoothnessIndicator or
+                  STABILIZATION_TYPE==STABILIZATION::Kuzmin or
+                  STABILIZATION_TYPE==STABILIZATION::ImplicitEV)
                 {
-                  
+
                   // distribute entropy_residual
                   if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) // EV Stab
                     global_entropy_residual[gi] += element_entropy_residual[i];
@@ -1016,6 +1107,13 @@ inline
             eN  = elementBoundaryElementsArray.data()[ebN*2+0],
             ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+0],
             eN_nDOF_trial_element = eN*nDOF_trial_element;
+          const int eN_out = elementBoundaryElementsArray.data()[ebN*2+1];
+          const int ebFlag = elementBoundaryMaterialTypes.data()[ebN];
+          // Only integrate true physical exterior boundaries; skip partition/non-physical faces.
+          if (ebFlag <= 0 || isExteriorBoundaryPhysical.data()[ebNE] == 0 || eN_out >= 0)
+            {
+              continue;
+            }
           double elementResidual_u[nDOF_test_element],
             fluxTransport[nDOF_test_element][nDOF_trial_element];
           for (int i=0;i<nDOF_test_element;i++)
@@ -1051,6 +1149,7 @@ inline
                 bc_m_ext=0.0,
                 bc_dm_ext=0.0,
 
+                flux_adv_ext=0.0,
                 flux_diff_ext=0.0,
                 difffluxjacobian_ext=0.0,
                 bc_f_ext[nSpace],
@@ -1148,31 +1247,43 @@ inline
               //
               bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+
                           (1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
+             
 
                       //
               //
               //calculate the pde coefficients using the solution and the boundary values for the solution
               //
-              const double* qb_a_ptr = &ebqe_a[ebNE_kb * a_rowptr[nSpace]];
+              double rho_out_ext=0.0,rho_out_bc=0.0;
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &ebqe_velocity_ext.data()[ebNE_kb_nSpace],
-                                   alphaL_val, alphaT_val, Dm_val, 
-                                   //qb_a_ptr, //&q_a.data()[ebNE * nQuadraturePoints_element * nnz + kb * nnz],//[ebNE_kb*a_rowptr.data()[nSpace]],//[ebNE_kb*nnz],
+                                   alpha_L,
+                                   alpha_T,
+                                   Dm,
+                                   ebqe_porosity.data()[ebNE_kb],
+                                   rho_f,
+                                   rho_s,
                                    u_ext,
+                                   rho_out_ext,
                                    m_ext,
                                    dm_ext,
                                    f_ext,
                                    df_ext,
                                    a_ext,
                                    da_ext);
+              ebqe_rho.data()[ebNE_kb] = rho_out_ext;
               
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &ebqe_velocity_ext.data()[ebNE_kb_nSpace],
-                                   alphaL_val, alphaT_val, Dm_val, 
-                                   //qb_a_ptr,//&q_a.data()[ebNE * nQuadraturePoints_element * nnz + kb * nnz],//[ebNE_kb*a_rowptr.data()[nSpace]],//[ebNE_kb*nnz],
+                                   alpha_L,
+                                   alpha_T,
+                                   Dm,
+                                   ebqe_porosity.data()[ebNE_kb],
+                                   rho_f,
+                                   rho_s,
                                    bc_u_ext,
+                                   rho_out_bc,
                                    bc_m_ext,
                                    bc_dm_ext,
                                    bc_f_ext,
@@ -1196,6 +1307,15 @@ inline
               //
               //calculate the numerical fluxes
               //
+              exteriorNumericalAdvectiveFlux(isDOFBoundary_u.data()[ebNE_kb],
+                                             isFluxBoundary_u.data()[ebNE_kb],
+                                             forceStrongConditions,
+                                             normal,
+                                             ebqe_bc_flux_u_ext.data()[ebNE_kb],
+                                             f_ext,
+                                             bc_f_ext,
+                                             df_ext,
+                                             flux_adv_ext);
               exteriorNumericalDiffusiveFlux(a_rowptr.data(),
                                              a_colind.data(),
                                              isDOFBoundary_u.data()[ebNE_kb],
@@ -1209,30 +1329,18 @@ inline
                                              u_ext,
                                              ebqe_penalty_ext.data()[ebNE_kb],
                                              flux_diff_ext);
-
-              exteriorNumericalAdvectiveFlux(isDOFBoundary_u.data()[ebNE_kb],
-                                             isFluxBoundary_u.data()[ebNE_kb],
-                                             normal,
-                                             bc_u_ext,
-                                             ebqe_bc_flux_u_ext.data()[ebNE_kb],
-                                             u_ext,
-                                             df_ext,
-                                             flux_ext);
-            
-                  
-    
+              flux_ext = flux_adv_ext + flux_diff_ext;
+              double boundary_flow = 0.0;
+              for (int I=0; I<nSpace; I++)
+                boundary_flow += normal[I]*df_ext[I];
               
-               //std::cout<<"Advection EXT"<<flux_ext<<std::endl;
-               //std::cout<<"Diffusion  Ext"<<flux_diff_ext<<std::endl;
-                    
-              flux_ext += flux_diff_ext;  
-              //std::cout<<"Combine EXT"<<flux_ext<<std::endl;
               ebqe_flux.data()[ebNE_kb] = flux_ext;
-              //save for other models? cek need to be consistent with numerical flux
-              if(flux_ext >= 0.0)
+              if (isDOFBoundary_u.data()[ebNE_kb] == 1)
+                ebqe_u.data()[ebNE_kb] = bc_u_ext;
+              else if (boundary_flow >= 0.0)
                 ebqe_u.data()[ebNE_kb] = u_ext;
               else
-                ebqe_u.data()[ebNE_kb] = bc_u_ext;              
+                ebqe_u.data()[ebNE_kb] = bc_u_ext;
               if (STABILIZATION_TYPE==STABILIZATION::TaylorGalerkinEV)
                 {
                   if (stage == 1)
@@ -1244,14 +1352,10 @@ inline
               //
               //update residuals
               //
-              //cek todo, these are brought in from EV residual and are not correct
-              //the element residual should be updated and the global residual and transport updated
-              //after the closure of the quadrature loop
               for (int i=0;i<nDOF_test_element;i++)
                 {
-                  if (STABILIZATION_TYPE == STABILIZATION::Galerkin or 
-                      STABILIZATION_TYPE == STABILIZATION::VMS or 
-                      STABILIZATION_TYPE == STABILIZATION::TaylorGalerkinEV) 
+                  if (STABILIZATION_TYPE == STABILIZATION::Galerkin or STABILIZATION_TYPE == STABILIZATION::VMS or
+                      STABILIZATION_TYPE == STABILIZATION::TaylorGalerkinEV or STABILIZATION_TYPE == STABILIZATION::ImplicitEV)
                       {
                     elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i])+
                                             ck.ExteriorElementBoundaryDiffusionAdjoint(isDOFBoundary_u.data()[ebNE_kb],
@@ -1268,51 +1372,106 @@ inline
                   else if (STABILIZATION_TYPE == STABILIZATION::EntropyViscosity or 
                       STABILIZATION_TYPE == STABILIZATION::SmoothnessIndicator or 
                       STABILIZATION_TYPE == STABILIZATION::Kuzmin)
-                    {                 
+                    {
+                      const double boundaryAdvectiveContribution =
+                        ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i]);
+                      const double boundaryDiffusiveContribution =
+                        ck.ExteriorElementBoundaryDiffusionAdjoint(isDOFBoundary_u.data()[ebNE_kb],
+                                                                   isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                                                   eb_adjoint_sigma,
+                                                                   u_ext,
+                                                                   bc_u_ext,
+                                                                   normal,
+                                                                   a_rowptr.data(),
+                                                                   a_colind.data(),
+                                                                   a_ext,
+                                                                   &u_grad_test_dS[i*nSpace]);
+                      const double boundaryResidualContribution =
+                        boundaryAdvectiveContribution + boundaryDiffusiveContribution;
                       exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
                                                            isFluxBoundary_u.data()[ebNE_kb],
+                                                           forceStrongConditions,
                                                            normal,
                                                            df_ext,
                                                            dflux_u_u_ext);  
-                      exteriorNumericalDiffusiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
-                                                           isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                                           a_rowptr.data(),
-                                                           a_colind.data(),
-                                                           normal,
-                                                           a_ext,
-                                                           da_ext,
-                                                           grad_u_ext,
-                                                           &u_grad_trial_trace[nSpace],
-                                                           &u_trial_trace_ref.data()[ebN_local_kb*nSpace],
-                                                           ebqe_penalty_ext.data()[ebNE_kb],
-                                                           difffluxjacobian_ext);                 
                       
                       if (dflux_u_u_ext> 0.0)
-                      { 
-                        int ebN_local_kb_i = ebN_local_kb*nDOF_test_element+i;
+                      {
+                        double boundaryTransportContribution = 0.0;
                         for (int j=0;j<nDOF_trial_element;j++)
-                          fluxTransport[j][i] += (dflux_u_u_ext + difffluxjacobian_ext)*
-                            u_trial_trace_ref.data()[ebN_local_kb_i]*
-                            u_test_dS[j];
-                           
+                        {
+                          int ebN_local_kb_j=ebN_local_kb*nDOF_trial_element+j;
+                          double advJacobian_ext = 0.0, diffJacobian_ext = 0.0;
+                          exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
+                                                                   isFluxBoundary_u.data()[ebNE_kb],
+                                                                   forceStrongConditions,
+                                                                   normal,
+                                                                   df_ext,
+                                                                   advJacobian_ext);
+                          exteriorNumericalDiffusiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
+                                                                   isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                                                   a_rowptr.data(),
+                                                                   a_colind.data(),
+                                                                   normal,
+                                                                   a_ext,
+                                                                   da_ext,
+                                                                   grad_u_ext,
+                                                                   &u_grad_trial_trace[j*nSpace],
+                                                                   u_trial_trace_ref.data()[ebN_local_kb_j],
+                                                                   ebqe_penalty_ext.data()[ebNE_kb],
+                                                                   diffJacobian_ext);
+                          difffluxjacobian_ext = advJacobian_ext*u_trial_trace_ref.data()[ebN_local_kb_j]
+                                                 + diffJacobian_ext;
+                          const double localFluxTransportContribution =
+                            difffluxjacobian_ext*u_test_dS[i];
+                          fluxTransport[i][j] += localFluxTransportContribution;
+                          boundaryTransportContribution +=
+                            localFluxTransportContribution*u_dof_old.data()[u_l2g.data()[eN_nDOF_trial_element+j]];
+                        }
+                        elementResidual_u[i] += boundaryResidualContribution - boundaryTransportContribution;
                       }
                       else
-                        elementResidual_u[i] += ck.ExteriorElementBoundaryFlux(flux_ext,u_test_dS[i])+
-                                                ck.ExteriorElementBoundaryDiffusionAdjoint(isDOFBoundary_u.data()[ebNE_kb],
-                                                                                            isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                                                                            eb_adjoint_sigma,
-                                                                                            u_ext,
-                                                                                            bc_u_ext,
-                                                                                            normal,
-                                                                                            a_rowptr.data(),
-                                                                                            a_colind.data(),
-                                                                                            a_ext,
-                                                                                            &u_grad_test_dS[i*nSpace]);                                                                                        
-                    }                   
+                      {
+                        elementResidual_u[i] += boundaryResidualContribution;
+                        // Upwind Nitsche penalty for advection-dominated Dirichlet
+                        // inflow.  At inflow (boundary_flow = v.n < 0) the upwind
+                        // advective flux uses bc_u_ext and has zero derivative wrt
+                        // the interior u_ext -- so the existing IIPG penalty is the
+                        // only thing pulling u_ext toward bc_u_ext, and it scales as
+                        // max_a*penalty/h which becomes vanishingly small when D_m
+                        // is small.  Add a Nitsche term that scales with |v.n| so
+                        // BC enforcement is independent of the diffusion coefficient.
+                        // Sign: at inflow with u_ext > bc_u_ext (overshoot), this
+                        // contributes positively to elementResidual_u[i] (= positive
+                        // boundary flux out of node i), which reduces mLow at the BC
+                        // DOF and pulls c back to bc_u_ext.  Mass-conservative: the
+                        // term is integrated weakly with u_test_dS like the rest of
+                        // the boundary residual; sum over all faces telescopes the
+                        // weak Dirichlet to a consistent transport balance.
+                        if (isDOFBoundary_u.data()[ebNE_kb] == 1 && boundary_flow < 0.0)
+                        {
+                          const double upwind_penalty_rate = -boundary_flow; // |v.n|
+                          elementResidual_u[i] += upwind_penalty_rate
+                                                * (u_ext - bc_u_ext)
+                                                * u_test_dS[i];
+                        }
+                      }
+                    }
                 }//i
-              // local min/max at boundary
-              min_u_bc_local = fmin(ebqe_u.data()[ebNE_kb], min_u_bc_local);
-              max_u_bc_local = fmax(ebqe_u.data()[ebNE_kb], max_u_bc_local);
+              // local min/max at boundary.
+              // At Dirichlet faces use the BC value (ebqe_bc_u_ext), not the
+              // current solution trace (ebqe_u): the trace can drift off c_sat
+              // under weak Nitsche enforcement, and feeding that drifted value
+              // into min/max_u_bc pollutes the FCT bound at every interior
+              // neighbor.  Using the BC value keeps the bound tight at c_sat
+              // (combined with bc_mask in the FCT step, this gives the bounded
+              // + mass-conservative recipe that mphase_co2 uses).
+              const double u_for_bound =
+                  isDOFBoundary_u.data()[ebNE_kb]
+                      ? ebqe_bc_u_ext.data()[ebNE_kb]
+                      : ebqe_u.data()[ebNE_kb];
+              min_u_bc_local = fmin(u_for_bound, min_u_bc_local);
+              max_u_bc_local = fmax(u_for_bound, max_u_bc_local);
             }//kb
           //
           //update the element and global residual storage
@@ -1335,6 +1494,18 @@ inline
                       TransposeTransportMatrix[csrRowIndeces_CellLoops.data()[eN_i] + csrColumnOffsets_eb_CellLoops.data()[ebN_i_j]]
                         += fluxTransport[j][i];
                     }//j
+                }
+              else if (STABILIZATION_TYPE==STABILIZATION::ImplicitEV)
+                {
+                  // Implicit boundary: stash the consistent boundary residual in
+                  // boundary_integral (the edge loop adds + boundary_integral[i]
+                  // and OVERWRITES globalResidual[i], so we must NOT add here).
+                  // The boundary flux Jacobian is assembled in calculateJacobian.
+                  boundary_integral[gi] += elementResidual_u[i];
+                  // FCT bounds at the boundary (used by the explicit FCT
+                  // post-step when FCT=True; harmless otherwise).
+                  min_u_bc[gi] = fmin(min_u_bc_local,min_u_bc[gi]);
+                  max_u_bc[gi] = fmax(max_u_bc_local,max_u_bc[gi]);
                 }
               else
                 {
@@ -1389,8 +1560,13 @@ inline
                       etaMaxi = fmax(etaMaxi,fabs(eta[j]));
                       etaMini = fmin(etaMini,fabs(eta[j]));
                     }
-                  alpha_numerator += u_dof_old.data()[i]-u_dof_old.data()[j];
-                  alpha_denominator += fabs(u_dof_old.data()[i]-u_dof_old.data()[j]);
+                  // Sense smoothness on the projected nodal conservative variable
+                  // m = theta * rho(u) * u so the edge indicator is aligned with
+                  // the variable-density storage used by the PDE residual.
+                  const double mi = m_dof[i];
+                  const double mj = m_dof[j];
+                  alpha_numerator += mi - mj;
+                  alpha_denominator += fabs(mi - mj);
                   //update ij
                   ij+=1;
                 }
@@ -1416,32 +1592,36 @@ inline
           ij=0;
           for (int i=0; i<numDOFs; i++)
             {
-              double solni = u_dof_old.data()[i]; // solution at time tn for the ith DOF
-              double ith_dissipative_term = 0;
-              double ith_low_order_dissipative_term = 0;
-              double ith_flux_term = 0;
+              const double mi_mass = m_dof[i];
+              const double theta_i = fmax(theta_dof_proj[i], 1.0e-14);
+              const double ui_mass = inversevaluateCoefficients(mi_mass, theta_i, rho_f, rho_s);
+              const double rho_i = fmax(rho_dof_proj[i], rho_f);
+              const double drho_du = rho_s - rho_f;
+              const double dmdu_i = theta_i * (rho_i + ui_mass*drho_du);
+              double ith_dissipative_term_mass = 0;
+              double ith_low_order_dissipative_term_mass = 0;
+              double ith_flux_term_mass = 0;
+              // Row sum of the high-order graph viscosity, dLii = -sum_{j!=i} dLij.
+              // Feeds edge_based_cfl below.
               double dLii = 0.;
 
               // loop over the sparsity pattern of the i-th DOF
               for (int offset=csrRowIndeces_DofLoops.data()[i]; offset<csrRowIndeces_DofLoops.data()[i+1]; offset++)
                 {
                   int j = csrColumnOffsets_DofLoops.data()[offset];
-                  double solnj = u_dof_old.data()[j]; // solution at time tn for the jth DOF
+                  const double mj_mass = m_dof[j];
+                  const double theta_j = fmax(theta_dof_proj[j], 1.0e-14);
+                  const double uj_mass = inversevaluateCoefficients(mj_mass, theta_j, rho_f, rho_s);
                   double dLowij, dLij, dEVij, dHij;
 
-                  ith_flux_term += (TransportMatrix[ij]+ DiffusionMatrix[ij])*solnj;
-                 
-                  
-                  if (i != j) //NOTE: there is really no need to check for i!=j (see formula for ith_dissipative_term)
+                  ith_flux_term_mass += (TransportMatrix[ij] + DiffusionMatrix[ij])*uj_mass;
+
+                  if (i != j)
                     {
-                      // artificial compression
-                      double solij = 0.5*(solni+solnj);
-                      double Compij = cK*fmax(solij*(1.0-solij),0.0)/(fabs(solni-solnj)+1E-14);
-                      // first-order dissipative operator
+                      double solij = 0.5*(ui_mass+uj_mass);
+                      double Compij = cK*fmax(solij*(1.0-solij),0.0)/(fabs(ui_mass-uj_mass)+1E-14);
                       dLowij = fmax(fabs(TransportMatrix[ij]),fabs(TransposeTransportMatrix[ij]));
-                      //std::cout << dLowij;
-                      //dLij = fmax(0.,fmax(psi[i]*TransportMatrix[ij], // Approach by S. Badia
-                      //              psi[j]*TransposeTransportMatrix[ij]));
+
                       dLij = dLowij*fmax(psi[i],psi[j]); // Approach by JLG & BP
                       
                       if (STABILIZATION_TYPE==STABILIZATION::EntropyViscosity) //EV Stab
@@ -1454,16 +1634,27 @@ inline
                         {
                           dHij = dLij * fmax(1.0-Compij,0.0); // artificial compression
                         }
-                      //dissipative terms
-                      ith_dissipative_term += dHij*(solnj-solni);
-                      ith_low_order_dissipative_term += dLowij*(solnj-solni);
+                      // Dissipative terms.  The DIFFERENCES are taken in c, not in
+                      // m: dLow comes from the transport matrix, which already
+                      // carries rho (df/du = (rho + u*drho/du)*v), so dLow*(c_j-c_i)
+                      // is a mass flux, dimensionally consistent with
+                      // ith_flux_term_mass.  Differencing m instead multiplies the
+                      // dissipation by a spurious extra theta*rho (~1e3 in SI).
+                      // Note this pair IS already the monotone upwind operator:
+                      //   sum_j (T+D)_ij c_j - sum_{j!=i} dLow_ij (c_j - c_i)
+                      //     = -sum_{j!=i} (dLow_ij - T_ij - D_ij)(c_j - c_i)
+                      // with dLow_ij - T_ij - D_ij >= 0 because dLow_ij >= |T_ij|,
+                      // i.e. an M-matrix.  It must NOT be replaced by
+                      // -sum max(0,-T_ij)(c_j - c_i): for the skew-symmetric
+                      // advection matrix that is exactly HALF the upwind flux.
+                      ith_dissipative_term_mass += dHij*(uj_mass-ui_mass);
+                      ith_low_order_dissipative_term_mass += dLowij*(uj_mass-ui_mass);
                       //dHij - dLij. This matrix is needed during FCT step
                       dt_times_dH_minus_dL[ij] = dt*(dHij - dLowij);
-                      //std::cout << dLij;
 
                       dLii -= dLij;
                       dLow[ij] = dLowij;
-                      
+
                     }
                   else //i==j
                     {
@@ -1476,25 +1667,194 @@ inline
                   ij+=1;
                 }
               double mi = ML.data()[i];
+              // boundary_integral was assembled from m-space fluxes (rho*v*u and
+              // a=theta*rho*Disp); no dmdu_i lifting is needed.
+              const double boundary_integral_mass = boundary_integral[i];
               // compute edge_based_cfl
-              edge_based_cfl.data()[i] = 2.*fabs(dLii)/mi;
-              // Debugging output to check values
-              //std::cout << "Element: " << i << ", dLii: " << fabs(dLii) << ", mi: " << mi << std::endl;
+              // 2|dLii|/mi is the constant-density edge CFL.  The low-order step
+              // advances m = theta*rho(c)*c, so recovering c divides the mass
+              // change by the storage Jacobian dm/dc = dmdu_i; without that
+              // factor the stable dt is over-predicted in low-water-content (high
+              // gas saturation) zones where dmdu_i -> 0, and uLow overshoots out
+              // of [0, c_sat].  dmdu_i = 1 at rho=theta=1, so this reduces to the
+              // original 2|dLii|/mi.
+              edge_based_cfl.data()[i] = 2.*fabs(dLii)/(mi * fmax(dmdu_i, 1.0e-14));
+              
+              // Stage 3 kinetic dissolution source at node i (mass-rate form):
+              //   R_diss_i = theta_w_i * rho_w(u_i) * k_d * S_n_i * (c_sat - u_i)
+              // Added directly to mLow_i / mHigh_i since the lumped-mass time
+              // discretization gives dm/dt = R_diss with no further scaling.
+              // Sign of (c_sat - u_i) ensures R_diss > 0 when undersaturated
+              // (dissolution) and < 0 when supersaturated (exsolution).
+              // The S_w (interfacial-area) factor a_gw ~ S_n*S_w was dropped:
+              // it makes R_diss vanish at S_n = 1, so a gas pool stops
+              // dissolving once it consolidates.  theta_w is kept so the CO2
+              // still goes into the brine that exists (theta_w > 0 down to
+              // residual S_wr).  MUST stay consistent with mphase_co2.h.
+              const double S_n_i  = Sn_dof.data()[i];
+              const double rho_w_i = rho_f * (1.0 + ((rho_s - rho_f)/rho_f) * ui_mass);
+              const double R_diss_i = theta_i * rho_w_i * k_d * S_n_i
+                                    * (c_sat - ui_mass);
 
-              uLow[i] = u_dof_old.data()[i] - dt/mi*(ith_flux_term
-                                                     + boundary_integral[i]
-                                                     - ith_low_order_dissipative_term);
+              const double mLow_i = mi_mass - dt/mi*(ith_flux_term_mass
+                                                     + boundary_integral_mass
+                                                     - ith_low_order_dissipative_term_mass)
+                                            + dt * R_diss_i;
+              uLow[i] = inversevaluateCoefficients(mLow_i, theta_i, rho_f, rho_s);
 
               // update residual
               if (LUMPED_MASS_MATRIX==1)
-                globalResidual.data()[i] = u_dof_old.data()[i] - dt/mi*(ith_flux_term
-                                                                        + boundary_integral[i]
-                                                                        - ith_dissipative_term);
+                {
+                  const double mHigh_i = mi_mass - dt/mi*(ith_flux_term_mass
+                                                          + boundary_integral_mass
+                                                          - ith_dissipative_term_mass)
+                                                 + dt * R_diss_i;
+                  globalResidual.data()[i] = inversevaluateCoefficients(mHigh_i, theta_i, rho_f, rho_s);
+                }
               else
-                globalResidual.data()[i] += dt*(ith_flux_term - ith_dissipative_term);//cek todo: shouldn't this have boundaryIntegral?
+                globalResidual.data()[i] += dt*(ith_flux_term_mass - ith_dissipative_term_mass - R_diss_i);//cek todo: shouldn't this have boundaryIntegral?
             }//i
         }//edge-based
+      else if (STABILIZATION_TYPE==STABILIZATION::ImplicitEV)
+        {
+          //////////////////////////////////////////////////////////////////
+          // IMPLICIT edge-based scheme (backward Euler, low-order graph    //
+          // dissipation, no FCT).  Mirrors Richards STABILIZATION_TYPE==2  //
+          // but evaluates the advection/diffusion at the CURRENT Newton    //
+          // iterate (u_dof) so they contribute to the Jacobian (assembled  //
+          // separately in calculateJacobian) and the scheme is NOT         //
+          // CFL-limited.  Per-DOF residual:                                //
+          //                                                                //
+          //   R_i = ML_i*(m_i^{n+1} - m_i^n)/dt                            //
+          //         + sum_j (T_ij + D_ij)*c_j            (consistent flux)  //
+          //         - sum_{j!=i} dLow_ij*(m_j^{n+1}-m_i^{n+1}) (graph diss) //
+          //         + boundary_integral_i               (0 for closed BCs) //
+          //         - ML_i*R_diss_i                      (dissolution)      //
+          //                                                                //
+          // m^{n+1}_i = theta_i*rho(c_i)*c_i  (nodal, porosity lagged to   //
+          // theta_dof_proj); m^n_i = m_dof[i] (old projected mass).        //
+          // The advection coefficient in T uses the CURRENT-time velocity  //
+          // (q_v, refreshed from mphase_co2 before TADR solves) and the    //
+          // current iterate u -- fully implicit backward Euler.            //
+          //                                                                //
+          // FLUX IS UPWINDED: instead of the central sum_j(T_ij+D_ij)c_j   //
+          // plus symmetric dissipation, the advective/diffusive flux is the//
+          // first-order upwind low-order operator (the same one TADR's     //
+          // explicit branch builds for uLow), evaluated at the current c:  //
+          //                                                                //
+          //   F_i = sum_{j!=i} -a_ij*(c_j - c_i),                          //
+          //   a_ij = max(0,-T_ij)*(rho_up/rho_f) + max(0,-D_ij) >= 0,       //
+          //   rho_up = rho(c_i) if j->i is inflow (-T_ij*(c_j-c_i)<=0)      //
+          //            else rho(c_j).                                      //
+          //                                                                //
+          // a_ij>=0 makes the spatial operator an M-matrix (monotone, DMP);//
+          // diffusion (D symmetric, row-sum 0) is reproduced exactly since //
+          // -max(0,-D_ij)(c_j-c_i)=D_ij(c_j-c_i).  Conservative by global  //
+          // telescoping of the edge fluxes.  a_ij (frozen) is stashed in   //
+          // dLow[ij] for calculateJacobian.  m^{n+1}_i=theta_i*rho(c_i)*c_i //
+          // (nodal, porosity lagged); m^n_i=m_dof[i].  boundary_integral   //
+          // stays 0 (closed system); implicit boundary flux is a TODO.     //
+          //////////////////////////////////////////////////////////////////
+          const double drho_du = rho_s - rho_f;
+          // nodal current conservative variable m^{n+1}_i = theta_i*rho(c_i)*c_i
+          std::valarray<double> m_new(numDOFs);
+          for (int i=0; i<numDOFs; i++)
+            {
+              const double ci = u_dof.data()[i];
+              const double theta_i = fmax(theta_dof_proj[i], 1.0e-14);
+              const double rho_ci = rho_f*(1.0 + (drho_du/rho_f)*ci);
+              m_new[i] = theta_i*rho_ci*ci;
+            }
+          int ij=0;
+          for (int i=0; i<numDOFs; i++)
+            {
+              const double ci = u_dof.data()[i];
+              const double theta_i = fmax(theta_dof_proj[i], 1.0e-14);
+              const double rho_ci = rho_f*(1.0 + (drho_du/rho_f)*ci);
+              const double mi_new = m_new[i];
+              const double mn_i = m_dof[i];
+              const double MLi = ML.data()[i];
+
+              double ith_upwind_flux_term_mass = 0.0;
+              for (int offset=csrRowIndeces_DofLoops.data()[i]; offset<csrRowIndeces_DofLoops.data()[i+1]; offset++)
+                {
+                  int j = csrColumnOffsets_DofLoops.data()[offset];
+                  if (i != j)
+                    {
+                      const double cj      = u_dof.data()[j];
+                      const double rho_cj  = rho_f*(1.0 + (drho_du/rho_f)*cj);
+                      const double T_ij     = TransportMatrix[ij];
+                      const double D_ij     = DiffusionMatrix[ij];
+                      const double delta_c  = cj - ci;
+                      const double T_neg    = fmax(0.0, -T_ij);
+                      const double D_neg    = fmax(0.0, -D_ij);
+                      const double rho_up   = (-T_ij*delta_c <= 0.0) ? rho_ci : rho_cj;
+                      // frozen edge coefficient a_ij >= 0 (advection upwind + diffusion)
+                      const double a_ij     = T_neg*(rho_up/rho_f) + D_neg;
+                      ith_upwind_flux_term_mass += -a_ij*delta_c;
+                      // dLow stores the SYMMETRIC graph viscosity used by the
+                      // explicit FCT post-step (Kuzmin antidiffusive flux, which
+                      // must be antisymmetric per edge -> needs symmetric dLow,
+                      // NOT the directional a_ij).  calculateJacobian recomputes
+                      // a_ij directly from T,D, so it no longer reads dLow.
+                      dLow.data()[ij] = fmax(fabs(T_ij), fabs(TransposeTransportMatrix[ij]));
+                      // High-order (smoothness-compressed) graph dissipation for the
+                      // FCT post-step, mirroring the explicit EntropyViscosity branch
+                      // (dHij = dLowij*(1-Compij)).  Store dt*(dH - dLow) <= 0 so the
+                      // FCTStep removes ONLY the EXCESS low-order dissipation
+                      // (dLow - dH) and KEEPS dH.  Removing the full dLow (as the
+                      // explicit Kuzmin flux does) makes the antidiffusion target the
+                      // dissipation-free Galerkin solution, which over-sharpens the
+                      // Dirichlet source front back to the initial condition -> the
+                      // observed FCT=True freeze.  globalResidual is NOT touched here,
+                      // so calculateJacobian needs no change.
+                      {
+                        // Standard Kuzmin implicit FEM-FCT high-order target: ZERO
+                        // artificial dissipation (d^H = 0).  The full low-order graph
+                        // viscosity dLow is antidiffused; the Zalesak limiter
+                        // (min/max_u_bc bounds) provides boundedness.  The earlier
+                        // dH = dLow*(1-Comp) "smoothness compression" throttled the
+                        // antidiffusion so the consistent-mass term dominated and the
+                        // front stayed diffuse (verified in the 1D FCT numpy replica);
+                        // removing it recovers the textbook antidiffusive flux
+                        //   F_ij = M~_ij[(m_j^H-m_j^n)-(m_i^H-m_i^n)]
+                        //          + dt (d^H-d^L)_ij (m_j^n-m_i^n),  d^H=0.
+                        const double dHij = 0.0;
+                        dt_times_dH_minus_dL.data()[ij] = dt*(dHij - dLow.data()[ij]);
+                      }
+                    }
+                  else
+                    {
+                      dLow.data()[ij] = 0.0;
+                      dt_times_dH_minus_dL.data()[ij] = 0.0;
+                    }
+                  ij += 1;
+                }
+              // Stage-3 kinetic dissolution source (mass-rate form); MUST match
+              // mphase_co2.h and the explicit edge-based branch above.
+              const double S_n_i   = Sn_dof.data()[i];
+              const double rho_w_i = rho_ci;   // rho_w(c_i) = rho_f*(1 + eps*c_i)
+              const double R_diss_i = theta_i * rho_w_i * k_d * S_n_i * (c_sat - ci);
+
+              globalResidual.data()[i] = MLi*(mi_new - mn_i)/dt
+                                       + ith_upwind_flux_term_mass
+                                       + boundary_integral[i]
+                                       - MLi*R_diss_i;
+            }//i
+        }//implicit edge-based
     }
+
+  void invert(arguments_dict& args)
+  {
+    int numDOFs = args.scalar<int>("numDOFs");
+    xt::pyarray<double>& mIn = args.array<double>("mIn");
+    xt::pyarray<double>& uOut = args.array<double>("uOut");
+    xt::pyarray<double>& nodal_porosity = args.array<double>("nodal_porosity");
+    const double rho_f = args.scalar<double>("rho_f");
+    const double rho_s = args.scalar<double>("rho_s");
+    for (int i=0; i<numDOFs; i++)
+      uOut.data()[i] = inversevaluateCoefficients(mIn.data()[i], nodal_porosity.data()[i], rho_f, rho_s);
+  }
   
 
     void calculateJacobian(arguments_dict& args)
@@ -1529,6 +1889,8 @@ inline
       xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
       xt::pyarray<double>& u_dof = args.array<double>("u_dof");
       xt::pyarray<double>& velocity = args.array<double>("velocity");
+      xt::pyarray<double>& q_porosity = args.array<double>("q_porosity");
+      xt::pyarray<double>& q_rho = args.array<double>("q_rho");
       xt::pyarray<double>& q_m_betaBDF = args.array<double>("q_m_betaBDF");
       xt::pyarray<double>& cfl = args.array<double>("cfl");
       xt::pyarray<double>& q_numDiff_u_last = args.array<double>("q_numDiff_u_last");
@@ -1537,6 +1899,8 @@ inline
       xt::pyarray<double>& globalJacobian = args.array<double>("globalJacobian");
       int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
       xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
+      xt::pyarray<int>& elementBoundaryMaterialTypes = args.array<int>("elementBoundaryMaterialTypes");
+      xt::pyarray<int>& isExteriorBoundaryPhysical = args.array<int>("isExteriorBoundaryPhysical");
       xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
       xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
       xt::pyarray<double>& ebqe_velocity_ext = args.array<double>("ebqe_velocity_ext");
@@ -1544,32 +1908,215 @@ inline
       xt::pyarray<double>& ebqe_bc_u_ext = args.array<double>("ebqe_bc_u_ext");
       xt::pyarray<int>& isFluxBoundary_u = args.array<int>("isFluxBoundary_u");
       xt::pyarray<double>& ebqe_bc_flux_u_ext = args.array<double>("ebqe_bc_flux_u_ext");
+      xt::pyarray<double>& ebqe_porosity = args.array<double>("ebqe_porosity");
+      xt::pyarray<double>& ebqe_rho = args.array<double>("ebqe_rho");
       xt::pyarray<int>& csrColumnOffsets_eb_u_u = args.array<int>("csrColumnOffsets_eb_u_u");
       STABILIZATION STABILIZATION_TYPE = static_cast<STABILIZATION>(args.scalar<int>("STABILIZATION_TYPE"));
 //      ENTROPY ENTROPY_TYPE = static_cast<ENTROPY>(args.scalar<int>("ENTROPY_TYPE"));    
 //      STABILIZATION STABILIZATION_TYPE{args.scalar<int>("STABILIZATION_TYPE")};
       double physicalDiffusion = args.scalar<double>("physicalDiffusion");
-      xt::pyarray<double>& q_a = args.array<double>("q_a");
-      xt::pyarray<double>& ebqe_a = args.array<double>("ebq_a");
+      const double alpha_L = args.scalar<double>("alpha_L");
+      const double alpha_T = args.scalar<double>("alpha_T");
+      const double Dm = args.scalar<double>("Dm");
+      int forceStrongConditions = args.scalar<int>("forceStrongConditions");
+      // const int dispersion_type_int = args.scalar<int>("dispersion_type");
+      // const double theta_s = args.scalar<double>("theta_s");
+      // const double theta_r = args.scalar<double>("theta_r");
+      // const double power_law_exponent = args.scalar<double>("power_law_exponent");
+      // const double velocity_exponent = args.scalar<double>("velocity_exponent");
+      const double rho_f = args.scalar<double>("rho_f");
+      const double rho_s = args.scalar<double>("rho_s");
       
-      // Extract alpha_L, alpha_T, and Dm from args
-      const double alphaL_val = args.scalar<double>("alpha_L"); // Longitudinal dispersion coefficient
-      const double alphaT_val = args.scalar<double>("alpha_T"); // Transverse dispersion coefficient
-      const double Dm_val = args.scalar<double>("Dm");         // Molecular diffusion coefficient
+      // DISPERSION DISPERSION_TYPE = static_cast<DISPERSION>(dispersion_type_int);
 
 
       double Ct_sge = 4.0;
 
 
 
-      /////////////////////////////////////////////////////////////////////////
+            /////////////////////////////////////////////////////////////////////////
       xt::pyarray<int>& a_rowptr = args.array<int>("a_rowptr");
       xt::pyarray<int>& a_colind = args.array<int>("a_colind");
       //xt::pyarray<double>& D = args.array<double>("D");
       //////////////////////////////////////////////////////////////////////////
       xt::pyarray<int>& isDiffusiveFluxBoundary_u = args.array<int>("isDiffusiveFluxBoundary_u");
       xt::pyarray<double>& ebqe_penalty_ext = args.array<double>("ebqe_penalty_ext");
-      
+
+      //////////////////////////////////////////////////////////////////////
+      // ImplicitEV (STAB=5): assemble the implicit edge-based Jacobian in  //
+      // THIS function (unlike Richards, which builds it inside the         //
+      // residual).  It reads the transport/diffusion matrices and nodal    //
+      // projections (theta_dof_proj) that the immediately preceding        //
+      // calculateResidual call filled -- Proteus Newton evaluates F(u)     //
+      // then J(u) at the same iterate -- plus the frozen per-edge upwind   //
+      // coefficient a_ij the residual stashed in dLow[ij].  Single-comp P1 //
+      // => the DOF-loop CSR coincides with the matrix CSR, so globalJacobian//
+      // is indexed by the same running offset 'ij' as the residual         //
+      // (identical to the Richards STAB==2 convention).                    //
+      //                                                                    //
+      // Differentiating the upwind flux  F_i = sum_{j!=i} -a_ij*(c_j-c_i)  //
+      // with a_ij frozen gives a clean M-matrix:                           //
+      //   J_ij = -a_ij                                  (j != i, <= 0)     //
+      //   J_ii = ML_i*dmdu_i/dt + sum_{j!=i} a_ij  - ML_i*dRdiss_i/dc_i     //
+      // dmdu_i = theta_i*(rho(c_i)+c_i*drho_du), rho(c)=rho_f(1+eps*c).     //
+      // a_ij carries the upwind density/diffusion weighting; freezing it   //
+      // (and the O(eps) rho_up dependence) is the only inexactness          //
+      // (standard inexact-Newton, as Richards freezes Kr/psi).             //
+      //////////////////////////////////////////////////////////////////////
+      if (STABILIZATION_TYPE==STABILIZATION::ImplicitEV)
+        {
+          const double dt = args.scalar<double>("dt");
+          const int numDOFs = args.scalar<int>("numDOFs");
+          xt::pyarray<double>& ML = args.array<double>("ML");
+          xt::pyarray<double>& dLow = args.array<double>("dLow");
+          xt::pyarray<double>& Sn_dof = args.array<double>("Sn_dof");
+          const double k_d   = args.scalar<double>("k_d");
+          const double c_sat = args.scalar<double>("c_sat");
+          xt::pyarray<int>& csrRowIndeces_DofLoops = args.array<int>("csrRowIndeces_DofLoops");
+          xt::pyarray<int>& csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops");
+          const double drho_du = rho_s - rho_f;
+
+          // nodal storage Jacobian dmdu_i = theta_i*(rho(c_i) + c_i*drho_du)
+          std::valarray<double> dmdu(numDOFs);
+          for (int i=0; i<numDOFs; i++)
+            {
+              const double ci = u_dof.data()[i];
+              const double theta_i = fmax(theta_dof_proj[i], 1.0e-14);
+              const double rho_ci = rho_f*(1.0 + (drho_du/rho_f)*ci);
+              dmdu[i] = theta_i*(rho_ci + ci*drho_du);
+            }
+          int ij=0;
+          for (int i=0; i<numDOFs; i++)
+            {
+              const double ci = u_dof.data()[i];
+              const double theta_i = fmax(theta_dof_proj[i], 1.0e-14);
+              const double rho_ci = rho_f*(1.0 + (drho_du/rho_f)*ci);
+              const double MLi = ML.data()[i];
+              const double S_n_i = Sn_dof.data()[i];
+              // dR_diss_i/dc_i = theta_i*k_d*S_n_i*[ drho_du*(c_sat-c_i) - rho(c_i) ]
+              const double dRdiss_dci = theta_i*k_d*S_n_i*( drho_du*(c_sat - ci) - rho_ci );
+
+              int diag_ij = -1;
+              double sum_a = 0.0;
+              for (int offset=csrRowIndeces_DofLoops.data()[i]; offset<csrRowIndeces_DofLoops.data()[i+1]; offset++)
+                {
+                  int j = csrColumnOffsets_DofLoops.data()[offset];
+                  if (i != j)
+                    {
+                      // off-diagonal upwind flux: J_ij = -a_ij.  Recompute a_ij
+                      // from the (frozen) transport/diffusion matrices and the
+                      // current iterate -- dLow now stores the symmetric FCT
+                      // viscosity, not a_ij.  Matches the residual exactly.
+                      const double T_ij  = TransportMatrix[ij];
+                      const double D_ij  = DiffusionMatrix[ij];
+                      const double cj    = u_dof.data()[j];
+                      const double rho_cj= rho_f*(1.0 + (drho_du/rho_f)*cj);
+                      const double T_neg = fmax(0.0, -T_ij);
+                      const double D_neg = fmax(0.0, -D_ij);
+                      const double rho_up= (-T_ij*(cj - ci) <= 0.0) ? rho_ci : rho_cj;
+                      const double a_ij  = T_neg*(rho_up/rho_f) + D_neg;
+                      globalJacobian.data()[ij] += -a_ij;
+                      sum_a += a_ij;
+                    }
+                  else
+                    diag_ij = ij;
+                  ij += 1;
+                }
+              // diagonal: storage + upwind self term (sum a_ij) - dissolution
+              globalJacobian.data()[diag_ij] += MLi*dmdu[i]/dt
+                                              + sum_a
+                                              - MLi*dRdiss_dci;
+            }//i
+
+          //
+          // Implicit boundary flux Jacobian: d(boundary flux)/du -> globalJacobian
+          // so the boundary is implicit (like Richards), consistent with the
+          // boundary residual the calculateResidual ImplicitEV path stashes in
+          // boundary_integral.  fluxJacobian accumulates over the face
+          // quadrature and is loaded ONCE per face (the residual side likewise
+          // distributes once).  For closed BCs (zero adv/diff flux, no
+          // Dirichlet) every term here is identically 0.
+          //
+          for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++)
+            {
+              int ebN = exteriorElementBoundariesArray.data()[ebNE];
+              const int eN_out = elementBoundaryElementsArray.data()[ebN*2+1];
+              const int ebFlag = elementBoundaryMaterialTypes.data()[ebN];
+              if (ebFlag <= 0 || isExteriorBoundaryPhysical.data()[ebNE] == 0 || eN_out >= 0)
+                continue;
+              int eN  = elementBoundaryElementsArray.data()[ebN*2+0],
+                ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+0],
+                eN_nDOF_trial_element = eN*nDOF_trial_element;
+              double fluxJacobian_u_u[nDOF_test_element][nDOF_trial_element];
+              for (int i=0;i<nDOF_test_element;i++)
+                for (int j=0;j<nDOF_trial_element;j++)
+                  fluxJacobian_u_u[i][j]=0.0;
+              for (int kb=0;kb<nQuadraturePoints_elementBoundary;kb++)
+                {
+                  int ebNE_kb = ebNE*nQuadraturePoints_elementBoundary+kb,
+                    ebNE_kb_nSpace = ebNE_kb*nSpace,
+                    ebN_local_kb = ebN_local*nQuadraturePoints_elementBoundary+kb,
+                    ebN_local_kb_nSpace = ebN_local_kb*nSpace;
+                  double u_ext=0.0, grad_u_ext[nSpace], m_ext=0.0, dm_ext=0.0,
+                    f_ext[nSpace], df_ext[nSpace], a_ext[nnz], da_ext[nnz],
+                    bc_a_ext[nnz], bc_da_ext[nnz], difffluxjacobian_ext=0.0,
+                    bc_u_ext=0.0, bc_m_ext=0.0, bc_dm_ext=0.0,
+                    bc_f_ext[nSpace], bc_df_ext[nSpace],
+                    jac_ext[nSpace*nSpace], jacDet_ext, jacInv_ext[nSpace*nSpace],
+                    boundaryJac[nSpace*(nSpace-1)], metricTensor[(nSpace-1)*(nSpace-1)],
+                    metricTensorDetSqrt, dS, u_test_dS[nDOF_test_element],
+                    u_grad_trial_trace[nDOF_trial_element*nSpace],
+                    u_grad_test_dS[nDOF_trial_element*nSpace], normal[nSpace],
+                    x_ext,y_ext,z_ext,xt_ext,yt_ext,zt_ext,integralScaling,
+                    G[nSpace*nSpace],G_dd_G,tr_G;
+                  ck.calculateMapping_elementBoundary(eN,ebN_local,kb,ebN_local_kb,mesh_dof.data(),mesh_l2g.data(),mesh_trial_trace_ref.data(),mesh_grad_trial_trace_ref.data(),boundaryJac_ref.data(),jac_ext,jacDet_ext,jacInv_ext,boundaryJac,metricTensor,metricTensorDetSqrt,normal_ref.data(),normal,x_ext,y_ext,z_ext);
+                  ck.calculateMappingVelocity_elementBoundary(eN,ebN_local,kb,ebN_local_kb,mesh_velocity_dof.data(),mesh_l2g.data(),mesh_trial_trace_ref.data(),xt_ext,yt_ext,zt_ext,normal,boundaryJac,metricTensor,integralScaling);
+                  dS = ((1.0-MOVING_DOMAIN)*metricTensorDetSqrt + MOVING_DOMAIN*integralScaling)*dS_ref.data()[kb];
+                  ck.calculateG(jacInv_ext,G,G_dd_G,tr_G);
+                  ck.gradTrialFromRef(&u_grad_trial_trace_ref.data()[ebN_local_kb_nSpace*nDOF_trial_element],jacInv_ext,u_grad_trial_trace);
+                  ck.valFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],&u_trial_trace_ref.data()[ebN_local_kb*nDOF_test_element],u_ext);
+                  ck.gradFromDOF(u_dof.data(),&u_l2g.data()[eN_nDOF_trial_element],u_grad_trial_trace,grad_u_ext);
+                  for (int j=0;j<nDOF_trial_element;j++)
+                    {
+                      u_test_dS[j] = u_test_trace_ref.data()[ebN_local_kb*nDOF_test_element+j]*dS;
+                      for (int I=0;I<nSpace;I++)
+                        u_grad_test_dS[j*nSpace+I]= u_grad_trial_trace[j*nSpace+I]*dS;
+                    }
+                  bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+(1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
+                  double rho_out_ext=0.0,rho_out_bc=0.0;
+                  evaluateCoefficients(a_rowptr.data(),a_colind.data(),&ebqe_velocity_ext.data()[ebNE_kb_nSpace],alpha_L,alpha_T,Dm,ebqe_porosity.data()[ebNE_kb],rho_f,rho_s,u_ext,rho_out_ext,m_ext,dm_ext,f_ext,df_ext,a_ext,da_ext);
+                  evaluateCoefficients(a_rowptr.data(),a_colind.data(),&ebqe_velocity_ext.data()[ebNE_kb_nSpace],alpha_L,alpha_T,Dm,ebqe_porosity.data()[ebNE_kb],rho_f,rho_s,bc_u_ext,rho_out_bc,bc_m_ext,bc_dm_ext,bc_f_ext,bc_df_ext,bc_a_ext,bc_da_ext);
+                  double mesh_velocity[3]; mesh_velocity[0]=xt_ext; mesh_velocity[1]=yt_ext; mesh_velocity[2]=zt_ext;
+                  for (int I=0;I<nSpace;I++)
+                    {
+                      f_ext[I] -= MOVING_DOMAIN*m_ext*mesh_velocity[I];
+                      df_ext[I] -= MOVING_DOMAIN*dm_ext*mesh_velocity[I];
+                      bc_f_ext[I] -= MOVING_DOMAIN*bc_m_ext*mesh_velocity[I];
+                      bc_df_ext[I] -= MOVING_DOMAIN*bc_dm_ext*mesh_velocity[I];
+                    }
+                  for (int i=0;i<nDOF_test_element;i++)
+                    for (int j=0;j<nDOF_trial_element;j++)
+                      {
+                        int ebN_local_kb_j=ebN_local_kb*nDOF_trial_element+j;
+                        double advJacobian_ext = 0.0, diffJacobian_ext = 0.0;
+                        exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],isFluxBoundary_u.data()[ebNE_kb],forceStrongConditions,normal,df_ext,advJacobian_ext);
+                        exteriorNumericalDiffusiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],isDiffusiveFluxBoundary_u.data()[ebNE_kb],a_rowptr.data(),a_colind.data(),normal,a_ext,da_ext,grad_u_ext,&u_grad_trial_trace[j*nSpace],u_trial_trace_ref.data()[ebN_local_kb_j],ebqe_penalty_ext.data()[ebNE_kb],diffJacobian_ext);
+                        difffluxjacobian_ext = advJacobian_ext*u_trial_trace_ref.data()[ebN_local_kb_j] + diffJacobian_ext;
+                        fluxJacobian_u_u[i][j] += difffluxjacobian_ext*u_test_dS[i];
+                      }//j
+                }//kb
+              for (int i=0;i<nDOF_test_element;i++)
+                {
+                  int eN_i = eN*nDOF_test_element+i;
+                  for (int j=0;j<nDOF_trial_element;j++)
+                    {
+                      int ebN_i_j = ebN*4*nDOF_test_X_trial_element + i*nDOF_trial_element + j;
+                      globalJacobian.data()[csrRowIndeces_u_u.data()[eN_i] + csrColumnOffsets_eb_u_u.data()[ebN_i_j]] += fluxJacobian_u_u[i][j];
+                    }//j
+                }//i
+            }//ebNE
+          return;  // skip the element/boundary Jacobian loops below
+        }
 
       //
       //loop over elements to compute volume integrals and load them into the element Jacobians and global Jacobian
@@ -1651,13 +2198,18 @@ inline
               //calculate pde coefficients and derivatives at quadrature points
               //
               
-              //const double* q_a_ptr = &q_a[eN_k * a_rowptr[nSpace]];
+              double rho_out=0.0;
               evaluateCoefficients(a_rowptr.data(),
 				                           a_colind.data(),
                                    &velocity.data()[eN_k_nSpace],
-                                   alphaL_val, alphaT_val, Dm_val, 
-                                   //q_a_ptr, //&q_a.data()[eN * nQuadraturePoints_element * nnz + k * nnz],//[eN_k*a_rowptr.data()[nSpace]],//[eN_k*nnz],
+                                   alpha_L,
+                                   alpha_T,
+                                   Dm,
+                                   q_porosity.data()[eN*nQuadraturePoints_element+k],
+                                   rho_f,
+                                   rho_s,
                                    u,
+                                   rho_out,
                                    m,
                                    dm,
                                    f,
@@ -1797,6 +2349,10 @@ inline
           for (int ebNE = 0; ebNE < nExteriorElementBoundaries_global; ebNE++)
             {
               int ebN = exteriorElementBoundariesArray.data()[ebNE];
+              const int eN_out = elementBoundaryElementsArray.data()[ebN*2+1];
+              const int ebFlag = elementBoundaryMaterialTypes.data()[ebN];
+              if (ebFlag <= 0 || isExteriorBoundaryPhysical.data()[ebNE] == 0 || eN_out >= 0)
+                continue;
               int eN  = elementBoundaryElementsArray.data()[ebN*2+0],
                 ebN_local = elementBoundaryLocalElementBoundariesArray.data()[ebN*2+0],
                 eN_nDOF_trial_element = eN*nDOF_trial_element;
@@ -1903,18 +2459,24 @@ inline
                   //load the boundary values
                   //
                   bc_u_ext = isDOFBoundary_u.data()[ebNE_kb]*ebqe_bc_u_ext.data()[ebNE_kb]+(1-isDOFBoundary_u.data()[ebNE_kb])*u_ext;
+          
                   //
                   //
                   //calculate the internal and external trace of the pde coefficients
                   //
 
-                  const double* qb_a_ptr = &ebqe_a[ebNE_kb * a_rowptr[nSpace]];
+                  double rho_out_ext=0.0,rho_out_bc=0.0;
                   evaluateCoefficients(a_rowptr.data(),
                                        a_colind.data(),
                                        &ebqe_velocity_ext.data()[ebNE_kb_nSpace],
-                                       alphaL_val, alphaT_val, Dm_val, 
-                                       //qb_a_ptr,//&q_a.data()[ebNE * nQuadraturePoints_element * nnz + kb * nnz],//[ebNE_kb*a_rowptr.data()[nSpace]],//[ebNE_kb* nnz],
+                                       alpha_L,
+                                       alpha_T,
+                                       Dm,
+                                   ebqe_porosity.data()[ebNE_kb],
+                                       rho_f,
+                                       rho_s,
                                        u_ext,
+                                       rho_out_ext,
                                        m_ext,
                                        dm_ext,
                                        f_ext,
@@ -1926,9 +2488,14 @@ inline
                   evaluateCoefficients(a_rowptr.data(),
                                        a_colind.data(),
                                        &ebqe_velocity_ext.data()[ebNE_kb_nSpace],
-                                       alphaL_val, alphaT_val, Dm_val, 
-                                       //qb_a_ptr,//&q_a.data()[ebNE * nQuadraturePoints_element * nnz + kb * nnz],//[ebNE_kb*a_rowptr.data()[nSpace]],//[ebNE_kb* nnz],
+                                       alpha_L,
+                                       alpha_T,
+                                       Dm,
+                                   ebqe_porosity.data()[ebNE_kb],
+                                       rho_f,
+                                       rho_s,
                                        bc_u_ext,
+                                       rho_out_bc,
                                        bc_m_ext,
                                        bc_dm_ext,
                                        bc_f_ext,
@@ -1952,25 +2519,6 @@ inline
                   //
                   //calculate the numerical fluxes
                   //
-                  exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
-                                                           isFluxBoundary_u.data()[ebNE_kb],
-                                                           normal,
-                                                           df_ext,
-                                                           dflux_u_u_ext);
-                  exteriorNumericalDiffusiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
-                                                           isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                                           a_rowptr.data(),
-                                                           a_colind.data(),
-                                                           normal,
-                                                           a_ext,
-                                                           da_ext,
-                                                           grad_u_ext,
-                                                           &u_grad_trial_trace[nSpace],
-                                                           &u_trial_trace_ref.data()[ebN_local_kb*nSpace],
-                                                           ebqe_penalty_ext.data()[ebNE_kb],
-                                                           difffluxjacobian_ext);
-                  
-                  
                   //
                   //calculate the flux jacobian
                   //
@@ -1979,16 +2527,28 @@ inline
                       {
                         int ebN_local_kb_j=ebN_local_kb*nDOF_trial_element+j;
   
-                        fluxJacobian_u_u[i][j]+=ck.ExteriorNumericalAdvectiveFluxJacobian(dflux_u_u_ext,u_trial_trace_ref.data()[ebN_local_kb_j])*u_test_dS[i]+
-                                                ExteriorNumericalDiffusiveFluxJacobian(a_rowptr.data(),
-                                                                                       a_colind.data(),
-                                                                                       isDOFBoundary_u.data()[ebNE_kb],
-                                                                                       isDiffusiveFluxBoundary_u.data()[ebNE_kb],
-                                                                                       normal,
-                                                                                       a_ext,
-                                                                                       u_trial_trace_ref.data()[ebN_local_kb_j],
-                                                                                       &u_grad_trial_trace[j*nSpace],
-                                                                                       ebqe_penalty_ext.data()[ebNE_kb])*u_test_dS[i];
+                        double advJacobian_ext = 0.0, diffJacobian_ext = 0.0;
+                        exteriorNumericalAdvectiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
+                                                                 isFluxBoundary_u.data()[ebNE_kb],
+                                                                 forceStrongConditions,
+                                                                 normal,
+                                                                 df_ext,
+                                                                 advJacobian_ext);
+                        exteriorNumericalDiffusiveFluxDerivative(isDOFBoundary_u.data()[ebNE_kb],
+                                                                 isDiffusiveFluxBoundary_u.data()[ebNE_kb],
+                                                                 a_rowptr.data(),
+                                                                 a_colind.data(),
+                                                                 normal,
+                                                                 a_ext,
+                                                                 da_ext,
+                                                                 grad_u_ext,
+                                                                 &u_grad_trial_trace[j*nSpace],
+                                                                 u_trial_trace_ref.data()[ebN_local_kb_j],
+                                                                 ebqe_penalty_ext.data()[ebNE_kb],
+                                                                 diffJacobian_ext);
+                        difffluxjacobian_ext = advJacobian_ext*u_trial_trace_ref.data()[ebN_local_kb_j]
+                                               + diffJacobian_ext;
+                        fluxJacobian_u_u[i][j] += difffluxjacobian_ext*u_test_dS[i];
                       }//j
 
               //
@@ -2020,6 +2580,12 @@ inline
     xt::pyarray<double>& uLow = args.array<double>("uLow");
     xt::pyarray<double>& dLow = args.array<double>("dLow");
     xt::pyarray<double>& limited_solution = args.array<double>("limited_solution");
+    // bc_mask: 0.0 at Dirichlet DOFs, 1.0 elsewhere.  Mirrors mphase_co2's
+    // pattern.  Multiplied into the antidiffusive flux correction below so
+    // Dirichlet DOFs stay at their low-order value (which already carries the
+    // Nitsche BC contribution from the boundary residual) instead of being
+    // antidiffused past the BC value.
+    xt::pyarray<double>& bc_mask = args.array<double>("bc_mask");
     xt::pyarray<int>& csrRowIndeces_DofLoops = args.array<int>("csrRowIndeces_DofLoops");
     xt::pyarray<int>& csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops");
     xt::pyarray<double>& MassMatrix = args.array<double>("MassMatrix");
@@ -2027,9 +2593,44 @@ inline
     xt::pyarray<double>& min_u_bc = args.array<double>("min_u_bc");
     xt::pyarray<double>& max_u_bc = args.array<double>("max_u_bc");
     int LUMPED_MASS_MATRIX = args.scalar<int>("LUMPED_MASS_MATRIX");
+    // projection arrays replacing nodal_porosity
+    xt::pyarray<double>& q_porosity_old_fct = args.array<double>("q_porosity_old_fct");
+    xt::pyarray<double>& q_rho_fct        = args.array<double>("q_rho_fct");
+    xt::pyarray<double>& q_dV_fct         = args.array<double>("q_dV_fct");
+    xt::pyarray<int>&    u_l2g_fct        = args.array<int>("u_l2g_fct");
+    xt::pyarray<double>& u_test_ref_fct   = args.array<double>("u_test_ref_fct");
+    xt::pyarray<double>& theta_dof_out    = args.array<double>("theta_dof_out");
+    int nElements_global_fct              = args.scalar<int>("nElements_global_fct");
+    int nQuadraturePoints_element_fct     = args.scalar<int>("nQuadraturePoints_element_fct");
+    int nDOF_trial_element_fct            = args.scalar<int>("nDOF_trial_element_fct");
+    const double rho_f = args.scalar<double>("rho_f");
+    const double rho_s = args.scalar<double>("rho_s");
 //    STABILIZATION STABILIZATION_TYPE{args.scalar<int>("STABILIZATION_TYPE")};
     STABILIZATION STABILIZATION_TYPE = static_cast<STABILIZATION>(args.scalar<int>("STABILIZATION_TYPE"));
 //      ENTROPY ENTROPY_TYPE = static_cast<ENTROPY>(args.scalar<int>("ENTROPY_TYPE"));    
+    // --- L2 projection: quadrature → DOF ---
+    std::vector<double> theta_dof(numDOFs, 0.0);
+    std::vector<double> rho_dof(numDOFs, 0.0);
+    std::vector<double> ML_proj(numDOFs, 0.0);
+    for (int eN = 0; eN < nElements_global_fct; eN++) {
+      for (int k = 0; k < nQuadraturePoints_element_fct; k++) {
+        const int eN_k = eN * nQuadraturePoints_element_fct + k;
+        const double dV_k    = q_dV_fct.data()[eN_k];
+        const double theta_k = q_porosity_old_fct.data()[eN_k];
+        const double rho_k   = q_rho_fct.data()[eN_k];
+        for (int i = 0; i < nDOF_trial_element_fct; i++) {
+          const int gi = u_l2g_fct.data()[eN * nDOF_trial_element_fct + i];
+          const double w = u_test_ref_fct.data()[k * nDOF_trial_element_fct + i] * dV_k;
+          theta_dof[gi] += theta_k * w;
+          rho_dof[gi]   += rho_k   * w;
+          ML_proj[gi]   += w;
+        }
+      }
+    }
+    for (int i = 0; i < numDOFs; i++) {
+      if (ML_proj[i] > 1.0e-14) { theta_dof[i] /= ML_proj[i]; rho_dof[i] /= ML_proj[i]; }
+      else { theta_dof[i] = 1.0; rho_dof[i] = rho_f; }
+    }
     Rpos.resize(numDOFs,0.0);
     Rneg.resize(numDOFs,0.0);
     FluxCorrectionMatrix.resize(NNZ,0.0);
@@ -2040,9 +2641,13 @@ inline
         //read some vectors
         double solHi = solH.data()[i];
         double solni = soln.data()[i];
-        double mi = lumped_mass_matrix.data()[i];
+        const double lumped_volume = lumped_mass_matrix.data()[i];
         double uLowi = uLow.data()[i];
-        double uDotLowi = (uLowi - solni)/dt;
+        const double theta_i = theta_dof[i];
+        double mLowi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowi)*uLowi;
+        double solHmi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solHi)*solHi;
+        double solnmi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solni)*solni;
+        double uDotLowi = (mLowi - solnmi)/dt;
         double mini=min_u_bc.data()[i], maxi=max_u_bc.data()[i]; // init min/max with value at BCs (NOTE: if no boundary then min=1E10, max=-1E10)
         double Pposi=0, Pnegi=0;
         // Loop over neighbors (j)
@@ -2051,40 +2656,73 @@ inline
             assert(offset == ij); // (CSR matrix consistency)
             int j = csrColumnOffsets_DofLoops.data()[offset];
             double solnj = soln.data()[j];
+            double uLowj = uLow.data()[j];
             ////////////////////////
             // COMPUTE THE BOUNDS //
             ////////////////////////
-            mini = fmin(mini,solnj);
-            maxi = fmax(maxi,solnj);
-            double uLowj = uLow.data()[j];
-            double uDotLowj = (uLowj - solnj)/dt;
+            
+            // Explicit paths bound against soln (as VOF.h/VOF3P.h do);
+            // ImplicitEV, whose limiter works on mass, bounds against uLow.
+            const double bound_j =
+              (STABILIZATION_TYPE == STABILIZATION::ImplicitEV) ? uLowj : solnj;
+            mini = fmin(mini,bound_j);
+            maxi = fmax(maxi,bound_j);
+            const double theta_j = theta_dof[j];
+            double mLowj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowj)*uLowj;
+            double solHmj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solH.data()[j])*solH.data()[j];
+            double solnmj = theta_j*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*solnj)*solnj;
+            double uDotLowj = (mLowj - solnmj)/dt;
             // i-th row of flux correction matrix
             if (STABILIZATION_TYPE == STABILIZATION::Kuzmin)
               {
+                // Explicit Kuzmin antidiffusive flux: consistent-mass correction +
+                // full removal of the symmetric graph viscosity dLow*(mLow_i-mLow_j).
                 FluxCorrectionMatrix[ij] = dt*(MassMatrix.data()[ij]*(uDotLowi-uDotLowj)
-                                               + dLow.data()[ij]*(uLowi-uLowj));
+                                               + dLow.data()[ij]*(mLowi-mLowj));
+              }
+            else if (STABILIZATION_TYPE == STABILIZATION::ImplicitEV)
+              {
+                // Standard Kuzmin implicit FEM-FCT antidiffusive flux:
+                //   F_ij = M~_ij[(m_j^H - m_j^n) - (m_i^H - m_i^n)]
+                //          + dt (d^H - d^L)_ij (m_j^n - m_i^n)
+                // For ImplicitEV the Newton solve gives the low-order implicit
+                // solution, so the high-order state is taken as m^H := m^L (uLow):
+                //   first term  -M~_ij[(m_j^L-m_j^n)-(m_i^L-m_i^n)]
+                //               = dt*MC_ij*(uDotLow_i - uDotLow_j)   (consistent mass)
+                //   second term  dt_times_dH_minus_dL_ij*(m_j^n - m_i^n)
+                //               with dt_times_dH_minus_dL = dt*(d^H-d^L) = -dt*dLow.
+                // The dissipation antidiffusion now acts on the OLD-time mass m^n
+                // (solnm), matching the textbook Kuzmin form and the STAB=2
+                // (EntropyViscosity) `else` branch below.  The previous code used the
+                // diffused low-order m^L here and threw away most of dLow via the Comp
+                // throttle, so the front stayed under-sharpened.  solnm carries the
+                // density nonlinearity m^s(c)=theta*rho_f*(c + eps c^2); the inverse
+                // c = 2r/(1+sqrt(1+4 eps r)) is applied in invert().
+                FluxCorrectionMatrix[ij] = dt*MassMatrix.data()[ij]*(uDotLowi-uDotLowj)
+                                           + dt_times_dH_minus_dL.data()[ij]*(solnmj-solnmi);
               }
             else
               {
                 double ML_minus_MC =
-                  (LUMPED_MASS_MATRIX == 1 ? 0. : (i==j ? 1. : 0.)*mi - MassMatrix.data()[ij]);
-                FluxCorrectionMatrix[ij] = ML_minus_MC * (solH.data()[j]-solnj - (solHi-solni))
-                  + dt_times_dH_minus_dL.data()[ij]*(solnj-solni);
+                  (LUMPED_MASS_MATRIX == 1 ? 0. : (i==j ? 1. : 0.)*lumped_volume - MassMatrix.data()[ij]);
+                FluxCorrectionMatrix[ij] = ML_minus_MC * (solHmj-solnmj - (solHmi-solnmi))
+                  + dt_times_dH_minus_dL.data()[ij]*(solnmj-solnmi);
               }
             Pposi += FluxCorrectionMatrix[ij]*((FluxCorrectionMatrix[ij] > 0) ? 1. : 0.);
             Pnegi += FluxCorrectionMatrix[ij]*((FluxCorrectionMatrix[ij] < 0) ? 1. : 0.);
             ij+=1;
           }//j
-        double Qposi = mi*(maxi-uLow.data()[i]);
-        double Qnegi = mi*(mini-uLow.data()[i]);
-        Rpos[i] = ((Pposi==0) ? 1. : fmin(1.0,Qposi/Pposi));
-        Rneg[i] = ((Pnegi==0) ? 1. : fmin(1.0,Qnegi/Pnegi));
+        const double Qposi = lumped_volume*(theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*maxi)*maxi - mLowi);
+        const double Qnegi = lumped_volume*(theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*mini)*mini - mLowi);
+        Rpos[i] = ((Pposi==0) ? 1. : fmax(0.0, fmin(1.0,Qposi/Pposi)));
+        Rneg[i] = ((Pnegi==0) ? 1. : fmax(0.0, fmin(1.0,Qnegi/Pnegi)));
       }//i
     ij=0;
     for (int i=0; i<numDOFs; i++)
       {
         double ith_Limiter_times_FluxCorrectionMatrix = 0.;
         double Rposi = Rpos[i], Rnegi = Rneg[i];
+        const double lumped_volume = lumped_mass_matrix.data()[i];
         for (int offset=csrRowIndeces_DofLoops.data()[i]; offset<csrRowIndeces_DofLoops.data()[i+1]; offset++)
           {
             assert(offset == ij); // (CSR matrix consistency
@@ -2094,7 +2732,12 @@ inline
             ith_Limiter_times_FluxCorrectionMatrix += Lij * FluxCorrectionMatrix[ij];
             ij+=1;
           }
-        limited_solution.data()[i] = uLow.data()[i] + 1./lumped_mass_matrix.data()[i]*ith_Limiter_times_FluxCorrectionMatrix;
+        const double uLowi = uLow.data()[i];
+        const double theta_i = theta_dof[i];
+        const double mLowi = theta_i*rho_f*(1.0 + ((rho_s-rho_f)/rho_f)*uLowi)*uLowi;
+        // bc_mask.data()[i] is 0 at Dirichlet DOFs (freeze at mLow) and 1 elsewhere.
+        limited_solution.data()[i] = mLowi + bc_mask.data()[i] * (1./lumped_volume * ith_Limiter_times_FluxCorrectionMatrix);
+        theta_dof_out.data()[i] = theta_dof[i];
       }
     }//FCTStep
   };//TADR

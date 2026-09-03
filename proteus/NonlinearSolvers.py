@@ -670,9 +670,12 @@ class Newton(NonlinearSolver):
             logEvent("   Newton it %d norm(r) = %12.5e  \t\t norm(r)/(rtol*norm(r0)+atol) = %12.5e"
                 % (self.its,self.norm_r,(self.norm_r/(self.rtol_r*self.norm_r0+self.atol_r))),level=1)
             if hasattr(self.F.coefficients,'FCT') and self.F.coefficients.FCT==True:
-                logEvent("FCT Step After Newton")
-                self.F.FCTStep()
-                u[:] = self.F.u[0].dof
+                if self.failedFlag:
+                    logEvent("Skipping FCT Step After Newton due to nonlinear solver failure")
+                else:
+                    logEvent("FCT Step After Newton")
+                    self.F.FCTStep()
+                    u[:] = self.F.u[0].dof
             logEvent(memory("Exiting Newton.solve","NonlinearSolvers"),level=4)
             return self.failedFlag
         logEvent("  NumericalAnalytics NewtonIteration: %d, NewtonNorm: %12.5e"

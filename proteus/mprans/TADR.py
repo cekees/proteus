@@ -16,7 +16,7 @@ from proteus.TransportCoefficients import TC_base
 from proteus.SubgridError import SGE_base
 from proteus.ShockCapturing import ShockCapturing_base
 from proteus.NumericalFlux import Advection_DiagonalUpwind_Diffusion_IIPG_exterior
-from proteus.LinearAlgebraTools import SparseMat
+from proteus.LinearAlgebraTools import SparseMat, ParVec_petsc4py
 from proteus.NonlinearSolvers import ExplicitLumpedMassMatrix,ExplicitConsistentMassMatrixForVOF,TwoStageNewton
 from proteus.mprans.cTADR import cTADR_base
 
@@ -267,10 +267,7 @@ class Coefficients(TC_base):
     from proteus.cfemIntegrals import copyExteriorElementBoundaryValuesFromElementBoundaryValues
     
     def __init__(self,
-                 #aOfX,
-                 alpha_L,
-                 alpha_T,
-                 Dm,
+                 aOfX=None,
                  LS_model=None,
                  nd=2,
                  V_model=0,
@@ -283,7 +280,7 @@ class Coefficients(TC_base):
                  sc_uref=1.0,
                  sc_beta=1.0,
                  movingDomain=False,
-                 forceStrongConditions=True,
+                 forceStrongConditions=False,
                  STABILIZATION_TYPE='VMS',        
                  ENTROPY_TYPE='POWER',
                  diagonal_conductivity=True,
@@ -302,7 +299,27 @@ class Coefficients(TC_base):
                  #NULLSPACE INFO
                  nullSpace='NoNullSpace',
                  initialize=True,
-                 physicalDiffusion=0.0):
+                 physicalDiffusion=0.0,
+                 alpha_L=0.0,
+                 alpha_T=0.0,
+                 Dm=None,
+                 porosity=1.0,
+                 dispersion_type=0,
+                 theta_s=1.0,
+                 theta_r=0.0,
+                 power_law_exponent=0.0,
+                 velocity_exponent=1.0,
+                 rho_f=1.0,
+                 rho_s=1.0,
+                 specified_velocity=True,
+                 # Kinetic dissolution source: R_diss = k_d * S_n * S_w * (c_sat - c)
+                 # k_d : volumetric mass-transfer rate coefficient [1/s].  Default 0
+                 #       disables dissolution (Richards <-> TADR coupling is unchanged).
+                 # c_sat: saturation concentration (Henry's law equilibrium).
+                 # S_n : taken from vModel.u[1].dof if the flow model exposes a
+                 #       gas saturation (mphase_co2); else treated as zero.
+                 k_d=0.0,
+                 c_sat=1.0):
         self.variableNames = ['u']
         self.LS_modelIndex = LS_model
         self.V_model = V_model
@@ -327,10 +344,7 @@ class Coefficients(TC_base):
         self.movingDomain = movingDomain
         self.forceStrongConditions = forceStrongConditions
         self.nd=nd
-        #self.aOfX = aOfX
-        self.alpha_L= alpha_L
-        self.alpha_T= alpha_T
-        self.Dm= Dm        
+        self.aOfX = aOfX
         self.diagonal_conductivity = diagonal_conductivity
 
         if self.diagonal_conductivity:
@@ -351,18 +365,53 @@ class Coefficients(TC_base):
         self.nullSpace = nullSpace
         self.flowCoefficients = None
         self.physicalDiffusion=physicalDiffusion
+        self.alpha_L = alpha_L
+        self.alpha_T = alpha_T
+        self.Dm = physicalDiffusion if Dm is None else Dm
+        # aOfX (the old interface) is the default: the kernel builds its tensor
+        # from (Dm, alpha_L, alpha_T), so when the caller supplies aOfX and none
+        # of those, LevelModel.__init__ back-fills Dm from the aOfX tensor.  A
+        # caller that names any of them has specified the new dispersion model,
+        # and it wins over aOfX.
+        self.dispersion_specified = (Dm is not None or
+                                     alpha_L != 0.0 or
+                                     alpha_T != 0.0 or
+                                     physicalDiffusion != 0.0)
+        self.porosity = porosity
+        dispersion_types = {"Constant":0,
+                            "PowerLawSaturation":1,
+                            "VelocityBased":2}
+        try:
+            if isinstance(dispersion_type, int):
+                if dispersion_type not in [0, 1, 2]:
+                    raise ValueError
+                self.dispersion_type = dispersion_type
+            else:
+                self.dispersion_type = dispersion_types[dispersion_type]
+        except:
+            raise ValueError("dispersion_type must be one of "+str(dispersion_types.keys())+" or an int in [0,1,2], not "+str(dispersion_type))
+        self.theta_s = theta_s
+        self.theta_r = theta_r
+        self.power_law_exponent = power_law_exponent
+        self.velocity_exponent = velocity_exponent
+        self.rho_f = rho_f
+        self.rho_s = rho_s
+        self.specified_velocity = specified_velocity
+        self.k_d = k_d
+        self.c_sat = c_sat
         self.sparseDiffusionTensors = sdInfo
         if initialize:
             self.initialize()
-        
+
 
         #must keep synchronized with TADR.h enums
-        stabilization_types = {"Galerkin":-1, 
-                               "VMS":0, 
-                               "TaylorGalerkinEV":1, 
-                               "EntropyViscosity":2, 
-                               "SmoothnessIndicator":3, 
-                               "Kuzmin":4}
+        stabilization_types = {"Galerkin":-1,
+                               "VMS":0,
+                               "TaylorGalerkinEV":1,
+                               "EntropyViscosity":2,
+                               "SmoothnessIndicator":3,
+                               "Kuzmin":4,
+                               "ImplicitEV":5}
         entropy_types = {'POWER':0 , 
                          'LOG':1}
         try:
@@ -390,6 +439,17 @@ class Coefficients(TC_base):
         self.nullSpace = nullSpace
         self.flowCoefficients = None
         self.physicalDiffusion=physicalDiffusion
+        self.alpha_L = alpha_L
+        self.alpha_T = alpha_T
+        self.Dm = physicalDiffusion if Dm is None else Dm
+        self.porosity = porosity
+        self.theta_s = theta_s
+        self.theta_r = theta_r
+        self.power_law_exponent = power_law_exponent
+        self.velocity_exponent = velocity_exponent
+        self.rho_f = rho_f
+        self.rho_s = rho_s
+        self.specified_velocity = specified_velocity
         if initialize:
             self.initialize()
    
@@ -423,51 +483,7 @@ class Coefficients(TC_base):
     def initializeMesh(self, mesh):
         self.eps = self.epsFact * mesh.h
         
-    # def attachModels(self, modelList):
-    #     # self
-    #     self.model = modelList[self.modelIndex]
-    #     # redistanced level set
-    #     if self.RD_modelIndex is not None:
-    #         self.rdModel = modelList[self.RD_modelIndex]
-    #     # level set
-    #     if self.LS_modelIndex is not None:
-    #         self.lsModel = modelList[self.LS_modelIndex]
-    #         self.q_phi = modelList[self.LS_modelIndex].q[('u', 0)]
-    #         self.ebqe_phi = modelList[self.LS_modelIndex].ebqe[('u', 0)]
-    #         if ('u', 0) in modelList[self.LS_modelIndex].ebq:
-    #             self.ebq_phi = modelList[self.LS_modelIndex].ebq[('u', 0)]
-    #     else:
-    #         self.ebqe_phi = np.zeros(self.model.ebqe[('u', 0)].shape, 'd') # cek hack, we don't need this
-    #     # flow model
-    #     if self.V_model is not None:
-    #         if ('velocity', 0) in modelList[self.V_model].q:
-    #             self.q_v = modelList[self.V_model].q[('velocity', 0)]
-    #             self.ebqe_v = modelList[self.V_model].ebqe[('velocity', 0)]
-    #         else:
-    #             self.q_v = modelList[self.V_model].q[('f', 0)]
-    #             self.ebqe_v = modelList[self.V_model].ebqe[('f', 0)]
-    #         if ('velocity', 0) in modelList[self.V_model].ebq:
-    #             self.ebq_v = modelList[self.V_model].ebq[('velocity', 0)]
-    #         else:
-    #             if ('f', 0) in modelList[self.V_model].ebq:
-    #                 self.ebq_v = modelList[self.V_model].ebq[('f', 0)]
-    #     else:
-    #         self.q_v = np.ones(self.model.q[('u',0)].shape+(self.model.nSpace_global,),'d')
-    #         self.ebqe_v = np.ones(self.model.ebqe[('u',0)].shape+(self.model.nSpace_global,),'d')
-    #     # VRANS
-    #     if self.V_model is not None:
-    #         self.flowCoefficients = modelList[self.V_model].coefficients
-    #     else:
-    #         self.flowCoefficients = None
-    #     # Log velocity fields
-    #     logEvent(f"Velocity field (q_v): mean={np.mean(self.q_v)}, min={np.min(self.q_v)}, max={np.max(self.q_v)}")
-    #     logEvent(f"Boundary velocity (ebqe_v): mean={np.mean(self.ebqe_v)}, min={np.min(self.ebqe_v)}, max={np.max(self.ebqe_v)}")
-    #     if self.ebq_v is not None:
-    #         logEvent(f"Edge velocity (ebq_v): mean={np.mean(self.ebq_v)}, min={np.min(self.ebq_v)}, max={np.max(self.ebq_v)}")
-
     def attachModels(self, modelList):
-        import pdb
-        pdb.set_trace()
         # self
         self.model = modelList[self.modelIndex]
         # redistanced level set
@@ -484,98 +500,92 @@ class Coefficients(TC_base):
             self.ebqe_phi = np.zeros(self.model.ebqe[('u', 0)].shape, 'd') # cek hack, we don't need this
         # flow model
         if self.V_model is not None:
-            if ('grad(u)', 0) in modelList[self.V_model].q:
-                self.q_v = modelList[self.V_model].q[('grad(u)', 0)]
-                self.ebqe_v = modelList[self.V_model].ebqe[('grad(u)', 0)]
+            self.vModel = modelList[self.V_model]
+            if self.specified_velocity:
+                if ('velocity', 0) in self.vModel.q:
+                    self.q_v = self.vModel.q[('velocity', 0)]
+                    self.ebqe_v = self.vModel.ebqe[('velocity', 0)]
+                else:
+                    self.q_v = self.vModel.q[('f', 0)]
+                    self.ebqe_v = self.vModel.ebqe[('f', 0)]
+                if ('velocity', 0) in self.vModel.ebq:
+                    self.ebq_v = self.vModel.ebq[('velocity', 0)]
+                else:
+                    if ('f', 0) in self.vModel.ebq:
+                        self.ebq_v = self.vModel.ebq[('f', 0)]
             else:
-                self.q_v = modelList[self.V_model].q[('f', 0)]
-                self.ebqe_v = modelList[self.V_model].ebqe[('f', 0)]
-            if ('velocity', 0) in modelList[self.V_model].ebq:
-                self.ebq_v = modelList[self.V_model].ebq[('velocity', 0)]
+                # Use coupled velocity produced by Richards: ('velocity_couple', 0)
+                self.q_v = self.vModel.q[('velocity_couple', 0)].copy()
+                self.ebqe_v = self.vModel.ebqe[('velocity_couple', 0)].copy()
+                self.ebq_v = None
+            if (not self.specified_velocity and
+                    ('theta', 0) in self.vModel.q and
+                    ('theta', 0) in self.vModel.ebqe):
+                # Use Richards water content in the transport mass/storage term.
+                self.q_porosity = self.vModel.q[('theta', 0)]
+                self.ebqe_porosity = self.vModel.ebqe[('theta', 0)]
             else:
-                if ('f', 0) in modelList[self.V_model].ebq:
-                    self.ebq_v = modelList[self.V_model].ebq[('f', 0)]
+                self.q_porosity = np.full(self.model.q[('u', 0)].shape, self.porosity, 'd')
+                self.ebqe_porosity = np.full(self.model.ebqe[('u', 0)].shape, self.porosity, 'd')
+            self.q_porosity_old = self.q_porosity.copy()
+            self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_f, 'd')
+            self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_f, 'd')
+            self.q_v_old = self.q_v.copy()
+            self.q_rho_old = self.q_rho.copy()
+            # Sn_dof: gas saturation DOFs from a two-phase flow model.  When
+            # vModel has a second primary variable (mphase_co2: u[1] = S_n),
+            # alias it -- C0 P1 nodal DOFs are shared with TADR on the same
+            # mesh, so this is direct DOF-to-DOF transfer (no projection).
+            # When vModel has only one primary variable (Richards), Sn stays
+            # zero and the dissolution source R_diss = k_d * S_n * S_w *
+            # (c_sat - c) vanishes -- Richards <-> TADR coupling is unchanged.
+            if len(self.vModel.u) >= 2 and hasattr(self.vModel.u[1], 'dof'):
+                self.Sn_dof = self.vModel.u[1].dof
+            else:
+                self.Sn_dof = np.zeros_like(self.model.u[0].dof)
         else:
             self.q_v = np.ones(self.model.q[('u',0)].shape+(self.model.nSpace_global,),'d')
             self.ebqe_v = np.ones(self.model.ebqe[('u',0)].shape+(self.model.nSpace_global,),'d')
+            self.q_porosity = np.full(self.model.q[('u', 0)].shape, self.porosity, 'd')
+            self.ebqe_porosity = np.full(self.model.ebqe[('u', 0)].shape, self.porosity, 'd')
+            self.q_porosity_old = self.q_porosity.copy()
+            self.q_rho = np.full(self.model.q[('u', 0)].shape, self.rho_f, 'd')
+            self.ebqe_rho = np.full(self.model.ebqe[('u', 0)].shape, self.rho_f, 'd')
+            self.q_v_old = self.q_v.copy()
+            self.q_rho_old = self.q_rho.copy()
+            self.Sn_dof = np.zeros_like(self.model.u[0].dof)
         # VRANS
         if self.V_model is not None:
             self.flowCoefficients = modelList[self.V_model].coefficients
         else:
             self.flowCoefficients = None
-        # Log velocity fields
-        logEvent(f"Velocity field (q_v): mean={np.mean(self.q_v)}, min={np.min(self.q_v)}, max={np.max(self.q_v)}")
-        logEvent(f"Boundary velocity (ebqe_v): mean={np.mean(self.ebqe_v)}, min={np.min(self.ebqe_v)}, max={np.max(self.ebqe_v)}")
-        if self.ebq_v is not None:
-            logEvent(f"Edge velocity (ebq_v): mean={np.mean(self.ebq_v)}, min={np.min(self.ebq_v)}, max={np.max(self.ebq_v)}")
-
         
+
     def preStep(self, t, firstStep=False):
         # SAVE OLD SOLUTION #
         self.model.u_dof_old[:] = self.model.u[0].dof
+        self.q_v_old[:] = self.q_v
+        self.q_rho_old[:] = self.q_rho
 
         # Restart flags for stages of taylor galerkin
         self.model.stage = 1
         self.model.auxTaylorGalerkinFlag = 1
-        # Skip velocity field as a function check
-        if hasattr(self.model, "updateVelocityFieldAsFunction"):
-            self.model.updateVelocityFieldAsFunction()
         
         # COMPUTE NEW VELOCITY (if given by user) #
-#        if self.model.hasVelocityFieldAsFunction:
-#            self.model.updateVelocityFieldAsFunction()
-         # Explicitly update velocity if grad(u) is available
-        if ('grad(u_v)', 0) in self.model.q:
-            self.model.q[('velocity', 0)] = self.model.q[('grad(u_v)', 0)]
-            #self.model.q[('velocity', 0)] = np.copy(self.model.q[('grad(u_v)', 0)])
-            logEvent(f"Velocity updated in preStep: mean={self.model.q[('grad(u_v)', 0)].mean()}, "
-                 f"min={self.model.q[('grad(u_v)', 0)].min()}, max={self.model.q[('grad(u_v)', 0)].max()}")
-            if not np.any(self.model.q[('grad(u_v)', 0)]):
-                logEvent("Warning: grad(u_v) is zero, velocity will also be zero!")
-         # Log coefficients velocity fields
-        logEvent(f"Coefficients velocity field (q_v): "
-                 f"mean={np.mean(self.q_v)}, min={np.min(self.q_v)}, max={np.max(self.q_v)}")
-        logEvent(f"Coefficients boundary velocity field (ebqe_v): "
-                 f"mean={np.mean(self.ebqe_v)}, min={np.min(self.ebqe_v)}, max={np.max(self.ebqe_v)}")
-        # Compute velocity and update q_a_mod
-        nElements_global, nQuadraturePoints_element, _ = self.q_v.shape  # Extract dimensions from q_v
+        if self.model.hasVelocityFieldAsFunction and self.model.coefficients.specified_velocity:
+            self.model.updateVelocityFieldAsFunction()
+        elif (not self.model.coefficients.specified_velocity and
+              self.V_model is not None):
+            # Refresh coupled velocity every step from Richards.
+            self.q_v[:] = self.vModel.q[('velocity_couple', 0)]
+            self.ebqe_v[:] = self.vModel.ebqe[('velocity_couple', 0)]
 
-        # Update q_a_mod (diffusion tensor) if initialized
-        if hasattr(self, 'q_a_mod') and self.q_a_mod is not None:
-            logEvent("Updating diffusion tensor q_a_mod in preStep...")
-            a_rowptr = self.sdInfo[(0, 0)][0]
-            a_colind = self.sdInfo[(0, 0)][1]
-            for eN in range(nElements_global):  # Loop over elements
-                for k in range(nQuadraturePoints_element):  # Loop over valid quadrature points
-                    #if eN >= self.q_v.shape[0] or k >= self.q_v.shape[1]:
-                    #    raise IndexError(f"Index out of bounds: eN={eN}, k={k}, q_v shape={self.q_v.shape}")
-                    # Access velocity and position
-                    velocity = self.q_v[eN, k, :] if self.q_v is not None else np.zeros(self.nd)
-                    #logEvent(f"D is: mean={np.mean(velocity)}, min={np.min(velocity)}, max={np.max(velo)}")
+        if firstStep:
+            # No previous step to lag against, and the lag above ran before the
+            # velocity existed.  Re-seed so velocity_old == velocity on step 1;
+            # STABILIZATION_TYPE 2/3/4 read velocity_old in the low-order flux.
+            self.q_v_old[:] = self.q_v
 
-                    #logEvent("velocity is ", f"{np.mean(velocity)}")
-                    v_mag = np.linalg.norm(velocity) 
-                    if v_mag > 1e-8:
-                        v_unit = velocity / v_mag
-                    else:
-                        v_unit = np.zeros_like(velocity)
-                    # Compute dispersion tensor
-                    dispersion_tensor = (
-                        self.Dm * np.eye(self.nd)  # Molecular diffusion
-                        + self.alpha_L * np.outer(v_unit, v_unit) * v_mag  # Longitudinal dispersion
-                        + self.alpha_T * v_mag * (np.eye(self.nd) - np.outer(v_unit, v_unit))  # Transverse dispersion
-                    )
-                    # Map the diffusion tensor to the sparsity pattern
-                    a_val = np.array([dispersion_tensor[row, col] for row, col in zip(a_rowptr[:-1], a_colind)])
-                    if a_val.shape == (a_rowptr[-1],):
-                        self.q_a_mod[eN, k, :] = a_val
-                    else:
-                        raise ValueError(f"Unexpected shape {a_val.shape} for a_val. Expected ({self.a_rowptr[-1]},)")
-                    #logEvent(f"D is: mean={np.mean(self.q_a_mod)}, min={np.min(self.q_a_mod)}, max={np.max(self.q_a_mod)}")
-
-        #if self.ebq_v is not None:
-        #    logEvent(f"Coefficients edge velocity field (ebq_v): "
-        #             f"mean={np.mean(self.ebq_v)}, min={np.min(self.ebq_v)}, max={np.max(self.ebq_v)}")
         if self.checkMass:
             self.m_pre = Norms.scalarDomainIntegral(self.model.q['dV_last'],
                                                     self.model.q[('m', 0)],
@@ -585,22 +595,93 @@ class Coefficients(TC_base):
         return copyInstructions
 
     def postStep(self, t, firstStep=False):
+        # q_porosity aliases the coupled Richards theta field, so cache the
+        # lagged copy here before Richards advances it on the next split step.
+        self.q_porosity_old[:] = self.q_porosity
         self.model.q['dV_last'][:] = self.model.q['dV']
         if self.checkMass:
             self.m_post = Norms.scalarDomainIntegral(self.model.q['dV'],
                                                      self.model.q[('m', 0)],
                                                      self.model.mesh.nElements_owned)
             logEvent("Phase  0 mass after TADR step = %12.5e" % (self.m_post,), level=2)
+
+        # ---- coupling diagnostic: MPI-reduced, print on rank 0 ----
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+
+        def _global_stats(local):
+            a = np.asarray(local)
+            lo = comm.allreduce(float(a.min()) if a.size else float('inf'), op=MPI.MIN)
+            hi = comm.allreduce(float(a.max()) if a.size else float('-inf'), op=MPI.MAX)
+            ssum = comm.allreduce(float(a.sum()), op=MPI.SUM)
+            n = comm.allreduce(int(a.size), op=MPI.SUM)
+            return lo, hi, (ssum / n if n > 0 else float('nan'))
+
+        q_rho = getattr(self, 'q_rho', None)
+        ebqe_rho = getattr(self, 'ebqe_rho', None)
+        u_field = self.model.q[('u', 0)]
+        if q_rho is not None:
+            u_lo, u_hi, u_mn = _global_stats(u_field)
+            r_lo, r_hi, r_mn = _global_stats(q_rho)
+            if comm.Get_rank() == 0:
+                logEvent(
+                    "[Coupling rho q] TADR.postStep t={:.6e} "
+                    "u (min,max,mean)=({:.6e},{:.6e},{:.6e}) "
+                    "TADR.q_rho (min,max,mean)=({:.6e},{:.6e},{:.6e})".format(
+                        float(t), u_lo, u_hi, u_mn, r_lo, r_hi, r_mn),
+                    level=2)
+        if ebqe_rho is not None:
+            e_lo, e_hi, e_mn = _global_stats(ebqe_rho)
+            if comm.Get_rank() == 0:
+                logEvent(
+                    "[Coupling rho ebqe] TADR.postStep t={:.6e} "
+                    "TADR.ebqe_rho (min,max,mean)=({:.6e},{:.6e},{:.6e})".format(
+                        float(t), e_lo, e_hi, e_mn),
+                    level=2)
+
+        #self._write_velocity_output(t)
         copyInstructions = {}
         return copyInstructions
 
-    def evaluate(self, t, c):
-        import pdb
-        pdb.set_trace()
+    # def _write_velocity_output(self, t):
+    #     comm = Comm.get()
+    #     rank = comm.rank()
+    #     mpicomm = comm.comm.tompi4py() if hasattr(comm.comm, "tompi4py") else comm.comm
+    #     nSpace = int(getattr(self.model, "nSpace_global", getattr(self.model, "nSpace", self.nd)))
 
+    #     # Avoid duplicate writes if postStep is revisited at the same time.
+    #     if hasattr(self, "_last_velocity_output_time") and abs(t - self._last_velocity_output_time) <= 1.0e-12:
+    #         return
+
+    #     if not hasattr(self, "_wrote_velocity_coords_once"):
+    #         qcoords_local = np.asarray(self.model.q['x']).reshape((-1, 3))
+    #         qcoords_all = mpicomm.gather(qcoords_local, root=0)
+    #         if rank == 0:
+    #             Q = np.vstack(qcoords_all)
+    #             np.savetxt("RE_q_coords_all.txt",
+    #                        Q,
+    #                        fmt="%.16e",
+    #                        header=f"columns: x y z | total_rows={Q.shape[0]}")
+    #             logEvent(f"[TADR.postStep] wrote RE_q_coords_all.txt rows={Q.shape[0]}")
+    #         self._wrote_velocity_coords_once = True
+
+    #     qv_local = np.asarray(self.q_v).reshape((-1, nSpace))
+    #     qv_all = mpicomm.gather(qv_local, root=0)
+    #     if rank == 0:
+    #         V = np.vstack(qv_all)
+    #         header_cols = "vx vy" if nSpace == 2 else "vx vy vz"
+    #         np.savetxt(f"RE_q_vel_all_t{t:.8e}.txt",
+    #                    V,
+    #                    fmt="%.16e",
+    #                    header=f"columns: {header_cols} | t={t:.16e} | total_rows={V.shape[0]}")
+    #         logEvent(f"[TADR.postStep] wrote RE_q_vel_all_t{t:.8e}.txt rows={V.shape[0]}")
+    #     self._last_velocity_output_time = t
+
+    def evaluate(self, t, c):
         if c[('f', 0)].shape == self.q_v.shape:
             v = self.q_v
             phi = self.q_phi
+
 
         elif c[('f', 0)].shape == self.ebqe_v.shape:
             v = self.ebqe_v
@@ -614,38 +695,17 @@ class Coefficients(TC_base):
             v = None
             phi = None
         if v is not None:
-            if not np.any(v):
-                logEvent("Warning: Velocity (v) is zero in evaluate!")
             c[('m',0)] = c[('u',0)]
             c[('dm',0,0)] = np.ones_like(c[('u',0)])
             c[('f',0)][:] = v*c[('u',0)]
             c[('df',0,0)][:] = v
-            #c[('a',0,0)][:] = self.physicalDiffusion 
+            #c[('a',0,0)][:] = self.physicalDiffusion
             nd = self.nd
-            for i in range(len(c[('r', 0)].flat)):
-                #x_i = c['x'].flat[3*i:3*(i+1)]
-                velocity = v.flat[nd*i:nd*(i+1)] 
-                #c[('a', 0, 0)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[0](x_i).flat
-            ## Add dispersion
-                v_mag = np.linalg.norm(velocity)  # Magnitude of the velocity vector
-
-                if v_mag > 1e-8:  # Avoid division by zero
-                    v_unit = velocity / v_mag  # Unit vector of velocity
-                else:
-                    v_unit = np.zeros_like(velocity)
-
-                # Dispersion-diffusion tensor D
-                dispersion_tensor = (
-                    self.phi * self.D_m * np.eye(nd)  # Molecular diffusion
-                    + self.alpha_L * np.outer(v_unit, v_unit) * v_mag  # Longitudinal dispersion
-                    + self.alpha_T * v_mag * (np.eye(nd) - np.outer(v_unit, v_unit))  # Transverse dispersion
-                )
-
-                # Assign the dispersion tensor to the coefficient matrix
-                c[('a', 0, 0)].flat[nd*nd*i:nd*nd*(i+1)] = dispersion_tensor.flat
-                    #print(c[('a', 0, 0)])
-                    # Store the dispersion tensor in the coefficient dictionary
-            #c[('dispersion_tensor', 0)] = dispersion_tensor
+            if self.aOfX is not None:
+                for i in range(len(c[('r', 0)].flat)):
+                    x_i = c['x'].flat[3*i:3*(i+1)]
+                    c[('a', 0, 0)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[0](x_i).flat
+                #print(c[('a', 0, 0)])
             
             # Compute diffusion coefficients at each quadrature point
             #for i in range(len(c['x'])):
@@ -874,12 +934,17 @@ class LevelModel(OneLevelTransport):
         self.q[('numDiff', 0, 0)] = np.zeros((self.mesh.nElements_global, self.nQuadraturePoints_element), 'd')
         ###################################################
         self.q[('a',0,0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element,self.coefficients.sdInfo[(0,0)][0][-1]),'d')
-        nd = self.coefficients.nd      
+        nd = self.coefficients.nd
+
+        
+        
         self.q[('r',0)] = np.zeros((self.mesh.nElements_global,self.nQuadraturePoints_element),'d')
-        # Attach `q` to `coefficients`
-        self.coefficients.q_a_mod = self.q[('a',0,0)] 
+
         ###################################################
         #self.calculateQuadrature()
+
+
+
         self.ebqe[('u', 0)] = np.zeros((self.mesh.nExteriorElementBoundaries_global, self.nElementBoundaryQuadraturePoints_elementBoundary), 'd')
         self.ebqe[('grad(u)', 0)] = np.zeros((self.mesh.nExteriorElementBoundaries_global,
                                                  self.nElementBoundaryQuadraturePoints_elementBoundary, self.nSpace_global), 'd')
@@ -946,29 +1011,72 @@ class LevelModel(OneLevelTransport):
         a_rowptr = self.coefficients.sdInfo[(0, 0)][0]
         a_colind = self.coefficients.sdInfo[(0, 0)][1]
 
-        # for eN in range(self.mesh.nElements_global):
-        #     for k in range(self.nQuadraturePoints_element):
-        #         x = self.q['x'][eN, k, :]
-        #         a_full = self.coefficients.aOfX[0](x)
-        #         a_val = np.array([a_full[row, col] for row, col in zip(a_rowptr[:-1], a_colind)])
+        def _pack_diffusion_to_sd(a_full):
+            """
+            Pack dense diffusion tensor a_full into the sparse diffusion
+            layout defined by (a_rowptr, a_colind).
+            """
+            a_arr = np.asarray(a_full, dtype='d')
+            if a_arr.ndim == 0:
+                a_arr = a_arr.reshape((1, 1))
+            elif a_arr.ndim == 1 and a_arr.size == 1:
+                a_arr = a_arr.reshape((1, 1))
 
-        #         if a_val.shape == (a_rowptr[-1],):
-        #             self.q[('a', 0, 0)][eN, k, :] = a_val
-        #         else:
-        #             raise ValueError(f"Unexpected shape {a_val.shape} for a_val. Expected ({a_rowptr[-1]},)")
-        # self.ebqe[('a',0,0)] = np.zeros((,,self.coefficients.sdInfo[(0,0)][0][-1]),'d')
-        
-        # #########Dealing with boundary diffusion coefficient       
-        
-        # for ebNE in range(self.mesh.nExteriorElementBoundaries_global):
-        #     for kb in range(self.nElementBoundaryQuadraturePoints_elementBoundary):
-        #         x = self.ebqe['x'][ebNE, kb, :]
-        #         a_full = self.coefficients.aOfX[0](x)
-        #         a_val = np.array([a_full[row, col] for row, col in zip(a_rowptr[:-1], a_colind)])
-        #         if a_val.shape == (a_rowptr[-1],):
-        #             self.ebqe[('a', 0, 0)][ebNE, kb, :] = a_val
-        #         else:
-        #             raise ValueError(f"Unexpected shape {a_val.shape} for a_val. Expected ({a_rowptr[-1]},)")
+            n_rows = a_rowptr.shape[0] - 1
+            if a_arr.ndim != 2 or a_arr.shape[0] < n_rows:
+                raise ValueError(
+                    f"Unexpected aOfX shape {a_arr.shape}; expected at least ({n_rows}, {n_rows})"
+                )
+
+            a_sd = np.zeros((a_rowptr[-1],), dtype='d')
+            for row in range(n_rows):
+                for offset in range(a_rowptr[row], a_rowptr[row + 1]):
+                    col = a_colind[offset]
+                    a_sd[offset] = a_arr[row, col]
+            return a_sd
+
+        if self.coefficients.aOfX is not None:
+         #########Dealing with element diffusion coefficient
+         for eN in range(self.mesh.nElements_global):
+            for k in range(self.nQuadraturePoints_element):
+                x = self.q['x'][eN, k, :]
+                a_full = self.coefficients.aOfX[0](x)
+                a_val = _pack_diffusion_to_sd(a_full)
+
+                if a_val.shape == (a_rowptr[-1],):
+                    self.q[('a', 0, 0)][eN, k, :] = a_val
+                else:
+                    raise ValueError(f"Unexpected shape {a_val.shape} for a_val. Expected ({a_rowptr[-1]},)")
+         #self.ebqe[('a',0,0)] = np.zeros((,,self.coefficients.sdInfo[(0,0)][0][-1]),'d')
+
+         #########Dealing with boundary diffusion coefficient
+
+         for ebNE in range(self.mesh.nExteriorElementBoundaries_global):
+            for kb in range(self.nElementBoundaryQuadraturePoints_elementBoundary):
+                x = self.ebqe['x'][ebNE, kb, :]
+                a_full = self.coefficients.aOfX[0](x)
+                a_val = _pack_diffusion_to_sd(a_full)
+                if a_val.shape == (a_rowptr[-1],):
+                    self.ebqe[('a', 0, 0)][ebNE, kb, :] = a_val
+                else:
+                    raise ValueError(f"Unexpected shape {a_val.shape} for a_val. Expected ({a_rowptr[-1]},)")
+
+         # evaluateCoefficients builds the tensor from (Dm,alpha_L,alpha_T) and no
+         # longer reads q[('a',0,0)], so carry aOfX across into Dm when the caller
+         # gave aOfX alone.  Naming any of the three selects the new dispersion
+         # model instead, and it wins.  Only a constant isotropic aOfX has an
+         # exact (Dm,0,0) equivalent -- the dispersion form is isotropic plus a
+         # rank-1 term along v, so it cannot represent a general tensor.
+         if not self.coefficients.dispersion_specified:
+            a_q = self.q[('a', 0, 0)]
+            a0 = float(a_q.flat[0]) if a_q.size else 0.0
+            if not np.allclose(a_q, a0, rtol=0.0, atol=1.0e-14):
+                raise ValueError(
+                    "TADR: aOfX is not constant isotropic (entries span [%r, %r]) and the "
+                    "kernel builds its tensor from (Dm, alpha_L, alpha_T) only. Pass those "
+                    "explicitly for this case." % (float(a_q.min()), float(a_q.max())))
+            self.coefficients.Dm = a0
+            logEvent("TADR: aOfX given without Dm/alpha_L/alpha_T; taking Dm=%r from it" % (a0,))
 
 
 
@@ -1046,6 +1154,19 @@ class LevelModel(OneLevelTransport):
         if not hasattr(self.numericalFlux, 'ebqe'):
             self.numericalFlux.ebqe = {('u', 0): np.zeros(self.ebqe[('u', 0)].shape, 'd')}
 
+        # Build an explicit mask of physical exterior boundaries.
+        # A face is physical if it has no "outside" element; processor
+        # interfaces typically have a neighboring (ghost) element.
+        self.isExteriorBoundaryPhysical = np.zeros((self.mesh.nExteriorElementBoundaries_global,), 'i')
+        ebe = self.mesh.elementBoundaryElementsArray
+        for ebNE in range(self.mesh.nExteriorElementBoundaries_global):
+            ebN = self.mesh.exteriorElementBoundariesArray[ebNE]
+            if ebe.ndim == 2:
+                outside_eN = ebe[ebN, 1]
+            else:
+                outside_eN = ebe[ebN * 2 + 1]
+            self.isExteriorBoundaryPhysical[ebNE] = 1 if outside_eN < 0 else 0
+        self.elementBoundaryMaterialTypes = self.mesh.elementBoundaryMaterialTypes
         #TODO how to handle redistancing calls for calculateCoefficients,calculateElementResidual etc
         self.globalResidualDummy = None
         compKernelFlag = 0
@@ -1057,10 +1178,9 @@ class LevelModel(OneLevelTransport):
                              self.nElementBoundaryQuadraturePoints_elementBoundary,
                              compKernelFlag)
 
-        self.forceStrongConditions = True #False
+        self.forceStrongConditions = bool(getattr(self.coefficients,"forceStrongConditions",False))
         if self.forceStrongConditions:
             self.dirichletConditionsForceDOF = DOFBoundaryConditions(self.u[0].femSpace, dofBoundaryConditionsSetterDict[0], weakDirichletConditions=False)
-
         if self.movingDomain:
             self.MOVING_DOMAIN = 1.0
         else:
@@ -1070,18 +1190,33 @@ class LevelModel(OneLevelTransport):
 
         # Stuff added by mql.
         # Some ASSERTS to restrict the combination of the methods
-        if self.coefficients.STABILIZATION_TYPE > 1:
+        # STABILIZATION_TYPE 2,3,4 are the EXPLICIT edge-based schemes (SSP +
+        # ExplicitLumpedMassMatrix).  Type 5 (ImplicitEV) is the IMPLICIT
+        # edge-based scheme: backward-Euler + Newton, so it is exempt from the
+        # SSP/Explicit-solver/LUMPED_MASS_MATRIX constraints below.
+        if self.coefficients.STABILIZATION_TYPE > 1 and self.coefficients.STABILIZATION_TYPE != 5:
             assert self.timeIntegration.isSSP == True, "If STABILIZATION_TYPE>1, use RKEV timeIntegration within TADR model"
             cond = 'levelNonlinearSolver' in dir(options) and (options.levelNonlinearSolver ==
                                                                ExplicitLumpedMassMatrix or options.levelNonlinearSolver == ExplicitConsistentMassMatrixForVOF)
             assert cond, "If STABILIZATION_TYPE>1, use levelNonlinearSolver=ExplicitLumpedMassMatrix or ExplicitConsistentMassMatrixForVOF"
+        if self.coefficients.STABILIZATION_TYPE == 5:
+            assert getattr(self.timeIntegration, 'isSSP', False) == False, \
+                "If STABILIZATION_TYPE==5 (ImplicitEV), use an implicit (non-SSP) timeIntegration, e.g. BackwardEuler"
+            if 'levelNonlinearSolver' in dir(options):
+                assert options.levelNonlinearSolver not in (ExplicitLumpedMassMatrix,
+                                                            ExplicitConsistentMassMatrixForVOF), \
+                    "If STABILIZATION_TYPE==5 (ImplicitEV), use an implicit Newton solver " \
+                    "(levelNonlinearSolver=Newton); ExplicitLumpedMassMatrix / " \
+                    "ExplicitConsistentMassMatrixForVOF only do a single lumped update and " \
+                    "leave the implicit system unsolved."
         if 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == ExplicitLumpedMassMatrix:
             assert self.coefficients.LUMPED_MASS_MATRIX, "If levelNonlinearSolver=ExplicitLumpedMassMatrix, use LUMPED_MASS_MATRIX=True"
-        if self.coefficients.LUMPED_MASS_MATRIX == True:
+        if self.coefficients.LUMPED_MASS_MATRIX == True and self.coefficients.STABILIZATION_TYPE != 5:
             cond = 'levelNonlinearSolver' in dir(options) and options.levelNonlinearSolver == ExplicitLumpedMassMatrix
             assert cond, "Use levelNonlinearSolver=ExplicitLumpedMassMatrix when the mass matrix is lumped"
-        if self.coefficients.FCT == True:
-            cond = self.coefficients.STABILIZATION_TYPE > 1, "Use FCT just with STABILIZATION_TYPE>1; i.e., edge based stabilization"
+        if self.coefficients.FCT is True:
+            assert self.coefficients.STABILIZATION_TYPE > 1, \
+                "Use FCT just with STABILIZATION_TYPE>1; i.e., edge based stabilization"
         if self.coefficients.STABILIZATION_TYPE==1:
             cond = 'levelNonlinearSolver' in dir(options) and  options.levelNonlinearSolver == TwoStageNewton
             assert cond, "If STABILIZATION_TYPE==1, use levelNonlinearSolver=TwoStageNewton"
@@ -1090,7 +1225,7 @@ class LevelModel(OneLevelTransport):
             assert isinstance(self.timeIntegration, TimeIntegration.BackwardEuler_cfl), "If STABILIZATION_TYPE=1, use BackwardEuler_cfl"
             assert options.levelNonlinearSolver == TwoStageNewton, "If STABILIZATION_TYPE=1, use levelNonlinearSolver=TwoStageNewton"
         assert self.coefficients.ENTROPY_TYPE in [0,1], "Set ENTROPY_TYPE={0,1}"
-        assert self.coefficients.STABILIZATION_TYPE in [-1,0,1,2,3,4], "Set STABILIZATION_TYPE={-1,0,1,2,3,4}"
+        assert self.coefficients.STABILIZATION_TYPE in [-1,0,1,2,3,4,5], "Set STABILIZATION_TYPE={-1,0,1,2,3,4,5}"
         if self.coefficients.STABILIZATION_TYPE==4:
             assert self.coefficients.FCT==True, "If STABILIZATION_TYPE=4, use FCT=True"
             
@@ -1110,6 +1245,19 @@ class LevelModel(OneLevelTransport):
         self.max_u_bc = None
         self.quantDOFs = np.zeros(self.u[0].dof.shape, 'd')
 
+        # bc_mask: 1.0 at free DOFs, 0.0 at Dirichlet DOFs.  Mirrors mphase_co2's
+        # pattern.  The FCT step uses this to zero antidiffusive corrections at
+        # Dirichlet DOFs so they stay at the low-order solution, which already
+        # carries the Nitsche-weak BC contribution from the boundary kernel.
+        # Together with the existing consistent-flux + penalty boundary integral
+        # this gives bounded + mass-conservative Dirichlet BCs (matches the
+        # mphase_co2 architecture; no forceStrongConditions row-replacement
+        # needed for boundedness).
+        self.bc_mask = np.ones_like(self.u[0].dof)
+        if 0 in self.dirichletConditions and self.dirichletConditions[0] is not None:
+            for dofN in self.dirichletConditions[0].DOFBoundaryConditionsDict.keys():
+                self.bc_mask[dofN] = 0.0
+
         # For Taylor Galerkin methods
         self.stage = 1
         self.auxTaylorGalerkinFlag = 1        
@@ -1119,34 +1267,108 @@ class LevelModel(OneLevelTransport):
             self.degree_polynomial = self.u[0].femSpace.order
         except:
             pass
+        # Defaults for the coefficient-owned auxiliary fields calculateResidual
+        # reads.  Coefficients.attachModels() sets them, but a user subclass that
+        # overrides attachModels() without calling super -- the pattern used
+        # throughout test/ -- never runs it, and the residual then dies on a
+        # missing attribute.  Seed them here (attachModels() runs later and
+        # assigns unconditionally, so it still wins).  q_v/ebqe_v are not seeded:
+        # every attachModels(), overridden or not, sets those.
+        c = self.coefficients
+        if not hasattr(c, 'q_v_old'):
+            c.q_v_old = np.zeros(self.q[('grad(u)', 0)].shape, 'd')
+        if not hasattr(c, 'q_porosity'):
+            c.q_porosity = np.full(self.q[('u', 0)].shape, c.porosity, 'd')
+        if not hasattr(c, 'q_porosity_old'):
+            c.q_porosity_old = c.q_porosity.copy()
+        if not hasattr(c, 'q_rho'):
+            c.q_rho = np.full(self.q[('u', 0)].shape, c.rho_f, 'd')
+        if not hasattr(c, 'q_rho_old'):
+            c.q_rho_old = c.q_rho.copy()
+        if not hasattr(c, 'ebqe_porosity'):
+            c.ebqe_porosity = np.full(self.ebqe[('u', 0)].shape, c.porosity, 'd')
+        if not hasattr(c, 'ebqe_rho'):
+            c.ebqe_rho = np.full(self.ebqe[('u', 0)].shape, c.rho_f, 'd')
+        if not hasattr(c, 'Sn_dof'):
+            c.Sn_dof = np.zeros_like(self.u[0].dof)
 
     # def calculateQuadrature(self):
     #     self.coefficients.initializeElementQuadrature(self.timeIntegration.t, self.q)
                 
     def FCTStep(self):
+        # Explicit solvers call FCTStep() unconditionally.
+        # If FCT is disabled, advance with low-order solution (uLow).
+        if not self.coefficients.FCT:
+            if self.forceStrongConditions:
+                for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
+                    self.uLow[dofN] = g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN],
+                                        self.timeIntegration.t)
+            fromFreeToGlobal = 0
+            cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns(
+                fromFreeToGlobal,
+                self.offset[0],
+                self.stride[0],
+                self.dirichletConditions[0].global2freeGlobal_global_dofs,
+                self.dirichletConditions[0].global2freeGlobal_free_dofs,
+                self.timeIntegration.u,
+                self.uLow,
+            )
+            # Keep model DOFs in sync with the low-order update.
+            self.u[0].dof[:] = self.uLow
+            return
+
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
+        limited_mass = np.zeros(self.u[0].dof.shape)
         limited_solution = np.zeros(self.u[0].dof.shape)
+        numDOFs = len(rowptr) - 1
+        theta_dof_out_arr = np.zeros(numDOFs, 'd')
+
+        q_porosity_old_arr = np.ascontiguousarray(self.coefficients.q_porosity_old)
+        q_rho_arr = np.ascontiguousarray(self.coefficients.q_rho)
+        q_dV_arr = np.ascontiguousarray(self.q['dV_last'])
+        u_l2g_arr = np.ascontiguousarray(self.u[0].femSpace.dofMap.l2g)
+        u_test_ref_arr = np.ascontiguousarray(self.u[0].femSpace.psi)
 
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["dt"] = self.timeIntegration.dt
         argsDict["NNZ"] = self.nnz
-        argsDict["numDOFs"] = len(rowptr) - 1
+        argsDict["numDOFs"] = numDOFs
         argsDict["lumped_mass_matrix"] = self.ML
         argsDict["soln"] = self.u_dof_old
         argsDict["solH"] = self.timeIntegration.u
         argsDict["uLow"] = self.uLow
         argsDict["dLow"] = self.dLow
-        argsDict["limited_solution"] = limited_solution
+        argsDict["limited_solution"] = limited_mass
         argsDict["csrRowIndeces_DofLoops"] = rowptr
         argsDict["csrColumnOffsets_DofLoops"] = colind
         argsDict["MassMatrix"] = MassMatrix
         argsDict["dt_times_dH_minus_dL"] = self.dt_times_dC_minus_dL
         argsDict["min_u_bc"] = self.min_u_bc
         argsDict["max_u_bc"] = self.max_u_bc
+        argsDict["bc_mask"] = self.bc_mask
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
+        argsDict["q_porosity_old_fct"] = q_porosity_old_arr
+        argsDict["q_rho_fct"] = q_rho_arr
+        argsDict["q_dV_fct"] = q_dV_arr
+        argsDict["u_l2g_fct"] = u_l2g_arr
+        argsDict["u_test_ref_fct"] = u_test_ref_arr
+        argsDict["theta_dof_out"] = theta_dof_out_arr
+        argsDict["nElements_global_fct"] = self.mesh.nElements_global
+        argsDict["nQuadraturePoints_element_fct"] = self.nQuadraturePoints_element
+        argsDict["nDOF_trial_element_fct"] = self.nDOF_trial_element[0]
+        argsDict["rho_f"] = self.coefficients.rho_f
+        argsDict["rho_s"] = self.coefficients.rho_s
         self.adr.FCTStep(argsDict)
+        argsDict["mIn"] = limited_mass
+        argsDict["uOut"] = limited_solution
+        argsDict["nodal_porosity"] = theta_dof_out_arr
+        self.adr.invert(argsDict)
+        if self.forceStrongConditions:
+            for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
+                limited_solution[dofN] = g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN],
+                                           self.timeIntegration.t)
         #self.timeIntegration.u[:] = limited_solution
         fromFreeToGlobal=0 #direction copying
         cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns(fromFreeToGlobal,
@@ -1156,6 +1378,8 @@ class LevelModel(OneLevelTransport):
                                                                self.dirichletConditions[0].global2freeGlobal_free_dofs,
                                                                self.timeIntegration.u,
                                                                limited_solution)
+        self.u[0].dof[:] = limited_solution
+
     def updateVelocityFieldAsFunction(self):
         import pdb
         X = {0: self.q[('x')][:, :, 0],
@@ -1253,6 +1477,22 @@ class LevelModel(OneLevelTransport):
         
     def initVectors(self):
         self.u_dof_old = np.copy(self.u[0].dof)
+        self.par_u_dof_old = None
+        par_u = None
+        if hasattr(self, "par_uList") and len(self.par_uList) > 0 and self.par_uList[0] is not None:
+            par_u = self.par_uList[0]
+        elif hasattr(self.u[0], "par_dof") and self.u[0].par_dof is not None:
+            par_u = self.u[0].par_dof
+        if par_u is not None:
+            self.par_u_dof_old = ParVec_petsc4py(self.u_dof_old,
+                                                 1,
+                                                 par_u.dim_proc,
+                                                 par_u.getSize(),
+                                                 par_u.nghosts,
+                                                 par_u.subdomain2global,
+                                                 ghosts=None,
+                                                 proteus2petsc_subdomain=par_u.proteus2petsc_subdomain,
+                                                 petsc2proteus_subdomain=par_u.petsc2proteus_subdomain)
         rowptr, colind, MC = self.MC_global.getCSRrepresentation()
         # This is dummy. I just care about the csr structure of the sparse matrix
         self.dt_times_dC_minus_dL = np.zeros(MC.shape, 'd')
@@ -1289,20 +1529,16 @@ class LevelModel(OneLevelTransport):
             self.numericalFlux.setDirichletValues(self.ebqe)
         # flux boundary conditions
         for t, g in list(self.fluxBoundaryConditionsObjectsDict[0].advectiveFluxBoundaryConditionsDict.items()):
-            #print(f"Setting advective flux bc at boundary {t[0]}, point {t[1]}")
             self.ebqe[('advectiveFlux_bc', 0)][t[0], t[1]] = g(self.ebqe[('x')][t[0], t[1]], self.timeIntegration.t)
             self.ebqe[('advectiveFlux_bc_flag', 0)][t[0], t[1]] = 1
-            #print(f"  advective flux bc value: {self.ebqe[('advectiveFlux_bc', 0)][t[0], t[1]]}")
 
 
         # Flux boundary conditions for diffusive terms
         for ck, diffusiveFluxBoundaryConditionsDict in self.fluxBoundaryConditionsObjectsDict[0].diffusiveFluxBoundaryConditionsDictDict.items():
             #self.ebqe[('diffusiveFlux_bc_flag', ck, 0)] = np.zeros(self.ebqe[('diffusiveFlux_bc', ck, 0)].shape, 'i')
             for t, g in diffusiveFluxBoundaryConditionsDict.items():
-                #logEvent(f"Setting diffusive flux bc at boundary {t[0]}, point {t[1]}")
                 self.ebqe[('diffusiveFlux_bc', ck, 0)][t[0], t[1]] = g(self.ebqe[('x')][t[0], t[1]], self.timeIntegration.t)
                 self.ebqe[('diffusiveFlux_bc_flag', ck, 0)][t[0], t[1]] = 1
-                #logEvent(f"  diffusive flux bc value: {self.ebqe[('diffusiveFlux_bc', ck, 0)][t[0], t[1]]}")
 
 
         if self.forceStrongConditions:
@@ -1349,11 +1585,15 @@ class LevelModel(OneLevelTransport):
         argsDict["u_dof"] = self.u[0].dof
         argsDict["u_dof_old"] = self.u_dof_old
         argsDict["velocity"] = self.coefficients.q_v
+        argsDict["velocity_old"] = self.coefficients.q_v_old
         argsDict["q_m"] = self.timeIntegration.m_tmp[0]
         argsDict["q_u"] = self.q[('u', 0)]
+        argsDict["q_porosity"] = self.coefficients.q_porosity
+        argsDict["q_porosity_old"] = self.coefficients.q_porosity_old
+        argsDict["q_rho"] = self.coefficients.q_rho
+        argsDict["q_rho_old"] = self.coefficients.q_rho_old
         ###########################################
-        #argsDict["q_a"] = self.q[('a',0,0)]
-        argsDict["q_a"] = self.coefficients.q_a_mod #q[('a',0,0)]
+        argsDict["q_a"] = self.q[('a',0,0)]
         argsDict["q_r"] = self.q[('r',0)]
 
         argsDict["ebq_a"] = self.ebqe[('a',0,0)]
@@ -1372,6 +1612,8 @@ class LevelModel(OneLevelTransport):
         argsDict["globalResidual"] = r
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
+        argsDict["elementBoundaryMaterialTypes"] = self.elementBoundaryMaterialTypes
+        argsDict["isExteriorBoundaryPhysical"] = self.isExteriorBoundaryPhysical
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
         argsDict["elementBoundariesArray"] = self.mesh.elementBoundariesArray
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
@@ -1383,6 +1625,8 @@ class LevelModel(OneLevelTransport):
         argsDict["ebqe_bc_flux_u_ext"] = self.ebqe[('advectiveFlux_bc', 0)]
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag', 0, 0)]
         argsDict["ebqe_bc_diffusiveFlux_u_ext"] = self.ebqe[('diffusiveFlux_bc', 0, 0)]
+        argsDict["ebqe_porosity"] = self.coefficients.ebqe_porosity
+        argsDict["ebqe_rho"] = self.coefficients.ebqe_rho
         
 
 
@@ -1415,6 +1659,23 @@ class LevelModel(OneLevelTransport):
         argsDict["max_u_bc"] = self.max_u_bc
         argsDict["quantDOFs"] = self.quantDOFs
         argsDict["physicalDiffusion"] = self.coefficients.physicalDiffusion
+        argsDict["alpha_L"] = self.coefficients.alpha_L
+        argsDict["alpha_T"] = self.coefficients.alpha_T
+        argsDict["Dm"] = self.coefficients.Dm
+        argsDict["dispersion_type"] = self.coefficients.dispersion_type
+        argsDict["power_law_exponent"] = self.coefficients.power_law_exponent
+        argsDict["velocity_exponent"] = self.coefficients.velocity_exponent
+        argsDict["rho_f"] = self.coefficients.rho_f
+        argsDict["rho_s"] = self.coefficients.rho_s
+        argsDict["theta_s"] = self.coefficients.theta_s
+        argsDict["theta_r"] = self.coefficients.theta_r
+        # Stage 3 (kinetic dissolution): R_diss = k_d * S_n * S_w * (c_sat - c)
+        # added to the per-DOF mass update in the C++ residual.  Sn_dof comes
+        # from the flow model's u[1].dof when it's two-phase, else zeros.
+        argsDict["Sn_dof"] = self.coefficients.Sn_dof
+        argsDict["k_d"] = float(self.coefficients.k_d)
+        argsDict["c_sat"] = float(self.coefficients.c_sat)
+        argsDict["forceStrongConditions"] = int(self.forceStrongConditions)
         #argsDict["D"] = self.coefficients.DTypes
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag',0,0)]
         argsDict["isAdvectiveFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag',0)]
@@ -1427,12 +1688,17 @@ class LevelModel(OneLevelTransport):
     
         argsDict["a_rowptr"] = sdInfo[(0, 0)][0]
         argsDict["a_colind"] = sdInfo[(0, 0)][1]
-        
-        argsDict["alpha_L"] = self.coefficients.alpha_L  # Longitudinal dispersion coefficient
-        argsDict["alpha_T"] = self.coefficients.alpha_T  # Transverse dispersion coefficient
-        argsDict["Dm"] = self.coefficients.Dm           # Molecular diffusion coefficient
 
-
+        # Keep ghost values synchronized for edge-based MPI couplings.
+        par_u = None
+        if hasattr(self, "par_uList") and len(self.par_uList) > 0 and self.par_uList[0] is not None:
+            par_u = self.par_uList[0]
+        elif hasattr(self.u[0], "par_dof") and self.u[0].par_dof is not None:
+            par_u = self.u[0].par_dof
+        if par_u is not None:
+            par_u.scatter_forward_insert()
+            if self.par_u_dof_old is not None:
+                self.par_u_dof_old.scatter_forward_insert()
 
         #argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         #argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
@@ -1448,11 +1714,29 @@ class LevelModel(OneLevelTransport):
                 r[dofN] = 0
 
         if (self.auxiliaryCallCalculateResidual == False):
-            edge_based_cflMax = globalMax(self.edge_based_cfl.max()) * self.timeIntegration.dt
-            cell_based_cflMax = globalMax(self.q[('cfl', 0)].max()) * self.timeIntegration.dt
-            logEvent("...   Current dt = " + str(self.timeIntegration.dt), level=4)
-            logEvent("...   Maximum Cell Based CFL = " + str(cell_based_cflMax), level=2)
-            logEvent("...   Maximum Edge Based CFL = " + str(edge_based_cflMax), level=2)
+            if self.coefficients.STABILIZATION_TYPE == 5:
+                # Capture the converged DOF solution WHILE u[0].dof is still valid.
+                # calculateAuxiliaryQuantitiesAfterStep (where FCT runs) is called
+                # from modelStepTaken AFTER solveMultilevel with NO scatter back
+                # into u[0].dof, so u[0].dof/timeIntegration.u are stale (zero)
+                # there.  FCT must read uLow from this saved copy, not u[0].dof.
+                if (getattr(self, "_u_dof_conv", None) is None
+                        or self._u_dof_conv.shape != self.u[0].dof.shape):
+                    self._u_dof_conv = np.zeros_like(self.u[0].dof)
+                self._u_dof_conv[:] = self.u[0].dof
+                # ImplicitEV is solved implicitly by Newton (which already logs
+                # per-iteration norm(r)); the CFL is NOT the time-step limiter
+                # here, so report the residual norm like the implicit flow model
+                # instead of the misleading CFL=0 lines.
+                res_inf = globalMax(np.abs(r).max())
+                logEvent("...   Current dt = " + str(self.timeIntegration.dt), level=2)
+                logEvent("...   TADR ImplicitEV max|residual| = " + str(res_inf), level=2)
+            else:
+                edge_based_cflMax = globalMax(self.edge_based_cfl.max()) * self.timeIntegration.dt
+                cell_based_cflMax = globalMax(self.q[('cfl', 0)].max()) * self.timeIntegration.dt
+                logEvent("...   Current dt = " + str(self.timeIntegration.dt), level=4)
+                logEvent("...   Maximum Cell Based CFL = " + str(cell_based_cflMax), level=2)
+                logEvent("...   Maximum Edge Based CFL = " + str(edge_based_cflMax), level=2)
 
         if self.stabilization:
             self.stabilization.accumulateSubgridMassHistory(self.q)
@@ -1513,6 +1797,8 @@ class LevelModel(OneLevelTransport):
         argsDict["elementDiameter"] = self.mesh.elementDiametersArray
         argsDict["u_dof"] = self.u[0].dof
         argsDict["velocity"] = self.coefficients.q_v
+        argsDict["q_porosity"] = self.coefficients.q_porosity
+        argsDict["q_rho"] = self.coefficients.q_rho
         argsDict["q_m_betaBDF"] = self.timeIntegration.beta_bdf[0]
         argsDict["cfl"] = self.q[('cfl', 0)]
         argsDict["q_numDiff_u_last"] = self.shockCapturing.numDiff_last[0]
@@ -1521,6 +1807,8 @@ class LevelModel(OneLevelTransport):
         argsDict["globalJacobian"] = jacobian.getCSRrepresentation()[2]
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
+        argsDict["elementBoundaryMaterialTypes"] = self.elementBoundaryMaterialTypes
+        argsDict["isExteriorBoundaryPhysical"] = self.isExteriorBoundaryPhysical
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
         argsDict["ebqe_velocity_ext"] = self.coefficients.ebqe_v
@@ -1528,6 +1816,8 @@ class LevelModel(OneLevelTransport):
         argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u', 0)]
         argsDict["isFluxBoundary_u"] = self.ebqe[('advectiveFlux_bc_flag', 0)]
         argsDict["ebqe_bc_flux_u_ext"] = self.ebqe[('advectiveFlux_bc', 0)]
+        argsDict["ebqe_porosity"] = self.coefficients.ebqe_porosity
+        argsDict["ebqe_rho"] = self.coefficients.ebqe_rho
 
         argsDict["isDiffusiveFluxBoundary_u"] = self.ebqe[('diffusiveFlux_bc_flag', 0, 0)]
         argsDict["ebqe_bc_diffusiveFlux_u_ext"] = self.ebqe[('diffusiveFlux_bc', 0, 0)]
@@ -1536,6 +1826,33 @@ class LevelModel(OneLevelTransport):
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0, 0)]
         argsDict["STABILIZATION_TYPE"] = self.coefficients.STABILIZATION_TYPE
         argsDict["physicalDiffusion"] = self.coefficients.physicalDiffusion   
+        argsDict["alpha_L"] = self.coefficients.alpha_L
+        argsDict["alpha_T"] = self.coefficients.alpha_T
+        argsDict["Dm"] = self.coefficients.Dm
+        argsDict["dispersion_type"] = self.coefficients.dispersion_type
+        argsDict["power_law_exponent"] = self.coefficients.power_law_exponent
+        argsDict["velocity_exponent"] = self.coefficients.velocity_exponent
+        argsDict["rho_f"] = self.coefficients.rho_f
+        argsDict["rho_s"] = self.coefficients.rho_s
+        argsDict["theta_s"] = self.coefficients.theta_s
+        argsDict["theta_r"] = self.coefficients.theta_r
+        # Stage 3 (kinetic dissolution): R_diss = k_d * S_n * S_w * (c_sat - c)
+        # added to the per-DOF mass update in the C++ residual.  Sn_dof comes
+        # from the flow model's u[1].dof when it's two-phase, else zeros.
+        argsDict["Sn_dof"] = self.coefficients.Sn_dof
+        argsDict["k_d"] = float(self.coefficients.k_d)
+        argsDict["c_sat"] = float(self.coefficients.c_sat)
+        # Extra keys consumed only by the STABILIZATION_TYPE==ImplicitEV (5)
+        # branch of calculateJacobian, which assembles the implicit edge-based
+        # Jacobian using the DOF-loop CSR, lumped mass, time step and the
+        # low-order graph viscosity dLow the residual stored.
+        argsDict["dt"] = self.timeIntegration.dt
+        argsDict["numDOFs"] = len(self.rowptr) - 1
+        argsDict["ML"] = self.ML
+        argsDict["dLow"] = self.dLow
+        argsDict["csrRowIndeces_DofLoops"] = self.rowptr
+        argsDict["csrColumnOffsets_DofLoops"] = self.colind
+        argsDict["forceStrongConditions"] = int(self.forceStrongConditions)
         argsDict["ebq_a"] = self.ebqe[('a',0,0)]
         #argsDict["D"] = self.coefficients.DTypes
 
@@ -1543,16 +1860,12 @@ class LevelModel(OneLevelTransport):
     
         argsDict["a_rowptr"] = sdInfo[(0, 0)][0]
         argsDict["a_colind"] = sdInfo[(0, 0)][1]
-        argsDict["q_a"] = self.coefficients.q_a_mod
-        #argsDict["q_a"] = self.q[('a',0,0)]
+        argsDict["q_a"] = self.q[('a',0,0)]
         argsDict["eb_adjoint_sigma"] = self.numericalFlux.boundaryAdjoint_sigma
         argsDict["ebqe_penalty_ext"] = self.ebqe['penalty']
 
         #argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         #argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
-        argsDict["alpha_L"] = self.coefficients.alpha_L  # Longitudinal dispersion coefficient
-        argsDict["alpha_T"] = self.coefficients.alpha_T  # Transverse dispersion coefficient
-        argsDict["Dm"] = self.coefficients.Dm    
 
         self.adr.calculateJacobian(argsDict)
 
@@ -1635,7 +1948,48 @@ class LevelModel(OneLevelTransport):
         pass
 
     def calculateAuxiliaryQuantitiesAfterStep(self):
-        pass
+        # STAB=5 (ImplicitEV) is solved implicitly by Newton, so the explicit
+        # solver never calls FCTStep().  When FCT is on, apply it here (this
+        # hook is called by SplitOperator after the model's solve): the
+        # converged Newton solution IS the implicit, CFL-free LOW-ORDER
+        # solution uLow, and FCTStep adds the Zalesak-limited symmetric
+        # antidiffusion (Kuzmin branch) to recover a bounded high-order
+        # solution.  The residual stored the symmetric dLow and the min/max_u_bc
+        # bounds at the converged iterate, so FCTStep is consistent.
+        if self.coefficients.STABILIZATION_TYPE == 5 and self.coefficients.FCT:
+            # This hook (from modelStepTaken) runs AFTER solveMultilevel with no
+            # scatter back into u[0].dof for the FCT limiter, so the DOF interior
+            # can be stale here.  Restore the converged field captured at the end
+            # of getResidual, then feed it to FCTStep as uLow.  Without this the
+            # limiter operates on a stale field and freezes the solution.
+            _conv = getattr(self, "_u_dof_conv", None)
+            if _conv is not None:
+                self.u[0].dof[:] = _conv
+            self.uLow[:] = self.u[0].dof
+            # In-situ FCT sharpness diagnostic (set env TADR_FCT_DBG=1).  sum(u^2)
+            # rises when mass concentrates (front sharpens) and falls when it
+            # spreads (diffuses), at fixed mass.  Compares the low-order field
+            # (uLow) with the FCT-limited result to settle, on the REAL 2D run,
+            # whether the STAB=5 FCTStep sharpens or diffuses.  MAX/SUM-reduced
+            # across ranks (rank 0 owns a near-empty slice in parallel).
+            import os as _os
+            _dbg = bool(_os.environ.get("TADR_FCT_DBG"))
+            if _dbg:
+                _s_low = float(np.sum(self.uLow * self.uLow))
+            self.FCTStep()
+            if _dbg:
+                _s_fct = float(np.sum(self.u[0].dof * self.u[0].dof))
+                try:
+                    from proteus import Comm
+                    _c = Comm.get().comm.tompi4py()
+                    _s_low = _c.allreduce(_s_low)
+                    _s_fct = _c.allreduce(_s_fct)
+                except Exception:
+                    pass
+                logEvent("TADR FCT sharpness sum(u^2): low=%.6e fct=%.6e d=%+.3e %s"
+                         % (_s_low, _s_fct, _s_fct - _s_low,
+                            "(FCT SHARPENS)" if _s_fct > _s_low
+                            else "(FCT DIFFUSES!)"), level=1)
 
     def updateAfterMeshMotion(self):
         pass

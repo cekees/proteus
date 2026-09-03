@@ -381,6 +381,22 @@ class TC_base(object):
             if quant_dofs is not None:
                 yield ArchiveField("quantDOFs_for_{model}", quant_dofs)
 
+        # Derived nodal scalars a model computes for visualization and hangs
+        # off its coefficients as {name: array} -- m_comp_co2's flash fields
+        # Sg/X/c_brine are the first users. They are sized to u[0].dof and
+        # written through component 0's node space, deliberately: under
+        # m_comp_co2's node split the component 1 DOFs are renumbered, so a
+        # split-sized array archived against the mesh nodes comes out
+        # speckled.
+        #
+        # This arrived on main as a loop in NumericalSolution.py calling
+        # archiveFiniteElementResiduals inside a bare try/except -- the same
+        # shape as the eight blocks this hook replaced. Supported here
+        # instead, so the driver stays free of it and a broken declaration
+        # is reported rather than silently skipped.
+        for name, values in (getattr(self, "archive_scalar_dofs", None) or {}).items():
+            yield ArchiveField(name, values)
+
 ##\brief Linear advection-diffusion-reaction (single-component or uncoupled multi-component systems)
 #
 #The system of equations is formulated as
