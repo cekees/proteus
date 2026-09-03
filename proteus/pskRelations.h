@@ -935,6 +935,10 @@ inline void vgm_invert_analytic(const double m,
     pcBar   = pow(pcBar_n, 1.0 / n_vg);
     psiC    = pcBar / alpha;
     u       = -psiC;
+  } else if (thetaW >= thetaS) {
+    if (u < 0.0) u = 0.0;
+  } else {
+    u = -pcBarMax / alpha;
   }
 }
 
@@ -1151,6 +1155,10 @@ inline void bc_invert_analytic(const double m,
       const double psiC  = pcBar / alpha;
       u = -psiC;
     }
+  } else if (thetaW >= thetaS) {
+    if (u < -1.0 / alpha) u = -1.0 / alpha;
+  } else {
+    u = -psiCMax_over_pd / alpha;
   }
 }
 
