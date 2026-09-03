@@ -4445,6 +4445,17 @@ class OneLevelTransport(NonlinearEquation):
                                         for jj in range(self.l2g[cj]['nFreeDOF'][eN_ebN]):
                                             J = self.offset[cj]+self.stride[cj]*self.l2g[cj]['freeGlobal'][eN_ebN,jj]
                                             columnIndecesDict[I].add(J)
+        # Model hook for extra coupling nonzeros not implied by the FE element graph
+        # (e.g. m_comp_co2 node-split: the two z-copies z_a/z_b of a split interface
+        # node share NO element, so findNonzeros never allocates the (z_a,z_b)/(z_b,z_a)
+        # slots).  getExtraSparsityElements() returns a list of ready-made findNonzeros
+        # arg-tuples (synthetic "element" blocks) fed through the SAME sparsity builder
+        # BEFORE getCSR.  No-op (backward-identical) for models without the method.
+        if useC:
+            _extraSparsity = getattr(self, 'getExtraSparsityElements', None)
+            if _extraSparsity is not None:
+                for _blk in _extraSparsity():
+                    self.sparsityInfo.findNonzeros(*_blk)
         if useC:
             (self.rowptr,self.colind,self.nnz,self.nzval)  = self.sparsityInfo.getCSR()
         else:
@@ -6503,8 +6514,17 @@ class MultilevelTransport(object):
                             petsc_component_offsets[proc].append(total_dof_proc)
                             for g in ts.dofMap.subdomain2global[par_n_list[ci]:ts.dofMap.nDOF_subdomain]:
                                 if g >= ts.dofMap.dof_offsets_subdomain_owned[proc] and g < ts.dofMap.dof_offsets_subdomain_owned[proc+1]:
-                                    component_ghost_proc[g] = proc
-                                    component_ghost_local_index[g] = g -  ts.dofMap.dof_offsets_subdomain_owned[proc]
+                                    # key by (component, global-id): different
+                                    # components have INDEPENDENT global numberings
+                                    # (each starts at 0), so the same bare id g can
+                                    # be a ghost in two components with DIFFERENT
+                                    # owners/local-indices.  Keying by g alone makes
+                                    # the later component clobber the earlier one ->
+                                    # scrambled petsc ghost columns -> singular
+                                    # Jacobian (the node-split-z mixed system hits
+                                    # exactly this overlap).
+                                    component_ghost_proc[(ci,g)] = proc
+                                    component_ghost_local_index[(ci,g)] = g -  ts.dofMap.dof_offsets_subdomain_owned[proc]
                         petsc_component_offsets.append([petsc_component_offsets[-1][-1]])
                         petsc_global_offsets.append(total_dof_proc)
                     #calculate proteus global (end-to-end) offset for each component
@@ -6524,9 +6544,14 @@ class MultilevelTransport(object):
                     ghost_proc={}
                     ghost_global2petsc={}
                     for ci,offset, ts in zip(list(range(transport.nc)), global_component_offset, list(trialSpaceDict.values())):
-                        for g,gproc in component_ghost_proc.items():
+                        # iterate ONLY this component's ghosts (component-local
+                        # global ids) -- not the merged dict -- and look them up
+                        # by (ci,g) so an id shared across components resolves to
+                        # the right owner/local-index for THIS component.
+                        for g in ts.dofMap.subdomain2global[par_n_list[ci]:ts.dofMap.nDOF_subdomain]:
+                            gproc = component_ghost_proc[(ci,g)]
                             ghost_proc[offset+g] = gproc
-                            ghost_global2petsc[offset+g] = petsc_component_offsets[gproc][ci] + component_ghost_local_index[g]
+                            ghost_global2petsc[offset+g] = petsc_component_offsets[gproc][ci] + component_ghost_local_index[(ci,g)]
                     #
                     #build subdomain2global mappings
                     #

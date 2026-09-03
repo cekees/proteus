@@ -182,5 +182,32 @@ jobs:
             # same place -- 10 -> 11 -> 14/15 -- which argues for finding the cause
             # rather than widening the tolerance a third time.
           )
+          # Research/manuscript directories under test/richards. These hold
+          # parun input decks (*_p.py / *_n.py), notebooks and plotting
+          # scripts for the WRR paper -- not regression tests. Nothing in
+          # them is collected today, but only by accident: pytest's default
+          # python_files is "test_*.py *_test.py", and e.g.
+          # bio2d/HYDRUS/l2_direction_test.py already matches the second
+          # pattern (it is untracked, so CI has not seen it yet -- locally it
+          # is a collection error, "No module named 'pandas'"). Ignoring the
+          # directories outright means committing one of these decks cannot
+          # silently add a case to this workflow.
+          #
+          # The supported Richards regression tests are test_richards.py plus
+          # its test_1/, test_2_HYDRUS/, test_3/ deck directories and
+          # comparison_files/; those stay collected.
+          #
+          # bio2d and bio2d_FCT are the same case, so both go. Raingarden,
+          # Tracy_convergence and bio2d are untracked right now, so their
+          # --ignore is a no-op until they are committed; pytest does not
+          # error on an --ignore path that does not exist.
+          IGNORE_ARGS=(
+            --ignore=../test/richards/bio2d
+            --ignore=../test/richards/bio2d_FCT
+            --ignore=../test/richards/Raingarden
+            --ignore=../test/richards/Tracy_convergence
+            --ignore=../test/richards/WRR_input_files
+            --ignore=../test/richards/WRR_draft
+          )
           python -m pytest -v --forked --import-mode=importlib \
-            "${DESELECT_ARGS[@]}" ../test
+            "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" ../test
