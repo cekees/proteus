@@ -6046,6 +6046,21 @@ class MultilevelSimplicialMesh(MultilevelMesh):
 
 ###utility functions for reading meshes from Xdmf
 
+def _dataitem_dataset(node, label):
+    """The HDF5 dataset name a node's DataItem refers to.
+
+    Replaces ``node[0].text.split(':')[-1]``, which reached into the first
+    child by position and split the reference on any colon. A DataItem
+    reference is ``<file>:/<dataset>``, so splitting on ``:/`` keeps a
+    dataset path containing a colon intact.
+    """
+    item = node.find('DataItem')
+    assert item is not None, "no <DataItem> under <%s>" % (label,)
+    text = (item.text or "").strip()
+    assert text, "<DataItem> under <%s> has no reference" % (label,)
+    return text.split(':/')[-1]
+
+
 def findXMLgridElement(xmf,MeshTag='Spatial_Domain',id_in_collection=-1,verbose=0):
     """Try to find the element of the xml tree xmf that holds a uniform
     grid with the name given in MeshTag by searching through Temporal
@@ -6053,18 +6068,37 @@ def findXMLgridElement(xmf,MeshTag='Spatial_Domain',id_in_collection=-1,verbose=
 
     If MeshTag isn't found, uses the first entry in the Domain
     """
-    Domain = xmf.getroot()[-1]
+    #Find the Domain by tag rather than as the root's last child: an
+    #<Information> element is legal ahead of it, and a positional read
+    #silently picks up whatever happens to sit last.
+    Domain = xmf.getroot().find('Domain')
+    assert Domain is not None, "no <Domain> in the XDMF document"
+
     GridCollection = None
-    Grid = None
-    for collection in Domain:
-        if 'Name' in collection.attrib and MeshTag in collection.attrib['Name']:
+    for collection in Domain.findall('Grid'):
+        if MeshTag in collection.attrib.get('Name', ''):
             GridCollection = collection
             break
     if GridCollection is None:
-        GridCollection = Domain[0]
+        candidates = Domain.findall('Grid')
+        assert candidates, "no <Grid> under <Domain>"
+        GridCollection = candidates[0]
+        logEvent("No grid collection named %r; using %r"
+                 % (MeshTag, GridCollection.attrib.get('Name', '<unnamed>')), 3)
     logEvent("Trying GridCollection.tag= %s" % (GridCollection.tag),4)
+
     if GridCollection.attrib['GridType'] == 'Collection':
-        Grid = GridCollection[-1]
+        #id_in_collection selects the step; -1 is the last one written
+        steps = GridCollection.findall('Grid')
+        assert steps, ("grid collection %r holds no grids"
+                       % (GridCollection.attrib.get('Name', '<unnamed>'),))
+        Grid = steps[id_in_collection]
+        if Grid.attrib.get('GridType') == 'Collection':
+            #a spatial collection of subdomain grids: take the first, which
+            #is what a serial reader can use
+            subdomains = Grid.findall('Grid')
+            assert subdomains, "spatial collection holds no subdomain grids"
+            Grid = subdomains[0]
     elif GridCollection.attrib['GridType'] == 'Uniform':
         Grid = GridCollection
     assert Grid.tag == 'Grid'
@@ -6076,22 +6110,22 @@ def extractPropertiesFromXdmfGridNode(Grid):
     """unpack the Topology, Geometry, NodeMaterials, and ElementMaterials
     nodes from xdmf node for a uniform grid
     """
-    #Geometry first
-    Topology = None; Geometry  = None; NodeMaterials= None; ElementMaterials = None
-    for i,leaf in enumerate(Grid):
-        logEvent("Grid leaf %d tag= %s " % (i,leaf.tag),4)
-        if leaf.tag == 'Topology':
-            Topology = Grid[i]
-            logEvent("Topology found in leaf %d " % i,4)
-        elif leaf.tag == 'Geometry':
-            Geometry = Grid[i]
-            logEvent("Geometry found in leaf %d " % i,4)
-        elif leaf.tag == 'Attribute' and leaf.attrib['Name'] == 'nodeMaterialTypes':
-            NodeMaterials = Grid[i]
-            logEvent("NodeMaterials found in leaf %d " % i,4)
-        elif leaf.tag == 'Attribute' and leaf.attrib['Name'] == 'elementMaterialTypes':
-            ElementMaterials = Grid[i]
-            logEvent("ElementMaterials found in leaf %d " % i,4)
+    #Look these up by tag and name. The previous version iterated with
+    #enumerate and then re-indexed Grid[i] to get the very leaf it was
+    #already holding.
+    Topology = Grid.find('Topology')
+    Geometry = Grid.find('Geometry')
+    NodeMaterials = ElementMaterials = None
+    for attribute in Grid.findall('Attribute'):
+        name = attribute.attrib.get('Name')
+        if name == 'nodeMaterialTypes':
+            NodeMaterials = attribute
+        elif name == 'elementMaterialTypes':
+            ElementMaterials = attribute
+    for label, node in (("Topology", Topology), ("Geometry", Geometry),
+                        ("NodeMaterials", NodeMaterials),
+                        ("ElementMaterials", ElementMaterials)):
+        logEvent("%s %s" % (label, "found" if node is not None else "absent"), 4)
 
     return Topology,Geometry,NodeMaterials,ElementMaterials
 
@@ -6113,7 +6147,7 @@ def readUniformElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topolog
     """
 
     nNodes_element = topology2nodes[elementTopologyName]
-    entry = Topology[0].text.split(':')[-1]
+    entry = _dataitem_dataset(Topology, "Topology")
     logEvent("Reading  elementNodesArray from %s " % entry,3)
 
     elementNodesArray = hdf5["/"+entry][:]
@@ -6143,7 +6177,7 @@ def readMixedElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topologyi
     """
     assert elementTopologyName == 'Mixed'
 
-    entry = Topology[0].text.split(':')[-1]
+    entry = _dataitem_dataset(Topology, "Topology")
     logEvent("Reading xdmf_topology from %s " % entry,3)
 
     xdmf_topology = hdf5["/"+entry][:]
@@ -6235,14 +6269,14 @@ def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHD
     Topology,Geometry,NodeMaterials,ElementMaterials = extractPropertiesFromXdmfGridNode(Grid)
 
     assert Geometry is not None
-    entry = Geometry[0].text.split(':')[-1]
+    entry = _dataitem_dataset(Geometry, "Geometry")
     logEvent("Reading nodeArray from %s " % entry,3)
 
     MeshInfo.nodeArray = hdf5["/"+entry][:]
     MeshInfo.nNodes_global = MeshInfo.nodeArray.shape[0]
 
     if NodeMaterials is not None:
-        entry = NodeMaterials[0].text.split(':')[-1]
+        entry = _dataitem_dataset(NodeMaterials, "nodeMaterialTypes")
         logEvent("Reading nodeMaterialTypes from %s " % entry,4)
         MeshInfo.nodeMaterialTypes = hdf5["/"+entry][:]
     else:
@@ -6269,7 +6303,7 @@ def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHD
 
     #
     if ElementMaterials is not None:
-        entry = ElementMaterials[0].text.split(':')[-1]
+        entry = _dataitem_dataset(ElementMaterials, "elementMaterialTypes")
         logEvent("Reading elementMaterialTypes from %s " % entry,3)
         MeshInfo.elementMaterialTypes = hdf5["/"+entry][:]
 

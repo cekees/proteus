@@ -439,18 +439,24 @@ class NS_base(object):  # (HasTraits):
         for index,p,n,m,simOutput in zip(list(range(len(self.modelList))),self.pList,self.nList,self.modelList,self.simOutputList):
             if self.opts.hotStart:
                 logEvent("Setting initial conditions from hot start file for "+p.name)
-                tCount = int(self.ar[index].tree.getroot()[-1][-1][-1][0].attrib['Name'])
-                offset=0
-                while tCount > 0:
-                    time = float(self.ar[index].tree.getroot()[-1][-1][-1-offset][0].attrib['Value'])
-                    if time <= self.opts.hotStartTime:
-                        break
-                    else:
-                        tCount -=1
-                        offset +=1
+                # The archive's own record of the times it holds, rather
+                # than walking four levels of [-1] into the XML tree to
+                # reach a <Time> element's attributes. That walk read the
+                # last child of Domain, its last grid, and that grid's
+                # first child, and broke silently if any of those
+                # positions moved.
+                archiveTimes = self.ar[index].archived_times
+                assert archiveTimes, \
+                    ("hot start archive %s records no timesteps"
+                     % (self.ar[index].filename,))
+                # the latest step at or before the requested time
+                tCount = len(archiveTimes) - 1
+                while tCount > 0 and archiveTimes[tCount] > self.opts.hotStartTime:
+                    tCount -= 1
+                time = archiveTimes[tCount]
                 self.ar[index].n_datasets = tCount + 1
-                if len(self.ar[index].tree.getroot()[-1][-1]) - offset - 1 > 0:
-                    dt = time - float(self.ar[index].tree.getroot()[-1][-1][-1-offset-1][0].attrib['Value'])
+                if tCount > 0:
+                    dt = time - archiveTimes[tCount - 1]
                 else:
                     logEvent("Not enough steps in hot start file set set dt, setting dt to 1.0")
                     dt = 1.0

@@ -167,6 +167,9 @@ class AR_base(object):
     METADATA_FORMAT_VERSION = 2
     #: HDF5 root attribute holding :data:`METADATA_FORMAT_VERSION`.
     METADATA_VERSION_ATTR = "ymf_archive_metadata_version"
+    #: HDF5 root attribute holding the time-collection names, newline
+    #: separated, in the order they were written.
+    COLLECTIONS_ATTR = "ymf_archive_collections"
 
     def _check_metadata_version(self):
         """Refuse an archive whose metadata layout this code cannot read.
@@ -204,7 +207,8 @@ class AR_base(object):
         Empty until :meth:`gatherAndWriteTimes` has run, i.e. until the
         archive is closed.
         """
-        domain = getattr(self, "archived_domain", None)
+        domain = self.load_archived_domain() if self.hdfFile is not None \
+            else getattr(self, "archived_domain", None)
         if domain is None:
             return []
         times = []
@@ -214,6 +218,81 @@ class AR_base(object):
             #every collection covers the same instants, so one is enough
             break
         return times
+
+    def assemble_domain(self, n_steps=None):
+        """Build the ymf domain for the whole archive from the HDF5 metadata.
+
+        Used by both ends of the archive's life: :meth:`gatherAndWriteTimes`
+        calls it at close to produce the document it writes, and readers
+        call it to get the archive's structure without walking XML. That
+        shared use is the point -- there is one definition of what the
+        archive contains, rather than a writer's idea and a reader's idea
+        that can drift.
+
+        ``n_steps`` bounds the search when the caller knows it (the writer
+        does, from ``self.n_datasets``). A reader does not, so it is
+        discovered: steps are written consecutively from 0, so counting up
+        until a step is missing finds them all.
+
+        Returns ``None`` when there is no HDF5 metadata to assemble from,
+        which is the text-archive case.
+        """
+        from ymf.archive import (add_collection, add_spatial_step,
+                                 add_uniform_step, load_grid, new_domain)
+
+        if self.hdfFile is None:
+            return None
+        self._check_metadata_version()
+
+        raw = self.hdfFile.attrs.get(self.COLLECTIONS_ATTR)
+        if raw is None:
+            raise ValueError(
+                "%s has no %r attribute, so its time-collection names are "
+                "unknown. It was written by a proteus predating that "
+                "attribute." % (self.hdfFilename, self.COLLECTIONS_ATTR))
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        collection_names = [name for name in raw.split("\n") if name]
+
+        domain = None
+        for ci, collection_name in enumerate(collection_names):
+            if domain is None:
+                domain = new_domain(collection_name)
+            else:
+                add_collection(domain, collection_name)
+            step = 0
+            while n_steps is None or step < n_steps:
+                dataset_name = self._metadata_dataset_name(collection_name, step)
+                if dataset_name not in self.hdfFile:
+                    if n_steps is None:
+                        break      # discovered the end
+                    step += 1
+                    continue       # writer knows the count; tolerate a gap
+                grid_array = self.hdfFile[dataset_name]
+                t = float(grid_array.attrs['Time'])
+                grids = [load_grid(grid_array[j].decode("utf-8"))
+                         for j in range(grid_array.shape[0])]
+                if self.global_sync:
+                    #one already-global grid: its pieces are the archive
+                    g = grids[0]
+                    add_uniform_step(domain, t, g["Topology"], g["Geometry"],
+                                     g.get("Attributes", []), collection=ci)
+                else:
+                    #one grid per rank, presented as a single instant
+                    add_spatial_step(domain, t, grids, collection=ci)
+                step += 1
+        return domain
+
+    def load_archived_domain(self):
+        """The archive's domain, assembling it from HDF5 on first use.
+
+        For readers -- hot start, mesh readers -- which open an existing
+        archive and need its structure. Cached, since assembling walks
+        every step's metadata.
+        """
+        if getattr(self, "archived_domain", None) is None:
+            self.archived_domain = self.assemble_domain()
+        return self.archived_domain
 
     def field_dataset(self, name, tCount):
         """The HDF5 dataset holding one field at one step, for reading back.
@@ -288,41 +367,10 @@ class AR_base(object):
         the thing that gets written and the data model being an
         afterthought.
         """
-        from ymf.archive import (load_grid, new_domain, write_ymf,
-                                 add_collection, add_spatial_step, add_uniform_step)
+        from ymf.archive import write_ymf
         from ymf.xdmf import build_xdmf_tree, XDMF_HEADER
 
-        XDMF = self.treeGlobal.getroot()
-        Domain = XDMF[0]
-
-        domain = None
-        if self.hdfFile is not None:
-            self._check_metadata_version()
-            for ci, TemporalGridCollection in enumerate(Domain):
-                collection_name = TemporalGridCollection.attrib['Name']
-                if domain is None:
-                    domain = new_domain(collection_name)
-                    collection = domain["TimeCollections"][0]
-                else:
-                    collection = add_collection(domain, collection_name)
-                for i in range(self.n_datasets):
-                    dataset_name = self._metadata_dataset_name(collection_name, i)
-                    if dataset_name not in self.hdfFile:
-                        continue
-                    grid_array = self.hdfFile[dataset_name]
-                    t = float(grid_array.attrs['Time'])
-                    grids = [load_grid(grid_array[j].decode("utf-8"))
-                             for j in range(grid_array.shape[0])]
-                    if self.global_sync:
-                        #one already-global grid; its pieces are the archive
-                        g = grids[0]
-                        add_uniform_step(domain, t, g["Topology"], g["Geometry"],
-                                         g.get("Attributes", []),
-                                         collection=ci)
-                    else:
-                        #one grid per rank, presented as a single instant
-                        add_spatial_step(domain, t, grids, collection=ci)
-
+        domain = self.assemble_domain()
         #keep the assembled domain: it is the archive's representation now,
         #and callers that used to inspect self.treeGlobal want this instead
         self.archived_domain = domain
@@ -455,6 +503,14 @@ class AR_base(object):
         if self.hdfFile is not None:
             self.hdfFile.attrs[self.METADATA_VERSION_ATTR] = \
                 self.METADATA_FORMAT_VERSION
+            #Record the collection names, in order, so a reader can find the
+            #metadata without inferring names from dataset spellings. A
+            #collection name may itself contain underscores and digits
+            #(Mesh_c0p2_Lagrange), so pattern-matching <name>_<step> against
+            #the file's keys is guessy where this is not. Written by every
+            #rank with the same value, since attribute writes are collective.
+            self.hdfFile.attrs[self.COLLECTIONS_ATTR] = "\n".join(
+                c.attrib['Name'] for c in Domain)
 
         for i, TemporalGridCollection in enumerate(Domain):
             GridLocal = TemporalGridCollection[-1]

@@ -18,6 +18,35 @@ def indentXML(elem, level=0):
         if level and (not elem.tail or not elem.tail.strip()):
             elem.tail = i
 
+def timeStepGrids(tree, collectionName="Mesh Spatial_Domain"):
+    """The per-timestep Grid elements of a temporal collection.
+
+    Replaces ``tree.getroot()[-1][-1]``, which took the root's last child
+    as the Domain, that Domain's last child as the collection, and then
+    indexed into it. An <Information> element ahead of <Domain>, or a
+    second grid collection for a higher-order space -- which a real
+    proteus archive commonly has -- silently moved either position.
+    """
+    domain = tree.getroot().find("Domain")
+    assert domain is not None, "no <Domain> in the XDMF document"
+    collections = domain.findall("Grid")
+    assert collections, "no <Grid> under <Domain>"
+    for collection in collections:
+        if collectionName in collection.attrib.get("Name", ""):
+            return collection.findall("Grid")
+    return collections[0].findall("Grid")
+
+
+def asXML(elem):
+    """Serialize an element as text.
+
+    ``tostring`` returns bytes by default, and these files are opened in
+    text mode, so every write raised
+    ``TypeError: string argument expected, got 'bytes'``.
+    """
+    return tostring(elem, encoding="unicode")
+
+
 def gatherXDMFfiles(size,filename,dataDir='.',addname="_all"):
     """
     in case archiving failed to collect results from various processors in parallel simulation
@@ -29,31 +58,41 @@ def gatherXDMFfiles(size,filename,dataDir='.',addname="_all"):
     xmlFile.append(open(filename+str(0)+".xmf","r"))
     tree.append(ElementTree(file=xmlFile[0]))
     xmlFile[-1].close()
-    XDMF_all = tree[0].getroot()
-    Domain_all = XDMF_all[-1]
-    for TemporalGridCollection in Domain_all:
-        Grids = TemporalGridCollection[:]
+    Domain_all = tree[0].getroot().find("Domain")
+    assert Domain_all is not None, "no <Domain> in %s0.xmf" % (filename,)
+    for TemporalGridCollection in Domain_all.findall("Grid"):
+        Grids = TemporalGridCollection.findall("Grid")
         del TemporalGridCollection[:]
         for Grid in Grids:
             SpatialCollection=SubElement(TemporalGridCollection,"Grid",{"GridType":"Collection",
                                                                         "CollectionType":"Spatial"})
-            SpatialCollection.append(Grid[0])#append Time in Spatial Collection
-            del Grid[0]#delete Time in grid
+            #move the Time out of the grid and onto the spatial collection,
+            #found by tag rather than taken as the grid's first child
+            time = Grid.find("Time")
+            assert time is not None, "a grid has no <Time>"
+            SpatialCollection.append(time)
+            Grid.remove(time)
             SpatialCollection.append(Grid) #append Grid without Time
     for i in range(1,size):
         xmlFile.append(open(os.path.join(dataDir,filename+str(i)+".xmf"),"r"))
         tree.append(ElementTree(file=xmlFile[-1]))
-        XDMF=tree[-1].getroot()
-        Domain=XDMF[-1]
-        for TemporalGridCollection,TemporalGridCollection_all in zip(Domain,Domain_all):
+        Domain=tree[-1].getroot().find("Domain")
+        assert Domain is not None, "no <Domain> in %s%d.xmf" % (filename, i)
+        for TemporalGridCollection,TemporalGridCollection_all in zip(
+                Domain.findall("Grid"), Domain_all.findall("Grid")):
             SpatialGridCollections = TemporalGridCollection_all.findall('Grid')
-            for Grid,Grid_all in zip(TemporalGridCollection,SpatialGridCollections):
-                del Grid[0]#Time
+            for Grid,Grid_all in zip(TemporalGridCollection.findall("Grid"),
+                                     SpatialGridCollections):
+                time = Grid.find("Time")
+                if time is not None:
+                    Grid.remove(time)
                 Grid_all.append(Grid)
         xmlFile[-1].close()
     f = open(os.path.join(dataDir,filename+addname+str(size)+".xmf"),"w")
     indentXML(tree[0].getroot())
-    tree[0].write(f)
+    #encoding="unicode" makes write() emit str; without it ElementTree
+    #writes bytes and this text-mode file rejects them
+    tree[0].write(f, encoding="unicode")
     f.close()
 
 def gatherXDMFfilesOpt(size,filename,dataDir='.',addname="_all",nStepsOnly=None,stride=1):
@@ -67,7 +106,7 @@ def gatherXDMFfilesOpt(size,filename,dataDir='.',addname="_all",nStepsOnly=None,
     xmlFile = open(filename+str(0)+".xmf","r")
     tree = ElementTree(file=xmlFile)
     xmlFile.close()
-    nSteps = len(tree.getroot()[-1][-1])
+    nSteps = len(timeStepGrids(tree))
     if nStepsOnly != None:
         nSteps = nStepsOnly
     print("nSteps",nSteps)
@@ -88,18 +127,22 @@ def gatherXDMFfilesOpt(size,filename,dataDir='.',addname="_all",nStepsOnly=None,
         xmlFile = open(os.path.join(dataDir,filename+str(0)+".xmf"),"r")
         tree = ElementTree(file=xmlFile)
         xmlFile.close()
-        Grid=tree.getroot()[-1][-1][tn]
-        fAll.write(tostring(Grid[0]))
-        del Grid[0]
-        fAll.write(tostring(Grid))
+        Grid=timeStepGrids(tree)[tn]
+        time = Grid.find("Time")
+        assert time is not None, "step %d has no <Time>" % (tn,)
+        fAll.write(asXML(time))
+        Grid.remove(time)
+        fAll.write(asXML(Grid))
         for i in range(1,size):
             print("subdomain",i)
             xmlFile = open(os.path.join(dataDir,filename+str(i)+".xmf"),"r")
             tree = ElementTree(file=xmlFile)
             xmlFile.close()
-            Grid=tree.getroot()[-1][-1][tn]
-            del Grid[0]
-            fAll.write(tostring(Grid))
+            Grid=timeStepGrids(tree)[tn]
+            time = Grid.find("Time")
+            if time is not None:
+                Grid.remove(time)
+            fAll.write(asXML(Grid))
         fAll.write(r"""      </Grid>
 """)
     fAll.write(r"""    </Grid>
@@ -119,7 +162,7 @@ def gatherSplitTimeStepXDMFfilesOpt(size,filename,dataDir='.',addname="_all",nSt
     xmlFile = open(filename+str(0)+".xmf","r")
     tree = ElementTree(file=xmlFile)
     xmlFile.close()
-    nSteps = len(tree.getroot()[-1][-1])
+    nSteps = len(timeStepGrids(tree))
     if nStepsOnly != None:
         nSteps = nStepsOnly
     print("nSteps",nSteps)
@@ -140,18 +183,22 @@ def gatherSplitTimeStepXDMFfilesOpt(size,filename,dataDir='.',addname="_all",nSt
         xmlFile = open(os.path.join(dataDir,filename+str(0)+".xmf"),"r")
         tree = ElementTree(file=xmlFile)
         xmlFile.close()
-        Grid=tree.getroot()[-1][-1][tn]
-        fAll.write(tostring(Grid[0]))
-        del Grid[0]
-        fAll.write(tostring(Grid))
+        Grid=timeStepGrids(tree)[tn]
+        time = Grid.find("Time")
+        assert time is not None, "step %d has no <Time>" % (tn,)
+        fAll.write(asXML(time))
+        Grid.remove(time)
+        fAll.write(asXML(Grid))
         for i in range(1,size):
             print("subdomain",i)
             xmlFile = open(os.path.join(dataDir,filename+str(i)+".xmf"),"r")
             tree = ElementTree(file=xmlFile)
             xmlFile.close()
-            Grid=tree.getroot()[-1][-1][tn]
-            del Grid[0]
-            fAll.write(tostring(Grid))
+            Grid=timeStepGrids(tree)[tn]
+            time = Grid.find("Time")
+            if time is not None:
+                Grid.remove(time)
+            fAll.write(asXML(Grid))
         fAll.write(r"""      </Grid>
 """)
         fAll.write(r"""    </Grid>
