@@ -39,7 +39,6 @@ whatever the code does today.
 
 import csv
 import os
-import platform
 import sys
 from pathlib import Path
 
@@ -104,38 +103,13 @@ CASE_SCHEMES = {
 # STABILIZATION_TYPE=4 note in test/TADR/test_tadr.py.
 DECIMALS = {"stab_0": 8, "stab_2": 8, "FCT": 8}
 
-# On macOS the FCT runs do not reproduce the stored Linux columns: the limiter
-# clips against a bound and the two toolchains' arithmetic puts a handful of
-# nodes on opposite sides of it, which the wetting front then amplifies.  The
-# unlimited schemes agree to round-off across both platforms, so only FCT is
-# dropped here.  Set PROTEUS_RICHARDS_FCT_ON_DARWIN=1 to run it anyway.
-SKIP_FCT_ON_DARWIN = (
-    platform.system() == "Darwin"
-    and os.environ.get("PROTEUS_RICHARDS_FCT_ON_DARWIN", "") in (
-        "",
-        "0",
-        "no",
-        "false",
-        "False",
-    )
-)
-
-
-def _scheme_params(case):
-    """CASE_SCHEMES[case] as parametrize arguments, marking FCT skipped on macOS.
-
-    CASE_SCHEMES itself is left alone: _write_comparison keys the column order
-    off it, so a regeneration run must still know about every scheme.
-    """
-    return [
-        pytest.param(
-            scheme,
-            marks=pytest.mark.skip(reason="FCT is not reproducible on macOS")
-            if scheme == "FCT" and SKIP_FCT_ON_DARWIN
-            else (),
-        )
-        for scheme in CASE_SCHEMES[case]
-    ]
+# The FCT cases used to be skipped on macOS ("not reproducible"), which was a
+# misreading: the macOS columns were not a drifted answer at all but a frozen
+# initial condition with -pcBarMax/alpha = -2985.07 m at the four boundary DOFs.
+# calculateResidual read the never-written stack array fluxJacobian_un_un into
+# TransportMatrixConsistentn, which is NaN on macOS and zero on Linux; the
+# low-order schemes hid it (fmax(0.0, -NaN) is 0.0) and FCT did not (0.0 * NaN
+# is NaN).  Fixed in Richards.h, so all three schemes run on every platform.
 
 
 def _column(scheme, frame):
@@ -347,17 +321,17 @@ def _compare(case, scheme, archive):
 
 
 class TestRichards:
-    @pytest.mark.parametrize("scheme", _scheme_params("test_1"))
+    @pytest.mark.parametrize("scheme", CASE_SCHEMES["test_1"])
     def test_1(self, scheme, tmp_path, monkeypatch):
         archive = _run_case("test_1", scheme, tmp_path, monkeypatch)
         _compare("test_1", scheme, archive)
 
-    @pytest.mark.parametrize("scheme", _scheme_params("test_2_HYDRUS"))
+    @pytest.mark.parametrize("scheme", CASE_SCHEMES["test_2_HYDRUS"])
     def test_2_HYDRUS(self, scheme, tmp_path, monkeypatch):
         archive = _run_case("test_2_HYDRUS", scheme, tmp_path, monkeypatch)
         _compare("test_2_HYDRUS", scheme, archive)
 
-    @pytest.mark.parametrize("scheme", _scheme_params("test_3"))
+    @pytest.mark.parametrize("scheme", CASE_SCHEMES["test_3"])
     def test_3(self, scheme, tmp_path, monkeypatch):
         archive = _run_case("test_3", scheme, tmp_path, monkeypatch)
         _compare("test_3", scheme, archive)
