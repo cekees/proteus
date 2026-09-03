@@ -4000,26 +4000,17 @@ class C0_AffineLinearOnSimplexWithNodalBasis(ParametricFiniteElementSpace):
             ar.write_field(self.mesh.arGrid, u.name, u.dof, tCount,
                            dimensions=[self.mesh.nNodes_global])
     def readFunctionXdmf(self,ar,u,tCount=0):
-        if ar.hdfFile is not None:
-            if ar.hdfFileGlb is not None:
-                map = self.mesh.globalMesh.nodeNumbering_subdomain2global
-                array=ar.hdfFileGlb.get_node("/","{0:s}{1:d}".format(u.name, tCount))
-                for i in range(len(map)):
-                    u.dof[i] = array[map[i]]
-                del array
-            else:
-                if ar.global_sync:
-                    #this is known to be slow but it scales with
-                    #respect to memory (as opposed to the faster
-                    #approach of pulling in the entire array)
-                    permute = np.argsort(self.mesh.globalMesh.nodeNumbering_subdomain2global)
-                    u.dof[permute] = ar.hdfFile["/"+u.name+"_t{0:d}".format(tCount)][self.mesh.globalMesh.nodeNumbering_subdomain2global[permute].tolist()]
-                    #faster way
-                    #u.dof[:] = ar.hdfFile["/"+u.name+"_t{0:d}".format(tCount)].value[self.mesh.globalMesh.nodeNumbering_subdomain2global]                        
-                else:
-                    u.dof[:]=ar.hdfFile["/"+u.name+"_p"+repr(ar.comm.rank())+"_t{0:d}".format(tCount)]
+        assert ar.hdfFile is not None, \
+            "hot start needs an HDF5 archive; a text archive holds no readable field data"
+        dataset = ar.field_dataset(u.name, tCount)
+        if ar.global_sync:
+            #Read only this subdomain's nodes out of the global array. Slower
+            #than pulling the whole array in, but it scales with memory.
+            numbering = self.mesh.globalMesh.nodeNumbering_subdomain2global
+            permute = np.argsort(numbering)
+            u.dof[permute] = dataset[numbering[permute].tolist()]
         else:
-            assert(False)
+            u.dof[:] = dataset[:]
             #numpy.savetxt(ar.textDataDir+"/"+"{0:s}{0:d}".format(u.name, tCount)+".txt",u.dof)
             #SubElement(values,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"{0:s}{0:d}".format(u.name, tCount)+".txt"})
     def writeVectorFunctionXdmf(self,ar,uList,components,vectorName,tCount=0,init=True):
@@ -5244,11 +5235,15 @@ class C0_AffineQuadraticOnSimplexWithNodalBasis(ParametricFiniteElementSpace):
     def writeFunctionXdmf(self,ar,u,tCount=0,init=True):
         self.XdmfWriter.writeFunctionXdmf_C0P2Lagrange(ar,u,tCount=tCount,init=init)
     def readFunctionXdmf(self,ar,u,tCount=0):
+        dataset = ar.field_dataset(u.name, tCount)
         if ar.global_sync:
-            permute = np.argsort(u.femSpace.dofMap.subdomain2global)
-            u.dof[permute] = ar.hdfFile["/"+u.name+"_t{0:d}".format(tCount)][u.femSpace.dofMap.subdomain2global[permute].tolist()]
+            numbering = u.femSpace.dofMap.subdomain2global
+            permute = np.argsort(numbering)
+            u.dof[permute] = dataset[numbering[permute].tolist()]
         else:
-            u.dof[:]=ar.hdfFile["/"+u.name+"_p"+repr(ar.comm.rank())+"_t{0:d}".format(tCount)].value
+            #this read used h5py's Dataset.value, removed in h5py 3.0, so
+            #a per-subdomain hot start of this space raised AttributeError
+            u.dof[:] = dataset[:]
 
     def writeVectorFunctionXdmf(self,ar,uList,components,vectorName,tCount=0,init=True):
         self.XdmfWriter.writeVectorFunctionXdmf_nodal(ar,uList,components,vectorName,"c0p2_Lagrange",tCount=tCount,init=init)

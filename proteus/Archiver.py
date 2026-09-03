@@ -52,7 +52,6 @@ class AR_base(object):
         self.size = comm.size()
         self.dataDir=dataDir
         self.filename=filename
-        self.hdfFileGlb=None # The global XDMF file for hotStarts
         self.readOnly = readOnly
         self.n_datasets = 0
         self.archived_domain = None
@@ -113,16 +112,6 @@ class AR_base(object):
                                        "r",
                                        driver = 'mpio',
                                        comm = comm_world)
-                try:
-                    # The "global" extension is hardcoded in collect.py
-                    self.hdfFileGlb=h5py.File(
-                        os.path.join(self.dataDir,
-                                     filename+"global.h5"),
-                        "r",
-                        driver = 'mpio',
-                        comm = comm_world)
-                except:
-                    pass
                 self.dataItemFormat="HDF"
             else:
                 self.textDataDir=filename+"_Data"
@@ -225,6 +214,61 @@ class AR_base(object):
             #every collection covers the same instants, so one is enough
             break
         return times
+
+    def field_dataset(self, name, tCount):
+        """The HDF5 dataset holding one field at one step, for reading back.
+
+        Hot start supports exactly the two modes the archive can write:
+
+        * **global** -- one assembled array per field, named
+          ``<name>_t<step>``. Readable at any number of MPI tasks, since
+          the array does not encode the decomposition.
+        * **per-rank** -- one array per subdomain, named
+          ``<name>_p<rank>_t<step>``. Readable only with the same number
+          of tasks that wrote it, because rank *i* reads subdomain *i*.
+
+        A third path used to exist: a separate ``<name>global.h5`` opened
+        as ``hdfFileGlb`` and read with ``get_node``, which is a PyTables
+        method that ``h5py.File`` does not have. It had been dead since the
+        PyTables-to-h5py migration, and silently so -- the open was wrapped
+        in a bare ``except: pass``, so it only surfaced when the file
+        actually existed. Removed rather than repaired: a user writing
+        either supported mode can hot start from it.
+
+        Raises ``KeyError`` naming the mismatch rather than letting a
+        missing dataset surface as a bare key error, since the usual cause
+        is a per-rank archive being read at the wrong task count.
+        """
+        if self.global_sync:
+            key = "{0:s}_t{1:d}".format(name, tCount)
+        else:
+            key = "{0:s}_p{1:s}_t{2:d}".format(
+                name, repr(self.comm.rank()), tCount)
+        try:
+            return self.hdfFile["/" + key]
+        except KeyError:
+            pass
+        if self.global_sync:
+            raise KeyError(
+                "%s has no dataset %r. This run is hot starting in global "
+                "mode; the archive may have been written per-subdomain "
+                "instead, in which case it must be read with global_sync "
+                "off and the same number of MPI tasks."
+                % (self.hdfFilename, key))
+        import re
+        pattern = re.compile(r"^%s_p(\d+)_t%d$" % (re.escape(name), tCount))
+        written_by = sorted(int(m.group(1)) for m in
+                            (pattern.match(k) for k in self.hdfFile) if m)
+        raise KeyError(
+            "%s has no dataset %r. A per-subdomain hot start needs the same "
+            "number of MPI tasks that wrote the archive: this one holds %d "
+            "subdomain(s) %s and this run has %d task(s). Either run with %d "
+            "tasks or write the archive in global mode, which any task count "
+            "can read."
+            % (self.hdfFilename, key, len(written_by),
+               written_by if len(written_by) < 8 else
+               "0..%d" % (written_by[-1],),
+               self.size, len(written_by) or self.size))
 
     def _metadata_dataset_name(self, collection_name, index):
         """Name of the HDF5 dataset holding one collection's step metadata."""

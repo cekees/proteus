@@ -359,3 +359,103 @@ def test_global_sync_datasets_carry_no_rank_in_their_names(tmp_path):
         names = [k for k in f if not k.startswith("Mesh_")]
     assert names, "no data datasets were written"
     assert not [n for n in names if "_p" in n], names
+
+
+# --------------------------------------------------------------------------
+# reading back: hot start supports exactly the two modes the archive writes
+# --------------------------------------------------------------------------
+
+
+def _archive_with_fields(tmp_path):
+    """An archive holding one per-subdomain field and one global field."""
+    path = str(tmp_path / "a.h5")
+    with h5py.File(path, "w") as f:
+        for r in range(4):
+            f["u_p%d_t0" % r] = np.arange(3, dtype="d")
+        f["v_t0"] = np.arange(12, dtype="d")
+    return path
+
+
+class _StubArchive:
+    """Just what field_dataset touches."""
+
+    def __init__(self, hdf, global_sync, rank, size):
+        from proteus.Archiver import AR_base
+
+        self.field_dataset = AR_base.field_dataset.__get__(self)
+        self.hdfFile = hdf
+        self.hdfFilename = "a.h5"
+        self.global_sync = global_sync
+        self.size = size
+
+        class _Comm:
+            def __init__(s, r):
+                s._r = r
+
+            def rank(s):
+                return s._r
+
+        self.comm = _Comm(rank)
+
+
+def test_a_global_field_reads_back_at_any_task_count(tmp_path):
+    path = _archive_with_fields(tmp_path)
+    with h5py.File(path, "r") as f:
+        for size in (1, 4, 9):
+            ds = _StubArchive(f, True, 0, size).field_dataset("v", 0)
+            assert ds.shape == (12,), "global mode must not depend on task count"
+
+
+def test_a_per_subdomain_field_reads_back_at_the_matching_task_count(tmp_path):
+    path = _archive_with_fields(tmp_path)
+    with h5py.File(path, "r") as f:
+        for rank in range(4):
+            ds = _StubArchive(f, False, rank, 4).field_dataset("u", 0)
+            assert ds.shape == (3,)
+
+
+def test_a_per_subdomain_field_at_the_wrong_task_count_says_so(tmp_path):
+    """The failure mode a user will actually hit, with a usable message.
+
+    Rank i reads subdomain i, so a per-subdomain archive is only readable
+    at the task count that wrote it. Without this the symptom is a bare
+    KeyError on a mangled dataset name.
+    """
+    path = _archive_with_fields(tmp_path)
+    with h5py.File(path, "r") as f:
+        with pytest.raises(KeyError) as exc:
+            _StubArchive(f, False, 5, 6).field_dataset("u", 0)
+    message = str(exc.value)
+    assert "same number of MPI tasks" in message
+    assert "holds 4 subdomain" in message      # what the archive has
+    assert "6 task" in message                 # what this run has
+
+
+def test_reading_a_per_subdomain_archive_in_global_mode_says_so(tmp_path):
+    path = _archive_with_fields(tmp_path)
+    with h5py.File(path, "r") as f:
+        with pytest.raises(KeyError, match="written per-subdomain"):
+            _StubArchive(f, True, 0, 1).field_dataset("u", 0)
+
+
+def test_the_pytables_hot_start_path_is_gone():
+    """hdfFileGlb read fields with get_node, a PyTables method h5py lacks.
+
+    It had been dead since the PyTables migration and silently so, because
+    the file open was wrapped in a bare `except: pass`. Removed rather than
+    repaired -- either supported write mode can be hot started from.
+    """
+    import inspect
+
+    from proteus import Archiver, FemTools
+
+    assert not hasattr(Archiver.AR_base, "hdfFileGlb")
+    for module in (Archiver, FemTools):
+        source = inspect.getsource(module)
+        # the explanatory docstring may name it; live code must not use it
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped.startswith("*"):
+                continue
+            assert "get_node(" not in stripped, line
+            assert "ar.hdfFileGlb" not in stripped, line
