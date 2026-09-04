@@ -25,6 +25,24 @@ resources, and the release step is a push rather than a review.
 * Fork `erdc/proteus`, or keep using an existing fork of it
 * Open the pull request against **`cekees/proteus`'s `main`**, not `erdc`'s
 
+### Referring to issues from a commit
+
+The issue tracker is on `erdc/proteus`, but the pull requests are on
+`cekees/proteus`, and the two have separate numbering. A bare `#1274` is
+therefore ambiguous: GitHub resolves it against whichever repository you are
+viewing it in, which silently produces the wrong link about half the time.
+
+Always qualify the repository:
+
+    Fixes erdc/proteus#1274
+
+This matters more than it sounds. Across the 377 commits in the 1.9.0
+release, every bare `#NNN` in a commit message turned out to be a false
+positive when resolved against the tracker — a merge subject's `(#14)`
+referred to a pull request on the fork but resolves against `erdc` to an
+unrelated 2013 issue. The result is that the release's fixed issues had to
+be found by reading code rather than by following references.
+
 ## Cut the release candidate
 
 * Create the release candidate branch on `cekees/proteus`, from `main` (e.g. `rc1.9.0`)
