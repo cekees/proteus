@@ -1,7 +1,7 @@
-# Proteus: Computational Methods and Simulation Toolkit [![Build Status](https://travis-ci.com/cekees/proteus.svg?branch=main)](https://app.travis-ci.com/github/cekees/proteus) [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/erdc/proteus_tutorial/master?filepath=index.ipynb)  [![DOI](https://zenodo.org/badge/2212385.svg)](https://zenodo.org/badge/latestdoi/2212385)
+# Proteus: Computational Methods and Simulation Toolkit [![Build Status](https://github.com/cekees/proteus/actions/workflows/sdist.yml/badge.svg?branch=main)](https://github.com/cekees/proteus/actions/workflows/sdist.yml) [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/erdc/proteus_tutorial/main?filepath=index.ipynb)  [![DOI](https://zenodo.org/badge/2212385.svg)](https://zenodo.org/badge/latestdoi/2212385)
 
 
-Proteus (http://proteustoolkit.org) is a Python package for
+Proteus (https://proteustoolkit.org) is a Python package for
 rapidly developing computer models and numerical methods.
 
 # Installation
@@ -302,6 +302,15 @@ See https://github.com/erdc/proteus/wiki/How-to-Build-Proteus for old informatio
 
 # Developer Information
 
-The source code, wiki, and issue tracker are on GitHub at
+Development happens on the primary repository,
 
-https://github.com/erdc/proteus.
+https://github.com/cekees/proteus
+
+which is where pull requests go and where CI runs. The issue tracker and the
+wiki are on
+
+https://github.com/erdc/proteus
+
+which is also where releases are published. `RELEASE.md` describes how the
+two relate, including the convention for referring to an issue from a commit
+message (the numbering is per-repository, so references need qualifying).
