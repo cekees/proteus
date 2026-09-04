@@ -1,0 +1,31 @@
+# Canonical author identities.
+#
+# git consults this when printing names -- shortlog, log and blame all honour
+# it by default -- so one person committing under several addresses is counted
+# once. It rewrites no history: every commit SHA is unchanged, and a wrong
+# entry here is fixed by editing this file.
+#
+# Line forms in use:
+#   Proper Name <email>                      fixes the name for that address
+#   Proper Name <canonical> <other-address>  folds an alias onto the canonical
+#
+# Note GitHub does not read this file; its contributors graph goes off raw
+# commit authorship. This governs anything generated from git itself,
+# including the contributor list in release notes.
+#
+# Covers the contributors since the 1.8.3 release. The history before that
+# carries roughly 100 distinct identities with a good number still to fold
+# in; add them here as they are confirmed rather than guessed.
+
+Chris Kees <613654+cekees@users.noreply.github.com>
+
+Arnob Barua <35999938+abarua-ce@users.noreply.github.com>
+Arnob Barua <35999938+abarua-ce@users.noreply.github.com> <arnobtuku@gmail.com>
+Arnob Barua <35999938+abarua-ce@users.noreply.github.com> <abarua4@lsu.edu>
+
+Darsh Nathawani <36614489+nathawani@users.noreply.github.com>
+Darsh Nathawani <36614489+nathawani@users.noreply.github.com> <nathawanidarsh@gmail.com>
+
+linojr <113699564+linojr@users.noreply.github.com> <linojr@lsu.edu>
+
+jhcollins <jhcollins12@gmail.com>
