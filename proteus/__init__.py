@@ -2,7 +2,7 @@
 Modules for computing numerical solutions of differential equations
 """
 
-__version__ = '1.8.3.dev'
+__version__ = '1.9.0'
 
 __all__ = ["Archiver",
            "Domain",

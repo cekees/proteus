@@ -980,7 +980,7 @@ def setup_given_extensions(extensions):
         if getattr(ext, 'library_dirs', None):
             ext.library_dirs = list(dict.fromkeys(ext.library_dirs))
     setup(name='proteus',
-          version='1.8.3.dev',
+          version='1.9.0',
           classifiers=[
               'Development Status :: 4 - Beta',
               'Environment :: Console',
