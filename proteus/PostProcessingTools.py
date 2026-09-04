@@ -3018,12 +3018,12 @@ class VPP_POINT_EVAL(VelocityPostProcessingAlgorithmBase):
                                                      vtComponents=vtComponents)
 
     def postprocess_component(self,ci,verbose=0):
-        """compute velocity field by just using point evaluation of trial
+        r"""compute velocity field by just using point evaluation of trial
         solution and coefficients
 
         .. math::
 
-          v = -\ten{a}_h\\grad \\phi_h + \vec f_h
+          v = -\ten{a}_h\grad \phi_h + \vec f_h
 
         """
 #         TODO
@@ -4996,13 +4996,13 @@ nCalls= %d ; totalTime= %12.5e ; pythonCPU = %12.5e ; simCPU= %12.5e """ % (nCal
                                                              self.vt.ebq_global['n'],
                                                              self.nodeStarFactors[ci])
     def postprocessPointEval(self,ci,verbose=0):
-        """
+        r"""
         compute velocity field by just using point evaluation of trial solution
         and coefficients
 
         .. math::
 
-          v = -\ten{a}_h\\grad \\phi_h + \vec f_h
+          v = -\ten{a}_h\grad \phi_h + \vec f_h
 
         """
         self.q[('velocity'),ci][:]=0.0

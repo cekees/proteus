@@ -322,6 +322,7 @@ class BC_RANS(BoundaryConditions.BC_Base):
         """
         Sets atmosphere boundary conditions (water can come out)
         (!) pressure dirichlet set to 0 for this BC
+
         Parameters
         ----------
         orientation: Optional[array_like]
@@ -454,10 +455,10 @@ class BC_RANS(BoundaryConditions.BC_Base):
             At the moment version with shearStress=False is the only one that
             returns good results.
             Keep it False at the moment!
+
             - When True, the wall function prescribes diffusive boundaries
               for velocity and kappa. It's like imposing the shear stress.
             - If False, the wall function prescribes dirichlet conditions.
-
         """
         wf = wall
         self.reset()
@@ -643,6 +644,7 @@ class BC_RANS(BoundaryConditions.BC_Base):
         """
         Imposes a velocity profile lower than the sea level and an open
         boundary for higher than the sealevel.
+
         Parameters
         ----------
         U: list.
@@ -653,7 +655,7 @@ class BC_RANS(BoundaryConditions.BC_Base):
             water level at global coordinate system.
         smoothing: float.
             range within smoothing function is valid.
-           [3.0 times mesh element size can be a good value]
+            [3.0 times mesh element size can be a good value]
         vert_axis: optional. 
             index of vertical in position vector, must always be
             aligned with gravity, by default set to 1].
@@ -669,13 +671,16 @@ class BC_RANS(BoundaryConditions.BC_Base):
             Air K inflow value for turbulent model imposed at the boundary.
         dissipationInflowAir: float (optional).
             Air dissipation inflow value for turbulent model imposed at the boundary.
+
+        Notes
+        -----
         Below the seawater level, the condition returns the _dirichlet and
         p_advective condition according to the inflow velocity.
         Above the sea water level, the condition returns the gravity as zero,
         and sets _dirichlet condition to zero, only if there is a zero inflow
         velocity component.
         (!) This condition is best used for boundaries and gravity aligned with
-            one of the main axes.
+        one of the main axes.
         """
         self.reset()
         self.BC_type = 'TwoPhaseVelocityInlet'
@@ -777,7 +782,7 @@ class BC_RANS(BoundaryConditions.BC_Base):
         If the boundary is aligned with one of the main axes, sets the tangential
         velocity components to zero as well.
         (!) This condition is best used for boundaries and gravity aligned with
-            one of the main axes.
+        one of the main axes.
 
         Parameters
         ----------
@@ -1225,7 +1230,7 @@ class WallFunctions(AuxiliaryVariables.AV_base):
         impose the wall shear stress.
 
         - k is assumed to be constant in the fully turbulent region close to the wall,
-        in this way kv = kp.
+          in this way kv = kp.
         - dissipation is calculated.
 
         Parameters

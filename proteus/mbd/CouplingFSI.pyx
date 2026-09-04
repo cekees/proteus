@@ -1179,13 +1179,15 @@ cdef class ProtChBody:
             Angular velocity of body (default: False. Set to True to record).
         ang_acc: bool
             Angular acceleration of body (default: False. Set to True to record).
+
         Notes
         -----
-        To add another value manually, add to dictionary self.record_dict:
-        key: header of the column in .csv
-        value: list of length 2: [variable name, index within variable]
-                                                 (if no index, use None)
-        e.g. self.record_dict['m']['mass', None]
+        To add another value manually, add to dictionary self.record_dict::
+
+            key: header of the column in .csv
+            value: list of length 2: [variable name, index within variable]
+                   (if no index, use None)
+            e.g. self.record_dict['m']['mass', None]
         """
         if all_values is True:
             pos = rot = F = M = acc = vel = ang_acc = ang_vel = h_predict = True
@@ -1921,7 +1923,8 @@ cdef class ProtChSystem:
     def log_bodies_text(self, d_time, l_logging_info):
         """
         Logs the chrono information into a text file at each timestep
-                Parameters
+
+        Parameters
         ----------
         self: object
             ProtChSystem being referenced
@@ -1931,6 +1934,7 @@ cdef class ProtChSystem:
             Contains the information to be logged. Structure is [body number, type]
             with multiple entries being included as a 2d list. Valid types are
             'position', 'rotation', 'force', and 'torque'.
+
         Returns
         -------
         None. Data is logged to a text file
@@ -1984,6 +1988,7 @@ cdef class ProtChSystem:
     def log_bodies_h5(self, l_logging_info):
         """
         Logs the chrono information into a h5 file at each timestep
+
         Parameters
         ----------
         self: object
@@ -1992,6 +1997,7 @@ cdef class ProtChSystem:
             Contains the information to be logged. Structure is [body number, type]
             with multiple entries being included as a 2d list. Valid types are
             'position', 'rotation', 'force', and 'torque'.
+
         Returns
         -------
         None. Data is saved to an h5 file.
