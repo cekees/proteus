@@ -438,18 +438,19 @@ def  vel_mode(x,  t, kDir, kAbs,  omega,  phi,  amplitude,  mwl, depth, vDir, gA
 def sigma(omega,omega0):
     """Calculates sigma function for JONSWAP spectrum
 
-       See http://www.wikiwaves.org/Ocean-Wave_Sectra
+    See http://www.wikiwaves.org/Ocean-Wave_Sectra
+
     Parameters
     ----------
     omega : numpy.ndarray
         Angular frequency array
     omega0 : numpy.ndarray
         Peak angular frequency
+
     Returns
     --------
     numpy.ndarray
         1D Numpy array of simga function with respect to f
-
     """
     sigmaReturn = np.where(omega > omega0,0.09,0.07)
     return sigmaReturn
@@ -902,19 +903,20 @@ class  MonochromaticWaves(object):
              Fenton: uses BCoeffs/YCoeffs provided by user
     autoFenton: bool
              autoFenton=True: uses waveheight, period, depth, and g to
-                              calculate coeffs
+             calculate coeffs
              autoFenton=False: uses BCoeffs/YCoeffs provided by user
     autoFentonOpts: dict
              options for autoFenton. The dictionary must contain the following
-             entries (here the default values if autoFentonOpts is None):
-             autoFentonOpts = {'mode': 'Period',
-                               'current_criterion': 1,
-                               'height_steps': 1,
-                               'niter': 40,
-                               'conv_crit': 1e-05,
-                               'points_freesurface': 50,
-                               'points_velocity': 16,
-                               'points_vertical': 20}
+             entries (here the default values if autoFentonOpts is None)::
+
+                 autoFentonOpts = {'mode': 'Period',
+                                   'current_criterion': 1,
+                                   'height_steps': 1,
+                                   'niter': 40,
+                                   'conv_crit': 1e-05,
+                                   'points_freesurface': 50,
+                                   'points_velocity': 16,
+                                   'points_vertical': 20}
     Ycoeff : numpy.ndarray
              Fenton Fourier coefficients for free-surface elevation             
     Bcoeff : numpy.ndarray

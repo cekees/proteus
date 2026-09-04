@@ -30,14 +30,14 @@ class NumericalFlux(proteus.NumericalFlux.ConstantAdvection_exterior):
 
 
 class Coefficients(TC_base):
-    """
+    r"""
     The coefficients for pressure solution
 
     Update is given by
 
     .. math::
 
-       p^{k+1} - p^{k} - phi^{k+1} + \nabla\\cdot(\\mu \\mathbf{u}^{k+1}) = 0
+       p^{k+1} - p^{k} - phi^{k+1} + \nabla\cdot(\mu \mathbf{u}^{k+1}) = 0
     """
 
     def __init__(self,
