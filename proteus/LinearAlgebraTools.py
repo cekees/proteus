@@ -106,14 +106,14 @@ def petsc_load_IS(filename):
 def csr_2_petsc(size,csr):
     """ Create an petsc4py matrix from size and CSR information.
 
-    Parameters:
+    Parameters
     ----------
     size : tuple
         A 2-tuple with the number of matrix rows and columns.
     csr : tuple
         A 3-tuple with the sparse matrix csr information.
 
-    Returns:
+    Returns
     --------
     matrix : PETSc4py aij matrix
     """
@@ -365,14 +365,14 @@ def dense_numpy_2_petsc4py(dense_numpy, eps = 1.e-12):
 def csr_2_petsc_mpiaij(size,csr):
     """ Create an MPIaij petsc4py matrix from size and CSR information.
 
-    Parameters:
+    Parameters
     ----------
     size : tuple
         Two entires: (num_rows, num_cols)
     csr : tuple
         (row_idx, col_idx, vals)
 
-    Returns:
+    Returns
     --------
     matrix : PETSc4py MPIaij matrix
     """
@@ -389,11 +389,11 @@ def split_PETSc_Mat(mat):
     """ Decompose a PETSc matrix into a symmetric and skew-symmetric
         matrix
 
-    Parameters:
+    Parameters
     ----------
     mat : :class: `PETSc4py Matrix`
 
-    Returns:
+    Returns
     --------
     H : :class: `PETSc4py Matrix`
         Symmetric (or Hermitian) component of mat
@@ -552,6 +552,9 @@ class ParInfo_petsc4py(object):
 
 class ParMat_petsc4py(p4pyPETSc.Mat):
     """  Parallel matrix based on petsc4py's wrappers for PETSc.
+
+    Parameters
+    ----------
     ghosted_csr_mat : :class:`proteus.superluWrappers.SparseMatrix`
         Primary CSR information for the ParMat.
     par_bs : int

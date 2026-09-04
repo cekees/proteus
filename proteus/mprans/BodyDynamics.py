@@ -13,6 +13,7 @@ class RigidBody(AuxiliaryVariables.AV_base, object):
     class instance acting as a rigid body. To set a shape as a rigid body, use
     shape.setRigidBody(). The class instance is created automatically when
     shape.setRigidBody() has been called and after calling assembleDomain().
+
     Parameters
     ----------
     shape: proteus.mprans.SpatialTools.Shape_RANS
@@ -342,6 +343,7 @@ class RigidBody(AuxiliaryVariables.AV_base, object):
     def setSprings(self, springs, Kx, Ky, Krot, Cx, Cy, Crot, Kz=0.0, Cz=0.0):
         """
         Sets a system of uniform springs to model soil's reactions (for moving bodies)
+
         Parameters
         ----------
         spring: string
@@ -425,7 +427,6 @@ class RigidBody(AuxiliaryVariables.AV_base, object):
     def imposeSinusoidalMotion(self):
         """
         Motion is imposed rather than calculated.
-         Parameters
         """
         t = self.model.stepController.t_model_last
         Tra = np.array([0., 0., 0.])
@@ -453,6 +454,7 @@ class RigidBody(AuxiliaryVariables.AV_base, object):
     def step(self, dt):
         """
         Step for rigid body calculations in Python
+
         Parameters
         ----------
         dt: float
@@ -493,6 +495,7 @@ class RigidBody(AuxiliaryVariables.AV_base, object):
     def setConstraints(self, free_x, free_r):
         """
         Sets constraints on the Shape (for moving bodies)
+
         Parameters
         ----------
         free_x: array_like
@@ -506,6 +509,7 @@ class RigidBody(AuxiliaryVariables.AV_base, object):
     def setMass(self, mass):
         """
         Set mass of the shape.
+
         Parameters
         ----------
         mass: float
@@ -516,6 +520,7 @@ class RigidBody(AuxiliaryVariables.AV_base, object):
     def setInertiaTensor(self, It):
         """
         Set the inertia tensor of the shape
+
         Parameters
         ----------
         It: array_like, float
@@ -537,6 +542,7 @@ class RigidBody(AuxiliaryVariables.AV_base, object):
     def getInertia(self, vec=(0., 0., 1.), pivot=None):
         """
         Gives the inertia of the shape from an axis and a pivot
+
         Parameters
         ----------
         vec: array_like
@@ -586,6 +592,7 @@ class RigidBody(AuxiliaryVariables.AV_base, object):
         """
         Sets the rigid body attributes that are to be recorded in a csv file
         during the simulation.
+
         Parameters
         ----------
         filename: Optional[string]
@@ -616,13 +623,15 @@ class RigidBody(AuxiliaryVariables.AV_base, object):
             Angular velocity of body (default: False. Set to True to record).
         ang_acc: bool
             Angular acceleration of body (default: False. Set to True to record).
+
         Notes
         -----
-        To add another value manually, add to dictionary self.record_dict:
-        key: header of the column in .csv
-        value: list of length 2: [variable name, index within variable]
-                                                 (if no index, use None)
-        e.g. self.record_dict['m']['mass', None]
+        To add another value manually, add to dictionary self.record_dict::
+
+            key: header of the column in .csv
+            value: list of length 2: [variable name, index within variable]
+                   (if no index, use None)
+            e.g. self.record_dict['m']['mass', None]
         """
         if all_values is True:
             pos = rot = F = M = acc = vel = ang_acc = ang_vel = True
@@ -821,6 +830,7 @@ class CaissonBody(RigidBody):
     def step(self, dt, substeps=20):
         """
         Step for rigid body calculations in Python
+
         Parameters
         ----------
         dt: float
@@ -873,6 +883,7 @@ class CaissonBody(RigidBody):
     def getInertia(self, vec=(0., 0., 1.), pivot=None):
         """
         Gives the inertia of the shape from an axis and a pivot
+
         Parameters
         ----------
         vec: array_like
@@ -924,6 +935,7 @@ class CaissonBody(RigidBody):
     def setFriction(self, friction, m_static, m_dynamic, tolerance, grainSize):
         """
         Sets material properties for sliding and overturning modules
+
         Parameters
         ----------
         friction: string
@@ -949,6 +961,7 @@ class CaissonBody(RigidBody):
     def setOverturning(self, overturning):
         """
         Sets material properties for sliding and overturning modules
+
         Parameters
         ----------
         overturning: string
@@ -959,6 +972,7 @@ class CaissonBody(RigidBody):
     def setSprings(self, springs, Kx, Ky, Krot, Cx, Cy, Crot, Kz=0.0, Cz=0.0):
         """
         Sets a system of uniform springs to model soil's reactions (for moving bodies)
+
         Parameters
         ----------
         spring: string
@@ -989,6 +1003,7 @@ class CaissonBody(RigidBody):
     def setNumericalScheme(self, scheme):
         """
         Sets the numerical scheme used to solve motion.
+
         Parameters
         ----------
         scheme: string
@@ -1000,6 +1015,7 @@ class CaissonBody(RigidBody):
     def friction_module(self, dt):
         """
         Calculate sliding motion modelling frictional force.
+
         Parameters
         ----------
         dt : Time step.
@@ -1027,6 +1043,7 @@ class CaissonBody(RigidBody):
         def dynamic_case(self, sign, Fx, Fv, mass, m):
             """
             Set a dynamic friction.
+
             Parameters
             ----------
             sign : It's function of horizontal force.
@@ -1144,6 +1161,7 @@ class CaissonBody(RigidBody):
     def overturning_module(self, dt):
         """
         Calculate overturning motion modelling soil foundation reactions.
+
         Parameters
         ----------
         dt : Time step.
@@ -1156,6 +1174,7 @@ class CaissonBody(RigidBody):
         def calculate_rotation(self, floating, h):
             """
             Calculate rotation.
+
             Parameters
             ----------
             floating : enable floating body calculation with NO restrictions offered by friction or springs.
@@ -1255,6 +1274,7 @@ class CaissonBody(RigidBody):
         """
         Sets the rigid body attributes that are to be recorded in a csv file
         during the simulation.
+
         Parameters
         ----------
         filename: Optional[string]
@@ -1285,13 +1305,15 @@ class CaissonBody(RigidBody):
             Angular velocity of body (default: False. Set to True to record).
         ang_acc: bool
             Angular acceleration of body (default: False. Set to True to record).
+
         Notes
         -----
-        To add another value manually, add to dictionary self.record_dict:
-        key: header of the column in .csv
-        value: list of length 2: [variable name, index within variable]
-                                                 (if no index, use None)
-        e.g. self.record_dict['m']['mass', None]
+        To add another value manually, add to dictionary self.record_dict::
+
+            key: header of the column in .csv
+            value: list of length 2: [variable name, index within variable]
+                   (if no index, use None)
+            e.g. self.record_dict['m']['mass', None]
         """
         if all_values is True:
             pos = rot = F = M = acc = vel = ang_acc = ang_vel = elasticPlastic = True
@@ -1407,6 +1429,7 @@ class PaddleBody(RigidBody):
     def step(self, dt, substeps=20):
         """
         Step for rigid body calculations in Python
+
         Parameters
         ----------
         dt: float
@@ -1492,12 +1515,13 @@ class PaddleBody(RigidBody):
     def imposeSinusoidalMotion(self, tt = None):
         """
         Motion is imposed rather than calculated.
-         ----------
+
+        Parameters
+        ----------
         tt: None or float
-            tt should be None for other than testing purposes. If not None, 
+            tt should be None for other than testing purposes. If not None,
             time is externally set.
-       
-            """
+        """
         if tt is not None:
             t= tt
         else:
@@ -1560,6 +1584,7 @@ def getEulerAngles(coord_system):
 def runge_kutta(u0, v0, a0, dt, substeps, F, K, C, m, velCheck):
     """
     Function that applies Runge Kutta's scheme for motion calculation.
+
     Parameters
     ----------
     u0 : translational or rotational displacement.

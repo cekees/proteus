@@ -62,3 +62,8 @@ dependencies:
   - cffi >=1.17.1
   - jupyterlab >=4.6
   - llvm-openmp >=22.1
+  # provides the `past` package; proteus/richards/ADR.py imports
+  # `past.utils.old_div` for real (not vestigial -- used throughout the
+  # file's time-integration and quadrature code), so this is a genuine
+  # runtime dependency, not just a docs-build one.
+  - future >=1.0.0

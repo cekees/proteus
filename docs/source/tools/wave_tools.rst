@@ -104,7 +104,7 @@ If the relaxation zone method is used, then the class should be passed through t
    tank.setGenerationZones(x_n=True, waves=wave, dragAlpha=dragAlpha, smoothing = smoothing)
    
    
-Guidance for using the ``setUnsteadyTwoPhaseVelocityInlet`` and ``setGenerationZones`` functions are given in the :doc:`BoundaryConditions <./boundary_conditions>` and :doc:`Spatial Tools <./spatial_tools>` sections of the documentation
+Guidance for using the ``setUnsteadyTwoPhaseVelocityInlet`` and ``setGenerationZones`` functions is given in the ``BoundaryConditions`` API reference and the :doc:`Spatial Tools <./spatial_tools>` section of the documentation
 
 Simple examples of usage within the context of a 2D numerical tank can be found in `air-water-vv <https://github.com/erdc/air-water-vv/tree/master/2d/numericalTanks>`_
 

@@ -1402,11 +1402,13 @@ class SimulationProcessor(object):
         return tensorElementStorageKeys
     def stepPlotElementQuantitiesEnsight(self,mlvt,tsim):
         """
-        sort through desired quantities in quadrature dictionaries like m, dm, to plot
+        sort through desired quantities in quadrature dictionaries like m, dm, to plot::
+
           p    --- problem definition
           n    --- numerics definition
           mlvt --- multilevel vector transport that holds the quantities to measure
           tsim --- simulation time
+
         assumes this is the correct time to plot
         and plotOffSet is set correctly
         """
@@ -1464,11 +1466,13 @@ class SimulationProcessor(object):
 
         if multilevelModel is set, stores basically everything
 
-        Input
+        Input::
+
           p    --- problem definition
           n    --- numerics definition
           mlvt --- multilevel vector transport that holds the quantities to measure
           tsim --- simulation time
+
         assumes this is the correct time to store
 
         TODO: add option for storage directory
@@ -1586,11 +1590,13 @@ class SimulationProcessor(object):
     #
     def stepPlotEnsight(self,mlvt,tsim):
         """
-        plot solution and solution 'velocity' for ensight/paraview
+        plot solution and solution 'velocity' for ensight/paraview::
+
           p    --- problem definition
           n    --- numerics definition
           mlvt --- multilevel vector transport that holds the quantities to measure
           tsim --- simulation time
+
         assumes this is the correct time to plot
         and plotOffSet is set correctly
 
@@ -1696,17 +1702,18 @@ class SimulationProcessor(object):
 
     def plotScalarElementQuantityEnsight(self,ckey,mlvt,tsim):
         """
-        Ensight plotting routine to look at scalar quantity stored in element quad dictionary q
+        Ensight plotting routine to look at scalar quantity stored in element quad dictionary q::
+
           ckey --- what should be plotted
           p    --- problem definition
           n    --- numerics definition
           mlvt --- multilevel vector transport that holds the quantities to measure
           tsim --- simulation time
+
         assumes this is the correct time to plot
         and plotOffSet is set correctly
 
         assumes that initial case,sos, geo files set somewhere else
-
         """
         p = self.pFile; n = self.nFile
 
@@ -1731,12 +1738,14 @@ class SimulationProcessor(object):
         self.stepPlotCalled['ensightElementQuantities']= True
     def plotVectorElementQuantityEnsight(self,ckey,mlvt,tsim,scaleOutput=None):
         """
-        Ensight plotting routine to look at vector quantity stored in element quad dictionary q
+        Ensight plotting routine to look at vector quantity stored in element quad dictionary q::
+
           ckey --- what should be plotted
           p    --- problem definition
           n    --- numerics definition
           mlvt --- multilevel vector transport that holds the quantities to measure
           tsim --- simulation time
+
         assumes this is the correct time to plot
         and plotOffSet is set correctly
 
@@ -1773,17 +1782,18 @@ class SimulationProcessor(object):
 
     def plotScalarGlobalElementBoundaryQuantityEnsight(self,ckey,mlvt,tsim):
         """
-        Ensight plotting routine to look at scalar quantity stored in element quad dictionary ebq_global
+        Ensight plotting routine to look at scalar quantity stored in element quad dictionary ebq_global::
+
           ckey --- what should be plotted
           p    --- problem definition
           n    --- numerics definition
           mlvt --- multilevel vector transport that holds the quantities to measure
           tsim --- simulation time
+
         assumes this is the correct time to plot
         and plotOffSet is set correctly
 
         assumes that initial case,sos, geo files set somewhere else
-
         """
         p = self.pFile; n = self.nFile
 
@@ -1810,12 +1820,14 @@ class SimulationProcessor(object):
         self.stepPlotCalled['ensightElementQuantities']= True
     def plotVectorGlobalElementBoundaryQuantityEnsight(self,ckey,mlvt,tsim,scaleOutput=None):
         """
-        Ensight plotting routine to look at vector quantity stored in element quad dictionary ebq_global
+        Ensight plotting routine to look at vector quantity stored in element quad dictionary ebq_global::
+
           ckey --- what should be plotted
           p    --- problem definition
           n    --- numerics definition
           mlvt --- multilevel vector transport that holds the quantities to measure
           tsim --- simulation time
+
         assumes this is the correct time to plot
         and plotOffSet is set correctly
 

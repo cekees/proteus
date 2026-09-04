@@ -348,7 +348,20 @@ EXTENSIONS_TO_BUILD = [
         language='c++',
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
     ),
-   
+    Extension(
+        # proteus/richards/ADR.py does `from .cADR import *` expecting this
+        # extension at proteus.richards.cADR -- the source (cADR.cpp) has
+        # always been tracked in git but never had a setup.py Extension
+        # entry, so richards.ADR has been unimportable however long that's
+        # been the case. Mirrors richards.cRichards just above.
+        'richards.cADR',
+        sources=['proteus/richards/cADR.cpp'],
+        depends=['proteus/richards/ADR.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_xtensor_include(),
+        language='c++',
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
+    ),
+
     Extension(
         'm_comp_co2.cm_comp_co2',
         sources=['proteus/m_comp_co2/cm_comp_co2.cpp'],

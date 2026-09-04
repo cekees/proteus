@@ -567,54 +567,55 @@ class BernsteinOnCube(LocalFunctionSpace):
     Bernstein polynomials on the unit nd-cube
 
     Bernstein basis functions on the reference nd-cube (nd <=3) with
-    coordinates xi[0],xi[1],and xi[2]. 
-    The basis functions are numbered as follows:     
-    ##############
-    # *** 2D *** #
-    ##############
-    ###########
-    # Order=1 #
-    ###########
-    3--2
-    |  |
-    0--1
-    ###########
-    # Order=2 #
-    ###########
-    3-6-2
-    | | |
-    7-8-5
-    | | |
-    0-4-1
-    ###########
-    # Order=3 #
-    ###########
-    3--9--8--2
-    |  |  |  |
-    10-14-15-7
-    |  |  |  |
-    11-12-13-6
-    |  |  |  |
-    0--4--5--1
-    ###########
-    # Order=4 #
-    ###########
-    3--12-11-10-2
-    |  |  |  |  |
-    13-22-23-24-9
-    |  |  |  |  |
-    14-19-20-21-8
-    |  |  |  |  |
-    15-16-17-18-7
-    |  |  |  |  |
-    0--4--5--6--1
+    coordinates xi[0],xi[1],and xi[2].
+    The basis functions are numbered as follows::
 
-    NOTE (mql): *** The polynomials are defined for arbitrary order in 1D. 
-                    This definition is carried to multi-D via tensor products. 
-                *** The numbering is defined for arbitrary order (via funMap) in 2D.
-                *** TODO: Generalize numbering for 1D and 3D. 
-                *** TODO: The quad rule Lobatto edge alt must be generalized. 
-                *** TODO: define hessians and higher order deriavtives 
+        ##############
+        # *** 2D *** #
+        ##############
+        ###########
+        # Order=1 #
+        ###########
+        3--2
+        |  |
+        0--1
+        ###########
+        # Order=2 #
+        ###########
+        3-6-2
+        | | |
+        7-8-5
+        | | |
+        0-4-1
+        ###########
+        # Order=3 #
+        ###########
+        3--9--8--2
+        |  |  |  |
+        10-14-15-7
+        |  |  |  |
+        11-12-13-6
+        |  |  |  |
+        0--4--5--1
+        ###########
+        # Order=4 #
+        ###########
+        3--12-11-10-2
+        |  |  |  |  |
+        13-22-23-24-9
+        |  |  |  |  |
+        14-19-20-21-8
+        |  |  |  |  |
+        15-16-17-18-7
+        |  |  |  |  |
+        0--4--5--6--1
+
+        NOTE (mql): *** The polynomials are defined for arbitrary order in 1D.
+                        This definition is carried to multi-D via tensor products.
+                    *** The numbering is defined for arbitrary order (via funMap) in 2D.
+                    *** TODO: Generalize numbering for 1D and 3D.
+                    *** TODO: The quad rule Lobatto edge alt must be generalized.
+                    *** TODO: define hessians and higher order deriavtives
     """
     from math import factorial 
 

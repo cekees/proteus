@@ -1,8 +1,5 @@
 """
 Tools for calculating norms on function spaces.
-
-.. inheritance-diagram:: proteus.Norms
-   :parts: 1
 """
 from .FemTools import *
 from .Quadrature import *

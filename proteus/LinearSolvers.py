@@ -1292,6 +1292,7 @@ class DofOrderInfo(object):
     """Base class for managing DOF ordering information
 
     Parameters
+    ----------
     dof_order_type : str
         This describes the type of dof ordering that will
         be constructed.  Currently supports: 'blocked'
@@ -4386,7 +4387,7 @@ class NavierStokesConstantPressure(SolverNullSpace):
 
         Arguments
         ---------
-        par_b : :vec:`petsc4py_vec`
+        par_b : petsc4py vector
         """
         # Check whether a global null space vector for a constant
         # pressure has been created.  If not, create one.
@@ -4454,7 +4455,7 @@ class ConstantNullSpace(SolverNullSpace):
 
         Arguments
         ---------
-        par_b : :vec:`petsc4py_vec`
+        par_b : petsc4py vector
         """
         # Check whether a global null space vector for a constant
         # has been created.  If not, create one.

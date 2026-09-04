@@ -854,24 +854,23 @@ class FLCBDF_controller_sys(FLCBDF_controller):
         return retry
 
 class HeuristicNL_dt_controller(SC_base):
-    """
+    r"""
     Classical Heuristic step controller that picks time step based on threshholds in nonlinear
-    solver iterations
+    solver iterations::
 
-    if nnl < nonlinearIterationsFloor:
-       dt *= dtNLgrowFactor
-    else if nnl > nonlinearIterationsCeil:
-       dt *= dtNLreduceFactor
-    end
+      if nnl < nonlinearIterationsFloor:
+         dt *= dtNLgrowFactor
+      else if nnl > nonlinearIterationsCeil:
+         dt *= dtNLreduceFactor
+      end
 
-    if the nonlinear solver fails, the time step is modified using
+    if the nonlinear solver fails, the time step is modified using::
 
-    dt *= dtNLfailureReduceFactor
+      dt *= dtNLfailureReduceFactor
 
-    Also includes simple linear predictor for initial guess
+    Also includes simple linear predictor for initial guess::
 
-    y^{n+1,p} = y^{n} + (y^{n}-y^{n-1})/(\\Delta t^{n})(t - t^{n-1})
-
+      y^{n+1,p} = y^{n} + (y^{n}-y^{n-1})/(\Delta t^{n})(t - t^{n-1})
 
     TODO:
      Implementation:
@@ -977,39 +976,40 @@ class HeuristicNL_dt_controller(SC_base):
         return False
 
 class GustafssonFullNewton_dt_controller(SC_base):
-    """
+    r"""
     Try version of basic Gustafsson and Soederlind 97 time step selection strategy
       that accounts for nonlinear solver performance assuming a full Newton nonlinear
       solver
 
     Also includes error control based on classical "deadbeat" control
-    Right now, decisions based on finest level solve
+    Right now, decisions based on finest level solve::
 
-    input: dt_prev
-    output: dt
+      input: dt_prev
+      output: dt
 
-    get time step estimate based on temporal error --> dt_e
-    get convergence rate estimate from nonlinear solver --> a
-    get number of iterations from nonlinear solver --> nnl
+      get time step estimate based on temporal error --> dt_e
+      get convergence rate estimate from nonlinear solver --> a
+      get number of iterations from nonlinear solver --> nnl
 
-    if nonlinear solver converges
+      if nonlinear solver converges
 
-       r_a = phi(a_ref/a)
-       r_a = min(r_a_max,max(r_a,r_a_min))
-
-    else
-
-       if a_ref < a    #convergence rate ok but took too many iterations anyway
-         r_a = phi(nnl_ref/nnl)
-       else
          r_a = phi(a_ref/a)
-       #
-       r_a = min(r_a_max,max(r_a,r_a_min))
-    #
+         r_a = min(r_a_max,max(r_a,r_a_min))
 
-    dt = min(dt_e,r_a dt_prev)
+      else
+
+         if a_ref < a    #convergence rate ok but took too many iterations anyway
+           r_a = phi(nnl_ref/nnl)
+         else
+           r_a = phi(a_ref/a)
+         #
+         r_a = min(r_a_max,max(r_a,r_a_min))
+      #
+
+      dt = min(dt_e,r_a dt_prev)
 
     Here,
+
      a_ref   -- target convergence rate
      nnl_ref -- target number of nonlinear iterations
      r_a_max -- max growth rate
@@ -1017,10 +1017,9 @@ class GustafssonFullNewton_dt_controller(SC_base):
 
      phi     -- limiter function, defaut is phi(x) = x
 
-    Also includes simple linear predictor for initial guess
+    Also includes simple linear predictor for initial guess::
 
-    y^{n+1,p} = y^{n} + (y^{n}-y^{n-1})/(\\Delta t^{n})(t - t^{n-1})
-
+      y^{n+1,p} = y^{n} + (y^{n}-y^{n-1})/(\Delta t^{n})(t - t^{n-1})
 
     TODO:
      Implementation:

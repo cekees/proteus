@@ -50,7 +50,7 @@ class Coefficients(TransportCoefficients.PoissonEquationCoefficients):
     grading: double
         grading of mesh with distance function. 1.-> no grading, 1.1->10% increase
         (!) if using grading, func must be a distance function
-            otherwise func is an area function
+        otherwise func is an area function
     grading_type: int
         type of grading:
         0 -> no grading

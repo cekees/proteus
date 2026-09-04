@@ -555,11 +555,13 @@ class V_base(object):
     #end def
     def stepPlotElementQuantities(self,mlvt,tsim):
         """
-        sort through desired quantities in quadrature dictionaries like m, dm, to plot
+        sort through desired quantities in quadrature dictionaries like m, dm, to plot::
+
           p    --- problem definition
           n    --- numerics definition
           mlvt --- multilevel vector transport that holds the quantities to measure
           tsim --- simulation time
+
         assumes this is the correct time to plot
         and plotOffSet is set correctly
         """
@@ -929,15 +931,17 @@ class V_base(object):
     def plotVectorElementQuantity(self,ckey,mlvt,tsim,nVectorPlotPointsPerElement=1):
         """
         plotting routine to look at vector quantity stored in global element quad dictionary q
-         input :
+
+        input::
+
           ckey --- what should be plotted
           p    --- problem definition
           n    --- numerics definition
           mlvt --- multilevel vector transport that holds the quantities to measure
           tsim --- simulation time
+
         assumes this is the correct time to plot
         and plotOffSet is set correctly
-
         """
         from proteusGraphical import vtkViewers
         p = self.p; n = self.n
@@ -1182,18 +1186,16 @@ Warning! viewScalarPointData nPoints_element=%s < %s too small for useLocal, usi
                                   storeMeshData=True,figureNumber=1,title=None):
         """
         input scalar variable and coordinates stored in dictionary
-           q['x'], q[ckey]
+        q['x'], q[ckey]
         respectively, generate global continuous interpolant
         should work for q, ebq_global, and ebqe quadrature dictionaries
 
         uses delaunay triangulation in 2d and 3d
 
-        scalar data is stored in
-            name_q
+        scalar data is stored in name_q
 
-        if storeMeshData = True, writes out
-            name_x_q    -- point data
-            tri_name_q  -- Delaunay representation (2d,3d)
+        if storeMeshData = True, writes out name_x_q (point data) and
+        tri_name_q (Delaunay representation, 2d/3d)
 
         returns number of figures actually plotted
         """
@@ -1300,18 +1302,16 @@ dx = (XYZ(1,2)-XYZ(1,1))/nx; dy = (XYZ(2,2)-XYZ(2,1))/ny; dz = (XYZ(3,2)-XYZ(3,1
                                   storeMeshData=True,figureNumber=1,title=None):
         """
         input vector variable and coordinates stored in dictionary
-           q['x'], q[ckey]
+        q['x'], q[ckey]
         respectively, generate global continuous interpolant
         should work for q, ebq_global, and ebqe quadrature dictionaries
 
         uses delaunay triangulation in 2d and 3d
 
-        vector data is stored in
-            name_q
+        vector data is stored in name_q
 
-        if storeMeshData = True, writes out
-            name_x_q    -- point data
-            tri_name_q  -- Delaunay representation (2d,3d)
+        if storeMeshData = True, writes out name_x_q (point data) and
+        tri_name_q (Delaunay representation, 2d/3d)
 
         returns number of figures actually generated
         """
@@ -1427,18 +1427,16 @@ dx = (XYZ(1,2)-XYZ(1,1))/nx; dy = (XYZ(2,2)-XYZ(2,1))/ny; dz = (XYZ(3,2)-XYZ(3,1
                                  storeMeshData=True,figureNumber=1,title=None):
         """
         input scalar variable and coordinates stored in dictionary
-           q['x'], q[ckey]
+        q['x'], q[ckey]
         respectively, generate local  interpolant that is element-wise continuous
         should work for q, ebq_global, and ebqe quadrature dictionaries
 
         uses delaunay triangulation in 2d and 3d on each element (stored in cell array)
 
-        scalar data is stored in
-            name_q
+        scalar data is stored in name_q
 
-        if storeMeshData = True, writes out
-            name_x_q    -- point data
-            tri_name_q  -- Delaunay representation (2d,3d)
+        if storeMeshData = True, writes out name_x_q (point data) and
+        tri_name_q (Delaunay representation, 2d/3d)
 
         returns number of figures actually plotted
         """

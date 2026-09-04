@@ -1,8 +1,5 @@
 """
 A simple implementation of basic 3D Euclidean Geometry
-
-.. inheritance-diagram:: proteus.EGeometry
-   :parts: 1
 """
 import math
 from math import *

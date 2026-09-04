@@ -13,6 +13,10 @@
 {%- endfor %}
 {%- endmacro %}
 
+{%- if pkgname == "proteus" %}
+:orphan:
+
+{% endif %}
 {%- if is_namespace %}
 {{- [pkgname, "namespace"] | join(" ") | e | heading }}
 {% else %}

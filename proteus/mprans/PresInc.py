@@ -31,14 +31,14 @@ class NumericalFlux(proteus.NumericalFlux.ConstantAdvection_Diffusion_SIPG_exter
 
 
 class Coefficients(TC_base):
-    """
+    r"""
     The coefficients for pressure increment solution
 
     Update is given by
 
     .. math::
 
-       \nabla\\cdot( -a \nabla \\phi^{k+1} - \\mathbf{q^t}^{k+1} ) = 0
+       \nabla\cdot( -a \nabla \phi^{k+1} - \mathbf{q^t}^{k+1} ) = 0
        a = \frac{\tau (1-\theta_s)}{\rho_f} + \frac{\tau \theta_s}{\rho_s}
        q^t = (1-\theta_s) v_f + \theta_s v_s
     """
