@@ -542,7 +542,7 @@ EXTENSIONS_TO_BUILD = [
               PROTEUS_PETSC_INCLUDE_DIRS + \
               PROTEUS_MPI_INCLUDE_DIRS,
               library_dirs=PROTEUS_PETSC_LIB_DIRS+PROTEUS_MPI_LIB_DIRS+PROTEUS_HDF5_LIB_DIRS,
-              libraries=['hdf5','stdc++','m']+PROTEUS_PETSC_LIBS+PROTEUS_MPI_LIBS+PROTEUS_HDF5_LIBS,
+              libraries=['stdc++','m']+PROTEUS_PETSC_LIBS+PROTEUS_MPI_LIBS+PROTEUS_HDF5_LIBS,
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS + PROTEUS_PETSC_EXTRA_LINK_ARGS,
               extra_compile_args=PROTEUS_EXTRA_COMPILE_ARGS + PROTEUS_PETSC_EXTRA_COMPILE_ARGS+PROTEUS_OPT),
     Extension('ctransportCoefficients',
@@ -678,7 +678,7 @@ EXTENSIONS_TO_BUILD = [
               PROTEUS_MPI_INCLUDE_DIRS,
               language="c++",
               library_dirs=PROTEUS_PETSC_LIB_DIRS+PROTEUS_MPI_LIB_DIRS+PROTEUS_HDF5_LIB_DIRS,
-              libraries=['hdf5','stdc++','m']+PROTEUS_PETSC_LIBS+PROTEUS_MPI_LIBS+PROTEUS_HDF5_LIBS,
+              libraries=['stdc++','m']+PROTEUS_PETSC_LIBS+PROTEUS_MPI_LIBS+PROTEUS_HDF5_LIBS,
               extra_compile_args=PROTEUS_EXTRA_COMPILE_ARGS + PROTEUS_PETSC_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS + PROTEUS_PETSC_EXTRA_LINK_ARGS,
     ),
@@ -700,7 +700,7 @@ EXTENSIONS_TO_BUILD = [
               PROTEUS_MPI_INCLUDE_DIRS,
               language="c++",
               library_dirs=PROTEUS_PETSC_LIB_DIRS+PROTEUS_MPI_LIB_DIRS+PROTEUS_HDF5_LIB_DIRS,
-              libraries=['hdf5','stdc++','m']+PROTEUS_PETSC_LIBS+PROTEUS_MPI_LIBS+PROTEUS_HDF5_LIBS,
+              libraries=['stdc++','m']+PROTEUS_PETSC_LIBS+PROTEUS_MPI_LIBS+PROTEUS_HDF5_LIBS,
               extra_compile_args=PROTEUS_EXTRA_COMPILE_ARGS + PROTEUS_PETSC_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS + PROTEUS_PETSC_EXTRA_LINK_ARGS,
     ),
@@ -722,7 +722,7 @@ EXTENSIONS_TO_BUILD = [
               PROTEUS_MPI_INCLUDE_DIRS,
               language="c++",
               library_dirs=PROTEUS_PETSC_LIB_DIRS+PROTEUS_MPI_LIB_DIRS+PROTEUS_HDF5_LIB_DIRS,
-              libraries=['hdf5','stdc++','m']+PROTEUS_PETSC_LIBS+PROTEUS_MPI_LIBS+PROTEUS_HDF5_LIBS,
+              libraries=['stdc++','m']+PROTEUS_PETSC_LIBS+PROTEUS_MPI_LIBS+PROTEUS_HDF5_LIBS,
               extra_compile_args=PROTEUS_EXTRA_COMPILE_ARGS + PROTEUS_PETSC_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS + PROTEUS_PETSC_EXTRA_LINK_ARGS,
     ),
@@ -753,7 +753,7 @@ EXTENSIONS_TO_BUILD = [
               PROTEUS_PETSC_INCLUDE_DIRS + PROTEUS_MPI_INCLUDE_DIRS,
               language="c++",
               library_dirs=PROTEUS_PETSC_LIB_DIRS+PROTEUS_MPI_LIB_DIRS+PROTEUS_HDF5_LIB_DIRS,
-              libraries=['hdf5','stdc++','m']+PROTEUS_PETSC_LIBS+PROTEUS_MPI_LIBS+PROTEUS_HDF5_LIBS,
+              libraries=['stdc++','m']+PROTEUS_PETSC_LIBS+PROTEUS_MPI_LIBS+PROTEUS_HDF5_LIBS,
               extra_compile_args=['-std=c++20']+PROTEUS_EXTRA_COMPILE_ARGS + PROTEUS_PETSC_EXTRA_COMPILE_ARGS+PROTEUS_OPT,
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS + PROTEUS_PETSC_EXTRA_LINK_ARGS,
     ),
@@ -960,6 +960,27 @@ if _os.environ.get("PROTEUS_SKIP_PUMI_CHRONO") or _os.environ.get("PROTEUS_SKIP_
 if _os.environ.get("PROTEUS_SKIP_PUMI_CHRONO") or _os.environ.get("PROTEUS_SKIP_CHRONO"):
     _skip.add("mbd.CouplingFSI")
 EXTENSIONS_TO_BUILD = [e for e in EXTENSIONS_TO_BUILD if e.name not in _skip]
+
+# PROTEUS_BUILD_EXTENSIONS: a comma-separated *allowlist* of extension names
+# to build, for build targets that only need a slice of proteus rather than
+# all of it. The skip flags above turn individual optional extensions off;
+# this is the inverse, for when the wanted set is much smaller than the
+# available one and listing what to keep is far shorter than listing what to
+# drop. Introduced for the emscripten-wasm32/JupyterLite cross-build (see
+# proteus/config/emscripten.py), which needs roughly a dozen of these.
+# Unset (the default) builds everything, exactly as before.
+_only = _os.environ.get("PROTEUS_BUILD_EXTENSIONS")
+if _only:
+    _wanted = {name.strip() for name in _only.split(',') if name.strip()}
+    _available = {e.name for e in EXTENSIONS_TO_BUILD}
+    _unknown = _wanted - _available
+    if _unknown:
+        raise SystemExit(
+            "PROTEUS_BUILD_EXTENSIONS names unknown extension(s): "
+            + ", ".join(sorted(_unknown))
+            + "\nAvailable: " + ", ".join(sorted(_available))
+        )
+    EXTENSIONS_TO_BUILD = [e for e in EXTENSIONS_TO_BUILD if e.name in _wanted]
 
 def setup_given_extensions(extensions):
     # Most Extensions above list several *_LIB_DIR constants (SUPERLU, LAPACK,
