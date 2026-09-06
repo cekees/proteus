@@ -12,7 +12,18 @@ import sys
 # at import time, mpi4py initializes the MPI execution environment calling MPI_Init_thread().
 # mpi4py must be imported before petsc4py otherwise petsc4py initializes MPI with MPI_Init().
 from mpi4py import MPI
-import petsc4py
+try:
+    import petsc4py
+except ImportError:
+    # petsc4py is optional. Proteus's own default linear solver
+    # (LinearSolvers.LU, a direct SuperLU factorisation -- see
+    # default_n.py) is serial and needs no PETSc at all, so a build that
+    # omits petsc4py entirely is still usable for serial runs; the
+    # emscripten/wasm target does exactly that. Everything Comm actually
+    # asks of a communicator below (rank, size, Barrier, allreduce) is
+    # provided by mpi4py just as well as by PETSc.COMM_WORLD, so fall
+    # back to it rather than failing at import.
+    petsc4py = None
 from .Profiling import logEvent
 
 
@@ -28,6 +39,11 @@ petscInitialized = False
 
 def init():
     global comm, petscInitialized
+    if petsc4py is None:
+        new_comm = Comm()
+        if not comm:
+            comm = new_comm
+        return new_comm
     if not petscInitialized:
         petsc4py.init(argv)
         petscInitialized = True
@@ -62,9 +78,13 @@ class Comm(object):
     """
 
     def __init__(self):
-        from petsc4py import PETSc
-        self.comm = PETSc.COMM_WORLD
-        self.mpi4py_comm = PETSc.COMM_WORLD.tompi4py()
+        if petsc4py is None:
+            self.comm = MPI.COMM_WORLD
+            self.mpi4py_comm = MPI.COMM_WORLD
+        else:
+            from petsc4py import PETSc
+            self.comm = PETSc.COMM_WORLD
+            self.mpi4py_comm = PETSc.COMM_WORLD.tompi4py()
     def isInitialized(self):
         return True
 
