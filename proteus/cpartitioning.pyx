@@ -42,30 +42,31 @@ cdef extern from "petscsys.h":
 
 
 cdef inline void _ensure_petsc():
-    """Make sure the PETSc *this* module is linked against is initialized.
+    """Initialize PETSc if nothing else has.
 
     Every entry point below calls into partitioning.cpp, which uses PETSc
-    (MatPartitioning, PetscBT, ISCreate*). PETSc is normally initialized
-    once by petsc4py, via proteus.Comm.init(), long before any mesh is
-    built -- and where libpetsc is a shared library that is the very same
-    PETSc this module uses, so the check below always finds it already
-    initialized and does nothing at all.
+    (MatPartitioning, PetscBT, ISCreate*), and PETSc is normally
+    initialized once by petsc4py, via proteus.Comm.init(), long before any
+    mesh is built. Where that has happened -- which is every ordinary
+    proteus run -- the check here finds PETSc already initialized and does
+    nothing.
 
-    It is not the same PETSc when libpetsc is linked statically into each
-    extension, as on the emscripten-wasm32 target: every wasm side module
-    then carries its own private copy of libpetsc, and of the MPI library
-    beneath it, each with its own global state. petsc4py initializing its
-    copy says nothing about this one, and the first PETSc call here dies
-    inside PetscCommDuplicate() with "MPI_Comm_get_attr() is not returning
-    a MPI_TAG_UB" -- MPI_Init having never run against this copy's
-    attribute table.
+    It matters when this extension is used without petsc4py having been
+    imported at all, which nothing in proteus's own import graph
+    guarantees: MeshTools imports cpartitioning lazily, inside the
+    functions that need it, so a caller can reach mesh partitioning
+    without ever having touched proteus.Comm. PetscInitialize() also calls
+    MPI_Init() when MPI isn't yet initialized, so this covers both layers.
 
-    Initializing it is sufficient, not just a workaround for the
-    duplication: this module only ever asks PETSc to partition a mesh over
-    the ranks of the communicator it is handed, so with a single-rank MPI
-    each private copy is a self-consistent one-rank world that shares no
-    state with any other. PetscInitialize() calls MPI_Init() itself when
-    MPI is not yet initialized, so this covers both layers.
+    Note this is *not* sufficient to give a statically linked libpetsc its
+    own initialized state, if that was why you came looking. PETSc's
+    globals have external linkage, so on a target that links libpetsc into
+    each extension separately -- emscripten-wasm32 -- Emscripten still
+    emits them as GOT.mem imports and resolves them across modules to
+    whichever loaded first. PetscInitializeCalled is therefore shared with
+    petsc4py's copy and this check sees it set, whatever this module's own
+    copy has or hasn't done. Keeping the MPI state underneath consistent
+    with that is mpi-serial's job, not this function's.
     """
     cdef PetscBool ready = PETSC_FALSE
     PetscInitialized(&ready)
