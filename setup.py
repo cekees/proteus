@@ -97,6 +97,40 @@ from Cython.Distutils.extension import Extension
 from Cython.Distutils import build_ext
 
 class custom_build_ext(build_ext):
+    def build_extension(self, ext):
+        # Four sources are listed by two extensions each: mesh.cpp and
+        # meshio.cpp (cmeshTools, cpartitioning), postprocessing.c
+        # (cfemIntegrals, cpostprocessing) and
+        # SubsurfaceTransportCoefficients.cpp (cSubsurfaceTransportCoefficients,
+        # cTwophaseDarcyCoefficients). setuptools derives each object path from
+        # the source path under a single self.build_temp, so both members of a
+        # pair compile to the *same* .o -- and since build_extensions sets
+        # self.parallel, setuptools builds extensions concurrently in a
+        # ThreadPoolExecutor over os.cpu_count() threads. Two threads then write
+        # one object file at once.
+        #
+        # This fails two ways, both silent. The linker can read a half-written
+        # object, yielding a .so missing every symbol from that source -- the
+        # build succeeds and the failure surfaces only at import ("undefined
+        # symbol: regularMeshNodes2D"). Or both compiles complete and whichever
+        # lands last is linked into both extensions, which is worse here because
+        # the pairs do not use the same flags: cpartitioning adds -std=c++20
+        # where cmeshTools does not, and cfemIntegrals defines PROTEUS_SUPERLU_H
+        # where cpostprocessing does not.
+        #
+        # Give every extension its own object directory. Mutating
+        # self.build_temp in place would itself race, so hand build_extension a
+        # shallow copy of this command carrying a private build_temp; the
+        # compiler is passed output_dir explicitly, so the copy is enough.
+        # imported here, not at module scope: the only `os` in this file's
+        # namespace arrives incidentally via `from proteus.config import *`.
+        import copy as _copy, os as _osmod
+        private = _copy.copy(self)
+        private.build_temp = _osmod.path.join(self.build_temp, '_ext',
+                                              ext.name.replace('.', '_'))
+        _osmod.makedirs(private.build_temp, exist_ok=True)
+        return build_ext.build_extension(private, ext)
+
     def build_extensions(self):
         self.parallel=True
         # OpenMPI's/MPICH's mpi.h transparently pulls in its legacy C++
