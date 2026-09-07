@@ -10,6 +10,47 @@
 #include "mesh.h"
 #include "meshio.h"
 
+#ifndef H5_HAVE_PARALLEL
+/* Serial HDF5 declares the MPI-IO driver's two property-list setters only
+   under H5_HAVE_PARALLEL (see H5FDmpio.h), so partitioning.cpp does not
+   compile against a serial HDF5 at all -- and serial HDF5 builds are
+   common. Their only callers here are partitionNodesFromTetgenFiles and
+   partitionNodesFromTriangleFiles.
+
+   Supply them, so that on one rank HDF5 falls back to its default (serial)
+   driver and default transfer mode. That is not a degradation: a single
+   process writing a file has nothing to coordinate, which is the same
+   reasoning Archiver.openHDF5() applies on the Python side. Across more
+   than one rank it genuinely would be wrong, so say so rather than quietly
+   writing a file holding only one rank's data.
+
+   H5FD_mpio_xfer_t and H5FD_MPIO_COLLECTIVE need no such treatment --
+   hdf5.h includes H5FDmpi.h unconditionally, so the enum is always
+   available; only the functions go missing. */
+static inline herr_t H5Pset_fapl_mpio(hid_t, MPI_Comm comm, MPI_Info)
+{
+  int size = 1;
+  MPI_Comm_size(comm, &size);
+  if (size > 1)
+    {
+      std::cerr << "proteus: partitioning a mesh from files across " << size
+                << " ranks requires HDF5 built with MPI-IO support, but this"
+                << " HDF5 is serial (H5_HAVE_PARALLEL undefined)."
+                << std::endl;
+      return -1;
+    }
+  return 0;
+}
+
+static inline herr_t H5Pset_dxpl_mpio(hid_t, H5FD_mpio_xfer_t)
+{
+  /* Collective vs independent transfer is a distinction without a
+     difference on one rank, and H5Pset_fapl_mpio above has already
+     rejected the case where it would matter. */
+  return 0;
+}
+#endif
+
 namespace proteus
 {
   //--memory profiling
