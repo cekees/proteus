@@ -80,24 +80,43 @@ PROTEUS_SUPERLU_LIB_DIR = PROTEUS_LIB_DIR
 PROTEUS_SUPERLU_LIB = 'superlu'
 PROTEUS_SUPERLU_H = r'"slu_ddefs.h"'
 
-# --- HDF5 ---------------------------------------------------------------
-# None of the C/C++ sources built for this target actually call into HDF5;
-# `hdf5` is only named because cmeshTools' Extension() hardcodes it in its
-# `libraries` list. Point the search at $PREFIX so that -lhdf5 resolves.
+# --- HDF5 (serial) ------------------------------------------------------
+# Only cpartitioning genuinely needs this: partitioning.h includes hdf5.h
+# and partitioning.cpp makes real H5* calls. Everything else in this
+# target's extension set names `hdf5` in its Extension()'s `libraries`
+# list without ever calling into it.
 PROTEUS_HDF5_INCLUDE_DIR = PROTEUS_INCLUDE_DIR
 PROTEUS_HDF5_LIB_DIRS = [PROTEUS_LIB_DIR]
-PROTEUS_HDF5_LIBS = []
+PROTEUS_HDF5_LIBS = ['hdf5']
 
-# --- Everything deliberately not built for this target -------------------
-PROTEUS_MPI_INCLUDE_DIRS = []
-PROTEUS_MPI_LIB_DIRS = []
-PROTEUS_MPI_LIBS = []
+# --- MPI (mpi-serial, static) -------------------------------------------
+# Also only for cpartitioning: partitioning.h includes mpi.h, and
+# cpartitioning.pyx cimports mpi4py.MPI, so the generated C++ needs both
+# mpi.h and mpi4py's own headers. Nothing else built here touches MPI from
+# C at all -- cmeshTools uses mpi4py only at the Python level.
+PROTEUS_MPI_INCLUDE_DIRS = [PROTEUS_INCLUDE_DIR]
+PROTEUS_MPI_LIB_DIRS = [PROTEUS_LIB_DIR]
+PROTEUS_MPI_LIBS = ['mpi-serial']
 
-PROTEUS_PETSC_INCLUDE_DIRS = []
-PROTEUS_PETSC_LIB_DIRS = []
-PROTEUS_PETSC_LIBS = []
+# --- PETSc (static, serial: --with-mpi=0 + f2cblaslapack) ---------------
+# Same story: cpartitioning is the one extension here that #includes
+# petsc.h and calls PETSc's C API (MatPartitioning, PetscBT, ISCreate*),
+# and it is not optional even on one rank -- MeshTools.partitionMesh()
+# builds the subdomain mesh that the rest of proteus then works on, so
+# every mesh, serial or not, goes through it.
+#
+# Note there is deliberately no -rpath here (PROTEUS_EXTRA_LINK_ARGS uses
+# -L instead). An rpath is meaningless for wasm, and embedding a build
+# prefix in a wasm module's dylink.0 section metadata corrupts the module
+# when the packaging step rewrites that prefix -- the failure that cost
+# this campaign most of Phase 1.
+PROTEUS_PETSC_INCLUDE_DIRS = [PROTEUS_INCLUDE_DIR]
+PROTEUS_PETSC_LIB_DIRS = [PROTEUS_LIB_DIR]
+PROTEUS_PETSC_LIBS = ['petsc']
 PROTEUS_PETSC_EXTRA_COMPILE_ARGS = []
 PROTEUS_PETSC_EXTRA_LINK_ARGS = []
+
+# --- Everything deliberately not built for this target -------------------
 
 PROTEUS_SCOREC_INCLUDE_DIRS = []
 PROTEUS_SCOREC_LIB_DIRS = []
