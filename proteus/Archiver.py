@@ -14,6 +14,33 @@ from xml.etree.ElementTree import *
 
 memory = Profiling.memory
 
+# h5py is only built against a parallel HDF5 in some environments. Serial
+# h5py builds are common -- pip wheels are serial, and so is any conda
+# h5py that isn't explicitly MPI-flavoured -- and asking one of those for
+# driver="mpio" raises ValueError("h5py was built without MPI support,
+# can't use mpio driver") rather than degrading to something workable.
+_H5PY_HAS_MPI = h5py.get_config().mpi
+
+
+def openHDF5(path, mode, comm_world):
+    """Open an HDF5 archive, using MPI-IO only when h5py can.
+
+    On a single rank the mpio driver buys nothing, so a serial h5py is
+    perfectly adequate and we fall back to the default driver. On more
+    than one rank it genuinely isn't, so say so plainly rather than
+    writing an archive that quietly loses every other rank's data.
+    """
+    if _H5PY_HAS_MPI:
+        return h5py.File(path, mode, driver='mpio', comm=comm_world)
+    if comm_world.size > 1:
+        raise RuntimeError(
+            "Archiving across %d ranks requires h5py built against a "
+            "parallel HDF5, but this h5py has no MPI support. Install a "
+            "parallel h5py, run on a single rank, or archive in text "
+            "format (useTextArchive=True)." % comm_world.size)
+    return h5py.File(path, mode)
+
+
 def indentXML(elem, level=0):
     i = "\n" + level*"  "
     if len(elem):
@@ -81,10 +108,9 @@ class AR_base(object):
                                   "ab")
             if not useTextArchive:
                 self.hdfFilename=filename+".h5"
-                self.hdfFile=h5py.File(os.path.join(self.dataDir,self.hdfFilename),
-                                       "a",
-                                       driver="mpio",
-                                       comm = comm_world)
+                self.hdfFile=openHDF5(os.path.join(self.dataDir,self.hdfFilename),
+                                      "a",
+                                      comm_world)
                 self.dataItemFormat="HDF"
             else:
                 self.textDataDir=filename+"_Data"
@@ -107,19 +133,17 @@ class AR_base(object):
             self.tree=ElementTree(file=self.xmlFile)
             if not useTextArchive:
                 self.hdfFilename=filename+".h5"
-                self.hdfFile=h5py.File(os.path.join(self.dataDir,
-                                                    self.hdfFilename),
-                                       "r",
-                                       driver = 'mpio',
-                                       comm = comm_world)
+                self.hdfFile=openHDF5(os.path.join(self.dataDir,
+                                                   self.hdfFilename),
+                                      "r",
+                                      comm_world)
                 try:
                     # The "global" extension is hardcoded in collect.py
-                    self.hdfFileGlb=h5py.File(
+                    self.hdfFileGlb=openHDF5(
                         os.path.join(self.dataDir,
                                      filename+"global.h5"),
                         "r",
-                        driver = 'mpio',
-                        comm = comm_world)
+                        comm_world)
                 except:
                     pass
                 self.dataItemFormat="HDF"
@@ -150,11 +174,10 @@ class AR_base(object):
                 )
             if not useTextArchive:
                 self.hdfFilename=filename+".h5"
-                self.hdfFile=h5py.File(os.path.join(self.dataDir,
-                                                    self.hdfFilename),
-                                       "w",
-                                       driver = 'mpio',
-                                       comm = comm_world)
+                self.hdfFile=openHDF5(os.path.join(self.dataDir,
+                                                   self.hdfFilename),
+                                      "w",
+                                      comm_world)
                 self.dataItemFormat="HDF"
                 self.comm.barrier()
             else:
