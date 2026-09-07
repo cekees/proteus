@@ -33,7 +33,47 @@ from proteus.partitioning cimport (c_partitionElements,
                                    buildQuadraticCubeSubdomain2GlobalMappings_3d,
                                    buildDiscontinuousGalerkinSubdomain2GlobalMappings)
 
+cdef extern from "petscsys.h":
+    ctypedef enum PetscBool:
+        PETSC_FALSE
+        PETSC_TRUE
+    int PetscInitialized(PetscBool *isInitialized)
+    int PetscInitializeNoArguments()
+
+
+cdef inline void _ensure_petsc():
+    """Make sure the PETSc *this* module is linked against is initialized.
+
+    Every entry point below calls into partitioning.cpp, which uses PETSc
+    (MatPartitioning, PetscBT, ISCreate*). PETSc is normally initialized
+    once by petsc4py, via proteus.Comm.init(), long before any mesh is
+    built -- and where libpetsc is a shared library that is the very same
+    PETSc this module uses, so the check below always finds it already
+    initialized and does nothing at all.
+
+    It is not the same PETSc when libpetsc is linked statically into each
+    extension, as on the emscripten-wasm32 target: every wasm side module
+    then carries its own private copy of libpetsc, and of the MPI library
+    beneath it, each with its own global state. petsc4py initializing its
+    copy says nothing about this one, and the first PETSc call here dies
+    inside PetscCommDuplicate() with "MPI_Comm_get_attr() is not returning
+    a MPI_TAG_UB" -- MPI_Init having never run against this copy's
+    attribute table.
+
+    Initializing it is sufficient, not just a workaround for the
+    duplication: this module only ever asks PETSc to partition a mesh over
+    the ranks of the communicator it is handed, so with a single-rank MPI
+    each private copy is a self-consistent one-rank world that shares no
+    state with any other. PetscInitialize() calls MPI_Init() itself when
+    MPI is not yet initialized, so this covers both layers.
+    """
+    cdef PetscBool ready = PETSC_FALSE
+    PetscInitialized(&ready)
+    if ready == PETSC_FALSE:
+        PetscInitializeNoArguments()
+
 def partitionElements(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
+    _ensure_petsc()
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     c_partitionElements(comm.ob_mpi,
                         cmesh.mesh,
@@ -50,6 +90,7 @@ def partitionElements(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, c
     )
 
 def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
+    _ensure_petsc()
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     c_partitionNodes(comm.ob_mpi,
                      cmesh.mesh,
@@ -80,6 +121,7 @@ def convertPUMIPartitionToPython(Comm comm, cmeshTools.CMesh cmesh, cmeshTools.C
     )
 
 def partitionNodesFromTetgenFiles(Comm comm, object filebase, int indexBase, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh, double memHardLimit):
+    _ensure_petsc()
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     if not isinstance(filebase, bytes):
         filebase = filebase.encode()
@@ -101,6 +143,7 @@ def partitionNodesFromTetgenFiles(Comm comm, object filebase, int indexBase, int
     )
 
 def partitionNodesFromTriangleFiles(Comm comm, object filebase, int indexBase, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
+    _ensure_petsc()
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     if not isinstance(filebase, bytes):
         filebase = filebase.encode()
@@ -136,6 +179,7 @@ def buildQuadraticLocal2GlobalMappings(Comm comm,
                                        np.ndarray quadratic_subdomain_l2g,
                                        np.ndarray quadraticNumbering_subdomain2global,
                                        np.ndarray quadratic_lagrangeNodes):
+    _ensure_petsc()
     cdef int nDOF_all_processes=0
     cdef int nDOF_subdomain=0
     cdef int max_dof_neighbors=0
@@ -201,6 +245,7 @@ def buildQuadraticCubeLocal2GlobalMappings(Comm comm,
                                            np.ndarray quadratic_subdomain_l2g,
                                            np.ndarray quadraticNumbering_subdomain2global,
                                            np.ndarray quadratic_lagrangeNodes):
+    _ensure_petsc()
     cdef int nDOF_all_processes=0
     cdef int nDOF_subdomain=0
     cdef int max_dof_neighbors=0
@@ -235,6 +280,7 @@ def buildDiscontinuousGalerkinLocal2GlobalMappings(Comm comm,
                                                    np.ndarray dg_dof_offsets_subdomain_owned,
                                                    np.ndarray dg_subdomain_l2g,
                                                    np.ndarray dgNumbering_subdomain2global):
+    _ensure_petsc()
     cdef int nDOF_all_processes=0
     cdef int nDOF_subdomain=0
     cdef int max_dof_neighbors=0
