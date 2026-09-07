@@ -9,7 +9,18 @@ from .MeshTools import *
 from .LinearAlgebraTools import *
 from .Quadrature import *
 from . import cfemIntegrals
-from . import cpartitioning
+try:
+    from . import cpartitioning
+except ImportError:
+    # cpartitioning is the parallel mesh/DOF partitioning extension. It is
+    # only ever called from the parallel local-to-global mapping builders
+    # further down this module -- MeshTools already imports it lazily,
+    # inside the individual functions that need it, for the same reason.
+    # Importing it at module scope here made it a hard requirement of
+    # FemTools (and so of LinearSolvers, and so of essentially all of
+    # proteus), which a serial-only build has no use for: the
+    # emscripten/wasm target doesn't build it at all.
+    cpartitioning = None
 from .Profiling import logEvent
 import numpy as np
 
