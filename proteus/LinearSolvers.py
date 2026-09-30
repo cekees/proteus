@@ -415,7 +415,7 @@ class KSP_petsc4py(LinearSolver):
         self.null_space = self._set_null_space_class()
         self.converged_on_maxit=False
         if convergenceTest in ['r-true', 'rits-true']:
-            self.r_work = self.petsc_L.getVecLeft()
+            self.r_work = self.petsc_L.createVecLeft()
             self.rnorm0 = None
             self.ksp.setConvergenceTest(self._converged_trueRes)
             if convergenceTest == 'rits-true':
@@ -1680,7 +1680,7 @@ class SchurPrecon(KSP_Preconditioner):
 
     def _converged_trueRes(self,ksp,its,rnorm):
         """ Function handle to feed to ksp's setConvergenceTest  """
-        r_work = ksp.getOperators()[1].getVecLeft()
+        r_work = ksp.getOperators()[1].createVecLeft()
         ksp.buildResidual(r_work)
         truenorm = r_work.norm()
         if its == 0:
