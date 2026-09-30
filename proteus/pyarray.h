@@ -45,6 +45,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ostream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -144,6 +145,31 @@ namespace proteus
         reference operator[](size_type i) noexcept { return (*this)(i); }
         const_reference operator[](size_type i) const noexcept { return (*this)(i); }
 
+        // Bounds-checked access, matching xt::pyarray::at. Same index
+        // alignment as operator(), plus the two checks xtensor makes:
+        // more indices than the rank is an error here (operator() silently
+        // drops the leading ones), and each index is range-checked against
+        // its axis. An axis of length 1 is exempt, as it is in xtensor,
+        // where it exists to let broadcasting through.
+        //
+        // Note the alignment applies to the check too: at(i) on a rank-2
+        // array checks i against the *last* dimension, not the first. That
+        // is xtensor's behaviour, surprising as it is; every call site in
+        // proteus is on a rank-1 array, where it is simply the flat bound.
+        template <class... Args>
+        reference at(Args... args)
+        {
+            check_access(args...);
+            return (*this)(args...);
+        }
+
+        template <class... Args>
+        const_reference at(Args... args) const
+        {
+            check_access(args...);
+            return (*this)(args...);
+        }
+
         // The underlying numpy array, for handing back to Python.
         const pybind11::object& pyobject() const noexcept { return m_obj; }
 
@@ -151,6 +177,9 @@ namespace proteus
 
         template <class... Args>
         size_type data_offset(Args... args) const noexcept;
+
+        template <class... Args>
+        void check_access(Args... args) const;
 
         pybind11::object m_obj;
         T* m_data = nullptr;
@@ -271,6 +300,37 @@ namespace proteus
                         * static_cast<difference_type>(m_strides[first_stride + t]);
             }
             return static_cast<size_type>(offset);
+        }
+    }
+
+    template <class T>
+    template <class... Args>
+    inline void pyarray<T>::check_access(Args... args) const
+    {
+        constexpr size_type m = sizeof...(Args);
+        if (m > m_dimension)
+        {
+            throw std::out_of_range("proteus::pyarray: " + std::to_string(m)
+                                    + " indices given for an array of rank "
+                                    + std::to_string(m_dimension));
+        }
+        if constexpr (m > 0)
+        {
+            const std::array<difference_type, m> idx{{static_cast<difference_type>(args)...}};
+            const size_type first_dim = m_dimension - m;
+            for (size_type t = 0; t < m; ++t)
+            {
+                const size_type extent = m_shape[first_dim + t];
+                if (extent != 1
+                    && (idx[t] < 0 || static_cast<size_type>(idx[t]) >= extent))
+                {
+                    throw std::out_of_range("proteus::pyarray: index "
+                                            + std::to_string(idx[t])
+                                            + " is out of bounds for axis "
+                                            + std::to_string(first_dim + t)
+                                            + " with size " + std::to_string(extent));
+                }
+            }
         }
     }
 
