@@ -36,31 +36,6 @@ export PYTHONPATH=${PROTEUS_PREFIX}/lib
 export LD_LIBRARY_PATH=${PROTEUS_PREFIX}/lib
 export DYLD_LIBRARY_PATH=${PROTEUS_PREFIX}/lib
 CC="mpicc" HDF5_MPI="ON" HDF5_DIR=${PROTEUS_PREFIX} pip install h5py scipy pybind11 swig future
-info "installing xtensor stack: xtl, xtensor, xtensor-python"
-info "installing xtl"
-git clone https://github.com/xtensor-stack/xtl.git
-cd xtl
-mkdir build
-cd build
-cmake -DCMAKE_INSTALL_PREFIX=${PROTEUS_PREFIX} ..
-make install
-cd ../..
-info "installing xtensor"
-git clone https://github.com/xtensor-stack/xtensor.git
-cd xtensor
-mkdir build
-cd build
-cmake -DCMAKE_INSTALL_PREFIX=${PROTEUS_PREFIX} ..
-make install
-cd ../..
-info "installing xtensor-python"
-git clone https://github.com/xtensor-stack/xtensor-python.git
-cd xtensor-python
-mkdir build
-cd build
-pybind11_DIR=${PROTEUS_PREFIX}/lib/python${PYVER}/site-packages/pybind11 cmake -DCMAKE_INSTALL_PREFIX=${PROTEUS_PREFIX} ..
-make install
-cd ../..
 info "installing chrono"
 git clone https://github.com/projectchrono/chrono.git
 cd chrono

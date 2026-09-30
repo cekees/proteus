@@ -1,8 +1,6 @@
 #ifndef COMPKERNEL_H
 #define COMPKERNEL_H
 #include <cmath>
-//#include "xtensor-python/pyarray.hpp"
-//#include "xtensor-python/pyvectorize.hpp"
 /**
  *   A class to provide indexing into Euclidean vectors and tensors.
  */
@@ -103,7 +101,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -116,14 +114,14 @@ public:
 				 const int k,
 				 double* h_dof,
 				 int* mesh_l2g,
-				 //xt::pyarray<double>& mesh_trial_ref,
+				 //proteus::pyarray<double>& mesh_trial_ref,
 				 double* mesh_trial_ref,
 				 double& h);
   inline void calculateMappingVelocity_element(const int eN,
 					       const int k,
 					       double* mesh_velocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt,
 					       double& yt,
@@ -231,7 +229,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -296,7 +294,7 @@ public:
 				 const int k,
 				 double* h_dof,
 				 int* mesh_l2g,
-				 //xt::pyarray<double>& mesh_trial_ref,
+				 //proteus::pyarray<double>& mesh_trial_ref,
 				 double* mesh_trial_ref,
 				 double& h)
   {
@@ -313,7 +311,7 @@ public:
 					       const int k,
 					       double* mesh_velocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt,
 					       double& yt,
@@ -523,7 +521,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -550,7 +548,7 @@ public:
 					       const int k,
 					       double* mesh_velocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt,
 					       double& yt)
@@ -667,7 +665,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -722,7 +720,7 @@ public:
 				 const int k,
 				 double* h_dof,
 				 int* mesh_l2g,
-				 //xt::pyarray<double>& mesh_trial_ref,
+				 //proteus::pyarray<double>& mesh_trial_ref,
 				 double* mesh_trial_ref,
 				 double& h)
   {
@@ -739,7 +737,7 @@ public:
 					       const int k,
 					       double* mesh_velocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt,
 					       double& yt)
@@ -921,7 +919,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -947,7 +945,7 @@ public:
 					       const int k,
 					       double* mesh_velocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt,
 					       double& yt,
@@ -1060,7 +1058,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -1097,7 +1095,7 @@ public:
 				 const int k,
 				 double* h_dof,
 				 int* mesh_l2g,
-				 //xt::pyarray<double>& mesh_trial_ref,
+				 //proteus::pyarray<double>& mesh_trial_ref,
 				 double* mesh_trial_ref,
 				 double& h)
   {
@@ -1113,7 +1111,7 @@ public:
 					       const int k,
 					       double* mesh_velocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt)
   {
@@ -1264,7 +1262,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -1289,7 +1287,7 @@ public:
 					       const int k,
 					       double* mesh_velocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt,
 					       double& yt,
@@ -2013,7 +2011,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -2030,7 +2028,7 @@ public:
 				 const int k,
 				 double* h_dof,
 				 int* mesh_l2g,
-				 //xt::pyarray<double>& mesh_trial_ref,
+				 //proteus::pyarray<double>& mesh_trial_ref,
 				 double* mesh_trial_ref,
 				 double& h)
   {
@@ -2046,7 +2044,7 @@ public:
 					       const int k,
 					       double* meshVelocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt,
 					       double& yt,
@@ -2844,7 +2842,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -2860,7 +2858,7 @@ public:
 				 const int k,
 				 double* h_dof,
 				 int* mesh_l2g,
-				 //xt::pyarray<double>& mesh_trial_ref,
+				 //proteus::pyarray<double>& mesh_trial_ref,
 				 double* mesh_trial_ref,
 				 double& h)
   {
@@ -2876,7 +2874,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -2893,7 +2891,7 @@ public:
 					       const int k,
 					       double* meshVelocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt,
 					       double& yt)
@@ -2905,7 +2903,7 @@ public:
 					       const int k,
 					       double* meshVelocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt,
 					       double& yt,
@@ -3721,7 +3719,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -3737,7 +3735,7 @@ public:
 				 const int k,
 				 double* h_dof,
 				 int* mesh_l2g,
-				 //xt::pyarray<double>& mesh_trial_ref,
+				 //proteus::pyarray<double>& mesh_trial_ref,
 				 double* mesh_trial_ref,
 				 double& h)
   {
@@ -3753,7 +3751,7 @@ public:
 				       const int k,
 				       double* mesh_dof,
 				       int* mesh_l2g,
-				       //xt::pyarray<double>& mesh_trial_ref,
+				       //proteus::pyarray<double>& mesh_trial_ref,
 				       double* mesh_trial_ref,
 				       double* mesh_grad_trial_ref,
 				       double* jac,
@@ -3770,7 +3768,7 @@ public:
 					       const int k,
 					       double* meshVelocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt,
 					       double& yt)
@@ -3782,7 +3780,7 @@ public:
 					       const int k,
 					       double* meshVelocity_dof,
 					       int* mesh_l2g,
-					       //xt::pyarray<double>& mesh_trial_ref,
+					       //proteus::pyarray<double>& mesh_trial_ref,
 					       double* mesh_trial_ref,
 					       double& xt,
 					       double& yt,

@@ -858,7 +858,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["nExteriorElementBoundaries_global"] = self.mesh.nExteriorElementBoundaries_global
         argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
         argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
-        argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray, 
+        argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
         argsDict["INTEGRATE_BY_PARTS_DIV_U"] = self.coefficients.INTEGRATE_BY_PARTS_DIV_U
         argsDict["q_a"] = self.q['a']
         argsDict["ebqe_a"] = self.ebqe['a']

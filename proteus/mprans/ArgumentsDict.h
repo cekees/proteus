@@ -4,8 +4,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
-#include "xtensor-python/pyarray.hpp"
-#include "xtensor/io/xio.hpp"
+#include "pyarray.h"
 
 namespace proteus
 {
@@ -61,7 +60,7 @@ namespace proteus
      ******************/
 
     template <class K, class T>
-    using pyarray_dict = throwing_map<K, xt::pyarray<T>>;
+    using pyarray_dict = throwing_map<K, proteus::pyarray<T>>;
 
     template <class K, class T>
     using scalar_dict = throwing_map<K, T>;
@@ -74,7 +73,7 @@ namespace proteus
         scalar_dict<std::string, int> m_iscalar;
 
         template <class T>
-        xt::pyarray<T>& array(const std::string& key);
+        proteus::pyarray<T>& array(const std::string& key);
 
         template <class T>
         T& scalar(const std::string& key);
@@ -150,13 +149,13 @@ namespace proteus
      *********************************/
 
     template <>
-    inline xt::pyarray<double>& arguments_dict::array<double>(const std::string& key)
+    inline proteus::pyarray<double>& arguments_dict::array<double>(const std::string& key)
     {
         return find_element(key, m_darray, m_iarray, "pyarray<double>", "pyarray<int>");
     }
 
     template <>
-    inline xt::pyarray<int>& arguments_dict::array<int>(const std::string& key)
+    inline proteus::pyarray<int>& arguments_dict::array<int>(const std::string& key)
     {
         return find_element(key, m_iarray, m_darray, "pyarray<int>", "pyarray<double>");
     }

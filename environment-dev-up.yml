@@ -48,7 +48,6 @@ dependencies:
   - ncurses >=6.6
   - python >=3.13.15
   - ipyparallel >=9.2
-  - xtensor-python >=0.29.0
   - git-lfs >=3.7
   - eigen >=5.0.1
   - zoltan >=3.901

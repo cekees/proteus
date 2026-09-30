@@ -53,48 +53,53 @@ itself, which is a confusing half-measure.
   mode to actually find compiled extensions)? Validate on a small
   extension before assuming it'll work for the whole package.
 
-## 2. Replace xtensor with a native proteus module
+## 2. Replace xtensor with a native proteus module — DONE
 
-**Current state:** ~40 of proteus's C++ extensions (`ArgumentsDict.h`,
-`RANS2P.h`, `RANS2P2D.h`, and everything that includes them —
-see `get_xtensor_include()` in `setup.py`) `#include` xtensor/xtensor-python
-headers directly. This pulls in three extra PETSc packages
-(`xtl.py`, `xtensor.py`, `xtensor-python.py`) purely for their headers —
-nothing in proteus links against a compiled xtensor library, it's a
-header-only dependency used for its array-view type.
+Done on the `remove-xtensor` branch. `proteus/pyarray.h` defines
+`proteus::pyarray<T>`, a non-owning numpy-array view built on pybind11 and
+the numpy C-API only, and every `xt::pyarray<T>` in the tree now uses it.
+`xtl`/`xtensor`/`xtensor-python` are gone from proteus's dependency list
+(`setup.py`'s `get_xtensor_include()` became `get_pybind_include_dirs()`,
+and the `environment-*-dev.yml` files list `pybind11` directly instead of
+getting it transitively from `xtensor-python`).
 
-This has already caused real friction this session: `xtensor-python`
-0.28.0 doesn't compile against pybind11 3.x (`xtensor-python.py` has to
-pin `pybind11.version = '2.13.6'` to work around it), which is exactly the
-kind of transitive-version-compatibility problem that motivates removing
-the dependency rather than continuing to pin around it.
+The audit that made this small: of xtensor's API, the 8,500-odd
+`xt::pyarray` sites used only `data()`, `size()`, `shape(i)`, `operator[]`
+and `operator()`. Five sites used xtensor *expressions* and were rewritten
+as plain loops over `std::valarray` (`xt::where`/broadcast arithmetic in
+`SW2DCV.h`, `xt::xarray` + `xt::amax` in `RANS2P.h`/`RANS2P2D.h`) — the
+same idiom the surrounding code in those files already used.
 
-**The plan** (already noted in `proteus.py`'s own comments): replace
-xtensor's array-view usage with a proteus-owned, PyArrayView-style header
-built only on pybind11 and numpy — both already hard dependencies of
-proteus regardless of xtensor. This drops `xtl`/`xtensor`/`xtensor-python`
-from the dependency list entirely.
+Two things worth knowing about the replacement:
 
-**Where to start:**
-- Find every actual xtensor API surface used in `ArgumentsDict.h`/
-  `RANS2P.h`/`RANS2P2D.h` (likely just `xt::pyarray<double>`-style views
-  over numpy arrays passed from Python, plus whatever indexing/slicing
-  operations proteus actually calls on them — audit rather than assume,
-  xtensor's API surface is large but proteus's usage of it is probably
-  narrow).
-- Design the replacement header to cover exactly that usage, using
-  pybind11's own `py::array_t<double>` (or a thin wrapper around it) —
-  this is a much smaller surface to implement and maintain than
-  reimplementing xtensor generally.
-- This is a mechanical-but-widespread change (touches ~40 extensions'
-  worth of `#include` and usage sites), so plan for a dedicated pass with
-  a clear "compiles and every affected test still passes" checkpoint,
-  rather than doing it incrementally alongside other work.
-- Once done: remove `xtl.py`/`xtensor.py`/`xtensor-python.py` from
-  `config/BuildSystem/config/packages/`, drop the corresponding
-  `--download-*` flags from `configure_macos_arm64.sh` and
-  `README_PROTEUS.md`, and drop `proteus.py`'s dependency on
-  `xtensorpython`.
+- `operator[](i)` and `operator()(i0, i1, ...)` reproduce xtensor's index
+  alignment rule exactly (fewer indices than rank align with the *trailing*
+  dimensions; more than rank drops the leading ones), which is what makes
+  `arr[i]` a flat index and lets it agree with the `arr.data()[i]` the
+  kernels use interchangeably on the same array.
+- It deliberately does **not** reproduce xtensor's conversion behaviour.
+  `xt::pyarray`'s caster used `PyArray_FromAny(..., NPY_ARRAY_FORCECAST)`,
+  so it accepted any array-like — a tuple, a list, a float32 array where
+  double was wanted, a strided slice — by silently making a converted copy.
+  Harmless for an input array, silently wrong for an output one (the kernel
+  writes into the copy). `proteus::pyarray` converts nothing. That
+  immediately surfaced eleven real `argsDict[...] = arr,` typos on the
+  Python side (a trailing comma makes the value a 1-tuple) in
+  `RANS3PF.py`, `RANS2P_IB.py`, `PresInc.py`, `RANS3PSed.py`,
+  `richards/ADR.py` and `richards/Richards.py`; all are fixed.
+
+**Remaining, and it has an ordering constraint:** the PETSc fork
+(`cekees/petsc`, branch `download-proteus-support`) still carries
+`xtl.py`/`xtensor.py`/`xtensor-python.py`, `proteus.py`'s dependency on
+`xtensorpython`, and the `--download-xtl --download-xtensor
+--download-xtensor-python` flags in `configure_macos_arm64.sh` /
+`README_PROTEUS.md`. Those edits are prepared but must not land until this
+proteus change is merged, because `proteus.py` pins `self.gitcommit =
+'main'` — dropping xtensor from the fork while proteus `main` still
+includes xtensor headers would break `--download-proteus`. Removing
+`xtensor-python.py` also drops that file's `self.pybind11.version =
+'2.13.6'` pin, which is the only thing holding pybind11 back to 2.x in the
+BuildSystem path.
 
 ## 3. Re-enable skipped tests
 

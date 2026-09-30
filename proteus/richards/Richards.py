@@ -1597,7 +1597,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["nElements_global"] = self.mesh.nElements_global
         argsDict["ebqe_penalty_ext"] = self.ebqe['penalty']
-        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes,
+        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
         argsDict["isSeepageFace"] = self.coefficients.isSeepageFace
         argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
@@ -1754,8 +1754,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.calculateResidual = self.richards.calculateResidual_entropy_viscosity
             self.calculateJacobian = self.richards.calculateMassMatrix
         
-        if self.delta_x_ij is None:
-            self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
         self.calculateResidual(argsDict)
         # if getattr(self, "_theta_log_count", 0) < 5:
         #     q_theta = self.q[('theta',0)]
@@ -1960,7 +1958,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["nElements_global"] = self.mesh.nElements_global
         argsDict["ebqe_penalty_ext"] = self.ebqe['penalty']
-        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes,
+        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
         argsDict["isSeepageFace"] = self.coefficients.isSeepageFace
         argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
