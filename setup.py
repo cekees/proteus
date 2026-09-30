@@ -1014,7 +1014,7 @@ def setup_given_extensions(extensions):
         if getattr(ext, 'library_dirs', None):
             ext.library_dirs = list(dict.fromkeys(ext.library_dirs))
     setup(name='proteus',
-          version='1.9.0',
+          version='2.0.0.dev',
           classifiers=[
               'Development Status :: 4 - Beta',
               'Environment :: Console',
