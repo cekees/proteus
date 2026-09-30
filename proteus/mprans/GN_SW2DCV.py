@@ -1294,8 +1294,6 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["heta_max"] = self.heta_max
         argsDict["kin_max"] = self.kin_max
         argsDict["x_values"] = self.dofsXCoord
-        argsDict["x_min"] = np.max(self.mesh.nodeArray[:, 0])
-        argsDict["x_max"] = np.min(self.mesh.nodeArray[:, 0])
         argsDict["inverse_mesh"] = self.inverse_mesh
         argsDict["h0_max"] = self.h0_max
         argsDict["RHS_high_h"] = self.RHS_high_h

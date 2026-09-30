@@ -4903,22 +4903,66 @@ class Richards_IIPG_exterior(NF_base):
                  getDiffusiveFluxBoundaryConditions)
         self.epsSeepage = 3.0
         self.hasInterior=False
+        #per-problem override: Richards.Coefficients(...,penalty_constant=1.0e4)
         self.penalty_constant = 100.0
         self.penalty_power = 1.0
+    def setDirichletValues(self, ebqe):
+        """
+        Minimal 2-phase safe version.
 
-    def setDirichletValues(self,ebqe):
-        self.isDOFBoundary[0][:]=0
+        - CHANGED: reset boundary flags per component (not just water/0)
+        - CHANGED: set flags for the current component 'ci' (not hardcoded 0)
+        - NEW: shape-safety guards so arrays exist and match shapes even if no BCs
+        """
+        import numpy as np
+        # --- ensure per-component storage exists and zero flags (MINIMAL CHANGE) ---
         for ci in range(self.nc):
-            self.ebqe[('u',ci)].flat[:] = ebqe[('u',ci)].flat[:]
-            for (ebNE,k),g,x in zip(list(self.DOFBoundaryConditionsDictList[ci].keys()),
-                                    list(self.DOFBoundaryConditionsDictList[ci].values()),
-                                    list(self.DOFBoundaryPointDictList[ci].values())):
-                self.ebqe[('u',ci)][ebNE,k]=g(x,self.vt.timeIntegration.t)
-                self.isDOFBoundary[0][ebNE,k] = 1#this will get turned off if on the seepage boundary and flow is inward
+            # guarantee local ebqe storage for ('u', ci)
+            if ('u', ci) not in self.ebqe:
+                self.ebqe[('u', ci)] = np.zeros_like(ebqe[('u', ci)], dtype='d')
+            else:
+                # copy current boundary field into local buffer
+                self.ebqe[('u', ci)].flat[:] = ebqe[('u', ci)].flat[:]
+
+            # guarantee per-component isDOFBoundary with correct shape
+            if (not hasattr(self, 'isDOFBoundary') or
+                ci not in self.isDOFBoundary or
+                self.isDOFBoundary[ci].shape != self.ebqe[('u', ci)].shape):
+                if not hasattr(self, 'isDOFBoundary'):
+                    self.isDOFBoundary = {}
+                self.isDOFBoundary[ci] = np.zeros_like(self.ebqe[('u', ci)], dtype='i')
+            else:
+                self.isDOFBoundary[ci][:] = 0  # CHANGED: reset flags per component
+
+        # --- impose Dirichlet values and mark flags per component (MINIMAL CHANGE) ---
+        for ci in range(self.nc):
+            # These dicts may be empty; zip handles that safely.
+            keys   = list(self.DOFBoundaryConditionsDictList[ci].keys())
+            funs   = list(self.DOFBoundaryConditionsDictList[ci].values())
+            points = list(self.DOFBoundaryPointDictList[ci].values())
+            for (ebNE, k), g, x in zip(keys, funs, points):
+                self.ebqe[('u', ci)][ebNE, k] = g(x, self.vt.timeIntegration.t)
+                self.isDOFBoundary[ci][ebNE, k] = 1  # CHANGED: flag for ci (not hardcoded 0)
+
+        # --- periodic BC mapping stays the same but do it per component (UNCHANGED LOGIC) ---
         for ci in range(self.nc):
             for bci in list(self.periodicBoundaryConditionsDictList[ci].values()):
-                self.ebqe[('u',ci)][bci[0]]=ebqe[('u',ci)][bci[1]]
-                self.ebqe[('u',ci)][bci[1]]=ebqe[('u',ci)][bci[0]]
+                self.ebqe[('u', ci)][bci[0]] = ebqe[('u', ci)][bci[1]]
+                self.ebqe[('u', ci)][bci[1]] = ebqe[('u', ci)][bci[0]]
+
+    # def setDirichletValues(self,ebqe):
+    #     self.isDOFBoundary[0][:]=0
+    #     for ci in range(self.nc):
+    #         self.ebqe[('u',ci)].flat[:] = ebqe[('u',ci)].flat[:]
+    #         for (ebNE,k),g,x in zip(list(self.DOFBoundaryConditionsDictList[ci].keys()),
+    #                                 list(self.DOFBoundaryConditionsDictList[ci].values()),
+    #                                 list(self.DOFBoundaryPointDictList[ci].values())):
+    #             self.ebqe[('u',ci)][ebNE,k]=g(x,self.vt.timeIntegration.t)
+    #             self.isDOFBoundary[0][ebNE,k] = 1#this will get turned off if on the seepage boundary and flow is inward
+    #     for ci in range(self.nc):
+    #         for bci in list(self.periodicBoundaryConditionsDictList[ci].values()):
+    #             self.ebqe[('u',ci)][bci[0]]=ebqe[('u',ci)][bci[1]]
+    #             self.ebqe[('u',ci)][bci[1]]=ebqe[('u',ci)][bci[0]]
     def calculateExteriorNumericalFlux(self,inflowFlag,q,ebqe):
         ebqe[('advectiveFlux',0)].flat[:]=0.0#just put everthing in the diffusive flux
         self.ebqe[('u',0)].flat[:] = ebqe[('u',0)].flat[:]
@@ -4975,3 +5019,131 @@ class Richards_SIPG_exterior(Richards_IIPG_exterior):
         self.boundaryAdjoint_sigma=1.0
         self.penalty_constant = 100.0
         self.penalty_power = 1.0
+
+# class Richards_IIPG_exterior(NF_base):
+#     hasInterior=False
+#     def __init__(self,vt,getPointwiseBoundaryConditions,
+#                  getAdvectiveFluxBoundaryConditions,
+#                  getDiffusiveFluxBoundaryConditions):
+#         NF_base.__init__(self,vt,getPointwiseBoundaryConditions,
+#                  getAdvectiveFluxBoundaryConditions,
+#                  getDiffusiveFluxBoundaryConditions)
+#         self.epsSeepage = 3.0
+#         self.hasInterior=False
+#         self.penalty_constant = 100.0
+#         self.penalty_power = 1.0
+#         # ADDED: cache sizes and nc
+#         self.nc = vt.nc
+#         self.nEB = vt.mesh.nExteriorElementBoundaries_global
+#         # note: nQb is set after initializeElementBoundaryQuadrature runs, so guard in methods
+
+#     def setDirichletValues(self,ebqe):
+#         # ADDED: if no exterior boundaries, nothing to do
+#         if self.vt.mesh.nExteriorElementBoundaries_global == 0:
+#             return
+#         # ADDED: zero flags for all components, not just ci=0
+#         for ci in range(self.nc):
+#             self.isDOFBoundary[ci][:] = 0  # CHANGED: was self.isDOFBoundary[0][:]=0
+
+#         # Copy current u trace, then apply pointwise Dirichlet values per component if any
+#         for ci in range(self.nc):  # CHANGED: loop over components
+#             self.ebqe[('u',ci)].flat[:] = ebqe[('u',ci)].flat[:]
+#             for (ebNE,k),g,x in zip(list(self.DOFBoundaryConditionsDictList[ci].keys()),
+#                                     list(self.DOFBoundaryConditionsDictList[ci].values()),
+#                                     list(self.DOFBoundaryPointDictList[ci].values())):
+#                 self.ebqe[('u',ci)][ebNE,k]=g(x,self.vt.timeIntegration.t)
+#                 self.isDOFBoundary[ci][ebNE,k] = 1  # CHANGED: per-component flag
+
+#         # Periodic copy per component if present
+#         for ci in range(self.nc):  # CHANGED: loop over components
+#             for bci in list(self.periodicBoundaryConditionsDictList[ci].values()):
+#                 self.ebqe[('u',ci)][bci[0]] = ebqe[('u',ci)][bci[1]]
+#                 self.ebqe[('u',ci)][bci[1]] = ebqe[('u',ci)][bci[0]]
+
+#     def calculateExteriorNumericalFlux(self,inflowFlag,q,ebqe):
+#         # ADDED: if no exterior boundaries, nothing to do
+#         if self.vt.mesh.nExteriorElementBoundaries_global == 0:
+#             return
+
+#         # Put everything in diffusive flux (as before) for all components
+#         for ci in range(self.nc):  # CHANGED
+#             ebqe[('advectiveFlux',ci)].flat[:] = 0.0
+
+#         # Apply pointwise Dirichlet on traces for all components (kept behavior)
+#         for ci in range(self.nc):  # CHANGED
+#             self.ebqe[('u',ci)].flat[:] = ebqe[('u',ci)].flat[:]
+#             for (ebNE,k),g,x in zip(list(self.DOFBoundaryConditionsDictList[ci].keys()),
+#                                     list(self.DOFBoundaryConditionsDictList[ci].values()),
+#                                     list(self.DOFBoundaryPointDictList[ci].values())):
+#                 self.ebqe[('u',ci)][ebNE,k]=g(x,self.vt.timeIntegration.t)
+#                 self.isDOFBoundary[ci][ebNE,k] = 1  # CHANGED
+
+#         # Evaluate coefficients on boundary traces
+#         self.vt.coefficients.evaluate(self.vt.timeIntegration.t,self.ebqe)
+
+#         # Zero Jacobian-like placeholders per component
+#         for ci in range(self.nc):  # CHANGED
+#             self.ebqe[('da',ci,ci,ci)].flat[:] = 0.0
+#             self.ebqe[('df',ci,ci)].flat[:]     = 0.0
+
+#         # Call C-kernel per component using that component's blocks/keys
+#         # (these kernels are generic as long as we pass (ci,ci) blocks)
+#         for ci in range(self.nc):  # ADDED
+#             cnumericalFlux.calculateExteriorNumericalFluxRichards_sd(
+#                 self.vt.coefficients.sdInfo[(ci,ci)][0],
+#                 self.vt.coefficients.sdInfo[(ci,ci)][1],
+#                 self.vt.coefficients.isSeepageFace,
+#                 self.isDOFBoundary[ci],          # CHANGED: per-component flags
+#                 ebqe['n'],
+#                 self.ebqe[('u',ci)],
+#                 self.ebqe[('a',ci,ci)],
+#                 ebqe[('grad(u)',ci)],
+#                 ebqe[('u',ci)],
+#                 self.ebqe[('f',ci)],
+#                 ebqe[('penalty')],
+#                 ebqe[('diffusiveFlux',ci,ci)]
+#             )
+
+#     def updateExteriorNumericalFluxJacobian(self,l2g,inflowFlag,q,ebqe,dphi,
+#                                             fluxJacobian_exterior,fluxJacobian_eb,fluxJacobian_hj):
+#         # ADDED: if no exterior boundaries, nothing to do
+#         if self.vt.mesh.nExteriorElementBoundaries_global == 0:
+#             return
+
+#         # Call the Jacobian kernel per component (generic over (ci,ci))
+#         for ci in range(self.nc):  # CHANGED
+#             cnumericalFlux.calculateExteriorNumericalFluxJacobianRichards_sd(
+#                 self.vt.coefficients.sdInfo[(ci,ci)][0],
+#                 self.vt.coefficients.sdInfo[(ci,ci)][1],
+#                 self.isDOFBoundary[ci],               # CHANGED: per-component flags
+#                 ebqe['n'],
+#                 self.ebqe[('u',ci)],
+#                 self.ebqe[('a',ci,ci)],
+#                 self.ebqe[('da',ci,ci,ci)],
+#                 ebqe[('grad(u)',ci)],
+#                 ebqe[('grad(v)',ci)],
+#                 ebqe[('u',ci)],
+#                 self.ebqe[('df',ci,ci)],
+#                 ebqe[('v',ci)],
+#                 ebqe[('penalty')],
+#                 fluxJacobian_exterior[ci][ci]
+#             )
+
+# class Richards_SIPG_exterior(Richards_IIPG_exterior):
+#     hasInterior=False
+#     def __init__(self,
+#                  vt,
+#                  getPointwiseBoundaryConditions,
+#                  getAdvectiveFluxBoundaryConditions,
+#                  getDiffusiveFluxBoundaryConditions):
+#         Richards_IIPG_exterior.__init__(self,
+#                                         vt,
+#                                         getPointwiseBoundaryConditions,
+#                                         getAdvectiveFluxBoundaryConditions,
+#                                         getDiffusiveFluxBoundaryConditions)
+
+#         self.hasInterior=False
+#         self.includeBoundaryAdjoint=True
+#         self.boundaryAdjoint_sigma=1.0
+#         self.penalty_constant = 100.0
+#         self.penalty_power = 1.0

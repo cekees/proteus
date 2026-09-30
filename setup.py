@@ -50,12 +50,87 @@ for _cfg_vars in (cfg_vars, _stdlib_sysconfig.get_config_vars()):
         if isinstance(_cfg_vars.get(key), str):
             _cfg_vars[key] = _dedup_rpath_tokens(_cfg_vars[key])
 
+# '-partition=none' is a *mangled* '-flto-partition=none'. conda-forge's
+# python recipe strips its own build-time LTO flags back out of the installed
+# _sysconfigdata, and a substring removal of '-flto' turns
+# '-flto-partition=none' into '-partition=none' -- which no gcc/g++ accepts
+# ("unrecognized command-line option '-partition=none'; did you mean
+# '-flto-partition=none'?"). The token sits in the interpreter's own
+# sysconfig CFLAGS, so every extension this interpreter builds inherits it
+# and the whole wheel build dies at the first compile, before any of
+# proteus's own sources are even parsed.
+#
+# This is per python *build*, not per version, which is why the same source
+# builds locally and fails in CI: linux-64 python 3.13.15 from
+# python-split_1786366211553 has the LTO flags cleanly removed (blank gaps in
+# CFLAGS where they were), while 3.13.15 from python-split_1788361500653 --
+# the build the sdist.yml "linux-64 / py3.13 (locked)" leg resolves, since
+# the environment files pin the version but not the build string -- carries
+# the mangled token. Dropping it is safe rather than a workaround for a flag
+# we want: the '-flto' it was an option to is already gone, and the
+# '-fuse-linker-plugin'/'-ffat-lto-objects' left beside it are valid options
+# that are inert without it.
+#
+# Patched over *both* config dicts for the same reason the rpath dedup above
+# is: depending on the setuptools version the compiler is customized from the
+# stdlib `sysconfig` cache rather than `distutils.sysconfig`'s, and pip's
+# build isolation installs its own newer setuptools regardless of what the
+# conda environment pins -- the failing CI compile lines still carry the
+# leading '-Wall' that the distutils-only rewrite at the top of this file
+# replaces with '-w', which is direct evidence that under an isolated build
+# it is the stdlib dict, not that one, that reaches the compiler.
+for _cfg_vars in (cfg_vars, _stdlib_sysconfig.get_config_vars()):
+    for key, value in _cfg_vars.items():
+        if isinstance(value, str) and '-partition=none' in value:
+            _cfg_vars[key] = value.replace('-partition=none', '')
+
+# setuptools appends the *environment's* CFLAGS/CXXFLAGS/CPPFLAGS/LDFLAGS to
+# each compile and link line on top of whatever sysconfig supplies, so scrub
+# those too in case an activation script re-exports the same broken flags.
+for _env_var in ('CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS'):
+    if '-partition=none' in os.environ.get(_env_var, ''):
+        os.environ[_env_var] = os.environ[_env_var].replace('-partition=none', '')
+
 from distutils.core import setup
 from Cython.Build import cythonize
 from Cython.Distutils.extension import Extension
 from Cython.Distutils import build_ext
 
 class custom_build_ext(build_ext):
+    def build_extension(self, ext):
+        # Four sources are listed by two extensions each: mesh.cpp and
+        # meshio.cpp (cmeshTools, cpartitioning), postprocessing.c
+        # (cfemIntegrals, cpostprocessing) and
+        # SubsurfaceTransportCoefficients.cpp (cSubsurfaceTransportCoefficients,
+        # cTwophaseDarcyCoefficients). setuptools derives each object path from
+        # the source path under a single self.build_temp, so both members of a
+        # pair compile to the *same* .o -- and since build_extensions sets
+        # self.parallel, setuptools builds extensions concurrently in a
+        # ThreadPoolExecutor over os.cpu_count() threads. Two threads then write
+        # one object file at once.
+        #
+        # This fails two ways, both silent. The linker can read a half-written
+        # object, yielding a .so missing every symbol from that source -- the
+        # build succeeds and the failure surfaces only at import ("undefined
+        # symbol: regularMeshNodes2D"). Or both compiles complete and whichever
+        # lands last is linked into both extensions, which is worse here because
+        # the pairs do not use the same flags: cpartitioning adds -std=c++20
+        # where cmeshTools does not, and cfemIntegrals defines PROTEUS_SUPERLU_H
+        # where cpostprocessing does not.
+        #
+        # Give every extension its own object directory. Mutating
+        # self.build_temp in place would itself race, so hand build_extension a
+        # shallow copy of this command carrying a private build_temp; the
+        # compiler is passed output_dir explicitly, so the copy is enough.
+        # imported here, not at module scope: the only `os` in this file's
+        # namespace arrives incidentally via `from proteus.config import *`.
+        import copy as _copy, os as _osmod
+        private = _copy.copy(self)
+        private.build_temp = _osmod.path.join(self.build_temp, '_ext',
+                                              ext.name.replace('.', '_'))
+        _osmod.makedirs(private.build_temp, exist_ok=True)
+        return build_ext.build_extension(private, ext)
+
     def build_extensions(self):
         self.parallel=True
         # OpenMPI's/MPICH's mpi.h transparently pulls in its legacy C++
@@ -305,11 +380,21 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'richards.cRichards',
         sources=['proteus/richards/cRichards.cpp'],
-        depends=['proteus/richards/Richards.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        depends=['proteus/richards/Richards.h',  'proteus/pskRelations.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
         include_dirs=get_pybind_include_dirs(),
         language='c++',
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
     ),
+   
+    Extension(
+        'm_comp_co2.cm_comp_co2',
+        sources=['proteus/m_comp_co2/cm_comp_co2.cpp'],
+        depends=['proteus/m_comp_co2/m_comp_co2.h', 'proteus/pskRelations.h', 'proteus/m_comp_co2/co2_brine_flash.h', 'proteus/m_comp_co2/co2_brine_eos.h', 'proteus/m_comp_co2/jet2.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_pybind_include_dirs(),
+        language='c++',
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
+    ),
+
     Extension(
         'elastoplastic.cElastoPlastic',
         sources=['proteus/elastoplastic/cElastoPlastic.cpp'],
@@ -932,7 +1017,7 @@ def setup_given_extensions(extensions):
         if getattr(ext, 'library_dirs', None):
             ext.library_dirs = list(dict.fromkeys(ext.library_dirs))
     setup(name='proteus',
-          version='1.8.3.dev',
+          version='2.0.0.dev',
           classifiers=[
               'Development Status :: 4 - Beta',
               'Environment :: Console',
@@ -968,6 +1053,7 @@ def setup_given_extensions(extensions):
                       'proteus.fenton',
                       'proteus.mprans',
                       'proteus.richards',
+                      'proteus.m_comp_co2',
                       'proteus.elastoplastic',
                       'proteus.mbd',
                       'proteus.test_utils',
