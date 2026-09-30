@@ -1,8 +1,17 @@
 name: sdist build + install
 
 on:
+  # Both lines are listed here on both lines, and that is deliberate. A push
+  # event runs the workflow file *from the branch that was pushed*, so the
+  # 1.9.x entry is inert in main's copy and the main entry is inert in
+  # 1.9.x's. Keeping the two copies identical is what stops this file from
+  # conflicting every time a fix is merged into both.
+  #
+  # Without 1.9.x here, the maintenance line had pull_request CI but no
+  # post-merge CI at all: merging into it produced no run, so a merge that
+  # broke something stayed invisible until somebody opened the next PR.
   push:
-    branches: [main]
+    branches: [main, 1.9.x]
   pull_request:
 
 jobs:
