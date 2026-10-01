@@ -293,11 +293,32 @@ if os.getenv('SIM_INCLUDE_DIR') is not None:
 
   PROTEUS_SCOREC_EXTRA_COMPILE_ARGS = PROTEUS_SCOREC_EXTRA_COMPILE_ARGS + ['-DPROTEUS_USE_SIMMETRIX']
 
-  PROTEUS_SCOREC_EXTRA_COMPILE_ARGS = PROTEUS_SCOREC_EXTRA_COMPILE_ARGS + ['-DPROTEUS_USE_SIMMETRIX']
-
-PROTEUS_SUPERLU_INCLUDE_DIR = PROTEUS_PETSC_INCLUDE_DIR
-PROTEUS_SUPERLU_LIB_DIR = pjoin(prefix, 'lib64')
-PROTEUS_SUPERLU_LIB_DIR = pjoin(prefix, 'lib')
+# SUPERLU_DIR, when set, names an externally built superlu and wins -- that
+# is what get_flags() exists for, and what config/thunder.py already does.
+# Without this, a build system that provides superlu at its own prefix has
+# no supported way to say so, even though proteus has long claimed to
+# support both an external superlu and a PETSc-downloaded one.
+#
+# The fallback is PETSc's own include dir, which is correct for exactly one
+# layout -- a PETSc configured with --download-superlu, which does install
+# slu_ddefs.h there. It is not what the other two layouts do; they work by
+# accident:
+#   conda  slu_ddefs.h belongs to the separate `superlu` package, and
+#          resolves only because the single prefix makes that directory and
+#          PROTEUS_PETSC_INCLUDE_DIR the same one.
+#   spack  petsc+superlu links spack's superlu without vendoring its
+#          headers; the build succeeds only because spack's compiler
+#          wrapper injects the -I/-L for a direct dependency implicitly.
+# Keeping it as the fallback leaves --download-superlu working unchanged.
+if os.getenv('SUPERLU_DIR'):
+    PROTEUS_SUPERLU_INCLUDE_DIR, PROTEUS_SUPERLU_LIB_DIR = get_flags('superlu')
+else:
+    PROTEUS_SUPERLU_INCLUDE_DIR = PROTEUS_PETSC_INCLUDE_DIR
+    # There was a second, dead assignment of pjoin(prefix, 'lib64') directly
+    # above this one, immediately overwritten. Dropped rather than made
+    # conditional: nothing here ever selected it, so reviving it would be a
+    # behaviour change, not a fix.
+    PROTEUS_SUPERLU_LIB_DIR = pjoin(prefix, 'lib')
 PROTEUS_SUPERLU_H   = r'"slu_ddefs.h"'
 PROTEUS_SUPERLU_LIB = 'superlu'
 
