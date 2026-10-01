@@ -1,5 +1,6 @@
 import sys, os
 import platform
+import subprocess
 import setuptools
 from distutils import sysconfig
 cfg_vars = sysconfig.get_config_vars()
@@ -97,6 +98,40 @@ from Cython.Distutils.extension import Extension
 from Cython.Distutils import build_ext
 
 class custom_build_ext(build_ext):
+    def build_extension(self, ext):
+        # Four sources are listed by two extensions each: mesh.cpp and
+        # meshio.cpp (cmeshTools, cpartitioning), postprocessing.c
+        # (cfemIntegrals, cpostprocessing) and
+        # SubsurfaceTransportCoefficients.cpp (cSubsurfaceTransportCoefficients,
+        # cTwophaseDarcyCoefficients). setuptools derives each object path from
+        # the source path under a single self.build_temp, so both members of a
+        # pair compile to the *same* .o -- and since build_extensions sets
+        # self.parallel, setuptools builds extensions concurrently in a
+        # ThreadPoolExecutor over os.cpu_count() threads. Two threads then write
+        # one object file at once.
+        #
+        # This fails two ways, both silent. The linker can read a half-written
+        # object, yielding a .so missing every symbol from that source -- the
+        # build succeeds and the failure surfaces only at import ("undefined
+        # symbol: regularMeshNodes2D"). Or both compiles complete and whichever
+        # lands last is linked into both extensions, which is worse here because
+        # the pairs do not use the same flags: cpartitioning adds -std=c++20
+        # where cmeshTools does not, and cfemIntegrals defines PROTEUS_SUPERLU_H
+        # where cpostprocessing does not.
+        #
+        # Give every extension its own object directory. Mutating
+        # self.build_temp in place would itself race, so hand build_extension a
+        # shallow copy of this command carrying a private build_temp; the
+        # compiler is passed output_dir explicitly, so the copy is enough.
+        # imported here, not at module scope: the only `os` in this file's
+        # namespace arrives incidentally via `from proteus.config import *`.
+        import copy as _copy, os as _osmod
+        private = _copy.copy(self)
+        private.build_temp = _osmod.path.join(self.build_temp, '_ext',
+                                              ext.name.replace('.', '_'))
+        _osmod.makedirs(private.build_temp, exist_ok=True)
+        return build_ext.build_extension(private, ext)
+
     def build_extensions(self):
         self.parallel=True
         # OpenMPI's/MPICH's mpi.h transparently pulls in its legacy C++
@@ -223,8 +258,39 @@ class get_numpy_include(object):
 
 # -mavx is x86-only; unconditionally requesting it fails outright on arm64
 # ("unsupported option '-mavx' for target ...") rather than just being a
-# missed optimization, so only request it on architectures that support it.
-PROTEUS_AVX_FLAGS = [] if platform.machine() in ('arm64', 'aarch64') else ['-mavx']
+# missed optimization. But not every non-arm64 host actually supports AVX
+# either (older Xeons/Atoms, and some virtualized/cloud CPU profiles that
+# expose a conservative feature mask, e.g. QEMU's default "qemu64" model) --
+# requesting it there doesn't fail the build, it silently bakes an illegal
+# instruction into mprans.MeshSmoothing/mprans.cMoveMeshMonitor that SIGILLs
+# the first time either module is imported. So probe the actual build host's
+# CPU capability instead of just checking platform.machine(). If detection
+# itself isn't possible (unknown platform, sandboxed build host, etc.),
+# default to no AVX -- a missed optimization is far cheaper than a crash.
+def _host_supports_avx():
+    if platform.machine() not in ('x86_64', 'AMD64', 'i386', 'i686'):
+        return False
+    if platform.system() == 'Linux':
+        try:
+            with open('/proc/cpuinfo') as f:
+                return any(
+                    'avx' in line.split(':', 1)[1].split()
+                    for line in f if line.startswith('flags')
+                )
+        except (OSError, IndexError):
+            return False
+    if platform.system() == 'Darwin':
+        try:
+            out = subprocess.check_output(
+                ['sysctl', '-n', 'machdep.cpu.features'],
+                stderr=subprocess.DEVNULL).decode()
+            return 'AVX' in out.split()
+        except (OSError, subprocess.CalledProcessError):
+            return False
+    # e.g. Windows -- no cheap portable probe here; be conservative.
+    return False
+
+PROTEUS_AVX_FLAGS = ['-mavx'] if _host_supports_avx() else []
 
 EXTENSIONS_TO_BUILD = [
     Extension("MeshAdaptPUMI.MeshAdapt",
@@ -980,7 +1046,7 @@ def setup_given_extensions(extensions):
         if getattr(ext, 'library_dirs', None):
             ext.library_dirs = list(dict.fromkeys(ext.library_dirs))
     setup(name='proteus',
-          version='1.9.0',
+          version='1.9.1.dev',
           classifiers=[
               'Development Status :: 4 - Beta',
               'Environment :: Console',
