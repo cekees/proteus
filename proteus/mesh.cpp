@@ -1,5 +1,6 @@
 #include "mesh.h"
 #include "PyEmbeddedFunctions.h"
+#include <cstdlib>   //PROBE: getenv
 #define DEBUG_REFINE
 /**
    \ingroup mesh mesh
@@ -3116,6 +3117,11 @@ extern "C"
 
   int constructElementBoundaryElementsArrayWithGivenElementBoundaryAndEdgeNumbers_tetrahedron(Mesh& mesh)
   {
+    //PROBE: the caller supplies BOTH a face numbering (elementBoundariesArray)
+    //and a face count (nElementBoundaries_global). This routine overwrites the
+    //count with its own rediscovered map size, then indexes with the caller's
+    //ids. Record the incoming count so the two can be compared.
+    const int nElementBoundaries_given_PROBE = mesh.nElementBoundaries_global;
     // printf("nNodes_global = %d\n", mesh.nNodes_global);
     // printf("nElements_global = %d\n", mesh.nElements_global);
     // printf("nNodes_element = %d\n", mesh.nNodes_element);
@@ -3160,6 +3166,30 @@ extern "C"
     stop = CurrentTime();
     //cout<<"Elapsed time for building element boundary elements map= "<<(stop-start)<<"s"<<endl;
     mesh.nElementBoundaries_global = elementBoundaryElements.size();
+
+    //PROBE: compare the given numbering against what was rediscovered.
+    //maxGiven is the largest index this routine is about to WRITE; if it is
+    //>= the allocated extent, the four new[] blocks below are overrun.
+    {
+      int maxGiven_PROBE = -1;
+      for (int i=0;i<mesh.nElements_global*mesh.nElementBoundaries_element;i++)
+        maxGiven_PROBE = std::max(maxGiven_PROBE, mesh.elementBoundariesArray[i]);
+      const char* r_PROBE = getenv("PMI_RANK");
+      if (nElementBoundaries_given_PROBE != mesh.nElementBoundaries_global ||
+          maxGiven_PROBE >= mesh.nElementBoundaries_global)
+        std::cerr<<"PROTEUS FACE NUMBERING MISMATCH rank "<<(r_PROBE?r_PROBE:"?")
+                 <<" given "<<nElementBoundaries_given_PROBE
+                 <<" discovered "<<mesh.nElementBoundaries_global
+                 <<" maxGivenId "<<maxGiven_PROBE
+                 <<" nElements_subdomain "<<mesh.nElements_global
+                 <<" OVERRUN_BY "<<(maxGiven_PROBE+1-mesh.nElementBoundaries_global)
+                 <<std::endl;
+      //Candidate fix, switchable at runtime: size by the numbering we were
+      //handed, which is what "WithGivenElementBoundary...Numbers" promises.
+      if (getenv("PROTEUS_FACE_NUMBERING_SAFE_ALLOC"))
+        mesh.nElementBoundaries_global =
+          std::max(mesh.nElementBoundaries_global, maxGiven_PROBE+1);
+    }
     //cout<<"nElementBoundaries_global = "<<mesh.nElementBoundaries_global<<endl;
 
     //cout<<"Allocating Arrays"<<endl;

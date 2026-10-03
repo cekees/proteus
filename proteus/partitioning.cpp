@@ -1,5 +1,6 @@
 #include "partitioning.h"
 #include "PyEmbeddedFunctions.h"
+#include <cstdlib>   //PROBE: getenv
 
 namespace proteus
 {
@@ -3053,6 +3054,16 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
            ebN_star_offset < nodeElementBoundaryOffsets[nN+1]; ebN_star_offset++)
         {
           int ebN_star_old = nodeElementBoundariesArray[ebN_star_offset];
+          //PROBE: operator[] on a std::map default-inserts 0 for a missing key,
+          //turning an unknown (or -1 sentinel) face into global face 0 and, on
+          //every rank that does not own face 0, into a phantom overlap face.
+          if (elementBoundaryNumbering_old2new_subdomain_map.find(ebN_star_old)
+              == elementBoundaryNumbering_old2new_subdomain_map.end())
+            {
+              const char* r_PROBE = getenv("PMI_RANK");
+              std::cerr<<"PROTEUS OLD2NEW MISS(overlap) rank "<<(r_PROBE?r_PROBE:"?")
+                       <<" ebN_star_old "<<ebN_star_old<<std::endl;
+            }
           int ebN_star_new = elementBoundaryNumbering_old2new_subdomain_map[ebN_star_old];
           bool offproc = ebN_star_new >= elementBoundaryOffsets_new[rank+1] || ebN_star_new < elementBoundaryOffsets_new[rank];
           if (offproc)
@@ -3230,6 +3241,21 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       int eN_global = eN+elementOffsets_new[rank];
       for (int ebN=0;ebN<newMesh.subdomainp->nElementBoundaries_element;ebN++)
         {
+          {
+            //PROBE: two chained operator[] lookups, either of which silently
+            //yields 0 on a miss. elementBoundariesMap entries are initialised
+            //to -1, so an unfilled face slot arrives here as -1.
+            int ebN_old_PROBE = elementBoundariesMap[eN_global][ebN];
+            if (ebN_old_PROBE < 0 ||
+                elementBoundaryNumbering_old2new_subdomain_map.find(ebN_old_PROBE)
+                == elementBoundaryNumbering_old2new_subdomain_map.end())
+              {
+                const char* r_PROBE = getenv("PMI_RANK");
+                std::cerr<<"PROTEUS OLD2NEW MISS(owned) rank "<<(r_PROBE?r_PROBE:"?")
+                         <<" eN_global "<<eN_global<<" ebN "<<ebN
+                         <<" ebN_old "<<ebN_old_PROBE<<std::endl;
+              }
+          }
           newMesh.subdomainp->elementBoundariesArray[eN*newMesh.subdomainp->nElementBoundaries_element+ebN] =
             elementBoundaryNumbering_global2subdomainMap[elementBoundaryNumbering_old2new_subdomain_map[elementBoundariesMap[eN_global][ebN]]];
         }
