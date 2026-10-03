@@ -3264,12 +3264,48 @@ extern "C"
     //         mesh.edgeNodesArray[edgeN*2+1] = edge_p->nodes[1];
     //         edge_p++;
     //       }
+    //PROBE: the caller allocates edgeNodesArray, fills it with -1, then
+    //populates it from edgeNodesMap (partitioning.cpp ~3266). Any entry left
+    //at -1, or outside [0,nNodes_global), indexes nodeStar out of bounds just
+    //below -- a straight SEGV with no allocator complaint. partitioning.cpp
+    //carries a dormant assert nearby saying "edge overlap seems to be messed
+    //up", which is the same suspicion.
+    {
+      long bad_PROBE=0, neg_PROBE=0;
+      for (long i=0;i<(long)mesh.nEdges_global*2;i++)
+        {
+          const int v = mesh.edgeNodesArray[i];
+          if (v < 0) { neg_PROBE++; bad_PROBE++; }
+          else if (v >= mesh.nNodes_global) bad_PROBE++;
+        }
+      if (bad_PROBE)
+        {
+          const char* r_PROBE = getenv("PMI_RANK");
+          std::cerr<<"PROTEUS EDGE NODES OUT OF RANGE rank "<<(r_PROBE?r_PROBE:"?")
+                   <<" bad "<<bad_PROBE<<" (still -1: "<<neg_PROBE<<")"
+                   <<" of "<<(long)mesh.nEdges_global*2
+                   <<" nEdges_subdomain "<<mesh.nEdges_global
+                   <<" nNodes_subdomain "<<mesh.nNodes_global<<std::endl;
+        }
+    }
     vector<set<int> > nodeStar(mesh.nNodes_global);
-    for (int edgeN=0;edgeN<mesh.nEdges_global;edgeN++)
-      {
-        nodeStar[mesh.edgeNodesArray[edgeN*2+0]].insert(mesh.edgeNodesArray[edgeN*2+1]);
-        nodeStar[mesh.edgeNodesArray[edgeN*2+1]].insert(mesh.edgeNodesArray[edgeN*2+0]);
-      }
+    {
+      //With PROTEUS_SKIP_BAD_EDGES set, skip out-of-range entries instead of
+      //walking off nodeStar, so the run continues and we learn whether this is
+      //the only problem.
+      const bool skip_PROBE = getenv("PROTEUS_SKIP_BAD_EDGES") != NULL;
+      for (int edgeN=0;edgeN<mesh.nEdges_global;edgeN++)
+        {
+          const int a_PROBE = mesh.edgeNodesArray[edgeN*2+0];
+          const int b_PROBE = mesh.edgeNodesArray[edgeN*2+1];
+          if (skip_PROBE &&
+              (a_PROBE<0 || b_PROBE<0 ||
+               a_PROBE>=mesh.nNodes_global || b_PROBE>=mesh.nNodes_global))
+            continue;
+          nodeStar[a_PROBE].insert(b_PROBE);
+          nodeStar[b_PROBE].insert(a_PROBE);
+        }
+    }
     mesh.nodeStarOffsets = new int[mesh.nNodes_global+1];
     mesh.nodeStarOffsets[0] = 0;
     for (int nN=1;nN<mesh.nNodes_global+1;nN++)
