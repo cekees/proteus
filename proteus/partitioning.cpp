@@ -2973,6 +2973,30 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
   ed_old2new_dataspace_id = H5Dopen1(file_id, "/edgeNumbering_old2new");
   ed_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
+  //PROBE: this H5Sselect_elements returns -1 on a minority of ranks, which is
+  //the whole edge failure. Capture everything it could be objecting to.
+  {
+    hsize_t cmin_=~(hsize_t)0, cmax_=0;
+    for (size_t q_=0;q_<edgeNodesMap.size();q_++)
+      { const hsize_t c_=old_edge_indices_subdomain[q_];
+        if (c_<cmin_) cmin_=c_; if (c_>cmax_) cmax_=c_; }
+    const hssize_t npts_ = H5Sget_simple_extent_npoints(ed_old2new_filespace_id);
+    const int sel_ = H5Sselect_elements(ed_old2new_filespace_id, H5S_SELECT_SET,
+                                        edgeNodesMap.size(), &old_edge_indices_subdomain[0]);
+    if (sel_ < 0)
+      {
+        const char* r_ = getenv("PMI_RANK");
+        std::cerr<<"PROTEUS EDGE SELECT FAIL rank "<<(r_?r_:"?")
+                 <<" npoints_requested "<<edgeNodesMap.size()
+                 <<" coord_min "<<cmin_<<" coord_max "<<cmax_
+                 <<" dataspace_npoints "<<npts_
+                 <<" ed_dims0 "<<ed_dims[0]
+                 <<" nEdges_global "<<nEdges_global
+                 <<" sizeof_hsize_t "<<sizeof(hsize_t)
+                 <<" ARRAY_RANK "<<ARRAY_RANK
+                 <<std::endl;
+      }
+  }
   status = H5Sselect_elements(ed_old2new_filespace_id, H5S_SELECT_SET, 
                               edgeNodesMap.size(), &old_edge_indices_subdomain[0]);
   hsize_t ed_subdomain_count[]={static_cast<hsize_t>(edgeNodesMap.size())};
