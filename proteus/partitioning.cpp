@@ -3220,6 +3220,27 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           newMesh.subdomainp->elementNodesArray[eN*newMesh.subdomainp->nNodes_element + nN]= nN_subdomain;
         }
     }
+  //PROBE: elementBoundariesMap is map<int,valarray<int>>; operator[] on a
+  //MISSING key default-constructs a ZERO-LENGTH valarray and the following
+  //[ebN] then reads out of bounds. Both lookups after it are bare operator[]
+  //on std::map and yield 0 on a miss. Count each failure mode separately, and
+  //never use operator[] to inspect.
+  long fpNoRow_PROBE[2]={0,0}, fpShortRow_PROBE[2]={0,0}, fpNeg_PROBE[2]={0,0},
+       fpOld2NewMiss_PROBE[2]={0,0}, fpG2SMiss_PROBE[2]={0,0}, fpTotal_PROBE[2]={0,0};
+#define FACEPROBE(EN,EB,W) do {                                                \
+    fpTotal_PROBE[W]++;                                                         \
+    auto it_ = elementBoundariesMap.find(EN);                                   \
+    if (it_ == elementBoundariesMap.end()) { fpNoRow_PROBE[W]++; break; }       \
+    if (int(it_->second.size()) <= (EB)) { fpShortRow_PROBE[W]++; break; }      \
+    const int v_ = it_->second[EB];                                             \
+    if (v_ < 0) fpNeg_PROBE[W]++;                                               \
+    auto o_ = elementBoundaryNumbering_old2new_subdomain_map.find(v_);          \
+    if (o_ == elementBoundaryNumbering_old2new_subdomain_map.end())             \
+      { fpOld2NewMiss_PROBE[W]++; break; }                                      \
+    if (elementBoundaryNumbering_global2subdomainMap.find(o_->second)           \
+        == elementBoundaryNumbering_global2subdomainMap.end())                  \
+      fpG2SMiss_PROBE[W]++;                                                     \
+  } while (0)
   //
   //element boundaries
   //
@@ -3253,21 +3274,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       int eN_global = eN+elementOffsets_new[rank];
       for (int ebN=0;ebN<newMesh.subdomainp->nElementBoundaries_element;ebN++)
         {
-          {
-            //PROBE: two chained operator[] lookups, either of which silently
-            //yields 0 on a miss. elementBoundariesMap entries are initialised
-            //to -1, so an unfilled face slot arrives here as -1.
-            int ebN_old_PROBE = elementBoundariesMap[eN_global][ebN];
-            if (ebN_old_PROBE < 0 ||
-                elementBoundaryNumbering_old2new_subdomain_map.find(ebN_old_PROBE)
-                == elementBoundaryNumbering_old2new_subdomain_map.end())
-              {
-                const char* r_PROBE = getenv("PMI_RANK");
-                std::cerr<<"PROTEUS OLD2NEW MISS(owned) rank "<<(r_PROBE?r_PROBE:"?")
-                         <<" eN_global "<<eN_global<<" ebN "<<ebN
-                         <<" ebN_old "<<ebN_old_PROBE<<std::endl;
-              }
-          }
+          FACEPROBE(eN_global, ebN, 0);
           newMesh.subdomainp->elementBoundariesArray[eN*newMesh.subdomainp->nElementBoundaries_element+ebN] =
             elementBoundaryNumbering_global2subdomainMap[elementBoundaryNumbering_old2new_subdomain_map[elementBoundariesMap[eN_global][ebN]]];
         }
@@ -3281,10 +3288,28 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       int eN_global_new = *eN_p;
       for (int ebN=0;ebN<newMesh.subdomainp->nElementBoundaries_element;ebN++)
         {
+          FACEPROBE(eN_global_new, ebN, 1);
           newMesh.subdomainp->elementBoundariesArray[eN*newMesh.subdomainp->nElementBoundaries_element+ebN] =
             elementBoundaryNumbering_global2subdomainMap[elementBoundaryNumbering_old2new_subdomain_map[elementBoundariesMap[eN_global_new][ebN]]];
         }
     }
+  //PROBE
+  for (int w_=0; w_<2; w_++)
+    if (fpNoRow_PROBE[w_]||fpShortRow_PROBE[w_]||fpNeg_PROBE[w_]||
+        fpOld2NewMiss_PROBE[w_]||fpG2SMiss_PROBE[w_])
+      {
+        const char* r_PROBE = getenv("PMI_RANK");
+        std::cerr<<"PROTEUS FACE LOOKUP FAIL rank "<<(r_PROBE?r_PROBE:"?")
+                 <<(w_?" ghost":" owned")
+                 <<" of "<<fpTotal_PROBE[w_]
+                 <<": no_row "<<fpNoRow_PROBE[w_]
+                 <<" short_row "<<fpShortRow_PROBE[w_]
+                 <<" value_neg1 "<<fpNeg_PROBE[w_]
+                 <<" old2new_miss "<<fpOld2NewMiss_PROBE[w_]
+                 <<" global2subdomain_miss "<<fpG2SMiss_PROBE[w_]
+                 <<std::endl;
+      }
+#undef FACEPROBE
   //
   //edges
   //
@@ -3310,6 +3335,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //now build edgeNodes array in new numberings
   //
   long nEdgeOld2NewMiss_PROBE=0, nEdgeG2SMiss_PROBE=0;   //PROBE
+  std::set<int> edSeen_PROBE;   //PROBE
   newMesh.subdomainp->edgeNodesArray = new int[newMesh.subdomainp->nEdges_global*2];
   for (int i=0;i<newMesh.subdomainp->nEdges_global*2;i++)
     newMesh.subdomainp->edgeNodesArray[i] = -1;
@@ -3331,17 +3357,23 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
         nEdgeG2SMiss_PROBE++;
       assert(edgeNumbering_global2subdomainMap.find(edN_global_new) != edgeNumbering_global2subdomainMap.end());
       int edN_subdomain  = edgeNumbering_global2subdomainMap[edN_global_new];
+      edSeen_PROBE.insert(edN_subdomain);   //PROBE
       newMesh.subdomainp->edgeNodesArray[edN_subdomain*2+0] = nodeNumbering_global2subdomainMap[edgep->second.first];
       newMesh.subdomainp->edgeNodesArray[edN_subdomain*2+1] = nodeNumbering_global2subdomainMap[edgep->second.second];
     }
   //PROBE
-  if (nEdgeOld2NewMiss_PROBE || nEdgeG2SMiss_PROBE)
+  if (nEdgeOld2NewMiss_PROBE || nEdgeG2SMiss_PROBE ||
+      int(edSeen_PROBE.size()) != newMesh.subdomainp->nEdges_global)
     {
       const char* r_PROBE = getenv("PMI_RANK");
       std::cerr<<"PROTEUS EDGE MAP MISSES rank "<<(r_PROBE?r_PROBE:"?")
                <<" old2new_miss "<<nEdgeOld2NewMiss_PROBE
                <<" global2subdomain_miss "<<nEdgeG2SMiss_PROBE
-               <<" of "<<edgeNodesMap.size()<<" edges"<<std::endl;
+               <<" distinct_idx_written "<<edSeen_PROBE.size()
+               <<" min "<<(edSeen_PROBE.empty()?-1:*edSeen_PROBE.begin())
+               <<" max "<<(edSeen_PROBE.empty()?-1:*edSeen_PROBE.rbegin())
+               <<" of "<<edgeNodesMap.size()<<" edges, array holds "
+               <<newMesh.subdomainp->nEdges_global<<std::endl;
     }
   //
   //end edges
