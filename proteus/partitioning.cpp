@@ -3082,6 +3082,18 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     }//nodes on this processor
   //cek debugging, edge overlap seems to be messed up. Check global node tuples of edges vs global edge numbers
   assert(edges_overlap.size() + nEdges_subdomain_new[rank] == edgeNodesMap.size());
+  //PROBE: the terms of the assert above, which NDEBUG compiles out.
+  if (edges_overlap.size() + nEdges_subdomain_new[rank] != edgeNodesMap.size())
+    {
+      const char* r_PROBE = getenv("PMI_RANK");
+      std::cerr<<"PROTEUS EDGE OVERLAP MISMATCH rank "<<(r_PROBE?r_PROBE:"?")
+               <<" owned "<<nEdges_subdomain_new[rank]
+               <<" overlap "<<edges_overlap.size()
+               <<" sum "<<(edges_overlap.size()+nEdges_subdomain_new[rank])
+               <<" edgeNodesMap "<<edgeNodesMap.size()
+               <<" subdomain_nEdges_global "<<newMesh.subdomainp->nEdges_global
+               <<std::endl;
+    }
   //
   //enumerate the overlap
   //
@@ -3297,6 +3309,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //
   //now build edgeNodes array in new numberings
   //
+  long nEdgeOld2NewMiss_PROBE=0, nEdgeG2SMiss_PROBE=0;   //PROBE
   newMesh.subdomainp->edgeNodesArray = new int[newMesh.subdomainp->nEdges_global*2];
   for (int i=0;i<newMesh.subdomainp->nEdges_global*2;i++)
     newMesh.subdomainp->edgeNodesArray[i] = -1;
@@ -3305,16 +3318,56 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
        edgep++)
     {
       int edN_global_old = edgep->first;
+      //PROBE: both lookups are bare operator[] on a std::map. A miss
+      //default-inserts 0 and returns 0, so EVERY missing edge writes to
+      //edgeNodesArray[0..1] and the rest of the array stays at its -1
+      //initialiser. The assert below would have caught it; NDEBUG removes it.
+      if (edgeNumbering_old2new_subdomain_map.find(edN_global_old)
+          == edgeNumbering_old2new_subdomain_map.end())
+        nEdgeOld2NewMiss_PROBE++;
       int edN_global_new = edgeNumbering_old2new_subdomain_map[edN_global_old];
+      if (edgeNumbering_global2subdomainMap.find(edN_global_new)
+          == edgeNumbering_global2subdomainMap.end())
+        nEdgeG2SMiss_PROBE++;
       assert(edgeNumbering_global2subdomainMap.find(edN_global_new) != edgeNumbering_global2subdomainMap.end());
       int edN_subdomain  = edgeNumbering_global2subdomainMap[edN_global_new];
       newMesh.subdomainp->edgeNodesArray[edN_subdomain*2+0] = nodeNumbering_global2subdomainMap[edgep->second.first];
       newMesh.subdomainp->edgeNodesArray[edN_subdomain*2+1] = nodeNumbering_global2subdomainMap[edgep->second.second];
     }
+  //PROBE
+  if (nEdgeOld2NewMiss_PROBE || nEdgeG2SMiss_PROBE)
+    {
+      const char* r_PROBE = getenv("PMI_RANK");
+      std::cerr<<"PROTEUS EDGE MAP MISSES rank "<<(r_PROBE?r_PROBE:"?")
+               <<" old2new_miss "<<nEdgeOld2NewMiss_PROBE
+               <<" global2subdomain_miss "<<nEdgeG2SMiss_PROBE
+               <<" of "<<edgeNodesMap.size()<<" edges"<<std::endl;
+    }
   //
   //end edges
   //
 
+  //PROBE: how many DISTINCT face ids the subdomain numbering actually uses,
+  //against how many it claims. The callee rediscovers more distinct faces than
+  //this, which means surplus faces alias onto ids already in use and the tail
+  //of each face array is never written.
+  {
+    std::set<int> seen_PROBE;
+    for (int k=0;k<newMesh.subdomainp->nElements_global*newMesh.subdomainp->nElementBoundaries_element;k++)
+      seen_PROBE.insert(newMesh.subdomainp->elementBoundariesArray[k]);
+    if (int(seen_PROBE.size()) != newMesh.subdomainp->nElementBoundaries_global)
+      {
+        const char* r_PROBE = getenv("PMI_RANK");
+        std::cerr<<"PROTEUS FACE ID SPARSITY rank "<<(r_PROBE?r_PROBE:"?")
+                 <<" distinct_ids_used "<<seen_PROBE.size()
+                 <<" claimed "<<newMesh.subdomainp->nElementBoundaries_global
+                 <<" owned "<<nElementBoundaries_subdomain_new[rank]
+                 <<" overlap "<<elementBoundaries_overlap.size()
+                 <<" min_id "<<(seen_PROBE.empty()?-1:*seen_PROBE.begin())
+                 <<" max_id "<<(seen_PROBE.empty()?-1:*seen_PROBE.rbegin())
+                 <<std::endl;
+      }
+  }
   //now build rest of subdomain mesh connectivity information etc
   constructElementBoundaryElementsArrayWithGivenElementBoundaryAndEdgeNumbers_tetrahedron(*newMesh.subdomainp);
   //build local geometric info
