@@ -1930,6 +1930,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   map<int, int> nodes_old2new_subdomain_map;
   //note any element index containers are in the old element numbering
   int eN_c_start = 0;//start of the collection of elements we are currently processing  
+  //Chunk this re-read by a FIXED node-collection size. Sizing the chunk as
+  //nElements_global/size makes the NUMBER of chunks equal the number of ranks,
+  //so every rank added costs another full read cycle, and each cycle has more
+  //participants. Restored from 77c99396^.
+  const int nNodes_collection_max=10000;
+  //Hold the mappings file open across the whole loop. Opening and closing it
+  //once per chunk had every rank open the same Lustre file on every chunk.
+  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  assert(file_id != H5I_INVALID_HID);
   for (int ie = 0; ie < nElements_global; ie++)
     {
       //
@@ -1959,7 +1968,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           elementId_collection.push_back(elementId_double);
         }
       element_old_nodes_collection.push_back(element_nodes_old);
-      if (elements_collection.size() == nElements_global/size || ie == nElements_global-1)
+      if (node_collection.size() >= nNodes_collection_max || ie == nElements_global-1)
         {
           //create a node list to read from old2new mapping
 	        valarray<int> nodes_old2new_subset(node_collection.size());
@@ -2040,8 +2049,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 		        {
 		          node_collection_array[i_nc] = static_cast<hsize_t>(*nv);
 		        }
-            file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
-            assert(file_id != H5I_INVALID_HID);
 	          nodes_old2new_dataset_id = H5Dopen1(file_id,"/nodeNumbering_old2new");
 	          nodes_old2new_filespace_id = H5Dget_space(nodes_old2new_dataset_id);
 	          status = H5Sselect_elements(nodes_old2new_filespace_id, H5S_SELECT_SET, 
@@ -2049,7 +2056,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 	          hsize_t dims[] = {static_cast<hsize_t>(node_collection.size())};
 	          hid_t nodes_old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);
 	          nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
-	          status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
+#ifdef H5_HAVE_PARALLEL
+	          status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_INDEPENDENT);
+#endif
 	          status = H5Dread(nodes_old2new_dataset_id, H5T_NATIVE_INT, 
 			                       nodes_old2new_subset_memspace_id, nodes_old2new_filespace_id, 
 			                       H5P_DEFAULT, &nodes_old2new_subset[0]);
@@ -2057,7 +2066,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 	          H5Sclose(nodes_old2new_subset_memspace_id);
 	          H5Sclose(nodes_old2new_filespace_id);
 	          H5Dclose(nodes_old2new_dataset_id);
-            H5Fclose(file_id);
 	          for (int i=0;i<node_collection.size();i++)
 		        {
 		          nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
@@ -2155,6 +2163,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       elementFile2 >> eatline;
     }
   elementFile2.close();
+  H5Fclose(file_id);
   int nElements_owned_subdomain(elements_subdomain_owned.size()),
     nElements_owned_new=0;
   MPI_Allreduce(&nElements_owned_subdomain,&nElements_owned_new,1,MPI_INT,MPI_SUM,PROTEUS_COMM_WORLD);
