@@ -1485,6 +1485,36 @@ delete [] mesh.elementBoundaryOffsets_subdomain_owned;
   return 0;
 }
 
+namespace {
+  //Reopen the mappings file with the SAME driver it was written with.
+  //
+  //These numbering datasets are written collectively through the MPI-IO
+  //driver and then reopened read-only. Reopening with the serial POSIX driver
+  //(H5P_DEFAULT) is not consistent on a parallel filesystem: a reader on
+  //another node can observe a shorter EOF than the superblock records, and
+  //HDF5 rejects the file outright. Measured on Carpenter at >=384 ranks:
+  //
+  //  H5F__super_read(): truncated file:
+  //      eof = 115343360, sblock->base_addr = 0, stored_eof = 116070216
+  //
+  //93 ranks of 1536 in one run. Nothing checked the result, so H5Dopen1
+  //returned -1, H5Dread failed on an invalid id, and the ZERO-initialised
+  //destination valarray was used as the numbering -- every old id mapping to
+  //new id 0. That is the origin of both the degenerate face numbering and the
+  //edgeNodesArray left at its -1 initialiser.
+  //
+  //Collective: every rank must call this.
+  hid_t openMappingsReadOnly(const MPI_Comm& comm, const char* name)
+  {
+    hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+    if (fapl < 0) return fapl;
+    H5Pset_fapl_mpio(fapl, comm, MPI_INFO_NULL);
+    hid_t fid = H5Fopen(name, H5F_ACC_RDONLY, fapl);
+    H5Pclose(fapl);
+    return fid;
+  }
+}
+
 int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char* filebase, int indexBase, 
                                   Mesh& newMesh, int nNodes_overlap, double memHardLimit)
 {
@@ -1937,7 +1967,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   const int nNodes_collection_max=10000;
   //Hold the mappings file open across the whole loop. Opening and closing it
   //once per chunk had every rank open the same Lustre file on every chunk.
-  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
+  if (file_id < 0)
+    {
+      H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
+    }
   assert(file_id != H5I_INVALID_HID);
   for (int ie = 0; ie < nElements_global; ie++)
     {
@@ -2312,7 +2348,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     {
       old_element_indices_subdomain[eN_old_subdomain] = it->first;
     }
-  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
+  if (file_id < 0)
+    {
+      H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
+    }
   e_old2new_dataset_id = H5Dopen1(file_id, "/elementNumbering_old2new");
   e_old2new_filespace_id = H5Dget_space(e_old2new_dataset_id);
   status = H5Sselect_elements(e_old2new_filespace_id, H5S_SELECT_SET, 
@@ -2642,7 +2684,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     {
       old_elementBoundary_indices_subdomain[ebN_subdomain] = static_cast<hsize_t>(*it);
     }
-  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
+  if (file_id < 0)
+    {
+      H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
+    }
   eb_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, eb_dims, NULL);
   eb_old2new_dataset_id = H5Dopen1(file_id, "/elementBoundaryNumbering_old2new");
   status = H5Sselect_elements(eb_old2new_filespace_id, H5S_SELECT_SET, 
@@ -2948,7 +2996,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     {
       old_edge_indices_subdomain[edN_old_subdomain] = static_cast<hsize_t>(it->first);
     }
-  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
+  if (file_id < 0)
+    {
+      H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
+    }
   ed_old2new_dataspace_id = H5Dopen1(file_id, "/edgeNumbering_old2new");
   ed_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
   status = H5Sselect_elements(ed_old2new_filespace_id, H5S_SELECT_SET, 
