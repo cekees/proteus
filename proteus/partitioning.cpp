@@ -1844,6 +1844,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       herr_t status;
       valarray<int> nodeNumbering_old2new_read(nNodes_global);
       file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
+  //HDF5's own reason the moment it happens, before any later call clears it.
+  if (file_id < 0)
+    {
+      const char* r_ = getenv("PMI_RANK");
+      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
+               <<" file "<<H5FILE_NAME<<std::endl;
+      H5Eprint2(H5E_DEFAULT, stderr);
+    }
       assert(file_id != H5I_INVALID_HID);
       hid_t nodeNumbering_old2new_dataset_id = H5Dopen1(file_id, "/nodeNumbering_old2new");
       status = H5Dread(nodeNumbering_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
@@ -1960,6 +1969,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //Hold the mappings file open across the whole loop. Opening and closing it
   //once per chunk had every rank open the same Lustre file on every chunk.
   file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
+  //HDF5's own reason the moment it happens, before any later call clears it.
+  if (file_id < 0)
+    {
+      const char* r_ = getenv("PMI_RANK");
+      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
+               <<" file "<<H5FILE_NAME<<std::endl;
+      H5Eprint2(H5E_DEFAULT, stderr);
+    }
   assert(file_id != H5I_INVALID_HID);
   for (int ie = 0; ie < nElements_global; ie++)
     {
@@ -2335,6 +2353,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       old_element_indices_subdomain[eN_old_subdomain] = it->first;
     }
   file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
+  //HDF5's own reason the moment it happens, before any later call clears it.
+  if (file_id < 0)
+    {
+      const char* r_ = getenv("PMI_RANK");
+      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
+               <<" file "<<H5FILE_NAME<<std::endl;
+      H5Eprint2(H5E_DEFAULT, stderr);
+    }
   e_old2new_dataset_id = H5Dopen1(file_id, "/elementNumbering_old2new");
   e_old2new_filespace_id = H5Dget_space(e_old2new_dataset_id);
   status = H5Sselect_elements(e_old2new_filespace_id, H5S_SELECT_SET, 
@@ -2384,6 +2411,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     //check old2new
     valarray<int> elementNumbering_global_old2new_read(nElements_global);
     file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
+  //HDF5's own reason the moment it happens, before any later call clears it.
+  if (file_id < 0)
+    {
+      const char* r_ = getenv("PMI_RANK");
+      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
+               <<" file "<<H5FILE_NAME<<std::endl;
+      H5Eprint2(H5E_DEFAULT, stderr);
+    }
     hid_t e_old2new_dataset_id = H5Dopen1(file_id, "/elementNumbering_old2new");
     status = H5Dread(e_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                       &elementNumbering_global_old2new_read[0]);
@@ -2667,6 +2703,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       old_elementBoundary_indices_subdomain[ebN_subdomain] = static_cast<hsize_t>(*it);
     }
   file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
+  //HDF5's own reason the moment it happens, before any later call clears it.
+  if (file_id < 0)
+    {
+      const char* r_ = getenv("PMI_RANK");
+      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
+               <<" file "<<H5FILE_NAME<<std::endl;
+      H5Eprint2(H5E_DEFAULT, stderr);
+    }
   eb_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, eb_dims, NULL);
   eb_old2new_dataset_id = H5Dopen1(file_id, "/elementBoundaryNumbering_old2new");
   status = H5Sselect_elements(eb_old2new_filespace_id, H5S_SELECT_SET, 
@@ -2712,6 +2757,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     herr_t status;
     valarray<int> elementBoundaryNumbering_old2new_read(nElementBoundaries_global);
     file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
+  //HDF5's own reason the moment it happens, before any later call clears it.
+  if (file_id < 0)
+    {
+      const char* r_ = getenv("PMI_RANK");
+      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
+               <<" file "<<H5FILE_NAME<<std::endl;
+      H5Eprint2(H5E_DEFAULT, stderr);
+    }
     eb_old2new_dataset_id = H5Dopen1(file_id, "/elementBoundaryNumbering_old2new");
     status = H5Dread(eb_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                      &elementBoundaryNumbering_old2new_read[0]);
@@ -2975,6 +3029,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       old_edge_indices_subdomain[edN_old_subdomain] = static_cast<hsize_t>(it->first);
     }
   file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
+  //HDF5's own reason the moment it happens, before any later call clears it.
+  if (file_id < 0)
+    {
+      const char* r_ = getenv("PMI_RANK");
+      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
+               <<" file "<<H5FILE_NAME<<std::endl;
+      H5Eprint2(H5E_DEFAULT, stderr);
+    }
   ed_old2new_dataspace_id = H5Dopen1(file_id, "/edgeNumbering_old2new");
   ed_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
   //PROBE: this H5Sselect_elements returns -1 on a minority of ranks, which is
@@ -3042,6 +3105,15 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     herr_t status;
     valarray<int> edgeNumbering_old2new_read(nEdges_global);
     file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
+  //HDF5's own reason the moment it happens, before any later call clears it.
+  if (file_id < 0)
+    {
+      const char* r_ = getenv("PMI_RANK");
+      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
+               <<" file "<<H5FILE_NAME<<std::endl;
+      H5Eprint2(H5E_DEFAULT, stderr);
+    }
     hid_t ed_old2new_dataset_id = H5Dopen1(file_id, "/edgeNumbering_old2new");
     status = H5Dread(ed_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                      &edgeNumbering_old2new_read[0]);
