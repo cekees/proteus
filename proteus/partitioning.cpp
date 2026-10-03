@@ -1495,17 +1495,19 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   //is therefore indistinguishable from "every old id maps to new id 0", which
   //is exactly the degenerate mapping observed. mappings.h5 itself is a perfect
   //permutation on disk, so the breakage is here on the read-back.
-#define READPROBE(TAG, ST_SEL, ST_RD, BUF, N)                                  \
+#define READPROBE(TAG, FID, DID, ST_SEL, ST_RD, BUF, N)                         \
   do {                                                                          \
     std::set<int> u_; long z_=0;                                                \
     for (long q_=0;q_<(long)(N);q_++){ u_.insert((BUF)[q_]); if(!(BUF)[q_]) z_++; }\
     if ((ST_SEL) < 0 || (ST_RD) < 0 || (N) == 0 || u_.size() < (size_t)(N)) {    \
       const char* r_ = getenv("PMI_RANK");                                       \
       std::cerr<<"PROTEUS NUMBERING READBACK "<<TAG<<" rank "<<(r_?r_:"?")        \
-               <<" n "<<(long)(N)<<" sel_status "<<(ST_SEL)<<" read_status "<<(ST_RD)\
-               <<" distinct "<<u_.size()<<" zeros "<<z_                           \
-               <<" min "<<(u_.empty()?-1:*u_.begin())                             \
-               <<" max "<<(u_.empty()?-1:*u_.rbegin())<<std::endl;                \
+               <<" n "<<(long)(N)<<" file_id "<<(long)(FID)                       \
+               <<" dset_id "<<(long)(DID)                                         \
+               <<" sel_status "<<(ST_SEL)<<" read_status "<<(ST_RD)               \
+               <<" distinct "<<u_.size()<<" zeros "<<z_<<std::endl;               \
+      std::cerr<<"--- HDF5 error stack for "<<TAG<<" rank "<<(r_?r_:"?")<<" ---"<<std::endl;\
+      H5Eprint2(H5E_DEFAULT, stderr);                                             \
     }                                                                             \
   } while (0)
   using namespace std;
@@ -2337,6 +2339,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   e_old2new_filespace_id = H5Dget_space(e_old2new_dataset_id);
   status = H5Sselect_elements(e_old2new_filespace_id, H5S_SELECT_SET, 
                               elementNodesArrayMap.size(), &old_element_indices_subdomain[0]);
+  const herr_t selPROBE_e = status;   //PROBE
   hsize_t e_subdomain_count[]={static_cast<hsize_t>(elementNodesArrayMap.size())};
   hid_t e_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, e_subdomain_count, NULL);
   hid_t e_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
@@ -2344,7 +2347,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Dread(e_old2new_dataset_id, H5T_NATIVE_INT, 
                    e_old2new_subdomain_memspace_id, e_old2new_filespace_id, 
                    H5P_DEFAULT, &new_element_indices_subdomain[0]);
-  READPROBE("elements", status, status, new_element_indices_subdomain, elementNodesArrayMap.size());
+  READPROBE("elements", file_id, e_old2new_dataset_id, selPROBE_e, status, new_element_indices_subdomain, elementNodesArrayMap.size());
   H5Pclose(e_old2new_subdomain_plist_id);
   H5Sclose(e_old2new_subdomain_memspace_id);
   H5Dclose(e_old2new_dataset_id);
@@ -2669,6 +2672,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Sselect_elements(eb_old2new_filespace_id, H5S_SELECT_SET, 
                               elementBoundaries_subdomain.size(), 
                               &old_elementBoundary_indices_subdomain[0]);
+  const herr_t selPROBE_eb = status;   //PROBE
   hsize_t eb_subdomain_count[]={static_cast<hsize_t>(elementBoundaries_subdomain.size())};
   hid_t eb_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, eb_subdomain_count, NULL);
   hid_t eb_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
@@ -2676,7 +2680,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Dread(eb_old2new_dataset_id, H5T_NATIVE_INT, 
                    eb_old2new_subdomain_memspace_id, eb_old2new_filespace_id, 
                    H5P_DEFAULT, &new_elementBoundary_indices_subdomain[0]);
-  READPROBE("elementBoundaries", status, status, new_elementBoundary_indices_subdomain, elementBoundaries_subdomain.size());
+  READPROBE("elementBoundaries", file_id, eb_old2new_dataset_id, selPROBE_eb, status, new_elementBoundary_indices_subdomain, elementBoundaries_subdomain.size());
   H5Pclose(eb_old2new_subdomain_plist_id);
   H5Sclose(eb_old2new_subdomain_memspace_id);
   H5Sclose(eb_old2new_filespace_id);
@@ -2999,6 +3003,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   }
   status = H5Sselect_elements(ed_old2new_filespace_id, H5S_SELECT_SET, 
                               edgeNodesMap.size(), &old_edge_indices_subdomain[0]);
+  const herr_t selPROBE_ed = status;   //PROBE
   hsize_t ed_subdomain_count[]={static_cast<hsize_t>(edgeNodesMap.size())};
   hid_t ed_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, ed_subdomain_count, NULL);
   hid_t ed_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
@@ -3006,7 +3011,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   status = H5Dread(ed_old2new_dataspace_id, H5T_NATIVE_INT, ed_old2new_subdomain_memspace_id, 
                    ed_old2new_filespace_id, 
                    H5P_DEFAULT, &new_edge_indices_subdomain[0]);
-  READPROBE("edges", status, status, new_edge_indices_subdomain, edgeNodesMap.size());
+  READPROBE("edges", file_id, ed_old2new_dataspace_id, selPROBE_ed, status, new_edge_indices_subdomain, edgeNodesMap.size());
   H5Pclose(ed_old2new_subdomain_plist_id);
   H5Sclose(ed_old2new_subdomain_memspace_id);
   H5Sclose(ed_old2new_filespace_id);
