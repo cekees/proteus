@@ -12,7 +12,8 @@ import os
 from xml.etree import ElementTree as ET
 from .Archiver import *
 from .LinearAlgebraTools import ParVec_petsc4py
-from .Profiling import logEvent,memory, memHardLimit
+from .Profiling import logEvent,memory
+from . import Profiling
 from . import Domain
 from . import Comm
 from subprocess import run, check_output
@@ -680,7 +681,7 @@ class Mesh(object):
                                                                                                                 nLayersOfOverlap,
                                                                                                                 self.cmesh,
                                                                                                                 self.subdomainMesh.cmesh,
-                                                                                                                memHardLimit)
+                                                                                                                Profiling.memHardLimit/1024.0)
             elif isinstance(self,TriangularMesh):
                     (self.elementOffsets_subdomain_owned,
                      self.elementNumbering_subdomain2global,
@@ -713,7 +714,7 @@ class Mesh(object):
                                                                                                    nLayersOfOverlap,
                                                                                                    self.cmesh,
                                                                                                    self.subdomainMesh.cmesh,
-                                                                                                   memHardLimit)
+                                                                                                   Profiling.memHardLimit/1024.0)
         #
         logEvent(memory("partitionMesh 3","MeshTools"),level=4)
         self.buildFromCNoArrays(self.cmesh)
