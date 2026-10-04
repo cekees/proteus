@@ -1486,6 +1486,36 @@ delete [] mesh.elementBoundaryOffsets_subdomain_owned;
   return 0;
 }
 
+namespace {
+  //Reopen the mappings file with the SAME driver it was written with.
+  //
+  //These numbering datasets are written collectively through the MPI-IO
+  //driver and then reopened read-only. Reopening with the serial POSIX driver
+  //(H5P_DEFAULT) is not consistent on a parallel filesystem: a reader on
+  //another node can observe a shorter EOF than the superblock records, and
+  //HDF5 rejects the file outright. Measured on Carpenter at >=384 ranks:
+  //
+  //  H5F__super_read(): truncated file:
+  //      eof = 115343360, sblock->base_addr = 0, stored_eof = 116070216
+  //
+  //93 ranks of 1536 in one run. Nothing checked the result, so H5Dopen1
+  //returned -1, H5Dread failed on an invalid id, and the ZERO-initialised
+  //destination valarray was used as the numbering -- every old id mapping to
+  //new id 0. That is the origin of both the degenerate face numbering and the
+  //edgeNodesArray left at its -1 initialiser.
+  //
+  //Collective: every rank must call this.
+  hid_t openMappingsReadOnly(const MPI_Comm& comm, const char* name)
+  {
+    hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+    if (fapl < 0) return fapl;
+    H5Pset_fapl_mpio(fapl, comm, MPI_INFO_NULL);
+    hid_t fid = H5Fopen(name, H5F_ACC_RDONLY, fapl);
+    H5Pclose(fapl);
+    return fid;
+  }
+}
+
 int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char* filebase, int indexBase, 
                                   Mesh& newMesh, int nNodes_overlap, double memHardLimit)
 {
@@ -1968,15 +1998,12 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   const int nNodes_collection_max=10000;
   //Hold the mappings file open across the whole loop. Opening and closing it
   //once per chunk had every rank open the same Lustre file on every chunk.
-  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
-  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
-  //HDF5's own reason the moment it happens, before any later call clears it.
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
   if (file_id < 0)
     {
-      const char* r_ = getenv("PMI_RANK");
-      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
-               <<" file "<<H5FILE_NAME<<std::endl;
       H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
     }
   assert(file_id != H5I_INVALID_HID);
   for (int ie = 0; ie < nElements_global; ie++)
@@ -2352,15 +2379,12 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     {
       old_element_indices_subdomain[eN_old_subdomain] = it->first;
     }
-  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
-  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
-  //HDF5's own reason the moment it happens, before any later call clears it.
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
   if (file_id < 0)
     {
-      const char* r_ = getenv("PMI_RANK");
-      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
-               <<" file "<<H5FILE_NAME<<std::endl;
       H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
     }
   e_old2new_dataset_id = H5Dopen1(file_id, "/elementNumbering_old2new");
   e_old2new_filespace_id = H5Dget_space(e_old2new_dataset_id);
@@ -2702,15 +2726,12 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     {
       old_elementBoundary_indices_subdomain[ebN_subdomain] = static_cast<hsize_t>(*it);
     }
-  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
-  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
-  //HDF5's own reason the moment it happens, before any later call clears it.
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
   if (file_id < 0)
     {
-      const char* r_ = getenv("PMI_RANK");
-      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
-               <<" file "<<H5FILE_NAME<<std::endl;
       H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
     }
   eb_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, eb_dims, NULL);
   eb_old2new_dataset_id = H5Dopen1(file_id, "/elementBoundaryNumbering_old2new");
@@ -3028,15 +3049,12 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     {
       old_edge_indices_subdomain[edN_old_subdomain] = static_cast<hsize_t>(it->first);
     }
-  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
-  //PROBE: this open FAILS on a minority of ranks and nothing checks it. Dump
-  //HDF5's own reason the moment it happens, before any later call clears it.
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
   if (file_id < 0)
     {
-      const char* r_ = getenv("PMI_RANK");
-      std::cerr<<"PROTEUS H5FOPEN FAIL rank "<<(r_?r_:"?")
-               <<" file "<<H5FILE_NAME<<std::endl;
       H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
     }
   ed_old2new_dataspace_id = H5Dopen1(file_id, "/edgeNumbering_old2new");
   ed_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
@@ -3945,27 +3963,45 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
   //
   //test out of core
   //
-  if (rank == 0)
+  //This was a scratch check that the out-of-core node numbering matches the
+  //in-core one. It declared
+  //
+  //    int dset_data[nNodes_global];
+  //
+  //a variable-length array of GLOBAL size on rank 0's stack -- 40 MB at 10M
+  //nodes, against a default 8 MB stack, so it crashes rank 0 on any large 2D
+  //mesh. The assert that justified it is compiled out by NDEBUG anyway, so
+  //what remained was a stack overflow and a printf. Kept behind a flag, on the
+  //heap, with the statuses actually checked.
+  if (rank == 0 && getenv("PROTEUS_CHECK_OUT_OF_CORE_NUMBERING"))
     {
-      hid_t       dataset_id;  /* identifiers */
-      herr_t      status;
-      int         dset_data[nNodes_global];
-
-      /* Open an existing file. */
-      //file_id = H5Fopen("mappings.h5", H5F_ACC_RDONLY, H5P_DEFAULT);
-
-      /* Open an existing dataset. */
-      dataset_id = H5Dopen2(file_id, "/nodeNumbering_old2new", H5P_DEFAULT);
-
-      status = H5Dread(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                       dset_data);
-
-      /* Close the dataset. */
-      status = H5Dclose(dataset_id);
-
+      valarray<int> dset_data(nNodes_global);
+      hid_t dataset_id = H5Dopen2(file_id, "/nodeNumbering_old2new", H5P_DEFAULT);
+      if (dataset_id < 0)
+        {
+          H5Eprint2(H5E_DEFAULT, stderr);
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_READ,
+                      "could not open /nodeNumbering_old2new");
+        }
+      herr_t status = H5Dread(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL,
+                              H5P_DEFAULT, &dset_data[0]);
+      if (status < 0)
+        {
+          H5Eprint2(H5E_DEFAULT, stderr);
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_READ,
+                      "could not read /nodeNumbering_old2new");
+        }
+      H5Dclose(dataset_id);
+      long bad = 0;
       for (int i=0;i<nNodes_global;i++)
-        assert(nodeNumbering_global_old2new[i] == dset_data[i]);
-      std::cout<<"==================out of core old2new is correct!===================="<<std::endl;
+        if (nodeNumbering_global_old2new[i] != dset_data[i]) bad++;
+      if (bad)
+        {
+          std::cerr<<"PROTEUS out-of-core node numbering differs in "<<bad
+                   <<" of "<<nNodes_global<<" entries"<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core node numbering does not match in-core");
+        }
     }
   //
   //end test out of core
