@@ -3817,6 +3817,11 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
    * Close/release resources.
    */
   H5Dclose(dset_id);
+  //Close the write handle here. It used to stay open until the end of the
+  //function, so the read-only reopen below met a file that was still open
+  //for write and H5Fopen refused it -- PETSC_ERR_FILE_OPEN, MPI_Abort(65) on
+  //every rank within 20 s. Closing also flushes, which the read needs.
+  H5Fclose(file_id);
   //
   //end try out of core
   //
@@ -5061,7 +5066,8 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
   H5Sclose(filespace);
   H5Sclose(memspace);
   H5Pclose(plist_id);
-  H5Fclose(file_id);
+  //(the mappings file is closed right after the numbering write and again
+  //after the chunked read loop; nothing is open here any more)
   /* out of core */
   PetscLogEventEnd(build_subdomains_cleanup_event,0,0,0,0);
   PetscLogStagePop();
