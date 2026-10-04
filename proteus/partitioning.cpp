@@ -1851,7 +1851,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
         nodeNumbering_global_new2old[nodeNumbering_global_old2new[nN]] = nN;
       herr_t status;
       valarray<int> nodeNumbering_old2new_read(nNodes_global);
-      file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+      file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
       assert(file_id != H5I_INVALID_HID);
       hid_t nodeNumbering_old2new_dataset_id = H5Dopen1(file_id, "/nodeNumbering_old2new");
       status = H5Dread(nodeNumbering_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
@@ -2401,7 +2401,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       }
     //check old2new
     valarray<int> elementNumbering_global_old2new_read(nElements_global);
-    file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+    file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
     hid_t e_old2new_dataset_id = H5Dopen1(file_id, "/elementNumbering_old2new");
     status = H5Dread(e_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                       &elementNumbering_global_old2new_read[0]);
@@ -2422,8 +2422,21 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                      &elementNumbering_global_new2old_read[0]);
     status = H5Dclose(e_new2old_dataset_id);
     status = H5Fclose(file_id);
-    for (int i=0;i<nElements_global;i++)
-      assert(elementNumbering_global_new2old[i] == elementNumbering_global_new2old_read[i]);
+    //assert() is compiled out by -DNDEBUG, so this verification has to
+    //count and report rather than assert, or the whole block is cost
+    //with no signal.
+    {
+      long bad_=0, first_=-1;
+      for (int i=0;i<nElements_global;i++)
+        if (elementNumbering_global_new2old[i] != elementNumbering_global_new2old_read[i]) { if (first_<0) first_=i; bad_++; }
+      if (bad_)
+        {
+          std::cerr<<"PROTEUS numbering check failed: elementNumbering_global_new2old vs elementNumbering_global_new2old_read, "
+                   <<bad_<<" of "<<nElements_global<<" differ, first at "<<first_<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core numbering does not match in-core");
+        }
+    }
     std::cout<<"==================out of core elements new2old is correct!===================="<<std::endl;
     for (size_t i=0;i< new_element_indices_subdomain.size(); i++)
     {
@@ -2733,13 +2746,26 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     
     herr_t status;
     valarray<int> elementBoundaryNumbering_old2new_read(nElementBoundaries_global);
-    file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+    file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
     eb_old2new_dataset_id = H5Dopen1(file_id, "/elementBoundaryNumbering_old2new");
     status = H5Dread(eb_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                      &elementBoundaryNumbering_old2new_read[0]);
     status = H5Dclose(eb_old2new_dataset_id);
-    for (int i=0;i<nElementBoundaries_global;i++)
-      assert(elementBoundaryNumbering_global_old2new[i] == elementBoundaryNumbering_old2new_read[i]);
+    //assert() is compiled out by -DNDEBUG, so this verification has to
+    //count and report rather than assert, or the whole block is cost
+    //with no signal.
+    {
+      long bad_=0, first_=-1;
+      for (int i=0;i<nElementBoundaries_global;i++)
+        if (elementBoundaryNumbering_global_old2new[i] != elementBoundaryNumbering_old2new_read[i]) { if (first_<0) first_=i; bad_++; }
+      if (bad_)
+        {
+          std::cerr<<"PROTEUS numbering check failed: elementBoundaryNumbering_global_old2new vs elementBoundaryNumbering_old2new_read, "
+                   <<bad_<<" of "<<nElementBoundaries_global<<" differ, first at "<<first_<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core numbering does not match in-core");
+        }
+    }
     std::cout<<"==================out of core old2new elementBoundaries is correct!===================="<<std::endl;
     hid_t eb_new2old_dataset_id = H5Dopen1(file_id, "/elementBoundaryNumbering_new2old");
     valarray<int> elementBoundaryNumbering_new2old_read(nElementBoundaries_global);
@@ -2747,8 +2773,21 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                      &elementBoundaryNumbering_new2old_read[0]);
     status = H5Dclose(eb_new2old_dataset_id);
     status = H5Fclose(file_id);
-    for (int i=0;i<nElementBoundaries_global;i++)
-      assert(elementBoundaryNumbering_global_new2old[i] == elementBoundaryNumbering_new2old_read[i]);
+    //assert() is compiled out by -DNDEBUG, so this verification has to
+    //count and report rather than assert, or the whole block is cost
+    //with no signal.
+    {
+      long bad_=0, first_=-1;
+      for (int i=0;i<nElementBoundaries_global;i++)
+        if (elementBoundaryNumbering_global_new2old[i] != elementBoundaryNumbering_new2old_read[i]) { if (first_<0) first_=i; bad_++; }
+      if (bad_)
+        {
+          std::cerr<<"PROTEUS numbering check failed: elementBoundaryNumbering_global_new2old vs elementBoundaryNumbering_new2old_read, "
+                   <<bad_<<" of "<<nElementBoundaries_global<<" differ, first at "<<first_<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core numbering does not match in-core");
+        }
+    }
     std::cout<<"==================out of core new2old elementBoundaries is correct!===================="<<std::endl;
     for (int i=0;i<elementBoundaries_subdomain.size();i++)
     {
@@ -3043,13 +3082,26 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 
     herr_t status;
     valarray<int> edgeNumbering_old2new_read(nEdges_global);
-    file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+    file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
     hid_t ed_old2new_dataset_id = H5Dopen1(file_id, "/edgeNumbering_old2new");
     status = H5Dread(ed_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                      &edgeNumbering_old2new_read[0]);
     status = H5Dclose(ed_old2new_dataset_id);
-    for (int i=0;i<nEdges_global;i++)
-      assert(edgeNumbering_global_old2new[i] == edgeNumbering_old2new_read[i]);
+    //assert() is compiled out by -DNDEBUG, so this verification has to
+    //count and report rather than assert, or the whole block is cost
+    //with no signal.
+    {
+      long bad_=0, first_=-1;
+      for (int i=0;i<nEdges_global;i++)
+        if (edgeNumbering_global_old2new[i] != edgeNumbering_old2new_read[i]) { if (first_<0) first_=i; bad_++; }
+      if (bad_)
+        {
+          std::cerr<<"PROTEUS numbering check failed: edgeNumbering_global_old2new vs edgeNumbering_old2new_read, "
+                   <<bad_<<" of "<<nEdges_global<<" differ, first at "<<first_<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core numbering does not match in-core");
+        }
+    }
     std::cout<<"==================out of core old2new edges is correct!===================="<<std::endl;
     hid_t ed_new2old_dataset_id = H5Dopen1(file_id, "/edgeNumbering_new2old");
     valarray<int> edgeNumbering_new2old_read(nEdges_global);
@@ -3057,8 +3109,21 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                      &edgeNumbering_new2old_read[0]);
     status = H5Dclose(ed_new2old_dataset_id);
     status = H5Fclose(file_id);
-    for (int i=0;i<nEdges_global;i++)
-      assert(edgeNumbering_global_new2old[i] == edgeNumbering_new2old_read[i]);
+    //assert() is compiled out by -DNDEBUG, so this verification has to
+    //count and report rather than assert, or the whole block is cost
+    //with no signal.
+    {
+      long bad_=0, first_=-1;
+      for (int i=0;i<nEdges_global;i++)
+        if (edgeNumbering_global_new2old[i] != edgeNumbering_new2old_read[i]) { if (first_<0) first_=i; bad_++; }
+      if (bad_)
+        {
+          std::cerr<<"PROTEUS numbering check failed: edgeNumbering_global_new2old vs edgeNumbering_new2old_read, "
+                   <<bad_<<" of "<<nEdges_global<<" differ, first at "<<first_<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core numbering does not match in-core");
+        }
+    }
     std::cout<<"==================out of core new2old edges is correct!===================="<<std::endl;
 
     for (auto it = edgeNodesMap.begin(); it != edgeNodesMap.end(); ++it)
