@@ -3823,53 +3823,15 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
   //collect new node numbers for whole mesh so that subdomain reordering and renumbering
   //can be done easily
 
-  IS nodeNumberingIS_global_old2new;
-  ISAllGather(nodeNumberingIS_subdomain_old2new,&nodeNumberingIS_global_old2new);
-  const PetscInt * nodeNumbering_global_old2new;//needs restore call
-  ISGetIndices(nodeNumberingIS_global_old2new,&nodeNumbering_global_old2new);
+  //The ISAllGather that used to build nodeNumbering_global_old2new here is
+  //gone: it put the whole global node numbering on every rank. The element
+  //loop below now reads old->new in chunks and keeps only
+  //nodes_old2new_subdomain_map, the nodes this rank's elements actually touch.
   //
   //test out of core
   //
-  //This was a scratch check that the out-of-core node numbering matches the
-  //in-core one. It declared
-  //
-  //    int dset_data[nNodes_global];
-  //
-  //a variable-length array of GLOBAL size on rank 0's stack -- 40 MB at 10M
-  //nodes, against a default 8 MB stack, so it crashes rank 0 on any large 2D
-  //mesh. The assert that justified it is compiled out by NDEBUG anyway, so
-  //what remained was a stack overflow and a printf. Kept behind a flag, on the
-  //heap, with the statuses actually checked.
-  if (rank == 0 && getenv("PROTEUS_CHECK_OUT_OF_CORE_NUMBERING"))
-    {
-      valarray<int> dset_data(nNodes_global);
-      hid_t dataset_id = H5Dopen2(file_id, "/nodeNumbering_old2new", H5P_DEFAULT);
-      if (dataset_id < 0)
-        {
-          H5Eprint2(H5E_DEFAULT, stderr);
-          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_READ,
-                      "could not open /nodeNumbering_old2new");
-        }
-      herr_t status = H5Dread(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL,
-                              H5P_DEFAULT, &dset_data[0]);
-      if (status < 0)
-        {
-          H5Eprint2(H5E_DEFAULT, stderr);
-          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_READ,
-                      "could not read /nodeNumbering_old2new");
-        }
-      H5Dclose(dataset_id);
-      long bad = 0;
-      for (int i=0;i<nNodes_global;i++)
-        if (nodeNumbering_global_old2new[i] != dset_data[i]) bad++;
-      if (bad)
-        {
-          std::cerr<<"PROTEUS out-of-core node numbering differs in "<<bad
-                   <<" of "<<nNodes_global<<" entries"<<std::endl;
-          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
-                      "out-of-core node numbering does not match in-core");
-        }
-    }
+  //(the scratch out-of-core comparison block is gone with the gather it
+  //compared against)
   //
   //end test out of core
   //
@@ -3922,88 +3884,180 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
   map<NodeTuple<2>,set<pair<int,int> > > edgeElementsMap;
 
   //note any element index containers are in the old element numbering
+  //
+  //Out-of-core node numbering, mirroring partitionNodesFromTetgenFiles.
+  //
+  //This loop used to index nodeNumbering_global_old2new, a global array that
+  //ISAllGather had put on EVERY rank. For a 2D mesh with N nodes that is N
+  //ints per rank here, and the element, elementBoundary and edge numberings
+  //add roughly 13N more -- so per-rank memory did not fall as ranks were
+  //added. Measured on damBreak (569508 nodes): peak per core was FLAT at
+  //0.26 GB from 384 to 768 ranks while the subdomain halved.
+  //
+  //Instead, accumulate a chunk of elements, read old->new for just the nodes
+  //that chunk touches, process it, and release. The chunk is capped by NODE
+  //COUNT, not by nElements_global/size, so the number of chunks does not grow
+  //with the rank count -- the mistake 77c99396 made in the tetgen path.
+  const int nNodes_collection_max=10000;
+  set<int> node_collection;
+  vector<int> elements_collection;
+  vector<valarray<int> > element_old_nodes_collection;
+  vector<double> elementId_collection;
+  map<int,int> nodes_old2new_subdomain_map;
+  int eN_c_start = 0;
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
+  if (file_id < 0)
+    {
+      H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
+    }
   for (int ie = 0; ie < nElements_global; ie++)
     {
-      int ne, nv, elementId(0);
+      int ne, nv;
       long double elementId_double;
       elementFile2 >> eatcomments >> ne;
       ne -= indexBase;
-      assert(0 <= ne && ne < nElements_global && elementFile.good());
+      assert(0 <= ne && ne < nElements_global && elementFile2.good());
+      elements_collection.push_back(ne);
+      valarray<int> enodes_PROBE(simplexDim);
       for (int iv = 0; iv < simplexDim; iv++)
         {
-          elementFile2 >> nv ;
+          elementFile2 >> nv;
           nv -= indexBase;
           assert(0 <= nv && nv < nNodes_global);
-          element_nodes_old[iv] = nv;
-          element_nodes_new[iv] = nodeNumbering_global_old2new[nv];
-          element_nodes_new_array[iv] = element_nodes_new[iv];
+          node_collection.insert(nv);
+          enodes_PROBE[iv] = nv;
         }
-      NodeTuple<simplexDim> nodeTuple(element_nodes_new_array);
-      for (int iv = 0; iv < simplexDim; iv++)
+      element_old_nodes_collection.push_back(enodes_PROBE);
+      //read the marker unconditionally: the stream position must not depend on
+      //whether this element turns out to be in the subdomain
+      if (hasElementMarkers > 0)
         {
-          int nN_star_new = element_nodes_new[iv];
-          bool inSubdomain=false;
-          if (nN_star_new >= nodeOffsets_new[rank] && nN_star_new < nodeOffsets_new[rank+1])
-            {
-              inSubdomain = true;
-              //add all the element boundaries of this element
-              for (int ebN=0;ebN < simplexDim ; ebN++)
-                {
-                  int nodes[simplexDim-1] = { element_nodes_new[(ebN+1) % simplexDim],
-                                   element_nodes_new[(ebN+2) % simplexDim]};
-                  NodeTuple<simplexDim-1> nodeTuple(nodes);
-                  if(elementBoundaryElementsMap.find(nodeTuple) != elementBoundaryElementsMap.end())
-                    {
-                      if (elementBoundaryElementsMap[nodeTuple].right == -1 && ne != elementBoundaryElementsMap[nodeTuple].left)
-                        {
-                          elementBoundaryElementsMap[nodeTuple].right=ne;
-                          elementBoundaryElementsMap[nodeTuple].right_ebN_element=ebN;
-                        }
-                    }
-                  else
-                    {
-                      elementBoundaryElementsMap[nodeTuple] = ElementNeighbors(ne,ebN);
-                    }
-                }
-              //add all the edges of this element
-              for (int nNL=0,edN=0;nNL < simplexDim ; nNL++)
-                for(int nNR=nNL+1;nNR < simplexDim;nNR++,edN++)
-                  {
-                    int nodes[2] = { element_nodes_new[nNL],
-                                     element_nodes_new[nNR]};
-                    NodeTuple<2> nodeTuple(nodes);
-                    edgeElementsMap[nodeTuple].insert(pair<int,int>(ne,edN));
-                  }
-              //add all the nodes to the node star
-              int nN_star_new_subdomain = nN_star_new - nodeOffsets_new[rank];
-              nodeElementsStar[nN_star_new_subdomain].insert(ne);
-              for (int jv = 0; jv < simplexDim; jv++)
-                {
-                  if (iv != jv)
-                    {
-                      int nN_point_new = element_nodes_new[jv];
-                      nodeStarNew[nN_star_new_subdomain].insert(nN_point_new);
-                    }
-                }
-            }
-          if (inSubdomain)
-            {
-              elementNodesArrayMap[ne] = element_nodes_new;
-            }
-        }
-      if (elementNodesArrayMap.find(ne) != elementNodesArrayMap.end())//this element contains a node owned by this subdomain
-        {
-          if (nodeTuple.nodes[1] >= nodeOffsets_new[rank] && nodeTuple.nodes[1] < nodeOffsets_new[rank+1])
-            elements_subdomain_owned.insert(ne);
-          if (hasElementMarkers > 0)
-            {
-              elementFile2 >> elementId_double;
-              elementId = static_cast<long int>(elementId_double);
-              elementMaterialTypesMap[ne] = elementId;
-            }
+          elementFile2 >> elementId_double;
+          elementId_collection.push_back(static_cast<double>(elementId_double));
         }
       elementFile2 >> eatline;
+
+      if (node_collection.size() >= (size_t)nNodes_collection_max || ie == nElements_global-1)
+        {
+          //one point-selection read for the whole chunk
+          valarray<hsize_t> node_collection_array(node_collection.size());
+          valarray<int> nodes_old2new_subset(node_collection.size());
+          int i_nc=0;
+          for (auto nvp=node_collection.begin();nvp!=node_collection.end();nvp++,i_nc++)
+            node_collection_array[i_nc] = static_cast<hsize_t>(*nvp);
+          hid_t dset_id_c = H5Dopen1(file_id,"/nodeNumbering_old2new");
+          if (dset_id_c < 0)
+            {
+              H5Eprint2(H5E_DEFAULT, stderr);
+              SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_READ,
+                          "could not open /nodeNumbering_old2new");
+            }
+          hid_t fspace_c = H5Dget_space(dset_id_c);
+          herr_t st_c = H5Sselect_elements(fspace_c, H5S_SELECT_SET,
+                                           node_collection.size(), &node_collection_array[0]);
+          hsize_t dims_c[] = {static_cast<hsize_t>(node_collection.size())};
+          hid_t mspace_c = H5Screate_simple(1, dims_c, NULL);
+          herr_t rd_c = H5Dread(dset_id_c, H5T_NATIVE_INT, mspace_c, fspace_c,
+                                H5P_DEFAULT, &nodes_old2new_subset[0]);
+          if (st_c < 0 || rd_c < 0)
+            {
+              H5Eprint2(H5E_DEFAULT, stderr);
+              SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_READ,
+                          "could not read /nodeNumbering_old2new for this chunk");
+            }
+          H5Sclose(mspace_c); H5Sclose(fspace_c); H5Dclose(dset_id_c);
+          map<int,int> nodes_old2new_subset_map;
+          for (size_t i=0;i<node_collection.size();i++)
+            nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
+
+          for (int eN_c = eN_c_start; eN_c <= ie; eN_c++)
+            {
+              const int ne = elements_collection[eN_c-eN_c_start];
+              long int elementId(0);
+              for (int iv = 0; iv < simplexDim; iv++)
+                {
+                  element_nodes_old[iv] = element_old_nodes_collection[eN_c-eN_c_start][iv];
+                  element_nodes_new[iv] = nodes_old2new_subset_map[element_nodes_old[iv]];
+                  element_nodes_new_array[iv] = element_nodes_new[iv];
+                }
+            NodeTuple<simplexDim> nodeTuple(element_nodes_new_array);
+            for (int iv = 0; iv < simplexDim; iv++)
+              {
+                int nN_star_new = element_nodes_new[iv];
+                bool inSubdomain=false;
+                if (nN_star_new >= nodeOffsets_new[rank] && nN_star_new < nodeOffsets_new[rank+1])
+                  {
+                    inSubdomain = true;
+                    //add all the element boundaries of this element
+                    for (int ebN=0;ebN < simplexDim ; ebN++)
+                      {
+                        int nodes[simplexDim-1] = { element_nodes_new[(ebN+1) % simplexDim],
+                                         element_nodes_new[(ebN+2) % simplexDim]};
+                        NodeTuple<simplexDim-1> nodeTuple(nodes);
+                        if(elementBoundaryElementsMap.find(nodeTuple) != elementBoundaryElementsMap.end())
+                          {
+                            if (elementBoundaryElementsMap[nodeTuple].right == -1 && ne != elementBoundaryElementsMap[nodeTuple].left)
+                              {
+                                elementBoundaryElementsMap[nodeTuple].right=ne;
+                                elementBoundaryElementsMap[nodeTuple].right_ebN_element=ebN;
+                              }
+                          }
+                        else
+                          {
+                            elementBoundaryElementsMap[nodeTuple] = ElementNeighbors(ne,ebN);
+                          }
+                      }
+                    //add all the edges of this element
+                    for (int nNL=0,edN=0;nNL < simplexDim ; nNL++)
+                      for(int nNR=nNL+1;nNR < simplexDim;nNR++,edN++)
+                        {
+                          int nodes[2] = { element_nodes_new[nNL],
+                                           element_nodes_new[nNR]};
+                          NodeTuple<2> nodeTuple(nodes);
+                          edgeElementsMap[nodeTuple].insert(pair<int,int>(ne,edN));
+                        }
+                    //add all the nodes to the node star
+                    int nN_star_new_subdomain = nN_star_new - nodeOffsets_new[rank];
+                    nodeElementsStar[nN_star_new_subdomain].insert(ne);
+                    for (int jv = 0; jv < simplexDim; jv++)
+                      {
+                        if (iv != jv)
+                          {
+                            int nN_point_new = element_nodes_new[jv];
+                            nodeStarNew[nN_star_new_subdomain].insert(nN_point_new);
+                          }
+                      }
+                  }
+                if (inSubdomain)
+                  {
+                    elementNodesArrayMap[ne] = element_nodes_new;
+                    //the later .poly/.edge readers need old->new for exactly these
+                    //nodes, which is what replaces the global ISAllGather
+                    for (int jv = 0; jv < simplexDim; jv++)
+                      nodes_old2new_subdomain_map[element_nodes_old[jv]] = element_nodes_new[jv];
+                  }
+              }
+            if (elementNodesArrayMap.find(ne) != elementNodesArrayMap.end())//this element contains a node owned by this subdomain
+              {
+                if (nodeTuple.nodes[1] >= nodeOffsets_new[rank] && nodeTuple.nodes[1] < nodeOffsets_new[rank+1])
+                  elements_subdomain_owned.insert(ne);
+                if (hasElementMarkers > 0)
+                  {
+                    elementId = static_cast<long int>(elementId_collection[eN_c-eN_c_start]);
+                    elementMaterialTypesMap[ne] = elementId;
+                  }
+              }
+            }
+          eN_c_start = ie+1;
+          node_collection.clear();
+          elements_collection.clear();
+          elementId_collection.clear();
+          element_old_nodes_collection.clear();
+        }
     }
+  H5Fclose(file_id);
   elementFile2.close();
   int nElements_owned_subdomain(elements_subdomain_owned.size()),
     nElements_owned_new=0;
@@ -4143,13 +4197,17 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
       assert(0 <= neb && neb < nElementBoundaries_global && elementBoundaryFile.good());
       //grab the element boundaries for the node if the node is owned by the subdomain
       //this will miss the element boundaries on the "outside boundary" of the star, which will grab later
-      int nn0_new = nodeNumbering_global_old2new[nn0];
+      int nn0_new = -1;
+      if (nodes_old2new_subdomain_map.find(nn0) != nodes_old2new_subdomain_map.end())
+        nn0_new = nodes_old2new_subdomain_map[nn0];
       if (nn0_new >= nodeOffsets_new[rank] && nn0_new < nodeOffsets_new[rank+1])
         {
           nodeElementBoundariesStar[nn0_new-nodeOffsets_new[rank]].insert(neb);
           supportedElementBoundaries.insert(neb);
         }
-      int nn1_new = nodeNumbering_global_old2new[nn1];
+      int nn1_new = -1;
+      if (nodes_old2new_subdomain_map.find(nn1) != nodes_old2new_subdomain_map.end())
+        nn1_new = nodes_old2new_subdomain_map[nn1];
       if (nn1_new >= nodeOffsets_new[rank] && nn1_new < nodeOffsets_new[rank+1])
         {
           nodeElementBoundariesStar[nn1_new-nodeOffsets_new[rank]].insert(neb);
@@ -4324,13 +4382,17 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
       nn0 -= indexBase;
       nn1 -= indexBase;
       assert(0 <= ned && ned < nEdges_global && edgeFile.good());
-      int nn0_new = nodeNumbering_global_old2new[nn0];
+      int nn0_new = -1;
+      if (nodes_old2new_subdomain_map.find(nn0) != nodes_old2new_subdomain_map.end())
+        nn0_new = nodes_old2new_subdomain_map[nn0];
       if (nn0_new >= nodeOffsets_new[rank] && nn0_new < nodeOffsets_new[rank+1])
         {
           nodeEdgesStar.at(nn0_new-nodeOffsets_new[rank]).insert(ned);
           supportedEdges.insert(ned);
         }
-      int nn1_new = nodeNumbering_global_old2new[nn1];
+      int nn1_new = -1;
+      if (nodes_old2new_subdomain_map.find(nn1) != nodes_old2new_subdomain_map.end())
+        nn1_new = nodes_old2new_subdomain_map[nn1];
       if (nn1_new >= nodeOffsets_new[rank] && nn1_new < nodeOffsets_new[rank+1])
         {
           nodeEdgesStar.at(nn1_new-nodeOffsets_new[rank]).insert(ned);
@@ -4573,7 +4635,9 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
         vertexFile >> nodeId;
       nv -= indexBase;
       assert(0 <= nv && nv < nNodes_global && vertexFile.good());
-      int nN_global_new = nodeNumbering_global_old2new[nv];
+      int nN_global_new = -1;
+      if (nodes_old2new_subdomain_map.find(nv) != nodes_old2new_subdomain_map.end())
+        nN_global_new = nodes_old2new_subdomain_map[nv];
       //local
       if (nN_global_new >= nodeOffsets_new[rank] && nN_global_new < nodeOffsets_new[rank+1])
         {
@@ -4601,10 +4665,8 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
       vertexFile >> eatline;
     }//end iv
   vertexFile.close();
-  ISRestoreIndices(nodeNumberingIS_global_old2new,&nodeNumbering_global_old2new);
   ISDestroy(&nodePartitioningIS_new);
   ISDestroy(&nodeNumberingIS_subdomain_old2new);
-  ISDestroy(&nodeNumberingIS_global_old2new);
   //done with vertex file (and all file reads at this point)
   //ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done reading vertices");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 
