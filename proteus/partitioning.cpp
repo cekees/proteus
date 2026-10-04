@@ -3765,27 +3765,45 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
   //
   //test out of core
   //
-  if (rank == 0)
+  //This was a scratch check that the out-of-core node numbering matches the
+  //in-core one. It declared
+  //
+  //    int dset_data[nNodes_global];
+  //
+  //a variable-length array of GLOBAL size on rank 0's stack -- 40 MB at 10M
+  //nodes, against a default 8 MB stack, so it crashes rank 0 on any large 2D
+  //mesh. The assert that justified it is compiled out by NDEBUG anyway, so
+  //what remained was a stack overflow and a printf. Kept behind a flag, on the
+  //heap, with the statuses actually checked.
+  if (rank == 0 && getenv("PROTEUS_CHECK_OUT_OF_CORE_NUMBERING"))
     {
-      hid_t       dataset_id;  /* identifiers */
-      herr_t      status;
-      int         dset_data[nNodes_global];
-
-      /* Open an existing file. */
-      //file_id = H5Fopen("mappings.h5", H5F_ACC_RDONLY, H5P_DEFAULT);
-
-      /* Open an existing dataset. */
-      dataset_id = H5Dopen2(file_id, "/nodeNumbering_old2new", H5P_DEFAULT);
-
-      status = H5Dread(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                       dset_data);
-
-      /* Close the dataset. */
-      status = H5Dclose(dataset_id);
-
+      valarray<int> dset_data(nNodes_global);
+      hid_t dataset_id = H5Dopen2(file_id, "/nodeNumbering_old2new", H5P_DEFAULT);
+      if (dataset_id < 0)
+        {
+          H5Eprint2(H5E_DEFAULT, stderr);
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_READ,
+                      "could not open /nodeNumbering_old2new");
+        }
+      herr_t status = H5Dread(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL,
+                              H5P_DEFAULT, &dset_data[0]);
+      if (status < 0)
+        {
+          H5Eprint2(H5E_DEFAULT, stderr);
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_READ,
+                      "could not read /nodeNumbering_old2new");
+        }
+      H5Dclose(dataset_id);
+      long bad = 0;
       for (int i=0;i<nNodes_global;i++)
-        assert(nodeNumbering_global_old2new[i] == dset_data[i]);
-      std::cout<<"==================out of core old2new is correct!===================="<<std::endl;
+        if (nodeNumbering_global_old2new[i] != dset_data[i]) bad++;
+      if (bad)
+        {
+          std::cerr<<"PROTEUS out-of-core node numbering differs in "<<bad
+                   <<" of "<<nNodes_global<<" entries"<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core node numbering does not match in-core");
+        }
     }
   //
   //end test out of core
