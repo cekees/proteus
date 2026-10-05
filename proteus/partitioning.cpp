@@ -2,6 +2,11 @@
 #include "PyEmbeddedFunctions.h"
 #include <cstdlib>
 #include <string>
+#include <sys/stat.h>
+#include <cstring>
+#include <cstdio>
+#include <cerrno>
+#include <unistd.h>
 
 namespace proteus
 {
@@ -1517,34 +1522,70 @@ namespace {
   //for A/B comparison on the same build.
   //
   //Collective: every rank must call this (the barrier).
-  bool mappingsReadUsesMPIIO()
+  //How the mappings file is reopened read-only after the collective writer
+  //is closed (PROTEUS_MAPPINGS_READ_DRIVER):
+  //  unset/"sec2"  HDF5's default local driver: per-rank POSIX reads, local close
+  //  "self"        MPI-IO on MPI_COMM_SELF: per-rank MPI-IO, local close
+  //  "mpio"        MPI-IO on the world communicator: collective close (f97b2611)
+  enum MappingsReadDriver { MAPPINGS_READ_SEC2, MAPPINGS_READ_SELF, MAPPINGS_READ_MPIO };
+
+  MappingsReadDriver mappingsReadDriver()
   {
-    static const bool use_mpio = []() {
-      const char* driver = std::getenv("PROTEUS_MAPPINGS_READ_DRIVER");
-      return driver != NULL && std::string(driver) == "mpio";
+    static const MappingsReadDriver driver = []() {
+      const char* d = std::getenv("PROTEUS_MAPPINGS_READ_DRIVER");
+      if (d != NULL && std::string(d) == "mpio") return MAPPINGS_READ_MPIO;
+      if (d != NULL && std::string(d) == "self") return MAPPINGS_READ_SELF;
+      return MAPPINGS_READ_SEC2;
     }();
-    return use_mpio;
+    return driver;
   }
 
   //Transfer mode for a read from a file opened by openMappingsReadOnly. HDF5
   //rejects collective transfer on a non-MPI driver ("collective access for
-  //MPI-based drivers only"), so collective is only requested on the MPI-IO
-  //path; on the local path the read is an ordinary independent read.
+  //MPI-based drivers only"), so collective is only requested when the file
+  //was opened on the world communicator; otherwise the read is independent.
   herr_t setMappingsReadXfer(hid_t dxpl)
   {
-    if (mappingsReadUsesMPIIO())
+    if (mappingsReadDriver() == MAPPINGS_READ_MPIO)
       return H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE);
     return 0;
   }
 
+  //On a failed reopen, write what this rank saw to mappings_open_fail.<rank>.txt:
+  //an abort can drop a rank's stderr (it did on Carpenter, job 3180113).
+  void reportMappingsOpenFailure(const MPI_Comm& comm, const char* name, const char* driver, int attempt)
+  {
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    char path[64];
+    snprintf(path, sizeof(path), "mappings_open_fail.%d.txt", rank);
+    FILE* f = fopen(path, "a");
+    if (f == NULL)
+      f = stderr;
+    struct stat st;
+    int sr = stat(name, &st);
+    fprintf(f, "rank %d attempt %d: H5Fopen(%s, RDONLY) failed with the %s driver\n", rank, attempt, name, driver);
+    if (sr == 0)
+      fprintf(f, "stat: st_size %lld\n", (long long)st.st_size);
+    else
+      fprintf(f, "stat failed: %s\n", strerror(errno));
+    H5Eprint2(H5E_DEFAULT, f);
+    if (f != stderr)
+      fclose(f);
+  }
+
   hid_t openMappingsReadOnly(const MPI_Comm& comm, const char* name)
   {
-    const bool use_mpio = mappingsReadUsesMPIIO();
+    const MappingsReadDriver driver = mappingsReadDriver();
+    const char* driver_name = driver == MAPPINGS_READ_MPIO ? "MPI-IO (world)" :
+                              driver == MAPPINGS_READ_SELF ? "MPI-IO (MPI_COMM_SELF)" : "sec2";
     static bool reported = false;
     if (!reported)
       {
-        if (use_mpio)
-          logEvent("mappings file read-only reopen: MPI-IO driver (PROTEUS_MAPPINGS_READ_DRIVER=mpio)",3);
+        if (driver == MAPPINGS_READ_MPIO)
+          logEvent("mappings file read-only reopen: MPI-IO driver on the world communicator (PROTEUS_MAPPINGS_READ_DRIVER=mpio)",3);
+        else if (driver == MAPPINGS_READ_SELF)
+          logEvent("mappings file read-only reopen: MPI-IO driver on MPI_COMM_SELF (PROTEUS_MAPPINGS_READ_DRIVER=self)",3);
         else
           logEvent("mappings file read-only reopen: local sec2 driver",3);
         reported = true;
@@ -1552,9 +1593,25 @@ namespace {
     MPI_Barrier(comm);
     hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
     if (fapl < 0) return fapl;
-    if (use_mpio)
+    if (driver == MAPPINGS_READ_MPIO)
       H5Pset_fapl_mpio(fapl, comm, MPI_INFO_NULL);
-    hid_t fid = H5Fopen(name, H5F_ACC_RDONLY, fapl);
+    else if (driver == MAPPINGS_READ_SELF)
+      H5Pset_fapl_mpio(fapl, MPI_COMM_SELF, MPI_INFO_NULL);
+    //Per-rank opens may retry: a rank on another Lustre client has been seen to
+    //fail the reopen while all others succeed (1 of 7680, job 3180113). The
+    //world-communicator open is collective and must not be retried per rank.
+    const int max_attempts = (driver == MAPPINGS_READ_MPIO) ? 1 : 6;
+    hid_t fid = -1;
+    for (int attempt = 0; attempt < max_attempts; attempt++)
+      {
+        fid = H5Fopen(name, H5F_ACC_RDONLY, fapl);
+        if (fid >= 0)
+          break;
+        reportMappingsOpenFailure(comm, name, driver_name, attempt);
+        H5Eclear2(H5E_DEFAULT);
+        if (attempt + 1 < max_attempts)
+          sleep(1);
+      }
     H5Pclose(fapl);
     return fid;
   }
