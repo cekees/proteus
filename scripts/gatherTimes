@@ -20,9 +20,33 @@ def indentXML(elem, level=0):
         if level and (not elem.tail or not elem.tail.strip()):
             elem.tail = i
 
+def countFrames(h5File, collectionName):
+    """Number of consecutive frames <collectionName>_0, _1, ... stored in the .h5"""
+    prefix = collectionName.replace(" ","_")+"_"
+    n = 0
+    while prefix+repr(n) in h5File:
+        n += 1
+    return n
+
+def frameNames(TemporalGridCollection):
+    """The frame Names already present in a temporal collection, in order"""
+    names = []
+    for child in TemporalGridCollection:
+        t = child.find("Time")
+        names.append(None if t is None else t.attrib.get('Name'))
+    return names
+
 def gatherTimes(filename,dataDir='.',addname="_complete", tCount=None, global_sync=True):
     """
-    in case archiving failed to collect results from all times
+    Rebuild the temporal collections of filename.xmf from the per-frame grids
+    stored in filename.h5, writing filename+addname.xmf.
+
+    This is for archives whose .xmf lost frames, e.g. a run killed at walltime,
+    which leaves only the newest frame in the .xmf; the .h5 always holds all of
+    them. The frame count comes from the .h5, not from the .xmf. A collection
+    that already holds frames 0..n-1 is left untouched, so running this on a
+    complete .xmf is a no-op apart from writing the copy. tCount (None or <0
+    for all frames) limits the rebuild to the first tCount frames.
     """
     import h5py
     xmlFile = open(filename+".xmf","rb")
@@ -32,16 +56,23 @@ def gatherTimes(filename,dataDir='.',addname="_complete", tCount=None, global_sy
     XDMF = tree.getroot()
     Domain = XDMF[0]
     for TemporalGridCollection in Domain:
-        if tCount == -1:
-            if global_sync:
-                tCount = int(TemporalGridCollection[0][0].attrib['Name'])+1
-            else:
-                SpatialCollection = TemporalGridCollection[-1]
-                Grids = SpatialCollection[:]
-                tCount = int(Grids[0].attrib['Name'])+1
-            del TemporalGridCollection[:]
-        for i in range(tCount):
-            dataset_name = TemporalGridCollection.attrib['Name']+"_"+repr(i)
+        name = TemporalGridCollection.attrib['Name']
+        available = countFrames(h5File, name)
+        if available == 0:
+            raise ValueError("no {0}_<i> frame datasets in {1}.h5".format(name.replace(" ","_"), filename))
+        if tCount is None or tCount < 0:
+            nFrames = available
+        elif tCount > available:
+            raise ValueError("asked for {0} frames of {1} but {2}.h5 holds {3}".format(tCount, name, filename, available))
+        else:
+            nFrames = tCount
+        if frameNames(TemporalGridCollection) == [str(i) for i in range(nFrames)]:
+            print("{0}: {1} already holds frames 0-{2}; left as is".format(filename+".xmf", name, nFrames-1))
+            continue
+        #rebuild from scratch: never append to the frames already in the .xmf
+        del TemporalGridCollection[:]
+        for i in range(nFrames):
+            dataset_name = name+"_"+repr(i)
             dataset_name = dataset_name.replace(" ","_")
             grid_array = h5File["/"+dataset_name]
             if global_sync:
@@ -55,6 +86,8 @@ def gatherTimes(filename,dataDir='.',addname="_complete", tCount=None, global_sy
                 for j in range(size):
                     Grid = fromstring(grid_array[j])
                     SpatialCollection.append(Grid)
+        print("{0}: rebuilt {1} with {2} frames from {3}.h5".format(filename+addname+".xmf", name, nFrames, filename))
+    h5File.close()
     xmlFile = open(filename+addname+".xmf","wb")
     indentXML(tree.getroot())
     tree.write(xmlFile)
@@ -65,7 +98,7 @@ if __name__ == '__main__':
     usage = "usage: %prog [options] filename"
     parser = OptionParser(usage=usage)
     parser.add_option("-t","--tCount",
-                      help="number of time steps",
+                      help="number of frames to keep (default: all frames in the .h5)",
                       action="store",
                       type="int",
                       dest="tCount",

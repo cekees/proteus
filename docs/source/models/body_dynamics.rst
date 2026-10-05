@@ -175,12 +175,15 @@ ProtChMoorings
 The data related to mooring cables is saved in an hdf5 file, usually
 ``[my_mooring.name].h5``, which can be read directly with h5py. Another way to
 read and visualise the data is to use the associated ``[my_mooring.name].xmf``.
-The following script must be first ran (note that there is no extension for the
-file name):
+That file only lists the most recent time step, so first run ``gatherTimes``
+(installed with Proteus) to collect every time step stored in the ``.h5`` file:
+
 .. code-block::
 
-   {PROTEUS_DIR}/scripts/gatherTimes.py -f [my_mooring.name]
+   gatherTimes [my_mooring.name]
 
-where ``{PROTEUS_DIR}`` is the root directory of the Proteus installation. This
-will create ``[my_mooring.name]_complete.xmf`` which can be opened in Paraview
-to navigate the time steps that have been recorded.
+This creates ``[my_mooring.name]_complete.xmf``, which can be opened in
+Paraview to navigate the time steps that have been recorded. The argument may
+be given with or without the ``.xmf`` extension, and ``-t N`` keeps only the
+first ``N`` time steps. Running it on an ``.xmf`` that already lists every
+stored time step leaves the time steps unchanged.
