@@ -1,5 +1,7 @@
 #include "partitioning.h"
 #include "PyEmbeddedFunctions.h"
+#include <cstdlib>
+#include <string>
 
 namespace proteus
 {
@@ -1503,12 +1505,55 @@ namespace {
   //new id 0. That is the origin of both the degenerate face numbering and the
   //edgeNodesArray left at its -1 initialiser.
   //
-  //Collective: every rank must call this.
+  //The truncated reads came from reopening while the collective writer was
+  //still open; every call site now closes the writer first (beb3ba81). So
+  //the read-only reopen is LOCAL by default: each rank opens the file with
+  //HDF5's default (sec2) driver, reads go through ordinary POSIX I/O, and
+  //the close is not collective, so one slow rank no longer holds every other
+  //rank in an MPI_File_close barrier. The barrier here makes every rank's
+  //close of the writer complete before any rank reopens.
+  //
+  //PROTEUS_MAPPINGS_READ_DRIVER=mpio restores the MPI-IO reopen (f97b2611)
+  //for A/B comparison on the same build.
+  //
+  //Collective: every rank must call this (the barrier).
+  bool mappingsReadUsesMPIIO()
+  {
+    static const bool use_mpio = []() {
+      const char* driver = std::getenv("PROTEUS_MAPPINGS_READ_DRIVER");
+      return driver != NULL && std::string(driver) == "mpio";
+    }();
+    return use_mpio;
+  }
+
+  //Transfer mode for a read from a file opened by openMappingsReadOnly. HDF5
+  //rejects collective transfer on a non-MPI driver ("collective access for
+  //MPI-based drivers only"), so collective is only requested on the MPI-IO
+  //path; on the local path the read is an ordinary independent read.
+  herr_t setMappingsReadXfer(hid_t dxpl)
+  {
+    if (mappingsReadUsesMPIIO())
+      return H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE);
+    return 0;
+  }
+
   hid_t openMappingsReadOnly(const MPI_Comm& comm, const char* name)
   {
+    const bool use_mpio = mappingsReadUsesMPIIO();
+    static bool reported = false;
+    if (!reported)
+      {
+        if (use_mpio)
+          logEvent("mappings file read-only reopen: MPI-IO driver (PROTEUS_MAPPINGS_READ_DRIVER=mpio)",3);
+        else
+          logEvent("mappings file read-only reopen: local sec2 driver",3);
+        reported = true;
+      }
+    MPI_Barrier(comm);
     hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
     if (fapl < 0) return fapl;
-    H5Pset_fapl_mpio(fapl, comm, MPI_INFO_NULL);
+    if (use_mpio)
+      H5Pset_fapl_mpio(fapl, comm, MPI_INFO_NULL);
     hid_t fid = H5Fopen(name, H5F_ACC_RDONLY, fapl);
     H5Pclose(fapl);
     return fid;
@@ -2362,7 +2407,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t e_subdomain_count[]={static_cast<hsize_t>(elementNodesArrayMap.size())};
   hid_t e_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, e_subdomain_count, NULL);
   hid_t e_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  status = H5Pset_dxpl_mpio(e_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);
+  status = setMappingsReadXfer(e_old2new_subdomain_plist_id);
   status = H5Dread(e_old2new_dataset_id, H5T_NATIVE_INT, 
                    e_old2new_subdomain_memspace_id, e_old2new_filespace_id, 
                    H5P_DEFAULT, &new_element_indices_subdomain[0]);
@@ -2712,7 +2757,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t eb_subdomain_count[]={static_cast<hsize_t>(elementBoundaries_subdomain.size())};
   hid_t eb_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, eb_subdomain_count, NULL);
   hid_t eb_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  H5Pset_dxpl_mpio(eb_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);  
+  setMappingsReadXfer(eb_old2new_subdomain_plist_id);  
   status = H5Dread(eb_old2new_dataset_id, H5T_NATIVE_INT, 
                    eb_old2new_subdomain_memspace_id, eb_old2new_filespace_id, 
                    H5P_DEFAULT, &new_elementBoundary_indices_subdomain[0]);
@@ -3049,7 +3094,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t ed_subdomain_count[]={static_cast<hsize_t>(edgeNodesMap.size())};
   hid_t ed_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, ed_subdomain_count, NULL);
   hid_t ed_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  H5Pset_dxpl_mpio(ed_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);
+  setMappingsReadXfer(ed_old2new_subdomain_plist_id);
   status = H5Dread(ed_old2new_dataspace_id, H5T_NATIVE_INT, ed_old2new_subdomain_memspace_id, 
                    ed_old2new_filespace_id, 
                    H5P_DEFAULT, &new_edge_indices_subdomain[0]);
