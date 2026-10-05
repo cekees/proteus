@@ -1508,14 +1508,24 @@ namespace {
   //face numbering and of edgeNodesArray left at its -1 initialiser.
   //
   //Closing the writer before every reopen (beb3ba81) is necessary but NOT
-  //sufficient: after the collective MPI_File_close and a barrier, a rank on
-  //another Lustre client can still briefly see a short EOF. Measured on the
-  //S3H15 mesh at 7680 ranks (job 3180134): 39 ranks hit "truncated file" on
-  //a local reopen across the node, element, face and edge phases, and every
-  //one succeeded on a retry 1 s later.
+  //sufficient. A standalone reproduction on Carpenter (HDF5 1.14.6, Lustre,
+  //7680 ranks on 40 nodes, production-sized datasets; torino_flume
+  //debug/stale_eof) showed what the failures depend on:
+  //  - NOT time: waiting 5, 50 or 500 ms after the barrier fails as often as
+  //    not waiting, and a stat() right after a failed open always shows the
+  //    correct size;
+  //  - concurrency on one node: a node's first opener never failed, while
+  //    ranks opening at the same moment as many others on their node did
+  //    (up to ~100 of 7680 per reopen);
+  //  - one real H5Fopen per node first fixes it: with the node leader opening
+  //    before the rest, 4 failures in 61,440 opens. A leader that only
+  //    fstat()s the file and sees the right size does not help.
+  //The likely cause is the Lustre client handing some of many concurrent
+  //openers its stale cached size for a file another client just changed.
   //
-  //So the reopen is LOCAL, with retries: each rank opens the file with HDF5's
-  //default (sec2) driver after a barrier, retrying a failed open. Reads are
+  //So the reopen is LOCAL and node-leader-first: each rank opens the file
+  //with HDF5's default (sec2) driver, one rank per node before the others,
+  //and a failed open is retried with a short jittered backoff. Reads are
   //ordinary per-rank POSIX reads whose sieve buffer coalesces the point
   //selections, and the close is not collective, so one slow rank no longer
   //holds every other rank in an MPI_File_close barrier. Same build, mesh and
@@ -1543,6 +1553,47 @@ namespace {
     if (mappingsReadUsesMPIIO())
       return H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE);
     return 0;
+  }
+
+  //Ranks sharing this rank's node (and its Lustre client), split once.
+  MPI_Comm mappingsNodeComm(const MPI_Comm& comm)
+  {
+    static MPI_Comm node = MPI_COMM_NULL;
+    static MPI_Comm split_from = MPI_COMM_NULL;
+    if (node == MPI_COMM_NULL || split_from != comm)
+      {
+        int rank = 0;
+        MPI_Comm_rank(comm, &rank);
+        MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, rank, MPI_INFO_NULL, &node);
+        split_from = comm;
+      }
+    return node;
+  }
+
+  //A local read-only open, retried: 10 quick attempts with 10-60 ms of
+  //jitter (the failure is a collision with the node's other openers, not a
+  //window that closes with time), then up to 5 more 1 s apart. Returns the
+  //file id or -1, and the number of attempts used.
+  hid_t openLocalWithRetry(const char* name, hid_t fapl, int rank, int& attempts)
+  {
+    unsigned int seed = 2654435761u * (unsigned int)(rank + 1);
+    const int quick = 10, slow = 5;
+    hid_t fid = -1;
+    attempts = 0;
+    while (attempts < quick + slow)
+      {
+        H5E_BEGIN_TRY {
+          fid = H5Fopen(name, H5F_ACC_RDONLY, fapl);
+        } H5E_END_TRY;
+        attempts++;
+        if (fid >= 0 || attempts == quick + slow)
+          break;
+        if (attempts < quick)
+          usleep(10000 + rand_r(&seed) % 50000);
+        else
+          sleep(1);
+      }
+    return fid;
   }
 
   //A rank that exhausts its retries writes what it saw to
@@ -1587,19 +1638,26 @@ namespace {
     if (fapl < 0) return fapl;
     if (use_mpio)
       H5Pset_fapl_mpio(fapl, comm, MPI_INFO_NULL);
-    //the world MPI-IO open is collective and must not be retried per rank
-    const int max_attempts = use_mpio ? 1 : 10;
     hid_t fid = -1;
-    int attempts = 0;
-    while (attempts < max_attempts)
+    int attempts = 1;
+    int node_rank = 0;
+    if (use_mpio)
       {
+        //the world MPI-IO open is collective and must not be retried per rank
         H5E_BEGIN_TRY {
           fid = H5Fopen(name, H5F_ACC_RDONLY, fapl);
         } H5E_END_TRY;
-        attempts++;
-        if (fid >= 0 || attempts == max_attempts)
-          break;
-        sleep(1);
+      }
+    else
+      {
+        //node leader first, then the rest of the node
+        MPI_Comm node = mappingsNodeComm(comm);
+        MPI_Comm_rank(node, &node_rank);
+        if (node_rank == 0)
+          fid = openLocalWithRetry(name, fapl, rank, attempts);
+        MPI_Barrier(node);
+        if (node_rank != 0)
+          fid = openLocalWithRetry(name, fapl, rank, attempts);
       }
     if (fid < 0)
       {
@@ -1609,13 +1667,18 @@ namespace {
           reportMappingsOpenFailure(rank, name, attempts + 1);
       }
     H5Pclose(fapl);
-    int retried = (attempts > 1) ? 1 : 0, nRetried = 0, failed = (fid < 0) ? 1 : 0, nFailed = 0;
-    MPI_Allreduce(&retried, &nRetried, 1, MPI_INT, MPI_SUM, comm);
-    MPI_Allreduce(&failed, &nFailed, 1, MPI_INT, MPI_SUM, comm);
-    if (nRetried > 0 || nFailed > 0)
+    int counts[4] = {(attempts > 1 && node_rank == 0) ? 1 : 0,
+                     (attempts > 1 && node_rank != 0) ? 1 : 0,
+                     (fid < 0) ? 1 : 0,
+                     attempts};
+    int totals[3] = {0, 0, 0}, maxAttempts = 0;
+    MPI_Allreduce(counts, totals, 3, MPI_INT, MPI_SUM, comm);
+    MPI_Allreduce(&counts[3], &maxAttempts, 1, MPI_INT, MPI_MAX, comm);
+    if (totals[0] + totals[1] + totals[2] > 0)
       {
         char msg[256];
-        snprintf(msg, sizeof(msg), "mappings file reopen: %d rank(s) needed a retry, %d failed (stale EOF on a parallel filesystem)", nRetried, nFailed);
+        snprintf(msg, sizeof(msg), "mappings file reopen: %d node leader(s) and %d other rank(s) needed a retry (max %d attempts), %d failed (stale size on a parallel filesystem)",
+                 totals[0], totals[1], maxAttempts, totals[2]);
         logEvent(msg,3);
       }
     return fid;
