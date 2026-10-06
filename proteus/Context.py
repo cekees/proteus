@@ -62,6 +62,42 @@ def setFromModule(moduleIn,mutable=False):
         Context = namedtuple(moduleIn.__name__.split('.')[-1], list(fields.keys()))
         context = Context._make(list(fields.values()))
 
+def _splitContextOptions(optionsString):
+    """Split a context options string into "name=value" tokens.
+
+    Tokens may be separated by any run of whitespace (including newlines, so an
+    options file can hold one option per line), commas, or semicolons.
+    Separators inside brackets, braces, parentheses, or quotes are kept, so
+    values such as ``L=[1.0,2.0]``, ``x=(1, 2)``, or ``name='a b;c'`` stay whole.
+    """
+    tokens = []
+    current = []
+    depth = 0
+    quote = None
+    for ch in optionsString:
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+            current.append(ch)
+        elif ch in "([{":
+            depth += 1
+            current.append(ch)
+        elif ch in ")]}":
+            depth -= 1
+            current.append(ch)
+        elif depth == 0 and (ch.isspace() or ch in ",;"):
+            if current:
+                tokens.append("".join(current))
+                current = []
+        else:
+            current.append(ch)
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
 def Options(optionsList=None,mutable=False):
     """Construct an o
     from proteus.LinearAlgebraToptions object (named tuple)
@@ -92,9 +128,11 @@ def Options(optionsList=None,mutable=False):
         contextOptionsString=None
         sys.exit(0)
     if contextOptionsString is not None:
-        option_overides=contextOptionsString.split(" ")
+        option_overides=_splitContextOptions(contextOptionsString)
         for option in option_overides:
-            lvalue, rvalue = option.split("=")
+            if "=" not in option:
+                raise ValueError("Context option {0!r} is not of the form name=value (from {1!r})".format(option, contextOptionsString))
+            lvalue, rvalue = option.split("=",1)
             if lvalue in contextOptionsDict:
                 logEvent("Processing context input options from commandline")
                 try:

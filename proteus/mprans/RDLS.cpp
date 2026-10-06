@@ -1,19 +1,7 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl_bind.h"
 
-#define FORCE_IMPORT_ARRAY
 #include "RDLS.h"
-
-#if defined(__GNUC__) && !defined(__clang__)
-    namespace workaround
-    {
-        inline void define_allocators()
-        {
-            std::allocator<int> a0;
-            std::allocator<double> a1;
-        }
-    }
-#endif
 
 namespace py = pybind11;
 using proteus::RDLS_base;
@@ -21,7 +9,7 @@ using pybind11::return_value_policy;
 
 PYBIND11_MODULE(cRDLS, m)
 {
-    xt::import_numpy();
+    proteus::import_numpy();
 
     py::class_<RDLS_base>(m, "cRDLS_base")
         .def(py::init(&proteus::newRDLS))

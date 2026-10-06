@@ -24,10 +24,11 @@ def gatherTimes(filename, dataDir='.', addname="_complete", tCount=None,
                 global_sync=True):
     """Regenerate the document for ``<dataDir>/<filename>.h5``.
 
-    ``tCount`` and ``global_sync`` are accepted for command-line
-    compatibility. Both are now read from the archive itself: the step
-    count by discovering the metadata that is present, and the layout from
-    the attribute the writer records.
+    Every collection is rebuilt from scratch, so the result never repeats
+    a step, whatever the existing sidecars hold. ``tCount`` (None or < 0
+    for all) keeps the first ``tCount`` steps, and is refused if the
+    ``.h5`` holds fewer. The layout is read from the attribute the writer
+    records; ``global_sync`` is accepted for command-line compatibility.
     """
     from proteus.Archiver import readArchiveDomain
     from ymf.archive import write_ymf
@@ -41,12 +42,19 @@ def gatherTimes(filename, dataDir='.', addname="_complete", tCount=None,
 
     for collection in domain.get("TimeCollections", []):
         steps = collection["Data"]
-        if tCount is not None and tCount >= 0 and len(steps) > tCount:
+        if tCount is None or tCount < 0:
+            print("%s: %d step(s)" % (collection["Name"], len(steps)))
+        elif tCount > len(steps):
+            # Asking for steps the run never wrote is a mistake to report,
+            # not a request to quietly write fewer.
+            raise ValueError(
+                "asked for %d steps of %s but %s.h5 holds %d"
+                % (tCount, collection["Name"],
+                   os.path.join(dataDir, filename), len(steps)))
+        else:
             print("%s: keeping %d of %d step(s)"
                   % (collection["Name"], tCount, len(steps)))
             collection["Data"] = steps[:tCount]
-        else:
-            print("%s: %d step(s)" % (collection["Name"], len(steps)))
 
     out_base = os.path.join(dataDir, filename + addname)
     write_ymf(domain, out_base + ".ymf")

@@ -5,7 +5,7 @@
 #include "CompKernel.h"
 #include "ModelFactory.h"
 #include "ArgumentsDict.h"
-#include "xtensor-python/pyarray.hpp"
+#include "pyarray.h"
 
 namespace py = pybind11;
 
@@ -257,51 +257,51 @@ namespace proteus
     }
     void calculateResidual(arguments_dict& args)
     {
-        xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
-        xt::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
-        xt::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
-        xt::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
-        xt::pyarray<double>& dV_ref = args.array<double>("dV_ref");
-        xt::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
-        xt::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
-        xt::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
-        xt::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
-        xt::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
-        xt::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
-        xt::pyarray<double>& dS_ref = args.array<double>("dS_ref");
-        xt::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
-        xt::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
-        xt::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
-        xt::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
-        xt::pyarray<double>& normal_ref = args.array<double>("normal_ref");
-        xt::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
+        proteus::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
+        proteus::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
+        proteus::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
+        proteus::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
+        proteus::pyarray<double>& dV_ref = args.array<double>("dV_ref");
+        proteus::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
+        proteus::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
+        proteus::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
+        proteus::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
+        proteus::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
+        proteus::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
+        proteus::pyarray<double>& dS_ref = args.array<double>("dS_ref");
+        proteus::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
+        proteus::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
+        proteus::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
+        proteus::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
+        proteus::pyarray<double>& normal_ref = args.array<double>("normal_ref");
+        proteus::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
         int nElements_global = args.scalar<int>("nElements_global");
         double useMetrics = args.scalar<double>("useMetrics");
         double epsFactHeaviside = args.scalar<double>("epsFactHeaviside");
         double epsFactDirac = args.scalar<double>("epsFactDirac");
         double epsFactDiffusion = args.scalar<double>("epsFactDiffusion");
-        xt::pyarray<int>& u_l2g = args.array<int>("u_l2g");
-        xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
-        xt::pyarray<double>& nodeDiametersArray = args.array<double>("nodeDiametersArray");
-        xt::pyarray<double>& u_dof = args.array<double>("u_dof");
-        xt::pyarray<double>& q_phi = args.array<double>("q_phi");
-        xt::pyarray<double>& q_normal_phi = args.array<double>("q_normal_phi");
-        xt::pyarray<double>& ebqe_phi = args.array<double>("ebqe_phi");
-        xt::pyarray<double>& ebqe_normal_phi = args.array<double>("ebqe_normal_phi");
-        xt::pyarray<double>& q_H = args.array<double>("q_H");
-        xt::pyarray<double>& q_u = args.array<double>("q_u");
-        xt::pyarray<double>& q_n = args.array<double>("q_n");
-        xt::pyarray<double>& ebqe_u = args.array<double>("ebqe_u");
-        xt::pyarray<double>& ebqe_n = args.array<double>("ebqe_n");
-        xt::pyarray<double>& q_r = args.array<double>("q_r");
-        xt::pyarray<double>& q_vos = args.array<double>("q_vos");
+        proteus::pyarray<int>& u_l2g = args.array<int>("u_l2g");
+        proteus::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
+        proteus::pyarray<double>& nodeDiametersArray = args.array<double>("nodeDiametersArray");
+        proteus::pyarray<double>& u_dof = args.array<double>("u_dof");
+        proteus::pyarray<double>& q_phi = args.array<double>("q_phi");
+        proteus::pyarray<double>& q_normal_phi = args.array<double>("q_normal_phi");
+        proteus::pyarray<double>& ebqe_phi = args.array<double>("ebqe_phi");
+        proteus::pyarray<double>& ebqe_normal_phi = args.array<double>("ebqe_normal_phi");
+        proteus::pyarray<double>& q_H = args.array<double>("q_H");
+        proteus::pyarray<double>& q_u = args.array<double>("q_u");
+        proteus::pyarray<double>& q_n = args.array<double>("q_n");
+        proteus::pyarray<double>& ebqe_u = args.array<double>("ebqe_u");
+        proteus::pyarray<double>& ebqe_n = args.array<double>("ebqe_n");
+        proteus::pyarray<double>& q_r = args.array<double>("q_r");
+        proteus::pyarray<double>& q_vos = args.array<double>("q_vos");
         int offset_u = args.scalar<int>("offset_u");
         int stride_u = args.scalar<int>("stride_u");
-        xt::pyarray<double>& globalResidual = args.array<double>("globalResidual");
+        proteus::pyarray<double>& globalResidual = args.array<double>("globalResidual");
         int nExteriorElementBoundaries_global = args.scalar<int>("nExteriorElementBoundaries_global");
-        xt::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
-        xt::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
-        xt::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
+        proteus::pyarray<int>& exteriorElementBoundariesArray = args.array<int>("exteriorElementBoundariesArray");
+        proteus::pyarray<int>& elementBoundaryElementsArray = args.array<int>("elementBoundaryElementsArray");
+        proteus::pyarray<int>& elementBoundaryLocalElementBoundariesArray = args.array<int>("elementBoundaryLocalElementBoundariesArray");
       //
       //loop over elements to compute volume integrals and load them into element and global residual
       //
@@ -604,40 +604,40 @@ namespace proteus
     }
     void calculateJacobian(arguments_dict& args)
     {
-        xt::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
-        xt::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
-        xt::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
-        xt::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
-        xt::pyarray<double>& dV_ref = args.array<double>("dV_ref");
-        xt::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
-        xt::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
-        xt::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
-        xt::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
-        xt::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
-        xt::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
-        xt::pyarray<double>& dS_ref = args.array<double>("dS_ref");
-        xt::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
-        xt::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
-        xt::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
-        xt::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
-        xt::pyarray<double>& normal_ref = args.array<double>("normal_ref");
-        xt::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
+        proteus::pyarray<double>& mesh_trial_ref = args.array<double>("mesh_trial_ref");
+        proteus::pyarray<double>& mesh_grad_trial_ref = args.array<double>("mesh_grad_trial_ref");
+        proteus::pyarray<double>& mesh_dof = args.array<double>("mesh_dof");
+        proteus::pyarray<int>& mesh_l2g = args.array<int>("mesh_l2g");
+        proteus::pyarray<double>& dV_ref = args.array<double>("dV_ref");
+        proteus::pyarray<double>& u_trial_ref = args.array<double>("u_trial_ref");
+        proteus::pyarray<double>& u_grad_trial_ref = args.array<double>("u_grad_trial_ref");
+        proteus::pyarray<double>& u_test_ref = args.array<double>("u_test_ref");
+        proteus::pyarray<double>& u_grad_test_ref = args.array<double>("u_grad_test_ref");
+        proteus::pyarray<double>& mesh_trial_trace_ref = args.array<double>("mesh_trial_trace_ref");
+        proteus::pyarray<double>& mesh_grad_trial_trace_ref = args.array<double>("mesh_grad_trial_trace_ref");
+        proteus::pyarray<double>& dS_ref = args.array<double>("dS_ref");
+        proteus::pyarray<double>& u_trial_trace_ref = args.array<double>("u_trial_trace_ref");
+        proteus::pyarray<double>& u_grad_trial_trace_ref = args.array<double>("u_grad_trial_trace_ref");
+        proteus::pyarray<double>& u_test_trace_ref = args.array<double>("u_test_trace_ref");
+        proteus::pyarray<double>& u_grad_test_trace_ref = args.array<double>("u_grad_test_trace_ref");
+        proteus::pyarray<double>& normal_ref = args.array<double>("normal_ref");
+        proteus::pyarray<double>& boundaryJac_ref = args.array<double>("boundaryJac_ref");
         int nElements_global = args.scalar<int>("nElements_global");
         double useMetrics = args.scalar<double>("useMetrics");
         double epsFactHeaviside = args.scalar<double>("epsFactHeaviside");
         double epsFactDirac = args.scalar<double>("epsFactDirac");
         double epsFactDiffusion = args.scalar<double>("epsFactDiffusion");
-        xt::pyarray<int>& u_l2g = args.array<int>("u_l2g");
-        xt::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
-        xt::pyarray<double>& nodeDiametersArray = args.array<double>("nodeDiametersArray");
-        xt::pyarray<double>& u_dof = args.array<double>("u_dof");
-        xt::pyarray<double>& q_phi = args.array<double>("q_phi");
-        xt::pyarray<double>& q_normal_phi = args.array<double>("q_normal_phi");
-        xt::pyarray<double>& q_H = args.array<double>("q_H");
-        xt::pyarray<double>& q_vos = args.array<double>("q_vos");
-        xt::pyarray<int>& csrRowIndeces_u_u = args.array<int>("csrRowIndeces_u_u");
-        xt::pyarray<int>& csrColumnOffsets_u_u = args.array<int>("csrColumnOffsets_u_u");
-        xt::pyarray<double>& globalJacobian = args.array<double>("globalJacobian");
+        proteus::pyarray<int>& u_l2g = args.array<int>("u_l2g");
+        proteus::pyarray<double>& elementDiameter = args.array<double>("elementDiameter");
+        proteus::pyarray<double>& nodeDiametersArray = args.array<double>("nodeDiametersArray");
+        proteus::pyarray<double>& u_dof = args.array<double>("u_dof");
+        proteus::pyarray<double>& q_phi = args.array<double>("q_phi");
+        proteus::pyarray<double>& q_normal_phi = args.array<double>("q_normal_phi");
+        proteus::pyarray<double>& q_H = args.array<double>("q_H");
+        proteus::pyarray<double>& q_vos = args.array<double>("q_vos");
+        proteus::pyarray<int>& csrRowIndeces_u_u = args.array<int>("csrRowIndeces_u_u");
+        proteus::pyarray<int>& csrColumnOffsets_u_u = args.array<int>("csrColumnOffsets_u_u");
+        proteus::pyarray<double>& globalJacobian = args.array<double>("globalJacobian");
       //
       //loop over elements to compute volume integrals and load them into the element Jacobians and global Jacobian
       //

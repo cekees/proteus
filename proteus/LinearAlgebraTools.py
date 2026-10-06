@@ -1085,7 +1085,7 @@ class LSCInv_shell(InvOperatorShell):
 
         convergenceTest = 'r-true'
         if convergenceTest == 'r-true':
-            self.r_work = self.BQinvBt.getVecLeft()
+            self.r_work = self.BQinvBt.createVecLeft()
             self.rnorm0 = None
             self.kspBQinvBt.setConvergenceTest(self._converged_trueRes)
         else:

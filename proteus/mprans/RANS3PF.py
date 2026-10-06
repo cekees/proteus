@@ -2755,7 +2755,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["sdInfo_u_u_colind"] = self.coefficients.sdInfo[(0, 0)][1]
         argsDict["sdInfo_u_v_rowptr"] = self.coefficients.sdInfo[(0, 1)][0]
         argsDict["sdInfo_u_v_colind"] = self.coefficients.sdInfo[(0, 1)][1]
-        argsDict["sdInfo_u_w_rowptr"] = self.coefficients.sdInfo[(0, 2)][0], 
+        argsDict["sdInfo_u_w_rowptr"] = self.coefficients.sdInfo[(0, 2)][0]
         argsDict["sdInfo_u_w_colind"] = self.coefficients.sdInfo[(0, 2)][1]
         argsDict["sdInfo_v_v_rowptr"] = self.coefficients.sdInfo[(1, 1)][0]
         argsDict["sdInfo_v_v_colind"] = self.coefficients.sdInfo[(1, 1)][1]
@@ -2767,7 +2767,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["sdInfo_w_w_colind"] = self.coefficients.sdInfo[(2, 2)][1]
         argsDict["sdInfo_w_u_rowptr"] = self.coefficients.sdInfo[(2, 0)][0]
         argsDict["sdInfo_w_u_colind"] = self.coefficients.sdInfo[(2, 0)][1]
-        argsDict["sdInfo_w_v_rowptr"] = self.coefficients.sdInfo[(2, 1)][0], 
+        argsDict["sdInfo_w_v_rowptr"] = self.coefficients.sdInfo[(2, 1)][0]
         argsDict["sdInfo_w_v_colind"] = self.coefficients.sdInfo[(2, 1)][1]
         argsDict["csrRowIndeces_p_p"] = self.csrRowIndeces[(0, 0)]
         argsDict["csrColumnOffsets_p_p"] = self.csrColumnOffsets[(0, 0)]

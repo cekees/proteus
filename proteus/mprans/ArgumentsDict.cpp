@@ -1,22 +1,7 @@
 #include "pybind11/pybind11.h"
 #include "pybind11/stl_bind.h"
 
-#define FORCE_IMPORT_ARRAY
 #include "ArgumentsDict.h"
-
-namespace xt
-{
-#if defined(__GNUC__) && !defined(__clang__)
-    namespace workaround
-    {
-        inline void complex_allocator()
-        {
-           std::allocator<int> ai;
-           std::allocator<double> ad;
-        }
-    }
-#endif
-}
 
 namespace py = pybind11;
 
@@ -106,14 +91,13 @@ namespace proteus
         cl.def_readwrite("dscalar", &arguments_dict::m_dscalar);
         cl.def_readwrite("iscalar", &arguments_dict::m_iscalar);
 
-
         cl.def("__setitem__",
-                [](arguments_dict& ad, std::string& k, xt::pyarray<int>& a)
+                [](arguments_dict& ad, std::string& k, proteus::pyarray<int>& a)
                 {
                     ad.m_iarray.insert_or_assign(std::move(k), std::move(a));
                 });
         cl.def("__setitem__",
-                [](arguments_dict& ad, std::string& k, xt::pyarray<double>& a)
+                [](arguments_dict& ad, std::string& k, proteus::pyarray<double>& a)
                 {
                     ad.m_darray.insert_or_assign(std::move(k), std::move(a));
                 });
@@ -157,7 +141,7 @@ PYBIND11_MODULE(cArgumentsDict, m)
     using proteus::scalar_dict;
     using proteus::arguments_dict;
 
-    xt::import_numpy();
+    proteus::import_numpy();
 
     using dpyarray_dict = pyarray_dict<std::string, double>;
     using ipyarray_dict = pyarray_dict<std::string, int>;

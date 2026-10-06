@@ -3,7 +3,7 @@
 
 #include <cmath>
 #include <iostream>
-#include "xtensor-python/pyarray.hpp"
+#include "pyarray.h"
 
 namespace proteus
 {  
@@ -59,8 +59,8 @@ public:
     inline double  xt_betaCoeff(     
 			      double sedF, // Sediment fraction
 			      double rhoFluid,
-			      const xt::pyarray<double>& uFluid, //Fluid velocity
-			      const xt::pyarray<double>& uSolid, //Sediment velocity
+			      const proteus::pyarray<double>& uFluid, //Fluid velocity
+			      const proteus::pyarray<double>& uSolid, //Sediment velocity
 			      double nu //Kinematic viscosity
 			      )
     {
@@ -134,15 +134,15 @@ public:
 		      double sedF, // Sediment fraction
                       double rhoFluid,
 		      double rhoSolid,
-		      const xt::pyarray<double>& uFluid,
-		      const xt::pyarray<double>& uSolid,
-		      const xt::pyarray<double>& gradC, //Sediment velocity
+		      const proteus::pyarray<double>& uFluid,
+		      const proteus::pyarray<double>& uSolid,
+		      const proteus::pyarray<double>& gradC, //Sediment velocity
 		      double nu, //Kinematic viscosity
 		      double theta_n,
 		      double kappa_n,
 		      double epsilon_n,
 		      double nuT_n,
-		      const xt::pyarray<double>& g)
+		      const proteus::pyarray<double>& g)
      {
          return deps_sed_deps(sedF,
                               rhoFluid,
@@ -203,15 +203,15 @@ public:
 		      double sedF, // Sediment fraction
 		      double rhoFluid,
 		      double rhoSolid,
-		      const xt::pyarray<double>& uFluid,
-		      const xt::pyarray<double>& uSolid,
-		      const xt::pyarray<double>& gradC,
+		      const proteus::pyarray<double>& uFluid,
+		      const proteus::pyarray<double>& uSolid,
+		      const proteus::pyarray<double>& gradC,
 		      double nu, 
 		      double theta_n,
 		      double kappa_n,
 		      double epsilon_n,
 		      double nuT_n,
-		      const xt::pyarray<double>& g)
+		      const proteus::pyarray<double>& g)
 			   
     {
         return kappa_sed1(sedF,
@@ -270,9 +270,9 @@ public:
 		      double sedF, // Sediment fraction
 		      double rhoFluid,
 		      double rhoSolid,
-		      const xt::pyarray<double>& uFluid, //Fluid velocity
-		      const xt::pyarray<double>& uSolid, //Sediment velocity
-		      const xt::pyarray<double>& gradC, //Sediment velocity
+		      const proteus::pyarray<double>& uFluid, //Fluid velocity
+		      const proteus::pyarray<double>& uSolid, //Sediment velocity
+		      const proteus::pyarray<double>& gradC, //Sediment velocity
 		      double nu, //Kinematic viscosity
 		      double theta_n,
 		      double kappa_n,
@@ -473,8 +473,8 @@ public:
     inline double  xt_jint1(  double sedF,
 			   double rhoFluid,
 			   double rhoSolid,
-			   const xt::pyarray<double>& uFluid,
-			   const xt::pyarray<double>& uSolid,
+			   const proteus::pyarray<double>& uFluid,
+			   const proteus::pyarray<double>& uSolid,
 			   double kappa,
 			   double epsilon,
 			   double theta,
@@ -518,8 +518,8 @@ public:
     inline double  xt_jint2(  double sedF,
 			   double rhoFluid,
 			   double rhoSolid,
-			   const xt::pyarray<double>& uFluid,
-			   const xt::pyarray<double>& uSolid,
+			   const proteus::pyarray<double>& uFluid,
+			   const proteus::pyarray<double>& uSolid,
 			   double theta,
 			   double nu)
 
@@ -550,8 +550,8 @@ public:
     inline double  xt_djint2_dtheta(  double sedF,
 			   double rhoFluid,
 			   double rhoSolid,
-			   const xt::pyarray<double>& uFluid,
-			   const xt::pyarray<double>& uSolid,
+			   const proteus::pyarray<double>& uFluid,
+			   const proteus::pyarray<double>& uSolid,
 			   double nu)
     {
         return djint2_dtheta(sedF,
@@ -708,17 +708,17 @@ public:
 
     
 
-    inline xt::pyarray<double> xt_mIntFluid(double sedF,
+    inline proteus::pyarray<double> xt_mIntFluid(double sedF,
 			   double rhoFluid,
-			      const xt::pyarray<double>& uFluid_n, //Fluid velocity
-			      const xt::pyarray<double>& uSolid_n, //Sediment velocity
-			      const xt::pyarray<double>& uFluid_np1, //Fluid velocity
+			      const proteus::pyarray<double>& uFluid_n, //Fluid velocity
+			      const proteus::pyarray<double>& uSolid_n, //Sediment velocity
+			      const proteus::pyarray<double>& uFluid_np1, //Fluid velocity
 			      double nu, //Kinematic viscosity
 			      double nuT, //Turbulent viscosity
-			      const xt::pyarray<double>& gradc
+			      const proteus::pyarray<double>& gradc
 			      )
     {
-        auto mint2 = xt::pyarray<double>::from_shape({2});
+        auto mint2 = proteus::pyarray<double>::from_shape({2});
         mIntFluid(mint2.data(),
                   sedF,
                   rhoFluid,
@@ -750,17 +750,17 @@ public:
       
       }
 
-    inline xt::pyarray<double> xt_mIntSolid(double sedF,
+    inline proteus::pyarray<double> xt_mIntSolid(double sedF,
 			   double rhoFluid,
-			      const xt::pyarray<double>& uFluid_n, //Fluid velocity
-			      const xt::pyarray<double>& uSolid_n, //Sediment velocity
-			      const xt::pyarray<double>& uSolid_np1, //Sediment velocity
+			      const proteus::pyarray<double>& uFluid_n, //Fluid velocity
+			      const proteus::pyarray<double>& uSolid_n, //Sediment velocity
+			      const proteus::pyarray<double>& uSolid_np1, //Sediment velocity
 			      double nu, //Kinematic viscosity
 			      double nuT, //Turbulent viscosity
-			      const xt::pyarray<double>& gradc
+			      const proteus::pyarray<double>& gradc
 			      )
     {
-        auto mint2 = xt::pyarray<double>::from_shape({2});
+        auto mint2 = proteus::pyarray<double>::from_shape({2});
         mIntSolid(mint2.data(),
                   sedF,
                   rhoFluid,
@@ -791,17 +791,17 @@ public:
 	    }
 
     }
-    inline xt::pyarray<double> xt_mIntgradC(double sedF,
+    inline proteus::pyarray<double> xt_mIntgradC(double sedF,
 			   double rhoFluid,
-				  const xt::pyarray<double>& uFluid_n, //Fluid velocity
-				  const xt::pyarray<double>& uSolid_n, //Sediment velocity
+				  const proteus::pyarray<double>& uFluid_n, //Fluid velocity
+				  const proteus::pyarray<double>& uSolid_n, //Sediment velocity
 				  double nu, //Kinematic viscosity
 				  double nuT, //Turbulent viscosity
-				  const xt::pyarray<double>& gradc
+				  const proteus::pyarray<double>& gradc
 			      )
     {
         
-        auto mint2 = xt::pyarray<double>::from_shape({2});
+        auto mint2 = proteus::pyarray<double>::from_shape({2});
         mIntgradC(mint2.data(),
                   sedF,
                   rhoFluid,
@@ -838,8 +838,8 @@ public:
     inline double  xt_dmInt_duFluid
                             (  double sedF,
 			   double rhoFluid,
-			      const xt::pyarray<double>& uFluid_n, //Fluid velocity
-			      const xt::pyarray<double>& uSolid_n, //Sediment velocity
+			      const proteus::pyarray<double>& uFluid_n, //Fluid velocity
+			      const proteus::pyarray<double>& uSolid_n, //Sediment velocity
 			      double nu //Kinematic viscosity
 
 			      )
@@ -868,8 +868,8 @@ public:
        inline double  xt_dmInt_duSolid
                             (  double sedF,
 			   double rhoFluid,
-			      const xt::pyarray<double>& uFluid_n, //Fluid velocity
-			      const xt::pyarray<double>& uSolid_n, //Sediment velocity
+			      const proteus::pyarray<double>& uFluid_n, //Fluid velocity
+			      const proteus::pyarray<double>& uSolid_n, //Sediment velocity
 			      double nu //Kinematic viscosity
 
 			      )

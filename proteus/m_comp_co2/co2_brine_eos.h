@@ -1,7 +1,7 @@
 #ifndef CO2_BRINE_EOS_H
 #define CO2_BRINE_EOS_H
 // Spycher-Pruess-Ennis-King (2003) CO2-brine equilibrium EOS  -- C++ port of
-// co2_brine_eos.py (P2).  Header-only, no proteus/xtensor deps so it is
+// co2_brine_eos.py (P2).  Header-only, no proteus deps so it is
 // standalone-testable.  All constants/equations match the numpy reference.
 //
 //   Spycher, Pruess & Ennis-King (2003), GCA 67(16) 3015-3031 (LBNL-50991)

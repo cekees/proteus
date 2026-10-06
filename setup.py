@@ -1,5 +1,6 @@
 import sys, os
 import platform
+import subprocess
 import setuptools
 from distutils import sysconfig
 cfg_vars = sysconfig.get_config_vars()
@@ -97,6 +98,40 @@ from Cython.Distutils.extension import Extension
 from Cython.Distutils import build_ext
 
 class custom_build_ext(build_ext):
+    def build_extension(self, ext):
+        # Four sources are listed by two extensions each: mesh.cpp and
+        # meshio.cpp (cmeshTools, cpartitioning), postprocessing.c
+        # (cfemIntegrals, cpostprocessing) and
+        # SubsurfaceTransportCoefficients.cpp (cSubsurfaceTransportCoefficients,
+        # cTwophaseDarcyCoefficients). setuptools derives each object path from
+        # the source path under a single self.build_temp, so both members of a
+        # pair compile to the *same* .o -- and since build_extensions sets
+        # self.parallel, setuptools builds extensions concurrently in a
+        # ThreadPoolExecutor over os.cpu_count() threads. Two threads then write
+        # one object file at once.
+        #
+        # This fails two ways, both silent. The linker can read a half-written
+        # object, yielding a .so missing every symbol from that source -- the
+        # build succeeds and the failure surfaces only at import ("undefined
+        # symbol: regularMeshNodes2D"). Or both compiles complete and whichever
+        # lands last is linked into both extensions, which is worse here because
+        # the pairs do not use the same flags: cpartitioning adds -std=c++20
+        # where cmeshTools does not, and cfemIntegrals defines PROTEUS_SUPERLU_H
+        # where cpostprocessing does not.
+        #
+        # Give every extension its own object directory. Mutating
+        # self.build_temp in place would itself race, so hand build_extension a
+        # shallow copy of this command carrying a private build_temp; the
+        # compiler is passed output_dir explicitly, so the copy is enough.
+        # imported here, not at module scope: the only `os` in this file's
+        # namespace arrives incidentally via `from proteus.config import *`.
+        import copy as _copy, os as _osmod
+        private = _copy.copy(self)
+        private.build_temp = _osmod.path.join(self.build_temp, '_ext',
+                                              ext.name.replace('.', '_'))
+        _osmod.makedirs(private.build_temp, exist_ok=True)
+        return build_ext.build_extension(private, ext)
+
     def build_extensions(self):
         self.parallel=True
         # OpenMPI's/MPICH's mpi.h transparently pulls in its legacy C++
@@ -179,18 +214,21 @@ for arg in sys.argv:
         proteus_install_path = proteus_install_path.partition(sys.prefix + '/')[-1]
         break
 
-def get_xtensor_include():
+def get_pybind_include_dirs():
+    """Include path for the pybind11 extensions.
+
+    These need pybind11, numpy and proteus's own headers (`proteus/pyarray.h`
+    in particular, via the `proteus` entry). They used to also need
+    xtl/xtensor/xtensor-python; proteus::pyarray replaced xt::pyarray, so
+    those are gone.
+    """
     return [str(get_pybind_include()),
             str(get_pybind_include(user=True)),
             str(get_numpy_include()),
             os.path.join(prefix, 'include'),
             os.path.join(sys.prefix, 'include'),
             os.path.join(sys.prefix, 'Library', 'include'),
-            'proteus',
-            'proteus/xtensor/pybind11/include',
-            'proteus/xtensor/xtensor-python/include',
-            'proteus/xtensor/xtensor/include',
-            'proteus/xtensor/xtl/include']
+            'proteus']
 
 class get_pybind_include(object):
     """Helper class to determine the pybind11 include path
@@ -223,8 +261,39 @@ class get_numpy_include(object):
 
 # -mavx is x86-only; unconditionally requesting it fails outright on arm64
 # ("unsupported option '-mavx' for target ...") rather than just being a
-# missed optimization, so only request it on architectures that support it.
-PROTEUS_AVX_FLAGS = [] if platform.machine() in ('arm64', 'aarch64') else ['-mavx']
+# missed optimization. But not every non-arm64 host actually supports AVX
+# either (older Xeons/Atoms, and some virtualized/cloud CPU profiles that
+# expose a conservative feature mask, e.g. QEMU's default "qemu64" model) --
+# requesting it there doesn't fail the build, it silently bakes an illegal
+# instruction into mprans.MeshSmoothing/mprans.cMoveMeshMonitor that SIGILLs
+# the first time either module is imported. So probe the actual build host's
+# CPU capability instead of just checking platform.machine(). If detection
+# itself isn't possible (unknown platform, sandboxed build host, etc.),
+# default to no AVX -- a missed optimization is far cheaper than a crash.
+def _host_supports_avx():
+    if platform.machine() not in ('x86_64', 'AMD64', 'i386', 'i686'):
+        return False
+    if platform.system() == 'Linux':
+        try:
+            with open('/proc/cpuinfo') as f:
+                return any(
+                    'avx' in line.split(':', 1)[1].split()
+                    for line in f if line.startswith('flags')
+                )
+        except (OSError, IndexError):
+            return False
+    if platform.system() == 'Darwin':
+        try:
+            out = subprocess.check_output(
+                ['sysctl', '-n', 'machdep.cpu.features'],
+                stderr=subprocess.DEVNULL).decode()
+            return 'AVX' in out.split()
+        except (OSError, subprocess.CalledProcessError):
+            return False
+    # e.g. Windows -- no cheap portable probe here; be conservative.
+    return False
+
+PROTEUS_AVX_FLAGS = ['-mavx'] if _host_supports_avx() else []
 
 EXTENSIONS_TO_BUILD = [
     Extension("MeshAdaptPUMI.MeshAdapt",
@@ -252,67 +321,67 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'mprans.cArgumentsDict',
         sources = ['proteus/mprans/ArgumentsDict.cpp'],
-        depends=['proteus/mprans/ArgumentsDict.h'],
-        include_dirs=get_xtensor_include(),
+        depends=['proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h'],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cPres',
         sources = ['proteus/mprans/Pres.cpp'],
-        depends=['proteus/mprans/Pres.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
-        include_dirs=get_xtensor_include(),
+        depends=['proteus/mprans/Pres.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cPresInit',
         sources = ['proteus/mprans/PresInit.cpp'],
-        depends=['proteus/mprans/PresInit.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
-        include_dirs=get_xtensor_include(),
+        depends=['proteus/mprans/PresInit.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cPresInc',
         sources = ['proteus/mprans/PresInc.cpp'],
         depends = ['proteus/mprans/PresInc.h', 'proteus/mprans/PresInc.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension('mprans.cAddedMass',
               sources = ['proteus/mprans/AddedMass.cpp'],
-              depends=['proteus/mprans/AddedMass.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+              depends=['proteus/mprans/AddedMass.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
               language='c++',
-              include_dirs=get_xtensor_include(),
+              include_dirs=get_pybind_include_dirs(),
               extra_compile_args=PROTEUS_OPT+['-std=c++20']),
     Extension('mprans.SedClosure',
               sources = ['proteus/mprans/SedClosure.cpp'],
               depends = ['proteus/mprans/SedClosure.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
               language='c++',
-              include_dirs=get_xtensor_include(),
+              include_dirs=get_pybind_include_dirs(),
               extra_compile_args=PROTEUS_OPT+['-std=c++20']),
     Extension('mprans.cVOF3P',
               sources = ['proteus/mprans/VOF3P.cpp'],
-              depends = ['proteus/mprans/VOF3P.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+              depends = ['proteus/mprans/VOF3P.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
               language='c++',
-              include_dirs=get_xtensor_include(),
+              include_dirs=get_pybind_include_dirs(),
               extra_compile_args=PROTEUS_OPT+['-std=c++20']),
     Extension(
         'mprans.cVOS3P',
         sources = ['proteus/mprans/VOS3P.cpp'],
-        depends = ['proteus/mprans/VOS3P.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
-        include_dirs=get_xtensor_include(),
+        depends = ['proteus/mprans/VOS3P.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension('mprans.cNCLS3P',
               sources=['proteus/mprans/NCLS3P.cpp'],
-              depends=['proteus/mprans/NCLS3P.h', 'proteus/mprans/ArgumentsDict.h' , 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+              depends=['proteus/mprans/NCLS3P.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h' , 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
               language='c++',
-              include_dirs=get_xtensor_include(),
+              include_dirs=get_pybind_include_dirs(),
               extra_compile_args=PROTEUS_OPT+['-std=c++20']),
     Extension('mprans.cMCorr3P',
               sources=['proteus/mprans/MCorr3P.cpp'],
-              depends=['proteus/mprans/MCorr3P.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+              depends=['proteus/mprans/MCorr3P.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
               language='c++',
-              include_dirs=get_xtensor_include(),
+              include_dirs=get_pybind_include_dirs(),
               extra_compile_args=PROTEUS_OPT+['-std=c++20'],
               extra_link_args=PROTEUS_EXTRA_LINK_ARGS,
               define_macros=[('PROTEUS_LAPACK_H',
@@ -329,22 +398,22 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'mprans.cRANS3PSed',
         sources=['proteus/mprans/RANS3PSed.cpp'],
-        depends=['proteus/mprans/RANS3PSed.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
-        include_dirs=get_xtensor_include(),
+        depends=['proteus/mprans/RANS3PSed.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cRANS3PSed2D',
         sources=['proteus/mprans/RANS3PSed2D.cpp'],
-        depends=['proteus/mprans/RANS3PSed2D.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
-        include_dirs=get_xtensor_include(),
+        depends=['proteus/mprans/RANS3PSed2D.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'richards.cRichards',
         sources=['proteus/richards/cRichards.cpp'],
-        depends=['proteus/richards/Richards.h',  'proteus/pskRelations.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
-        include_dirs=get_xtensor_include(),
+        depends=['proteus/richards/Richards.h',  'proteus/pskRelations.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_pybind_include_dirs(),
         language='c++',
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
     ),
@@ -352,8 +421,8 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'm_comp_co2.cm_comp_co2',
         sources=['proteus/m_comp_co2/cm_comp_co2.cpp'],
-        depends=['proteus/m_comp_co2/m_comp_co2.h', 'proteus/pskRelations.h', 'proteus/m_comp_co2/co2_brine_flash.h', 'proteus/m_comp_co2/co2_brine_eos.h', 'proteus/m_comp_co2/jet2.h', 'proteus/mprans/ArgumentsDict.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
-        include_dirs=get_xtensor_include(),
+        depends=['proteus/m_comp_co2/m_comp_co2.h', 'proteus/pskRelations.h', 'proteus/m_comp_co2/co2_brine_flash.h', 'proteus/m_comp_co2/co2_brine_eos.h', 'proteus/m_comp_co2/jet2.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h' ,'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_pybind_include_dirs(),
         language='c++',
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
     ),
@@ -367,8 +436,8 @@ EXTENSIONS_TO_BUILD = [
                         PROTEUS_LAPACK_INTEGER),
                        ('PROTEUS_BLAS_H',
                         PROTEUS_BLAS_H)],
-        depends=['proteus/elastoplastic/ElastoPlastic.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
-        include_dirs=get_xtensor_include(),
+        depends=['proteus/elastoplastic/ElastoPlastic.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_pybind_include_dirs(),
         language='c++',
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         library_dirs=[PROTEUS_LAPACK_LIB_DIR,
@@ -380,23 +449,23 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'mprans.cRANS3PF',
         sources=['proteus/mprans/RANS3PF.cpp'],
-        depends=['proteus/mprans/RANS3PF.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h',
+        depends=['proteus/mprans/RANS3PF.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h',
                  'proteus/equivalent_polynomials.h',
                  'proteus/equivalent_polynomials_utils.h',
                  'proteus/equivalent_polynomials_coefficients.h',
                  'proteus/equivalent_polynomials_coefficients_quad.h'],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cRANS3PF2D',
         sources=['proteus/mprans/RANS3PF2D.cpp'],
-        depends=['proteus/mprans/RANS3PF2D.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h',
+        depends=['proteus/mprans/RANS3PF2D.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h',
                  'proteus/equivalent_polynomials.h',
                  'proteus/equivalent_polynomials_utils.h',
                  'proteus/equivalent_polynomials_coefficients.h',
                  'proteus/equivalent_polynomials_coefficients_quad.h'],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension("Isosurface",
@@ -476,12 +545,12 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'cADR',
         sources=['proteus/ADR.cpp'],
-        depends=['proteus/ADR.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h',
+        depends=['proteus/ADR.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h',
                  'proteus/equivalent_polynomials.h',
                  'proteus/equivalent_polynomials_utils.h',
                  'proteus/equivalent_polynomials_coefficients.h',
                  'proteus/equivalent_polynomials_coefficients_quad.h'],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'
     ),
@@ -782,20 +851,20 @@ EXTENSIONS_TO_BUILD = [
         'mprans.cCLSVOF',
         sources=['proteus/mprans/CLSVOF.cpp'],
         depends=["proteus/mprans/CLSVOF.h", "proteus/mprans/CLSVOF.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cNCLS',
         sources=['proteus/mprans/NCLS.cpp'],
-        depends=["proteus/mprans/NCLS.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        depends=["proteus/mprans/NCLS.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cMCorr',
         sources=['proteus/mprans/MCorr.cpp'],
-        depends=["proteus/mprans/MCorr.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"] + [
+        depends=["proteus/mprans/MCorr.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"] + [
             "proteus/equivalent_polynomials.h",
             "proteus/equivalent_polynomials_utils.h",
             "proteus/equivalent_polynomials_coefficients.h",
@@ -803,7 +872,7 @@ EXTENSIONS_TO_BUILD = [
         define_macros=[('PROTEUS_LAPACK_H',PROTEUS_LAPACK_H),
                        ('PROTEUS_LAPACK_INTEGER',PROTEUS_LAPACK_INTEGER),
                        ('PROTEUS_BLAS_H',PROTEUS_BLAS_H)],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         library_dirs=[PROTEUS_LAPACK_LIB_DIR,
                       PROTEUS_BLAS_LIB_DIR],
         libraries=['m',PROTEUS_LAPACK_LIB,PROTEUS_BLAS_LIB],
@@ -813,12 +882,12 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'mprans.cRANS2P',
         sources=['proteus/mprans/RANS2P.cpp'],
-        depends=["proteus/mprans/RANS2P.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/MixedModelFactory.h","proteus/CompKernel.h"] + [
+        depends=["proteus/mprans/RANS2P.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h"] + ["proteus/MixedModelFactory.h","proteus/CompKernel.h"] + [
             "proteus/equivalent_polynomials.h",
             "proteus/equivalent_polynomials_utils.h",
             "proteus/equivalent_polynomials_coefficients.h",
             'proteus/equivalent_polynomials_coefficients_quad.h'],
-        include_dirs=get_xtensor_include() + PROTEUS_MPI_INCLUDE_DIRS,
+        include_dirs=get_pybind_include_dirs() + PROTEUS_MPI_INCLUDE_DIRS,
         extra_compile_args=PROTEUS_OPT+PROTEUS_MPI_LIB_DIRS+['-std=c++20'],#,'-fopenmp'],#,'-DXTENSOR_USE_OPENMP'],
         library_dirs=PROTEUS_MPI_LIB_DIRS+[PROTEUS_LAPACK_LIB_DIR,
                       PROTEUS_BLAS_LIB_DIR],
@@ -830,12 +899,12 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'mprans.cRANS2P_IB',
         sources=['proteus/mprans/RANS2P_IB.cpp'],
-        depends=["proteus/mprans/RANS2P_IB.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/MixedModelFactory.h","proteus/CompKernel.h"] + [
+        depends=["proteus/mprans/RANS2P_IB.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h"] + ["proteus/MixedModelFactory.h","proteus/CompKernel.h"] + [
             "proteus/equivalent_polynomials.h",
             "proteus/equivalent_polynomials_utils.h",
             "proteus/equivalent_polynomials_coefficients.h",
             'proteus/equivalent_polynomials_coefficients_quad.h'],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
@@ -846,7 +915,7 @@ EXTENSIONS_TO_BUILD = [
             "proteus/equivalent_polynomials_utils.h",
             "proteus/equivalent_polynomials_coefficients.h",
             'proteus/equivalent_polynomials_coefficients_quad.h'],
-        include_dirs=get_xtensor_include() + PROTEUS_MPI_INCLUDE_DIRS,
+        include_dirs=get_pybind_include_dirs() + PROTEUS_MPI_INCLUDE_DIRS,
         extra_compile_args=PROTEUS_OPT+PROTEUS_MPI_LIB_DIRS+['-std=c++20'],#,'-fopenmp'],#,'-DXTENSOR_USE_OPENMP'],
         library_dirs=PROTEUS_MPI_LIB_DIRS+[PROTEUS_LAPACK_LIB_DIR,
                       PROTEUS_BLAS_LIB_DIR],
@@ -858,93 +927,93 @@ EXTENSIONS_TO_BUILD = [
     Extension(
         'mprans.cRDLS',
         sources=['proteus/mprans/RDLS.cpp'],
-        depends=["proteus/mprans/RDLS.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"] + [
+        depends=["proteus/mprans/RDLS.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"] + [
             "proteus/equivalent_polynomials.h",
             "proteus/equivalent_polynomials_utils.h",
             "proteus/equivalent_polynomials_coefficients.h",
             'proteus/equivalent_polynomials_coefficients_quad.h'],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cVOF',
         sources=['proteus/mprans/VOF.cpp'],
-        depends=["proteus/mprans/VOF.h", "proteus/mprans/ArgumentsDict.h", "proteus/ModelFactory.h","proteus/CompKernel.h",
+        depends=["proteus/mprans/VOF.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h", "proteus/ModelFactory.h","proteus/CompKernel.h",
                  "proteus/equivalent_polynomials.h",
                  "proteus/equivalent_polynomials_utils.h",
                  "proteus/equivalent_polynomials_coefficients.h",
                  "proteus/equivalent_polynomials_coefficients_quad.h"],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cTADR',
         sources=['proteus/mprans/TADR.cpp'],
-        depends=["proteus/mprans/TADR.h", "proteus/mprans/ArgumentsDict.h", "proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        depends=["proteus/mprans/TADR.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h", "proteus/ModelFactory.h","proteus/CompKernel.h"],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cMoveMesh',
         ['proteus/mprans/MoveMesh.cpp'],
-        depends=["proteus/mprans/MoveMesh.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        depends=["proteus/mprans/MoveMesh.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cMoveMesh2D',
         sources=['proteus/mprans/MoveMesh2D.cpp'],
-        depends=["proteus/mprans/MoveMesh2D.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        depends=["proteus/mprans/MoveMesh2D.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cSW2D',
         sources=['proteus/mprans/SW2D.cpp'],
         depends=["proteus/mprans/SW2D.h", "proteus/mprans/SW2D.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cSW2DCV',
         sources=['proteus/mprans/SW2DCV.cpp'],
-        depends=["proteus/mprans/SW2DCV.h", "proteus/mprans/ArgumentsDict.h", "proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        depends=["proteus/mprans/SW2DCV.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h", "proteus/ModelFactory.h","proteus/CompKernel.h"],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cGN_SW2DCV',
         sources=['proteus/mprans/GN_SW2DCV.cpp'],
-        depends=["proteus/mprans/GN_SW2DCV.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        depends=["proteus/mprans/GN_SW2DCV.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cKappa',
         sources=['proteus/mprans/Kappa.cpp'],
-        depends=["proteus/mprans/Kappa.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        depends=["proteus/mprans/Kappa.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cKappa2D',
         sources=['proteus/mprans/Kappa2D.cpp'],
         depends=["proteus/mprans/Kappa2D.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cDissipation',
         sources=['proteus/mprans/Dissipation.cpp'],
-        depends=["proteus/mprans/Dissipation.h", "proteus/mprans/ArgumentsDict.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        depends=["proteus/mprans/Dissipation.h", "proteus/mprans/ArgumentsDict.h", "proteus/pyarray.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
     Extension(
         'mprans.cDissipation2D',
         sources=['proteus/mprans/Dissipation2D.cpp'],
         depends=["proteus/mprans/Dissipation2D.h"] + ["proteus/ModelFactory.h","proteus/CompKernel.h"],
-        include_dirs=get_xtensor_include(),
+        include_dirs=get_pybind_include_dirs(),
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
         language='c++'),
 ]
@@ -980,7 +1049,7 @@ def setup_given_extensions(extensions):
         if getattr(ext, 'library_dirs', None):
             ext.library_dirs = list(dict.fromkeys(ext.library_dirs))
     setup(name='proteus',
-          version='1.8.3.dev',
+          version='2.0.0.dev',
           classifiers=[
               'Development Status :: 4 - Beta',
               'Environment :: Console',

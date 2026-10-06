@@ -62,3 +62,36 @@ def test_Options():
     os.remove("context_module.py")
     Context.setFromModule(context_module)
     check_eq(Context.context)
+
+def test_splitContextOptions():
+    from proteus.Context import _splitContextOptions
+    # any run of whitespace (including newlines from an options file), commas, semicolons
+    assert _splitContextOptions("a=1  b=2") == ["a=1", "b=2"]
+    assert _splitContextOptions(" a=1 b=2 ") == ["a=1", "b=2"]
+    assert _splitContextOptions("a=1,b=2;c=3") == ["a=1", "b=2", "c=3"]
+    assert _splitContextOptions("a=1 ,; b=2\n\tc=3\n") == ["a=1", "b=2", "c=3"]
+    assert _splitContextOptions("") == []
+    # separators inside brackets and quotes are part of the value
+    assert _splitContextOptions("L=[1.0, 2.0] x=(1,2);d={'k': 1}") == ["L=[1.0, 2.0]", "x=(1,2)", "d={'k': 1}"]
+    assert _splitContextOptions("name='a b;c',other=\"d,e\"") == ["name='a b;c'", "other=\"d,e\""]
+
+def test_Options_separators():
+    from proteus import Context
+    Context.contextOptionsString = "nnx=21,  T=5.0;\nL=[1.0, 2.0] name='a b' eq='x=y'"
+    opts = Context.Options([("nnx", 11, ""), ("T", 10.0, ""), ("L", [0.0], ""), ("name", "", ""), ("eq", "", "")])
+    Context.contextOptionsString = None
+    assert opts.nnx == 21
+    assert opts.T == 5.0
+    assert opts.L == [1.0, 2.0]
+    assert opts.name == "a b"
+    assert opts.eq == "x=y"
+
+def test_Options_malformed():
+    import pytest
+    from proteus import Context
+    Context.contextOptionsString = "nnx=21 T"
+    try:
+        with pytest.raises(ValueError, match="name=value"):
+            Context.Options([("nnx", 11, ""), ("T", 10.0, "")])
+    finally:
+        Context.contextOptionsString = None
