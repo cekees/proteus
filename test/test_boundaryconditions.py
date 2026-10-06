@@ -875,9 +875,9 @@ class TestBC(unittest.TestCase):
         Yplus = Y*ut/1.004e-6
         turbModel = 'ke' # 'kw'
         kappaP = (ut**2)/(Cmu**0.5)
-        if turbModel is 'ke':
+        if turbModel == 'ke':
             dissipationP = (ut**3)/(0.41*Y) # ke model
-        elif turbModel is 'kw':
+        elif turbModel == 'kw':
             dissipationP = np.sqrt(kappaP)/(0.41*Y*(Cmu**0.25)) # kw model
         # Log law
         E = np.exp(0.41*B)

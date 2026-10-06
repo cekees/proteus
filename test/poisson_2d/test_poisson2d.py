@@ -63,20 +63,20 @@ class TestPoisson2D(object):
         if femSpace in ['c0p1','c0p2']:
             reload(poisson_het_2d_c0pk_n)
             nList = [poisson_het_2d_c0pk_n]
-            if femSpace is 'c0p1':
+            if femSpace == 'c0p1':
                 nList[0].femSpaces[0]  = default_n.C0_AffineLinearOnSimplexWithNodalBasis
             else:
                 nList[0].femSpaces[0]  = default_n.C0_AffineQuadraticOnSimplexWithNodalBasis
-            if bcType is 'strong':
+            if bcType == 'strong':
                 nList[0].numericalFluxType = nList[0].Exterior_StrongFlux
         if femSpace in ['dgp1','dgp2']:
             reload(poisson_het_2d_dgpk_n)
             nList = [poisson_het_2d_dgpk_n]
-            if femSpace is 'dgp1':
+            if femSpace == 'dgp1':
                 nList[0].femSpaces[0]  = default_n.DG_AffineLinearOnSimplexWithNodalBasis
             else:
                 nList[0].femSpaces[0]  = default_n.DG_AffineQuadraticOnSimplexWithNodalBasis
-            if bcType is 'strong':
+            if bcType == 'strong':
                 nList[0].numericalFluxType.useStrongDirichletConstraints=True
         nList[0].nnx=nList[0].nny=nList[0].nn=51
         reload(default_so)
@@ -89,7 +89,7 @@ class TestPoisson2D(object):
         opts.profile=True
         opts.gatherArchive=True
         soln_name = so.name
-        if solverType is 'direct':
+        if solverType == 'direct':
             nList[0].linearSolver=default_n.LU
             nList[0].multilevelLinearSolver=default_n.LU
         else:
