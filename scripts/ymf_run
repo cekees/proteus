@@ -1,0 +1,123 @@
+#!/usr/bin/env python
+"""Solve a YMF problem specification with Proteus, end to end.
+
+    ymf_run examples/poisson.yaml
+    ymf_run examples/navier_stokes/planar_couette.yaml --cells 4 8
+    ymf_run spec.yaml --discretization P1_linear --cells 4 8 16 32
+
+For each discretization in the spec's solution_paths (or just the one
+named), on each mesh: the ymf front end turns the strong form into an
+advection-diffusion-reaction form (ymf.symbolic, which needs sympy), and
+proteus.ADRProblem builds the Proteus problem from it and solves. With an
+exact solution in the spec, it prints the L2 error of every unknown and the
+observed convergence rate between meshes.
+
+This is the front end, so it imports sympy through ymf.symbolic. Proteus
+itself (proteus.ADRProblem) never does: it is handed plain data.
+"""
+import argparse
+import math
+import os
+import sys
+
+
+#: weak-form stabilization methods this runner can honour
+STABILIZATIONS = {"none"}
+
+
+def element_spaces(problem, finite_element):
+    """Map the spec's finite_element block onto scalar components.
+
+    ``fields`` applies to every unknown; in a velocity-pressure system,
+    ``velocity`` applies to the vector unknown and ``pressure`` to the
+    scalar one.
+    """
+    unknowns = problem["unknowns"]
+    spaces = {}
+    if "fields" in finite_element:
+        fe = finite_element["fields"]
+        for comps in unknowns.values():
+            for c in comps:
+                spaces[c] = (fe["family"], int(fe["order"]))
+    for key, rank in (("velocity", True), ("pressure", False)):
+        if key in finite_element:
+            fe = finite_element[key]
+            for name, comps in unknowns.items():
+                if (len(comps) > 1 or comps[0] != name) == rank:
+                    for c in comps:
+                        spaces[c] = (fe["family"], int(fe["order"]))
+    missing = [c for comps in unknowns.values() for c in comps if c not in spaces]
+    if missing:
+        raise SystemExit("finite_element gives no space for %s" % ", ".join(missing))
+    return spaces
+
+
+def time_stepping(discretization):
+    block = discretization.get("discretization") or {}
+    if "time_integration" not in block:
+        return None
+    if block["time_integration"] != "backward_euler":
+        raise SystemExit("time integration %r is not wired up yet (backward_euler is)"
+                         % block["time_integration"])
+    return {"dt": float(block["dt"]), "t_end": float(block["t_end"]),
+            "outputs": int(block.get("outputs", 1))}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("spec")
+    parser.add_argument("--discretization", help="run only this one (by name)")
+    parser.add_argument("--cells", type=int, nargs="+", default=[4, 8, 16],
+                        help="cells per side of each mesh in the sequence")
+    args = parser.parse_args(argv)
+
+    from ymf import load_ymf
+    from ymf.symbolic import adr_problem
+    from proteus import ADRProblem, Profiling
+    Profiling.logLevel = 1
+    Profiling.verbose = False
+
+    doc = load_ymf(args.spec)
+    problem = adr_problem(doc)
+    discretizations = doc["solution_paths"]["discretizations"]
+    if args.discretization:
+        discretizations = [d for d in discretizations if d["name"] == args.discretization]
+        if not discretizations:
+            raise SystemExit("no discretization named %r" % args.discretization)
+
+    stem = os.path.splitext(os.path.basename(args.spec))[0]
+    print("%s: %s" % (args.spec, doc["Problem"]["name"]))
+    print("unknowns: %s" % ", ".join("%s (%s)" % (n, ", ".join(c)) for n, c in problem["unknowns"].items()))
+    weak_forms = {w["label"]: w for w in doc["Problem"].get("weak_forms", [])}
+    for d in discretizations:
+        spaces = element_spaces(problem, d.get("finite_element") or {})
+        time = time_stepping(d)
+        weak = weak_forms.get(str(d.get("from_weak_form")), {})
+        method = (weak.get("stabilization_method") or "none").strip()
+        if method.lower() not in STABILIZATIONS:
+            # Running it without would solve a different (here, unstable)
+            # weak form under this branch's name.
+            print("\n%s -- skipped: its weak form %r needs %s stabilization, which "
+                  "is not wired up yet" % (d["name"], weak.get("label"), method))
+            continue
+        print("\n%s -- %s%s" % (d["name"], ", ".join("%s %s%d" % (c, f, o) for c, (f, o) in spaces.items()),
+                                "" if time is None else ", backward Euler dt=%g to t=%g" % (time["dt"], time["t_end"])))
+        names = list(problem["exact"])
+        print("  cells  " + "".join("  L2(%s)    rate  " % n for n in names))
+        previous = None
+        for cells in args.cells:
+            _, model, errors = ADRProblem.run(problem, spaces, cells, time,
+                                              name="%s_%s_%d" % (stem, d["name"], cells))
+            row = "  %5d  " % cells
+            for n in names:
+                rate = ""
+                if previous and previous[n] > 0 and errors[n] > 0:
+                    rate = "%5.2f" % math.log2(previous[n] / errors[n])
+                row += "  %.3e %5s  " % (errors[n], rate)
+            print(row, flush=True)
+            previous = errors
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
