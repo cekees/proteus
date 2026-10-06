@@ -1,28 +1,38 @@
 #!/usr/bin/env python
-"""Solve a YMF problem specification with Proteus, end to end.
+"""Solve a YMF problem with Proteus, reproducibly, end to end.
 
-    ymf_run examples/poisson.yaml
-    ymf_run examples/navier_stokes/planar_couette.yaml --cells 4 8
-    ymf_run spec.yaml --discretization P1_linear --cells 4 8 16 32
+    ymf_run examples/poisson.ymf                       # every discretization
+    ymf_run spec.ymf --discretization taylor_hood --cells 4 8 16
+    ymf_run out/poisson_P1_linear_8.ymf                # rerun an archive
+    ymf_run out/poisson_P1_linear_8.ymf --check        # ...and compare
 
-For each discretization in the spec's solution_paths (or just the one
-named), on each mesh: the ymf front end turns the strong form into an
-advection-diffusion-reaction form (ymf.symbolic, which needs sympy), and
-proteus.ADRProblem builds the Proteus problem from it and solves. With an
-exact solution in the spec, it prints the L2 error of every unknown and the
-observed convergence rate between meshes.
+The input is either a problem specification (monolithic, or composed with
+``extends``) or an archive this tool wrote. For a specification it runs each
+discretization (or the one named) on each mesh of the sequence and prints
+the L2 error of every unknown against the exact solution, with observed
+rates. Each run writes an archive, <stem>_<discretization>_<cells>.ymf plus
+its .h5 and .xmf, whose ``extra`` records everything needed to reproduce
+it: the composed specification (self-contained), the run configuration,
+the generated ADR form, software versions and the errors.
+
+Given such an archive instead, it reruns exactly that run from the record
+alone. With ``--check`` it then verifies the pipeline is idempotent: the
+regenerated ADR form must equal the recorded one and every numerical
+dataset must be bitwise identical to the original's.
 
 This is the front end, so it imports sympy through ymf.symbolic. Proteus
 itself (proteus.ADRProblem) never does: it is handed plain data.
 """
 import argparse
+import datetime
 import math
 import os
+import platform
+import subprocess
 import sys
 
-
-#: weak-form stabilization methods this runner can honour
-STABILIZATIONS = {"none"}
+#: archive format of the run record in ``extra``
+RECORD_VERSION = 1
 
 
 def element_spaces(problem, finite_element):
@@ -38,76 +48,132 @@ def element_spaces(problem, finite_element):
         fe = finite_element["fields"]
         for comps in unknowns.values():
             for c in comps:
-                spaces[c] = (fe["family"], int(fe["order"]))
-    for key, rank in (("velocity", True), ("pressure", False)):
+                spaces[c] = [fe["family"], int(fe["order"])]
+    for key, vector in (("velocity", True), ("pressure", False)):
         if key in finite_element:
             fe = finite_element[key]
             for name, comps in unknowns.items():
-                if (len(comps) > 1 or comps[0] != name) == rank:
+                if (len(comps) > 1) == vector:
                     for c in comps:
-                        spaces[c] = (fe["family"], int(fe["order"]))
+                        spaces[c] = [fe["family"], int(fe["order"])]
     missing = [c for comps in unknowns.values() for c in comps if c not in spaces]
     if missing:
         raise SystemExit("finite_element gives no space for %s" % ", ".join(missing))
     return spaces
 
 
-def time_stepping(discretization):
+def time_stepping(discretization, problem):
     block = discretization.get("discretization") or {}
     if "time_integration" not in block:
         return None
     if block["time_integration"] != "backward_euler":
         raise SystemExit("time integration %r is not wired up yet (backward_euler is)"
                          % block["time_integration"])
-    return {"dt": float(block["dt"]), "t_end": float(block["t_end"]),
-            "outputs": int(block.get("outputs", 1))}
+    if not problem.get("time"):
+        raise SystemExit("%s steps in time, but the problem's domain gives no time "
+                         "interval (', t ∈ (t0, t1]')" % discretization["name"])
+    return {"dt": float(block["dt"]), "outputs": int(block.get("outputs", 1))}
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("spec")
-    parser.add_argument("--discretization", help="run only this one (by name)")
-    parser.add_argument("--cells", type=int, nargs="+", default=[4, 8, 16],
-                        help="cells per side of each mesh in the sequence")
-    args = parser.parse_args(argv)
+def software():
+    """Versions of everything the result depends on."""
+    import numpy
+    import sympy
+    import ymf
+    import proteus
+    def commit(module):
+        here = os.path.dirname(os.path.abspath(module.__file__))
+        try:
+            return subprocess.run(["git", "-C", here, "describe", "--always", "--dirty"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            return None      # an installed package, not a checkout
+    return {"ymf": ymf.__version__, "ymf_git": commit(ymf),
+            "proteus": proteus.__version__, "proteus_git": commit(proteus),
+            "sympy": sympy.__version__, "numpy": numpy.__version__,
+            "python": platform.python_version(), "platform": platform.platform()}
 
-    from ymf import load_ymf
-    from ymf.symbolic import adr_problem
+
+def plain(value):
+    """The composed spec as plain YAML-safe data (strictyaml gives dicts already)."""
+    if isinstance(value, dict):
+        return {str(k): plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain(v) for v in value]
+    return value
+
+
+def solve(doc, problem, discretization, cells, outdir, name):
+    """Run one discretization on one mesh; return (errors, archive path)."""
     from proteus import ADRProblem, Profiling
     Profiling.logLevel = 1
     Profiling.verbose = False
+    spaces = element_spaces(problem, discretization.get("finite_element") or {})
+    time = time_stepping(discretization, problem)
+    weak = {w["label"]: w for w in doc["Problem"].get("weak_forms", [])}.get(
+        str(discretization.get("from_weak_form")), {})
+    stabilization = (weak.get("stabilization_method") or "none").strip().lower()
+    run = {"discretization": discretization["name"], "cells": cells,
+           "spaces": spaces, "time": time, "stabilization": stabilization}
+    extra = {"ymf_run": RECORD_VERSION, "spec": plain(doc), "run": run,
+             "adr": problem, "provenance": dict(software(), created=datetime.datetime.now(
+                 datetime.timezone.utc).isoformat(timespec="seconds"))}
+    from proteus.iproteus import opts
+    opts.dataDir = outdir
+    cwd = os.getcwd()
+    os.chdir(outdir)
+    try:
+        _, _, errors = ADRProblem.run(problem, {c: tuple(s) for c, s in spaces.items()},
+                                      cells, time, name=name, stabilization=stabilization,
+                                      extra=extra)
+    finally:
+        os.chdir(cwd)
+    # the errors are known only after the solve; add them to the record
+    path = os.path.join(outdir, name + ".ymf")
+    from ymf.archive import read_ymf, write_ymf
+    domain, extra = read_ymf(path)
+    extra["results"] = {"l2_errors": errors}
+    write_ymf(domain, path, extra=extra)
+    return errors, path
 
-    doc = load_ymf(args.spec)
+
+def run_spec(path, args):
+    from ymf import load_ymf
+    from ymf.symbolic import adr_problem
+    doc = load_ymf(path)
     problem = adr_problem(doc)
     discretizations = doc["solution_paths"]["discretizations"]
     if args.discretization:
         discretizations = [d for d in discretizations if d["name"] == args.discretization]
         if not discretizations:
             raise SystemExit("no discretization named %r" % args.discretization)
-
-    stem = os.path.splitext(os.path.basename(args.spec))[0]
-    print("%s: %s" % (args.spec, doc["Problem"]["name"]))
-    print("unknowns: %s" % ", ".join("%s (%s)" % (n, ", ".join(c)) for n, c in problem["unknowns"].items()))
     weak_forms = {w["label"]: w for w in doc["Problem"].get("weak_forms", [])}
+    from proteus.ADRProblem import STABILIZATIONS
+    stem = os.path.splitext(os.path.basename(path))[0]
+    print("%s: %s" % (path, doc["Problem"]["name"]))
+    print("unknowns: %s" % ", ".join("%s (%s)" % (n, ", ".join(c)) for n, c in problem["unknowns"].items()))
     for d in discretizations:
-        spaces = element_spaces(problem, d.get("finite_element") or {})
-        time = time_stepping(d)
         weak = weak_forms.get(str(d.get("from_weak_form")), {})
         method = (weak.get("stabilization_method") or "none").strip()
         if method.lower() not in STABILIZATIONS:
-            # Running it without would solve a different (here, unstable)
-            # weak form under this branch's name.
+            # Running it without would solve a different weak form under
+            # this branch's name.
             print("\n%s -- skipped: its weak form %r needs %s stabilization, which "
                   "is not wired up yet" % (d["name"], weak.get("label"), method))
             continue
-        print("\n%s -- %s%s" % (d["name"], ", ".join("%s %s%d" % (c, f, o) for c, (f, o) in spaces.items()),
-                                "" if time is None else ", backward Euler dt=%g to t=%g" % (time["dt"], time["t_end"])))
+        spaces = element_spaces(problem, d.get("finite_element") or {})
+        time = time_stepping(d, problem)
+        print("\n%s -- %s%s%s" % (
+            d["name"], ", ".join("%s %s%d" % (c, f, o) for c, (f, o) in spaces.items()),
+            "" if method.lower() == "none" else ", " + method,
+            "" if time is None else ", backward Euler dt=%g on (%g, %g]" % (
+                time["dt"], problem["time"][0], problem["time"][1])))
         names = list(problem["exact"])
         print("  cells  " + "".join("  L2(%s)    rate  " % n for n in names))
         previous = None
         for cells in args.cells:
-            _, model, errors = ADRProblem.run(problem, spaces, cells, time,
-                                              name="%s_%s_%d" % (stem, d["name"], cells))
+            errors, _ = solve(doc, problem, d, cells, args.outdir,
+                              "%s_%s_%d" % (stem, d["name"], cells))
             row = "  %5d  " % cells
             for n in names:
                 rate = ""
@@ -116,6 +182,89 @@ def main(argv=None):
                 row += "  %.3e %5s  " % (errors[n], rate)
             print(row, flush=True)
             previous = errors
+
+
+def run_archive(path, args):
+    """Rerun the run an archive records; with --check, compare the two."""
+    import yaml
+    from ymf import validate_ymf
+    from ymf.archive import read_ymf
+    from ymf.symbolic import adr_problem
+    _, extra = read_ymf(path)
+    if not extra or "run" not in extra or "spec" not in extra:
+        raise SystemExit("%s does not record a ymf_run run (no spec and run in extra)" % path)
+    # Validate the embedded spec exactly as a spec file would be.
+    doc = validate_ymf(yaml.safe_dump(extra["spec"], allow_unicode=True, sort_keys=False))
+    problem = adr_problem(doc)
+    run = extra["run"]
+    discretization = next(d for d in doc["solution_paths"]["discretizations"]
+                          if d["name"] == run["discretization"])
+    stem = os.path.splitext(os.path.basename(path))[0]
+    name = stem + "_rerun"
+    errors, rerun_path = solve(doc, problem, discretization, int(run["cells"]),
+                               args.outdir, name)
+    print("%s: reran %s on %d cells -> %s" % (path, run["discretization"], run["cells"], rerun_path))
+    print("  errors: %s" % ", ".join("%s %.6e" % kv for kv in errors.items()))
+    if not args.check:
+        return 0
+    failures = []
+    if problem != extra["adr"]:
+        failures.append("the regenerated ADR form differs from the recorded one")
+    recorded = extra.get("results", {}).get("l2_errors", {})
+    if recorded != errors:
+        failures.append("errors differ: recorded %s, rerun %s" % (recorded, errors))
+    failures += compare_heavy_data(os.path.splitext(path)[0] + ".h5",
+                                   os.path.splitext(rerun_path)[0] + ".h5")
+    if failures:
+        print("NOT IDEMPOTENT:\n  " + "\n  ".join(failures))
+        return 1
+    print("  idempotent: same ADR form, same errors, every numerical dataset bitwise identical")
+    return 0
+
+
+def compare_heavy_data(a, b):
+    """Every numerical dataset of two archives' .h5 files, compared exactly."""
+    import h5py
+    import numpy
+    failures = []
+    with h5py.File(a, "r") as fa, h5py.File(b, "r") as fb:
+        names = []
+        fa.visititems(lambda n, o: names.append(n) if isinstance(o, h5py.Dataset) else None)
+        numeric = [n for n in names if fa[n].dtype.kind in "fiu"]
+        if not numeric:
+            failures.append("%s holds no numerical datasets" % a)
+        for n in numeric:
+            if n not in fb:
+                failures.append("%s: missing from the rerun" % n)
+            elif not numpy.array_equal(fa[n][()], fb[n][()]):
+                diff = numpy.max(numpy.abs(fa[n][()] - fb[n][()]))
+                failures.append("%s: differs (max |difference| %.3e)" % (n, diff))
+        print("  compared %d numerical datasets" % len(numeric))
+    return failures
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("input", help="a spec .ymf, or an archive .ymf this tool wrote")
+    parser.add_argument("--discretization", help="run only this one (by name)")
+    parser.add_argument("--cells", type=int, nargs="+", default=[4, 8, 16],
+                        help="cells per side of each mesh in the sequence")
+    parser.add_argument("--outdir", default=".", help="where archives are written")
+    parser.add_argument("--check", action="store_true",
+                        help="for an archive: verify the rerun reproduces it exactly")
+    args = parser.parse_args(argv)
+    args.outdir = os.path.abspath(args.outdir)
+    os.makedirs(args.outdir, exist_ok=True)
+
+    from ymf.archive import YmfArchiveError, read_ymf
+    try:
+        read_ymf(args.input)
+        is_archive = True
+    except YmfArchiveError:
+        is_archive = False
+    if is_archive:
+        return run_archive(args.input, args)
+    run_spec(args.input, args)
     return 0
 
 

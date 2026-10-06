@@ -84,8 +84,12 @@ class ADRCoefficients(TC_base):
         sdInfo = {}
         self._terms = []   # (key, compiled code, slice) to fill on evaluate
         for i, eq in enumerate(adr["equations"]):
-            def flags(block):
-                return {index[c]: f for c, f in block["flags"].items()}
+            def flags(block, constant_key=i):
+                # ymf says how a coefficient depends on each unknown, and
+                # nothing for a constant; Proteus wants 'constant' keyed by
+                # some component, by convention the equation's own.
+                deps = {index[c]: f for c, f in block["depends_on"].items()}
+                return deps or {constant_key: 'constant'}
 
             if "mass" in eq:
                 b = eq["mass"]
@@ -105,7 +109,9 @@ class ADRCoefficients(TC_base):
                 diffusion[i] = {}
                 for phi, b in eq["diffusion"].items():
                     ck = index[phi]
-                    diffusion[i][ck] = {index[c]: f for c, f in b["flags"].items()}
+                    # Proteus's diffusion flags are 'constant' or 'nonlinear'
+                    diffusion[i][ck] = ({index[c]: 'nonlinear' for c in b["depends_on"]}
+                                        or {ck: 'constant'})
                     potential[ck] = {ck: 'u'}
                     sdInfo[(i, ck)] = (numpy.array(b["rowptr"], 'i'),
                                        numpy.array(b["colind"], 'i'))
@@ -122,7 +128,7 @@ class ADRCoefficients(TC_base):
                     self._add(('dr', i, index[c]), code)
             if "hamiltonian" in eq:
                 b = eq["hamiltonian"]
-                hamiltonian[i] = flags(b)
+                hamiltonian[i] = {index[c]: f for c, f in b["depends_on"].items()}
                 self._needs_gradients = True
                 self._add(('H', i), b["H"])
                 for c, codes in b["dH"].items():
@@ -301,12 +307,47 @@ ELEMENTS = {
 }
 
 
-def numerics(problem, spaces, cells, time=None, quadrature_order=None):
+def reorder(problem, first):
+    """The same problem with the components (and their equations) reordered.
+
+    Equation i belongs to component i, so the two are permuted together;
+    everything else refers to components by name. ``first`` lists the
+    components to put first, in order.
+    """
+    import copy
+    adr = problem["adr"]
+    names = list(adr["components"])
+    order = list(first) + [n for n in names if n not in first]
+    out = copy.deepcopy(problem)
+    out["adr"]["components"] = order
+    out["adr"]["equations"] = [copy.deepcopy(adr["equations"][names.index(n)]) for n in order]
+    return out
+
+
+#: weak-form stabilization methods numerics() can install
+STABILIZATIONS = ("none", "supg/pspg")
+
+
+def velocity_pressure(problem):
+    """(velocity components, pressure component) of a velocity-pressure system."""
+    vectors = [c for c in problem["unknowns"].values() if len(c) > 1]
+    scalars = [c[0] for c in problem["unknowns"].values() if len(c) == 1]
+    if len(vectors) != 1 or len(scalars) != 1:
+        raise ValueError("SUPG/PSPG is wired for velocity-pressure systems (one vector "
+                         "and one scalar unknown), not %s" % list(problem["unknowns"]))
+    return vectors[0], scalars[0]
+
+
+def numerics(problem, spaces, cells, time=None, quadrature_order=None,
+             stabilization="none", coefficients=None):
     """The discrete problem.
 
     ``spaces`` maps each scalar component to a (family, order) pair;
     ``cells`` is the number of mesh cells along each axis; ``time`` is None
-    for a steady problem or a dict with ``dt`` and ``t_end``.
+    for a steady problem or a dict with ``dt``. ``stabilization`` is one of
+    :data:`STABILIZATIONS`; ``supg/pspg`` installs Proteus's residual-based
+    velocity-pressure stabilization (ASGS), which needs the problem in
+    pressure-first order (see :func:`reorder`) and its ``coefficients``.
     """
     adr = problem["adr"]
     dim = adr["dim"]
@@ -331,6 +372,26 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None):
         n.numericalFluxType = NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG_exterior \
             if all(f == "CG" for f, _ in spaces.values()) else \
             NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG
+    stabilization = (stabilization or "none").lower()
+    if stabilization not in STABILIZATIONS:
+        raise ValueError("stabilization %r is not wired up (have %s)"
+                         % (stabilization, ", ".join(STABILIZATIONS)))
+    if stabilization == "supg/pspg":
+        from proteus import SubgridError
+        velocity, pressure = velocity_pressure(problem)
+        if names[0] != pressure or names[1:1 + dim] != velocity:
+            raise ValueError("SUPG/PSPG needs the pressure first, then the velocity "
+                             "(reorder the problem); got %s" % names)
+        # The stabilization reads the density from the momentum equations'
+        # mass coefficient (dm), so they need their ρ ∂v/∂t term even when
+        # the solve is steady (which drops it).
+        missing = [c for c, eq in zip(names, adr["equations"]) if c in velocity and "mass" not in eq]
+        if missing:
+            raise ValueError("SUPG/PSPG takes the density from the time derivative "
+                             "ρ ∂v/∂t, which the equations for %s lack; include it "
+                             "(a steady solve drops it)" % ", ".join(missing))
+        n.subgridError = SubgridError.NavierStokesASGS_velocity_pressure(
+            coefficients, dim, lag=False)
     if time is None:
         n.timeIntegration = TimeIntegration.NoIntegration
     else:
@@ -369,29 +430,45 @@ def l2_errors(model, problem, t):
     return errors
 
 
-def run(problem, spaces, cells, time=None, name="adr", opts=None):
-    """Solve; return (NS_base, the finest level model, L2 errors at the end)."""
+def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
+        extra=None, opts=None):
+    """Solve; return (NS_base, the finest level model, L2 errors at the end).
+
+    ``time`` is None for a steady solve, or ``{"dt": ...}`` to step through
+    the problem's own time interval (``problem["time"]``); ``outputs`` (1 by
+    default) sets how many evenly spaced archive frames to write. ``extra``
+    is stored in the archive (see AR_base.extra): pass the specification
+    and run configuration to make the archive reproduce its own run.
+    """
     from proteus import NumericalSolution, default_s
     if opts is None:
         from proteus.iproteus import opts
+    if (stabilization or "none").lower() == "supg/pspg":
+        velocity, pressure = velocity_pressure(problem)
+        problem = reorder(problem, [pressure] + velocity)
     p = physics(problem, name)
-    n = numerics(problem, spaces, cells, time)
+    n = numerics(problem, spaces, cells, time, stabilization=stabilization,
+                 coefficients=p.coefficients)
     if problem.get("periodic"):
         n.periodicDirichletConditions = p.periodicDirichletConditions
     so = defaults.System_base(name=name, pnList=[(p, n)], sList=[default_s])
     if time is None:
         so.tnList = [0.0, 1.0]
     else:
+        if not problem.get("time"):
+            raise ValueError("a time step was given for a problem with no time interval")
+        t0, t1 = (float(v) for v in problem["time"])
         outputs = int(time.get("outputs", 1))
-        so.tnList = [float(time["t_end"]) * k / outputs for k in range(outputs + 1)]
-        p.T = float(time["t_end"])
+        so.tnList = [t0 + (t1 - t0) * k / outputs for k in range(outputs + 1)]
+        p.T = t1
         # The system-level controller sets each step's size; the model's
         # own DT alone does not, and the run would take one step per output.
         from proteus import SplitOperator
         so.systemStepControllerType = SplitOperator.Sequential_FixedStep
         so.dt_system_fixed = float(time["dt"])
-    tnList = so.tnList
     ns = NumericalSolution.NS_base(so, [p], [n], so.sList, opts)
+    if extra is not None:
+        ns.ar[0].extra = extra
     ns.calculateSolution(name)
     model = ns.modelList[0].levelModelList[-1]
-    return ns, model, l2_errors(model, problem, tnList[-1])
+    return ns, model, l2_errors(model, problem, so.tnList[-1])
