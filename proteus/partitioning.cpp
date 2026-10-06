@@ -1,5 +1,12 @@
 #include "partitioning.h"
 #include "PyEmbeddedFunctions.h"
+#include <cstdlib>
+#include <string>
+#include <sys/stat.h>
+#include <cstring>
+#include <cstdio>
+#include <cerrno>
+#include <unistd.h>
 
 namespace proteus
 {
@@ -1485,6 +1492,199 @@ delete [] mesh.elementBoundaryOffsets_subdomain_owned;
   return 0;
 }
 
+namespace {
+  //Reopening the mappings file read-only.
+  //
+  //The numbering datasets are written collectively through the MPI-IO driver
+  //and then reopened read-only by every rank. Nothing used to check the
+  //reopen: on Carpenter at >=384 ranks some ranks saw
+  //
+  //  H5F__super_read(): truncated file:
+  //      eof = 115343360, sblock->base_addr = 0, stored_eof = 116070216
+  //
+  //(93 of 1536 in one run), H5Dopen1 returned -1, H5Dread failed on an invalid
+  //id, and the ZERO-initialised destination valarray became the numbering --
+  //every old id mapping to new id 0. That is the origin of the degenerate
+  //face numbering and of edgeNodesArray left at its -1 initialiser.
+  //
+  //Closing the writer before every reopen (beb3ba81) is necessary but NOT
+  //sufficient. A standalone reproduction on Carpenter (HDF5 1.14.6, Lustre,
+  //7680 ranks on 40 nodes, production-sized datasets; torino_flume
+  //debug/stale_eof) showed what the failures depend on:
+  //  - NOT time: waiting 5, 50 or 500 ms after the barrier fails as often as
+  //    not waiting, and a stat() right after a failed open always shows the
+  //    correct size;
+  //  - concurrency on one node: a node's first opener never failed, while
+  //    ranks opening at the same moment as many others on their node did
+  //    (up to ~100 of 7680 per reopen);
+  //  - one real H5Fopen per node first fixes it: with the node leader opening
+  //    before the rest, 4 failures in 61,440 opens. A leader that only
+  //    fstat()s the file and sees the right size does not help.
+  //The likely cause is the Lustre client handing some of many concurrent
+  //openers its stale cached size for a file another client just changed.
+  //
+  //So the reopen is LOCAL and node-leader-first: each rank opens the file
+  //with HDF5's default (sec2) driver, one rank per node before the others,
+  //and a failed open is retried with a short jittered backoff. Reads are
+  //ordinary per-rank POSIX reads whose sieve buffer coalesces the point
+  //selections, and the close is not collective, so one slow rank no longer
+  //holds every other rank in an MPI_File_close barrier. Same build, mesh and
+  //ranks (7680, 14.7M nodes): "Collecting elements" 704 s vs 1215 s with the
+  //world MPI-IO reopen, partitioning 882 s vs 1426 s; one MPI-IO run took
+  //8981 s when a single straggler rank held the other 7679 in that barrier.
+  //
+  //PROTEUS_MAPPINGS_READ_DRIVER=mpio restores the world MPI-IO reopen
+  //(collective, not retried) as a fallback.
+  bool mappingsReadUsesMPIIO()
+  {
+    static const bool use_mpio = []() {
+      const char* driver = std::getenv("PROTEUS_MAPPINGS_READ_DRIVER");
+      return driver != NULL && std::string(driver) == "mpio";
+    }();
+    return use_mpio;
+  }
+
+  //Transfer mode for a read from a file opened by openMappingsReadOnly. HDF5
+  //rejects collective transfer on a non-MPI driver ("collective access for
+  //MPI-based drivers only"), so collective is only requested on the MPI-IO
+  //path; on the local path the read is an ordinary independent read.
+  herr_t setMappingsReadXfer(hid_t dxpl)
+  {
+    if (mappingsReadUsesMPIIO())
+      return H5Pset_dxpl_mpio(dxpl, H5FD_MPIO_COLLECTIVE);
+    return 0;
+  }
+
+  //Ranks sharing this rank's node (and its Lustre client), split once.
+  MPI_Comm mappingsNodeComm(const MPI_Comm& comm)
+  {
+    static MPI_Comm node = MPI_COMM_NULL;
+    static MPI_Comm split_from = MPI_COMM_NULL;
+    if (node == MPI_COMM_NULL || split_from != comm)
+      {
+        int rank = 0;
+        MPI_Comm_rank(comm, &rank);
+        MPI_Comm_split_type(comm, MPI_COMM_TYPE_SHARED, rank, MPI_INFO_NULL, &node);
+        split_from = comm;
+      }
+    return node;
+  }
+
+  //A local read-only open, retried: 10 quick attempts with 10-60 ms of
+  //jitter (the failure is a collision with the node's other openers, not a
+  //window that closes with time), then up to 5 more 1 s apart. Returns the
+  //file id or -1, and the number of attempts used.
+  hid_t openLocalWithRetry(const char* name, hid_t fapl, int rank, int& attempts)
+  {
+    unsigned int seed = 2654435761u * (unsigned int)(rank + 1);
+    const int quick = 10, slow = 5;
+    hid_t fid = -1;
+    attempts = 0;
+    while (attempts < quick + slow)
+      {
+        H5E_BEGIN_TRY {
+          fid = H5Fopen(name, H5F_ACC_RDONLY, fapl);
+        } H5E_END_TRY;
+        attempts++;
+        if (fid >= 0 || attempts == quick + slow)
+          break;
+        if (attempts < quick)
+          usleep(10000 + rand_r(&seed) % 50000);
+        else
+          sleep(1);
+      }
+    return fid;
+  }
+
+  //A rank that exhausts its retries writes what it saw to
+  //mappings_open_fail.<rank>.txt before the caller aborts: the abort can
+  //drop that rank's stderr (it did on Carpenter, job 3180113).
+  void reportMappingsOpenFailure(int rank, const char* name, int attempts)
+  {
+    char path[64];
+    snprintf(path, sizeof(path), "mappings_open_fail.%d.txt", rank);
+    FILE* f = fopen(path, "w");
+    if (f == NULL)
+      f = stderr;
+    struct stat st;
+    int sr = stat(name, &st);
+    fprintf(f, "rank %d: H5Fopen(%s, RDONLY) failed %d times\n", rank, name, attempts);
+    if (sr == 0)
+      fprintf(f, "stat: st_size %lld\n", (long long)st.st_size);
+    else
+      fprintf(f, "stat failed: %s\n", strerror(errno));
+    H5Eprint2(H5E_DEFAULT, f);
+    if (f != stderr)
+      fclose(f);
+  }
+
+  //Collective: every rank must call this (barrier and the retry count reduction).
+  hid_t openMappingsReadOnly(const MPI_Comm& comm, const char* name)
+  {
+    const bool use_mpio = mappingsReadUsesMPIIO();
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    static bool reported = false;
+    if (!reported)
+      {
+        if (use_mpio)
+          logEvent("mappings file read-only reopen: MPI-IO driver (PROTEUS_MAPPINGS_READ_DRIVER=mpio)",3);
+        else
+          logEvent("mappings file read-only reopen: local sec2 driver",3);
+        reported = true;
+      }
+    MPI_Barrier(comm);
+    hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+    if (fapl < 0) return fapl;
+    if (use_mpio)
+      H5Pset_fapl_mpio(fapl, comm, MPI_INFO_NULL);
+    hid_t fid = -1;
+    int attempts = 1;
+    int node_rank = 0;
+    if (use_mpio)
+      {
+        //the world MPI-IO open is collective and must not be retried per rank
+        H5E_BEGIN_TRY {
+          fid = H5Fopen(name, H5F_ACC_RDONLY, fapl);
+        } H5E_END_TRY;
+      }
+    else
+      {
+        //node leader first, then the rest of the node
+        MPI_Comm node = mappingsNodeComm(comm);
+        MPI_Comm_rank(node, &node_rank);
+        if (node_rank == 0)
+          fid = openLocalWithRetry(name, fapl, rank, attempts);
+        MPI_Barrier(node);
+        if (node_rank != 0)
+          fid = openLocalWithRetry(name, fapl, rank, attempts);
+      }
+    if (fid < 0)
+      {
+        //reopen once more with error reporting on, to capture the HDF5 stack
+        fid = H5Fopen(name, H5F_ACC_RDONLY, fapl);
+        if (fid < 0)
+          reportMappingsOpenFailure(rank, name, attempts + 1);
+      }
+    H5Pclose(fapl);
+    int counts[4] = {(attempts > 1 && node_rank == 0) ? 1 : 0,
+                     (attempts > 1 && node_rank != 0) ? 1 : 0,
+                     (fid < 0) ? 1 : 0,
+                     attempts};
+    int totals[3] = {0, 0, 0}, maxAttempts = 0;
+    MPI_Allreduce(counts, totals, 3, MPI_INT, MPI_SUM, comm);
+    MPI_Allreduce(&counts[3], &maxAttempts, 1, MPI_INT, MPI_MAX, comm);
+    if (totals[0] + totals[1] + totals[2] > 0)
+      {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "mappings file reopen: %d node leader(s) and %d other rank(s) needed a retry (max %d attempts), %d failed (stale size on a parallel filesystem)",
+                 totals[0], totals[1], maxAttempts, totals[2]);
+        logEvent(msg,3);
+      }
+    return fid;
+  }
+}
+
 int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char* filebase, int indexBase, 
                                   Mesh& newMesh, int nNodes_overlap, double memHardLimit)
 {
@@ -1821,7 +2021,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
         nodeNumbering_global_new2old[nodeNumbering_global_old2new[nN]] = nN;
       herr_t status;
       valarray<int> nodeNumbering_old2new_read(nNodes_global);
-      file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+      file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
       assert(file_id != H5I_INVALID_HID);
       hid_t nodeNumbering_old2new_dataset_id = H5Dopen1(file_id, "/nodeNumbering_old2new");
       status = H5Dread(nodeNumbering_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
@@ -1930,6 +2130,21 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   map<int, int> nodes_old2new_subdomain_map;
   //note any element index containers are in the old element numbering
   int eN_c_start = 0;//start of the collection of elements we are currently processing  
+  //Chunk this re-read by a FIXED node-collection size. Sizing the chunk as
+  //nElements_global/size makes the NUMBER of chunks equal the number of ranks,
+  //so every rank added costs another full read cycle, and each cycle has more
+  //participants. Restored from 77c99396^.
+  const int nNodes_collection_max=10000;
+  //Hold the mappings file open across the whole loop. Opening and closing it
+  //once per chunk had every rank open the same Lustre file on every chunk.
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
+  if (file_id < 0)
+    {
+      H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
+    }
+  assert(file_id != H5I_INVALID_HID);
   for (int ie = 0; ie < nElements_global; ie++)
     {
       //
@@ -1959,7 +2174,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
           elementId_collection.push_back(elementId_double);
         }
       element_old_nodes_collection.push_back(element_nodes_old);
-      if (elements_collection.size() == nElements_global/size || ie == nElements_global-1)
+      if (node_collection.size() >= nNodes_collection_max || ie == nElements_global-1)
         {
           //create a node list to read from old2new mapping
 	        valarray<int> nodes_old2new_subset(node_collection.size());
@@ -2040,8 +2255,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 		        {
 		          node_collection_array[i_nc] = static_cast<hsize_t>(*nv);
 		        }
-            file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
-            assert(file_id != H5I_INVALID_HID);
 	          nodes_old2new_dataset_id = H5Dopen1(file_id,"/nodeNumbering_old2new");
 	          nodes_old2new_filespace_id = H5Dget_space(nodes_old2new_dataset_id);
 	          status = H5Sselect_elements(nodes_old2new_filespace_id, H5S_SELECT_SET, 
@@ -2049,7 +2262,9 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 	          hsize_t dims[] = {static_cast<hsize_t>(node_collection.size())};
 	          hid_t nodes_old2new_subset_memspace_id = H5Screate_simple(1, dims, NULL);
 	          nodes_old2new_plist_id = H5Pcreate(H5P_DATASET_XFER);
-	          status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_COLLECTIVE);
+#ifdef H5_HAVE_PARALLEL
+	          status = H5Pset_dxpl_mpio(nodes_old2new_plist_id, H5FD_MPIO_INDEPENDENT);
+#endif
 	          status = H5Dread(nodes_old2new_dataset_id, H5T_NATIVE_INT, 
 			                       nodes_old2new_subset_memspace_id, nodes_old2new_filespace_id, 
 			                       H5P_DEFAULT, &nodes_old2new_subset[0]);
@@ -2057,7 +2272,6 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 	          H5Sclose(nodes_old2new_subset_memspace_id);
 	          H5Sclose(nodes_old2new_filespace_id);
 	          H5Dclose(nodes_old2new_dataset_id);
-            H5Fclose(file_id);
 	          for (int i=0;i<node_collection.size();i++)
 		        {
 		          nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
@@ -2155,6 +2369,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       elementFile2 >> eatline;
     }
   elementFile2.close();
+  H5Fclose(file_id);
   int nElements_owned_subdomain(elements_subdomain_owned.size()),
     nElements_owned_new=0;
   MPI_Allreduce(&nElements_owned_subdomain,&nElements_owned_new,1,MPI_INT,MPI_SUM,PROTEUS_COMM_WORLD);
@@ -2303,7 +2518,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     {
       old_element_indices_subdomain[eN_old_subdomain] = it->first;
     }
-  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
+  if (file_id < 0)
+    {
+      H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
+    }
   e_old2new_dataset_id = H5Dopen1(file_id, "/elementNumbering_old2new");
   e_old2new_filespace_id = H5Dget_space(e_old2new_dataset_id);
   status = H5Sselect_elements(e_old2new_filespace_id, H5S_SELECT_SET, 
@@ -2311,7 +2532,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t e_subdomain_count[]={static_cast<hsize_t>(elementNodesArrayMap.size())};
   hid_t e_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, e_subdomain_count, NULL);
   hid_t e_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  status = H5Pset_dxpl_mpio(e_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);
+  status = setMappingsReadXfer(e_old2new_subdomain_plist_id);
   status = H5Dread(e_old2new_dataset_id, H5T_NATIVE_INT, 
                    e_old2new_subdomain_memspace_id, e_old2new_filespace_id, 
                    H5P_DEFAULT, &new_element_indices_subdomain[0]);
@@ -2350,7 +2571,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
       }
     //check old2new
     valarray<int> elementNumbering_global_old2new_read(nElements_global);
-    file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+    file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
     hid_t e_old2new_dataset_id = H5Dopen1(file_id, "/elementNumbering_old2new");
     status = H5Dread(e_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                       &elementNumbering_global_old2new_read[0]);
@@ -2371,8 +2592,21 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                      &elementNumbering_global_new2old_read[0]);
     status = H5Dclose(e_new2old_dataset_id);
     status = H5Fclose(file_id);
-    for (int i=0;i<nElements_global;i++)
-      assert(elementNumbering_global_new2old[i] == elementNumbering_global_new2old_read[i]);
+    //assert() is compiled out by -DNDEBUG, so this verification has to
+    //count and report rather than assert, or the whole block is cost
+    //with no signal.
+    {
+      long bad_=0, first_=-1;
+      for (int i=0;i<nElements_global;i++)
+        if (elementNumbering_global_new2old[i] != elementNumbering_global_new2old_read[i]) { if (first_<0) first_=i; bad_++; }
+      if (bad_)
+        {
+          std::cerr<<"PROTEUS numbering check failed: elementNumbering_global_new2old vs elementNumbering_global_new2old_read, "
+                   <<bad_<<" of "<<nElements_global<<" differ, first at "<<first_<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core numbering does not match in-core");
+        }
+    }
     std::cout<<"==================out of core elements new2old is correct!===================="<<std::endl;
     for (size_t i=0;i< new_element_indices_subdomain.size(); i++)
     {
@@ -2633,7 +2867,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     {
       old_elementBoundary_indices_subdomain[ebN_subdomain] = static_cast<hsize_t>(*it);
     }
-  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
+  if (file_id < 0)
+    {
+      H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
+    }
   eb_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, eb_dims, NULL);
   eb_old2new_dataset_id = H5Dopen1(file_id, "/elementBoundaryNumbering_old2new");
   status = H5Sselect_elements(eb_old2new_filespace_id, H5S_SELECT_SET, 
@@ -2642,7 +2882,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t eb_subdomain_count[]={static_cast<hsize_t>(elementBoundaries_subdomain.size())};
   hid_t eb_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, eb_subdomain_count, NULL);
   hid_t eb_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  H5Pset_dxpl_mpio(eb_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);  
+  setMappingsReadXfer(eb_old2new_subdomain_plist_id);  
   status = H5Dread(eb_old2new_dataset_id, H5T_NATIVE_INT, 
                    eb_old2new_subdomain_memspace_id, eb_old2new_filespace_id, 
                    H5P_DEFAULT, &new_elementBoundary_indices_subdomain[0]);
@@ -2676,13 +2916,26 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     
     herr_t status;
     valarray<int> elementBoundaryNumbering_old2new_read(nElementBoundaries_global);
-    file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+    file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
     eb_old2new_dataset_id = H5Dopen1(file_id, "/elementBoundaryNumbering_old2new");
     status = H5Dread(eb_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                      &elementBoundaryNumbering_old2new_read[0]);
     status = H5Dclose(eb_old2new_dataset_id);
-    for (int i=0;i<nElementBoundaries_global;i++)
-      assert(elementBoundaryNumbering_global_old2new[i] == elementBoundaryNumbering_old2new_read[i]);
+    //assert() is compiled out by -DNDEBUG, so this verification has to
+    //count and report rather than assert, or the whole block is cost
+    //with no signal.
+    {
+      long bad_=0, first_=-1;
+      for (int i=0;i<nElementBoundaries_global;i++)
+        if (elementBoundaryNumbering_global_old2new[i] != elementBoundaryNumbering_old2new_read[i]) { if (first_<0) first_=i; bad_++; }
+      if (bad_)
+        {
+          std::cerr<<"PROTEUS numbering check failed: elementBoundaryNumbering_global_old2new vs elementBoundaryNumbering_old2new_read, "
+                   <<bad_<<" of "<<nElementBoundaries_global<<" differ, first at "<<first_<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core numbering does not match in-core");
+        }
+    }
     std::cout<<"==================out of core old2new elementBoundaries is correct!===================="<<std::endl;
     hid_t eb_new2old_dataset_id = H5Dopen1(file_id, "/elementBoundaryNumbering_new2old");
     valarray<int> elementBoundaryNumbering_new2old_read(nElementBoundaries_global);
@@ -2690,8 +2943,21 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                      &elementBoundaryNumbering_new2old_read[0]);
     status = H5Dclose(eb_new2old_dataset_id);
     status = H5Fclose(file_id);
-    for (int i=0;i<nElementBoundaries_global;i++)
-      assert(elementBoundaryNumbering_global_new2old[i] == elementBoundaryNumbering_new2old_read[i]);
+    //assert() is compiled out by -DNDEBUG, so this verification has to
+    //count and report rather than assert, or the whole block is cost
+    //with no signal.
+    {
+      long bad_=0, first_=-1;
+      for (int i=0;i<nElementBoundaries_global;i++)
+        if (elementBoundaryNumbering_global_new2old[i] != elementBoundaryNumbering_new2old_read[i]) { if (first_<0) first_=i; bad_++; }
+      if (bad_)
+        {
+          std::cerr<<"PROTEUS numbering check failed: elementBoundaryNumbering_global_new2old vs elementBoundaryNumbering_new2old_read, "
+                   <<bad_<<" of "<<nElementBoundaries_global<<" differ, first at "<<first_<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core numbering does not match in-core");
+        }
+    }
     std::cout<<"==================out of core new2old elementBoundaries is correct!===================="<<std::endl;
     for (int i=0;i<elementBoundaries_subdomain.size();i++)
     {
@@ -2939,7 +3205,13 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
     {
       old_edge_indices_subdomain[edN_old_subdomain] = static_cast<hsize_t>(it->first);
     }
-  file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
+  if (file_id < 0)
+    {
+      H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
+    }
   ed_old2new_dataspace_id = H5Dopen1(file_id, "/edgeNumbering_old2new");
   ed_old2new_filespace_id = H5Screate_simple(ARRAY_RANK, ed_dims, NULL);
   status = H5Sselect_elements(ed_old2new_filespace_id, H5S_SELECT_SET, 
@@ -2947,7 +3219,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   hsize_t ed_subdomain_count[]={static_cast<hsize_t>(edgeNodesMap.size())};
   hid_t ed_old2new_subdomain_memspace_id = H5Screate_simple(ARRAY_RANK, ed_subdomain_count, NULL);
   hid_t ed_old2new_subdomain_plist_id = H5Pcreate(H5P_DATASET_XFER);
-  H5Pset_dxpl_mpio(ed_old2new_subdomain_plist_id, H5FD_MPIO_COLLECTIVE);
+  setMappingsReadXfer(ed_old2new_subdomain_plist_id);
   status = H5Dread(ed_old2new_dataspace_id, H5T_NATIVE_INT, ed_old2new_subdomain_memspace_id, 
                    ed_old2new_filespace_id, 
                    H5P_DEFAULT, &new_edge_indices_subdomain[0]);
@@ -2980,13 +3252,26 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
 
     herr_t status;
     valarray<int> edgeNumbering_old2new_read(nEdges_global);
-    file_id = H5Fopen(H5FILE_NAME, H5F_ACC_RDONLY, H5P_DEFAULT);
+    file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
     hid_t ed_old2new_dataset_id = H5Dopen1(file_id, "/edgeNumbering_old2new");
     status = H5Dread(ed_old2new_dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
                      &edgeNumbering_old2new_read[0]);
     status = H5Dclose(ed_old2new_dataset_id);
-    for (int i=0;i<nEdges_global;i++)
-      assert(edgeNumbering_global_old2new[i] == edgeNumbering_old2new_read[i]);
+    //assert() is compiled out by -DNDEBUG, so this verification has to
+    //count and report rather than assert, or the whole block is cost
+    //with no signal.
+    {
+      long bad_=0, first_=-1;
+      for (int i=0;i<nEdges_global;i++)
+        if (edgeNumbering_global_old2new[i] != edgeNumbering_old2new_read[i]) { if (first_<0) first_=i; bad_++; }
+      if (bad_)
+        {
+          std::cerr<<"PROTEUS numbering check failed: edgeNumbering_global_old2new vs edgeNumbering_old2new_read, "
+                   <<bad_<<" of "<<nEdges_global<<" differ, first at "<<first_<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core numbering does not match in-core");
+        }
+    }
     std::cout<<"==================out of core old2new edges is correct!===================="<<std::endl;
     hid_t ed_new2old_dataset_id = H5Dopen1(file_id, "/edgeNumbering_new2old");
     valarray<int> edgeNumbering_new2old_read(nEdges_global);
@@ -2994,8 +3279,21 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
                      &edgeNumbering_new2old_read[0]);
     status = H5Dclose(ed_new2old_dataset_id);
     status = H5Fclose(file_id);
-    for (int i=0;i<nEdges_global;i++)
-      assert(edgeNumbering_global_new2old[i] == edgeNumbering_new2old_read[i]);
+    //assert() is compiled out by -DNDEBUG, so this verification has to
+    //count and report rather than assert, or the whole block is cost
+    //with no signal.
+    {
+      long bad_=0, first_=-1;
+      for (int i=0;i<nEdges_global;i++)
+        if (edgeNumbering_global_new2old[i] != edgeNumbering_new2old_read[i]) { if (first_<0) first_=i; bad_++; }
+      if (bad_)
+        {
+          std::cerr<<"PROTEUS numbering check failed: edgeNumbering_global_new2old vs edgeNumbering_new2old_read, "
+                   <<bad_<<" of "<<nEdges_global<<" differ, first at "<<first_<<std::endl;
+          SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_PLIB,
+                      "out-of-core numbering does not match in-core");
+        }
+    }
     std::cout<<"==================out of core new2old edges is correct!===================="<<std::endl;
 
     for (auto it = edgeNodesMap.begin(); it != edgeNodesMap.end(); ++it)
@@ -3689,41 +3987,26 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
    * Close/release resources.
    */
   H5Dclose(dset_id);
+  //Close the write handle here. It used to stay open until the end of the
+  //function, so the read-only reopen below met a file that was still open
+  //for write and H5Fopen refused it -- PETSC_ERR_FILE_OPEN, MPI_Abort(65) on
+  //every rank within 20 s. Closing also flushes, which the read needs.
+  H5Fclose(file_id);
   //
   //end try out of core
   //
   //collect new node numbers for whole mesh so that subdomain reordering and renumbering
   //can be done easily
 
-  IS nodeNumberingIS_global_old2new;
-  ISAllGather(nodeNumberingIS_subdomain_old2new,&nodeNumberingIS_global_old2new);
-  const PetscInt * nodeNumbering_global_old2new;//needs restore call
-  ISGetIndices(nodeNumberingIS_global_old2new,&nodeNumbering_global_old2new);
+  //The ISAllGather that used to build nodeNumbering_global_old2new here is
+  //gone: it put the whole global node numbering on every rank. The element
+  //loop below now reads old->new in chunks and keeps only
+  //nodes_old2new_subdomain_map, the nodes this rank's elements actually touch.
   //
   //test out of core
   //
-  if (rank == 0)
-    {
-      hid_t       dataset_id;  /* identifiers */
-      herr_t      status;
-      int         dset_data[nNodes_global];
-
-      /* Open an existing file. */
-      //file_id = H5Fopen("mappings.h5", H5F_ACC_RDONLY, H5P_DEFAULT);
-
-      /* Open an existing dataset. */
-      dataset_id = H5Dopen2(file_id, "/nodeNumbering_old2new", H5P_DEFAULT);
-
-      status = H5Dread(dataset_id, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
-                       dset_data);
-
-      /* Close the dataset. */
-      status = H5Dclose(dataset_id);
-
-      for (int i=0;i<nNodes_global;i++)
-        assert(nodeNumbering_global_old2new[i] == dset_data[i]);
-      std::cout<<"==================out of core old2new is correct!===================="<<std::endl;
-    }
+  //(the scratch out-of-core comparison block is gone with the gather it
+  //compared against)
   //
   //end test out of core
   //
@@ -3776,88 +4059,180 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
   map<NodeTuple<2>,set<pair<int,int> > > edgeElementsMap;
 
   //note any element index containers are in the old element numbering
+  //
+  //Out-of-core node numbering, mirroring partitionNodesFromTetgenFiles.
+  //
+  //This loop used to index nodeNumbering_global_old2new, a global array that
+  //ISAllGather had put on EVERY rank. For a 2D mesh with N nodes that is N
+  //ints per rank here, and the element, elementBoundary and edge numberings
+  //add roughly 13N more -- so per-rank memory did not fall as ranks were
+  //added. Measured on damBreak (569508 nodes): peak per core was FLAT at
+  //0.26 GB from 384 to 768 ranks while the subdomain halved.
+  //
+  //Instead, accumulate a chunk of elements, read old->new for just the nodes
+  //that chunk touches, process it, and release. The chunk is capped by NODE
+  //COUNT, not by nElements_global/size, so the number of chunks does not grow
+  //with the rank count -- the mistake 77c99396 made in the tetgen path.
+  const int nNodes_collection_max=10000;
+  set<int> node_collection;
+  vector<int> elements_collection;
+  vector<valarray<int> > element_old_nodes_collection;
+  vector<double> elementId_collection;
+  map<int,int> nodes_old2new_subdomain_map;
+  int eN_c_start = 0;
+  file_id = openMappingsReadOnly(PROTEUS_COMM_WORLD, H5FILE_NAME);
+  if (file_id < 0)
+    {
+      H5Eprint2(H5E_DEFAULT, stderr);
+      SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_OPEN,
+                  "could not reopen the mappings file; see the HDF5 stack above");
+    }
   for (int ie = 0; ie < nElements_global; ie++)
     {
-      int ne, nv, elementId(0);
+      int ne, nv;
       long double elementId_double;
       elementFile2 >> eatcomments >> ne;
       ne -= indexBase;
-      assert(0 <= ne && ne < nElements_global && elementFile.good());
+      assert(0 <= ne && ne < nElements_global && elementFile2.good());
+      elements_collection.push_back(ne);
+      valarray<int> enodes_PROBE(simplexDim);
       for (int iv = 0; iv < simplexDim; iv++)
         {
-          elementFile2 >> nv ;
+          elementFile2 >> nv;
           nv -= indexBase;
           assert(0 <= nv && nv < nNodes_global);
-          element_nodes_old[iv] = nv;
-          element_nodes_new[iv] = nodeNumbering_global_old2new[nv];
-          element_nodes_new_array[iv] = element_nodes_new[iv];
+          node_collection.insert(nv);
+          enodes_PROBE[iv] = nv;
         }
-      NodeTuple<simplexDim> nodeTuple(element_nodes_new_array);
-      for (int iv = 0; iv < simplexDim; iv++)
+      element_old_nodes_collection.push_back(enodes_PROBE);
+      //read the marker unconditionally: the stream position must not depend on
+      //whether this element turns out to be in the subdomain
+      if (hasElementMarkers > 0)
         {
-          int nN_star_new = element_nodes_new[iv];
-          bool inSubdomain=false;
-          if (nN_star_new >= nodeOffsets_new[rank] && nN_star_new < nodeOffsets_new[rank+1])
-            {
-              inSubdomain = true;
-              //add all the element boundaries of this element
-              for (int ebN=0;ebN < simplexDim ; ebN++)
-                {
-                  int nodes[simplexDim-1] = { element_nodes_new[(ebN+1) % simplexDim],
-                                   element_nodes_new[(ebN+2) % simplexDim]};
-                  NodeTuple<simplexDim-1> nodeTuple(nodes);
-                  if(elementBoundaryElementsMap.find(nodeTuple) != elementBoundaryElementsMap.end())
-                    {
-                      if (elementBoundaryElementsMap[nodeTuple].right == -1 && ne != elementBoundaryElementsMap[nodeTuple].left)
-                        {
-                          elementBoundaryElementsMap[nodeTuple].right=ne;
-                          elementBoundaryElementsMap[nodeTuple].right_ebN_element=ebN;
-                        }
-                    }
-                  else
-                    {
-                      elementBoundaryElementsMap[nodeTuple] = ElementNeighbors(ne,ebN);
-                    }
-                }
-              //add all the edges of this element
-              for (int nNL=0,edN=0;nNL < simplexDim ; nNL++)
-                for(int nNR=nNL+1;nNR < simplexDim;nNR++,edN++)
-                  {
-                    int nodes[2] = { element_nodes_new[nNL],
-                                     element_nodes_new[nNR]};
-                    NodeTuple<2> nodeTuple(nodes);
-                    edgeElementsMap[nodeTuple].insert(pair<int,int>(ne,edN));
-                  }
-              //add all the nodes to the node star
-              int nN_star_new_subdomain = nN_star_new - nodeOffsets_new[rank];
-              nodeElementsStar[nN_star_new_subdomain].insert(ne);
-              for (int jv = 0; jv < simplexDim; jv++)
-                {
-                  if (iv != jv)
-                    {
-                      int nN_point_new = element_nodes_new[jv];
-                      nodeStarNew[nN_star_new_subdomain].insert(nN_point_new);
-                    }
-                }
-            }
-          if (inSubdomain)
-            {
-              elementNodesArrayMap[ne] = element_nodes_new;
-            }
-        }
-      if (elementNodesArrayMap.find(ne) != elementNodesArrayMap.end())//this element contains a node owned by this subdomain
-        {
-          if (nodeTuple.nodes[1] >= nodeOffsets_new[rank] && nodeTuple.nodes[1] < nodeOffsets_new[rank+1])
-            elements_subdomain_owned.insert(ne);
-          if (hasElementMarkers > 0)
-            {
-              elementFile2 >> elementId_double;
-              elementId = static_cast<long int>(elementId_double);
-              elementMaterialTypesMap[ne] = elementId;
-            }
+          elementFile2 >> elementId_double;
+          elementId_collection.push_back(static_cast<double>(elementId_double));
         }
       elementFile2 >> eatline;
+
+      if (node_collection.size() >= (size_t)nNodes_collection_max || ie == nElements_global-1)
+        {
+          //one point-selection read for the whole chunk
+          valarray<hsize_t> node_collection_array(node_collection.size());
+          valarray<int> nodes_old2new_subset(node_collection.size());
+          int i_nc=0;
+          for (auto nvp=node_collection.begin();nvp!=node_collection.end();nvp++,i_nc++)
+            node_collection_array[i_nc] = static_cast<hsize_t>(*nvp);
+          hid_t dset_id_c = H5Dopen1(file_id,"/nodeNumbering_old2new");
+          if (dset_id_c < 0)
+            {
+              H5Eprint2(H5E_DEFAULT, stderr);
+              SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_READ,
+                          "could not open /nodeNumbering_old2new");
+            }
+          hid_t fspace_c = H5Dget_space(dset_id_c);
+          herr_t st_c = H5Sselect_elements(fspace_c, H5S_SELECT_SET,
+                                           node_collection.size(), &node_collection_array[0]);
+          hsize_t dims_c[] = {static_cast<hsize_t>(node_collection.size())};
+          hid_t mspace_c = H5Screate_simple(1, dims_c, NULL);
+          herr_t rd_c = H5Dread(dset_id_c, H5T_NATIVE_INT, mspace_c, fspace_c,
+                                H5P_DEFAULT, &nodes_old2new_subset[0]);
+          if (st_c < 0 || rd_c < 0)
+            {
+              H5Eprint2(H5E_DEFAULT, stderr);
+              SETERRABORT(PROTEUS_COMM_WORLD, PETSC_ERR_FILE_READ,
+                          "could not read /nodeNumbering_old2new for this chunk");
+            }
+          H5Sclose(mspace_c); H5Sclose(fspace_c); H5Dclose(dset_id_c);
+          map<int,int> nodes_old2new_subset_map;
+          for (size_t i=0;i<node_collection.size();i++)
+            nodes_old2new_subset_map[node_collection_array[i]] = nodes_old2new_subset[i];
+
+          for (int eN_c = eN_c_start; eN_c <= ie; eN_c++)
+            {
+              const int ne = elements_collection[eN_c-eN_c_start];
+              long int elementId(0);
+              for (int iv = 0; iv < simplexDim; iv++)
+                {
+                  element_nodes_old[iv] = element_old_nodes_collection[eN_c-eN_c_start][iv];
+                  element_nodes_new[iv] = nodes_old2new_subset_map[element_nodes_old[iv]];
+                  element_nodes_new_array[iv] = element_nodes_new[iv];
+                }
+            NodeTuple<simplexDim> nodeTuple(element_nodes_new_array);
+            for (int iv = 0; iv < simplexDim; iv++)
+              {
+                int nN_star_new = element_nodes_new[iv];
+                bool inSubdomain=false;
+                if (nN_star_new >= nodeOffsets_new[rank] && nN_star_new < nodeOffsets_new[rank+1])
+                  {
+                    inSubdomain = true;
+                    //add all the element boundaries of this element
+                    for (int ebN=0;ebN < simplexDim ; ebN++)
+                      {
+                        int nodes[simplexDim-1] = { element_nodes_new[(ebN+1) % simplexDim],
+                                         element_nodes_new[(ebN+2) % simplexDim]};
+                        NodeTuple<simplexDim-1> nodeTuple(nodes);
+                        if(elementBoundaryElementsMap.find(nodeTuple) != elementBoundaryElementsMap.end())
+                          {
+                            if (elementBoundaryElementsMap[nodeTuple].right == -1 && ne != elementBoundaryElementsMap[nodeTuple].left)
+                              {
+                                elementBoundaryElementsMap[nodeTuple].right=ne;
+                                elementBoundaryElementsMap[nodeTuple].right_ebN_element=ebN;
+                              }
+                          }
+                        else
+                          {
+                            elementBoundaryElementsMap[nodeTuple] = ElementNeighbors(ne,ebN);
+                          }
+                      }
+                    //add all the edges of this element
+                    for (int nNL=0,edN=0;nNL < simplexDim ; nNL++)
+                      for(int nNR=nNL+1;nNR < simplexDim;nNR++,edN++)
+                        {
+                          int nodes[2] = { element_nodes_new[nNL],
+                                           element_nodes_new[nNR]};
+                          NodeTuple<2> nodeTuple(nodes);
+                          edgeElementsMap[nodeTuple].insert(pair<int,int>(ne,edN));
+                        }
+                    //add all the nodes to the node star
+                    int nN_star_new_subdomain = nN_star_new - nodeOffsets_new[rank];
+                    nodeElementsStar[nN_star_new_subdomain].insert(ne);
+                    for (int jv = 0; jv < simplexDim; jv++)
+                      {
+                        if (iv != jv)
+                          {
+                            int nN_point_new = element_nodes_new[jv];
+                            nodeStarNew[nN_star_new_subdomain].insert(nN_point_new);
+                          }
+                      }
+                  }
+                if (inSubdomain)
+                  {
+                    elementNodesArrayMap[ne] = element_nodes_new;
+                    //the later .poly/.edge readers need old->new for exactly these
+                    //nodes, which is what replaces the global ISAllGather
+                    for (int jv = 0; jv < simplexDim; jv++)
+                      nodes_old2new_subdomain_map[element_nodes_old[jv]] = element_nodes_new[jv];
+                  }
+              }
+            if (elementNodesArrayMap.find(ne) != elementNodesArrayMap.end())//this element contains a node owned by this subdomain
+              {
+                if (nodeTuple.nodes[1] >= nodeOffsets_new[rank] && nodeTuple.nodes[1] < nodeOffsets_new[rank+1])
+                  elements_subdomain_owned.insert(ne);
+                if (hasElementMarkers > 0)
+                  {
+                    elementId = static_cast<long int>(elementId_collection[eN_c-eN_c_start]);
+                    elementMaterialTypesMap[ne] = elementId;
+                  }
+              }
+            }
+          eN_c_start = ie+1;
+          node_collection.clear();
+          elements_collection.clear();
+          elementId_collection.clear();
+          element_old_nodes_collection.clear();
+        }
     }
+  H5Fclose(file_id);
   elementFile2.close();
   int nElements_owned_subdomain(elements_subdomain_owned.size()),
     nElements_owned_new=0;
@@ -3997,13 +4372,17 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
       assert(0 <= neb && neb < nElementBoundaries_global && elementBoundaryFile.good());
       //grab the element boundaries for the node if the node is owned by the subdomain
       //this will miss the element boundaries on the "outside boundary" of the star, which will grab later
-      int nn0_new = nodeNumbering_global_old2new[nn0];
+      int nn0_new = -1;
+      if (nodes_old2new_subdomain_map.find(nn0) != nodes_old2new_subdomain_map.end())
+        nn0_new = nodes_old2new_subdomain_map[nn0];
       if (nn0_new >= nodeOffsets_new[rank] && nn0_new < nodeOffsets_new[rank+1])
         {
           nodeElementBoundariesStar[nn0_new-nodeOffsets_new[rank]].insert(neb);
           supportedElementBoundaries.insert(neb);
         }
-      int nn1_new = nodeNumbering_global_old2new[nn1];
+      int nn1_new = -1;
+      if (nodes_old2new_subdomain_map.find(nn1) != nodes_old2new_subdomain_map.end())
+        nn1_new = nodes_old2new_subdomain_map[nn1];
       if (nn1_new >= nodeOffsets_new[rank] && nn1_new < nodeOffsets_new[rank+1])
         {
           nodeElementBoundariesStar[nn1_new-nodeOffsets_new[rank]].insert(neb);
@@ -4178,13 +4557,17 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
       nn0 -= indexBase;
       nn1 -= indexBase;
       assert(0 <= ned && ned < nEdges_global && edgeFile.good());
-      int nn0_new = nodeNumbering_global_old2new[nn0];
+      int nn0_new = -1;
+      if (nodes_old2new_subdomain_map.find(nn0) != nodes_old2new_subdomain_map.end())
+        nn0_new = nodes_old2new_subdomain_map[nn0];
       if (nn0_new >= nodeOffsets_new[rank] && nn0_new < nodeOffsets_new[rank+1])
         {
           nodeEdgesStar.at(nn0_new-nodeOffsets_new[rank]).insert(ned);
           supportedEdges.insert(ned);
         }
-      int nn1_new = nodeNumbering_global_old2new[nn1];
+      int nn1_new = -1;
+      if (nodes_old2new_subdomain_map.find(nn1) != nodes_old2new_subdomain_map.end())
+        nn1_new = nodes_old2new_subdomain_map[nn1];
       if (nn1_new >= nodeOffsets_new[rank] && nn1_new < nodeOffsets_new[rank+1])
         {
           nodeEdgesStar.at(nn1_new-nodeOffsets_new[rank]).insert(ned);
@@ -4427,7 +4810,9 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
         vertexFile >> nodeId;
       nv -= indexBase;
       assert(0 <= nv && nv < nNodes_global && vertexFile.good());
-      int nN_global_new = nodeNumbering_global_old2new[nv];
+      int nN_global_new = -1;
+      if (nodes_old2new_subdomain_map.find(nv) != nodes_old2new_subdomain_map.end())
+        nN_global_new = nodes_old2new_subdomain_map[nv];
       //local
       if (nN_global_new >= nodeOffsets_new[rank] && nN_global_new < nodeOffsets_new[rank+1])
         {
@@ -4455,10 +4840,8 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
       vertexFile >> eatline;
     }//end iv
   vertexFile.close();
-  ISRestoreIndices(nodeNumberingIS_global_old2new,&nodeNumbering_global_old2new);
   ISDestroy(&nodePartitioningIS_new);
   ISDestroy(&nodeNumberingIS_subdomain_old2new);
-  ISDestroy(&nodeNumberingIS_global_old2new);
   //done with vertex file (and all file reads at this point)
   //ierr = enforceMemoryLimit(PROTEUS_COMM_WORLD, rank, max_rss_gb,"Done reading vertices");CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
 
@@ -4853,7 +5236,8 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
   H5Sclose(filespace);
   H5Sclose(memspace);
   H5Pclose(plist_id);
-  H5Fclose(file_id);
+  //(the mappings file is closed right after the numbering write and again
+  //after the chunked read loop; nothing is open here any more)
   /* out of core */
   PetscLogEventEnd(build_subdomains_cleanup_event,0,0,0,0);
   PetscLogStagePop();
