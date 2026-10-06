@@ -62,7 +62,7 @@ class TestStokes(proteus.test_utils.TestTools.SimulationTest):
                     #'rdomain.node',
                     #'rdomain.poly',
                     'drivenCavityStokesTrial.h5',
-                    'drivenCavityStokesTrial.xmf']
+                    'drivenCavityStokesTrial.xmf', 'drivenCavityStokesTrial.ymf']
         self.remove_files(FileList)
 
     def _setPETSc(self):

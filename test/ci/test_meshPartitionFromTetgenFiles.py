@@ -38,9 +38,9 @@ class TestPoissonTetgen(object):
                     'meshNoVessel.face',
                     'meshNoVessel.node',
                     'meshNoVessel.poly',
-                    'poisson_3d_tetgen_c0p1pe1.xmf',
+                    'poisson_3d_tetgen_c0p1pe1.xmf', 'poisson_3d_tetgen_c0p1pe1.ymf',
                     'poisson_3d_tetgen_c0p1pe1.h5',
-                    'poisson_3d_tetgen_c0p2pe1.xmf',
+                    'poisson_3d_tetgen_c0p2pe1.xmf', 'poisson_3d_tetgen_c0p2pe1.ymf',
                     'poisson_3d_tetgen_c0p2pe1.h5' ]
         for file in FileList:
             if os.path.isfile(file):

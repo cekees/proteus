@@ -26,7 +26,7 @@ class TestMassConstruction2D(proteus.test_utils.TestTools.SimulationTest):
         
     def teardown_method(self):
         """ Tear down function """
-        FileList = ['Mass_matrix_test.xmf',
+        FileList = ['Mass_matrix_test.xmf', 'Mass_matrix_test.ymf',
                     'Mass_matrix_test.h5',
                     'reference_triangle_2d.ele',
                     'reference_triangle_2d.node',

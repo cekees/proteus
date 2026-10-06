@@ -11,7 +11,7 @@ class TestMoveMeshMonitor(unittest.TestCase):
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = ['movemesh_monitor.xmf',
+        FileList = ['movemesh_monitor.xmf', 'movemesh_monitor.ymf',
                     'movemesh_monitor.h5',
                     'mesh.ele',
                     'mesh.edge',

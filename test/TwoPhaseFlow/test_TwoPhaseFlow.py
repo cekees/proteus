@@ -22,11 +22,11 @@ class TestTwoPhaseFlow(object):
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = ['marin.h5','marin.xmf'
-                    'moses.h5','moses.xmf'
-                    'damBreak.h5','damBreak.xmf'
-                    'TwoDimBucklingFlow.h5','TwoDimBucklingFlow.xmf'
-                    'filling.h5','filling.xmf'
+        FileList = ['marin.h5','marin.xmf', 'marin.ymf',
+                    'moses.h5','moses.xmf', 'moses.ymf',
+                    'damBreak.h5','damBreak.xmf', 'damBreak.ymf',
+                    'TwoDimBucklingFlow.h5','TwoDimBucklingFlow.xmf', 'TwoDimBucklingFlow.ymf',
+                    'filling.h5','filling.xmf', 'filling.ymf',
                     ]
         for file in FileList:
             if os.path.isfile(file):

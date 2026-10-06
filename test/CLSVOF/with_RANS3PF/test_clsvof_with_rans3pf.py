@@ -57,8 +57,8 @@ class TestCLSVOF_with_RANS3PF(object):
 
     def teardown_method(self,method):
         pass
-        FileList = ['multiphase_2D_falling_bubble.h5','multiphase_2D_falling_bubble.xmf',
-                    'multiphase_3D_falling_bubble.h5','multiphase_3D_falling_bubble.xmf',
+        FileList = ['multiphase_2D_falling_bubble.h5','multiphase_2D_falling_bubble.xmf', 'multiphase_2D_falling_bubble.ymf',
+                    'multiphase_3D_falling_bubble.h5','multiphase_3D_falling_bubble.xmf', 'multiphase_3D_falling_bubble.ymf',
                     ]
         for file in FileList:
             if os.path.isfile(file):

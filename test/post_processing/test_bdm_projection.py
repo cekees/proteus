@@ -42,7 +42,7 @@ class TestBDM2Reference1(object):
 
     def teardown_method(self,method):
         """Tear down the test problem. """
-        filenames = ['poisson_bdm1_test.h5', 'poisson_bdm1_test.xmf','reference_triangle.ele',
+        filenames = ['poisson_bdm1_test.h5', 'poisson_bdm1_test.xmf', 'poisson_bdm1_test.ymf','reference_triangle.ele',
                      'reference_triangle.node', 'reference_triangle.poly','proteus.log']
         for file in filenames:
             if os.path.exists(file):

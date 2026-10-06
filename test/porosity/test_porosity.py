@@ -6,7 +6,7 @@ import pytest
 
 def teardown_method():
     """ Tear down function """
-    FileList = ['sloshing.xmf',
+    FileList = ['sloshing.xmf', 'sloshing.ymf',
                 'sloshing.h5',
                 'forceHistory_p.txt',
                 'forceHistory_v.txt',

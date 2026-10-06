@@ -28,7 +28,7 @@ class Test_rans2p(object):
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = [ "cylinder_rans2p_T1_rans2p.h5","cylinder_rans2p_T1_rans2p.xmf"
+        FileList = [ "cylinder_rans2p_T1_rans2p.h5","cylinder_rans2p_T1_rans2p.xmf", "cylinder_rans2p_T1_rans2p.ymf"
                     ]
         for file in FileList:
             if os.path.isfile(file):

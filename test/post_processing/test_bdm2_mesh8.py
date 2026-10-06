@@ -44,7 +44,7 @@ class TestBDM2Mesh8(object):
         self.scriptdir = os.path.dirname(__file__)
         
     def teardown_method(self,method):
-        filenames = ['poisson_bdm1_test.h5', 'poisson_bdm1_test.xmf','reference_triangle.ele',
+        filenames = ['poisson_bdm1_test.h5', 'poisson_bdm1_test.xmf', 'poisson_bdm1_test.ymf','reference_triangle.ele',
                      'reference_triangle.node', 'reference_triangle.poly','proteus.log',
                      'blockDomain.poly']
         for file in filenames:

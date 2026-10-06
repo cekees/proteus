@@ -15,9 +15,9 @@ class TestAddedMass3D(unittest.TestCase):
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = ['addedmass2D.xmf',
+        FileList = ['addedmass2D.xmf', 'addedmass2D.ymf',
                     'addedmass2D.h5',
-                    'addedmass3D.xmf',
+                    'addedmass3D.xmf', 'addedmass3D.ymf',
                     'addedmass3D.h5',
                     'record_rectangle1.csv',
                     'record_rectangle1_Aij.csv',

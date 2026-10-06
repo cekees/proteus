@@ -35,7 +35,7 @@ def clean_up_directory():
                 'wettedAreaHistory',
                 'twp_navier_stokes_cavity_2d']
     mesh_ext = ['asy', 'edge', 'ele', 'neig', 'node',
-                'ply', 'poly', 'txt', 'xmf', 'h5', 'log']
+                'ply', 'poly', 'txt', 'xmf','ymf', 'h5', 'log']
     TestTools.removeFiles(prefix_ext_tuple=(FileList,mesh_ext))
 
 @pytest.fixture()

@@ -27,7 +27,7 @@ class Test_sbm_cylinder2D_on_mesh3D(object):
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = ['cylinder_sbm_mesh3D_T001_P1_sbm_3Dmesh.h5', 'cylinder_sbm_mesh3D_T001_P1_sbm_3Dmesh.xmf',
+        FileList = ['cylinder_sbm_mesh3D_T001_P1_sbm_3Dmesh.h5', 'cylinder_sbm_mesh3D_T001_P1_sbm_3Dmesh.xmf', 'cylinder_sbm_mesh3D_T001_P1_sbm_3Dmesh.ymf',
                    ]
         for file in FileList:
             if os.path.isfile(file):

@@ -29,7 +29,7 @@ class Test_ibm():
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = ['cylinder_ibm_T1_ibm_3D_rans2p.h5','cylinder_ibm_T1_ibm_3D_rans2p.xmf'
+        FileList = ['cylinder_ibm_T1_ibm_3D_rans2p.h5','cylinder_ibm_T1_ibm_3D_rans2p.xmf', 'cylinder_ibm_T1_ibm_3D_rans2p.ymf'
                    ]
         for file in FileList:
             if os.path.isfile(file):

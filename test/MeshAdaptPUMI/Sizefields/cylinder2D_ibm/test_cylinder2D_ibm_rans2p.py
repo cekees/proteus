@@ -48,7 +48,7 @@ class Test_Adapt_ibm():
                     #'Reconstructed.dmg', #can't remove since teardown is called after each test
                     #'Reconstructed0.smb',
                     'proteus.log',
-                    'cylinder.xmf',
+                    'cylinder.xmf', 'cylinder.ymf',
                     'cylinder.h5',
                     'finalMesh0.smb',
                     'particle_forceHistory.txt',

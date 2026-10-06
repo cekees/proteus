@@ -30,7 +30,7 @@ class Test_sbm(object):
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = ['cylinder_sbm_T1_sbm_rans3p.xmf','cylinder_sbm_T1_sbm_rans3p.h5'
+        FileList = ['cylinder_sbm_T1_sbm_rans3p.xmf', 'cylinder_sbm_T1_sbm_rans3p.ymf','cylinder_sbm_T1_sbm_rans3p.h5'
                     ]
         for file in FileList:
             if os.path.isfile(file):
