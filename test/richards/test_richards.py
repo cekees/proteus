@@ -39,7 +39,6 @@ whatever the code does today.
 
 import csv
 import os
-import sys
 from pathlib import Path
 
 import h5py
@@ -199,37 +198,22 @@ def _load_case(case, scheme):
     """Load the physics/numerics decks for one benchmark at one scheme."""
     case_dir = str(CASE_DIRS[case])
 
-    for module_name in (P_MODULE, N_MODULE):
-        sys.modules.pop(module_name, None)
-
-    saved_path = sys.path[:]
     # The decks call Context.Options at import, which reads this module global --
-    # the same channel parun's -C writes.  defaults.load_source re-executes the
-    # deck on every call and never caches it, so setting the string immediately
-    # before the load is enough; no reload() and no ordering coupling between
-    # parameterized cases.
+    # the same channel parun's -C writes. Every load executes the decks afresh,
+    # so setting the string immediately before the load is enough.
+    #
+    # The numerics deck does "from re_vgm_sand_10m_1d_p import *". The loaders
+    # load the two as one model set, so that import gets the physics module
+    # just loaded from case_dir -- not test/richards's own opts-driven
+    # re_vgm_sand_10m_1d_p.py, and not a second execution of the deck -- and
+    # the numerics reuse the coefficients built at the scheme selected here.
     Context.contextOptionsString = SCHEMES[scheme]
     try:
-        # load_physics appends the deck directory to the END of sys.path and then
-        # drops it again with sys.path.remove(), which deletes the FIRST
-        # occurrence -- ours -- so the insert has to be repeated per loader call.
-        sys.path.insert(0, case_dir)
         physics = defaults.load_physics(P_MODULE, case_dir)
-
-        # The numerics deck does "from re_vgm_sand_10m_1d_p import *".  Left to
-        # the import machinery that resolves to test/richards's own opts-driven
-        # re_vgm_sand_10m_1d_p.py (pytest puts the test's directory on the front
-        # of sys.path), which does not define `galerkin` and describes a
-        # different column.  Publishing the physics we just loaded under the deck
-        # name makes the numerics deck read back exactly this case -- and reuse
-        # the coefficients object built at the scheme we just selected.
-        sys.modules[P_MODULE] = physics
-        sys.path.insert(0, case_dir)
         numerics = defaults.load_numerics(N_MODULE, case_dir)
     finally:
         Context.contextOptionsString = None
-        sys.path[:] = saved_path
-        sys.modules.pop(P_MODULE, None)
+    assert numerics.coefficients is physics.coefficients
 
     # The deck is the authority on what it built; if a scheme override silently
     # failed to apply, every later assertion would compare the wrong scheme.

@@ -243,6 +243,14 @@ linearSolverConvergenceTest = 'r' #r,its,r-true for true residual
 #we can add this if desired for setting solver specific options in petsc
 linear_solver_options_prefix= None #
 
+#: PETSc options for this model's solvers, as data: {"ksp_type": "gmres", ...},
+#: names relative to linear_solver_options_prefix (no leading dash). NS_base
+#: sets them while it builds the solvers and while it solves, and then puts
+#: back what the options database held before, so one model's options never
+#: leak into another run in the same process -- unlike PETSc.Options()
+#: calls at import time, which write to a process-wide singleton.
+petscOptions = None
+
 bcsTimeDependent = True
 """Allow optimizations if boundary conditions are not time dependent"""
 
