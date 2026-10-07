@@ -20,9 +20,68 @@ from .Archiver import ArchiveFlags
 from . import Domain
 from .MeshAdaptPUMI import Checkpoint,AdaptHelper
 from .Profiling import logEvent
+import contextlib
+import functools
 
 # Global to control whether the kernel starting is active.
 embed_ok = True
+
+
+def _numerics_petsc_options(nList):
+    """{full option name: value} from each numerics' petscOptions."""
+    options = {}
+    for n in nList:
+        given = getattr(n, "petscOptions", None)
+        if not given:
+            continue
+        prefix = getattr(n, "linear_solver_options_prefix", None) or ""
+        for key, value in given.items():
+            options[prefix + str(key).lstrip("-")] = value
+    return options
+
+
+@contextlib.contextmanager
+def _petsc_options_scope(options):
+    """Set ``options`` in PETSc's options database, then restore it.
+
+    What the database held before (from parun -P, say) is put back, and
+    what was not there is removed, so the options of one NS_base do not
+    outlive it.
+    """
+    if not options:
+        yield
+        return
+    from petsc4py import PETSc
+    database = PETSc.Options()
+    previous = dict((k, database.getString(k) if database.hasName(k) else None)
+                    for k in options)
+    for k, v in options.items():
+        database.setValue(k, v)
+    try:
+        yield
+    finally:
+        for k, v in previous.items():
+            if v is None:
+                database.delValue(k)
+            else:
+                database.setValue(k, v)
+
+
+def _with_numerics_petsc_options(method):
+    """Run an NS_base method with its numerics' petscOptions set.
+
+    PETSc reads them when the solvers are built (KSP setFromOptions, in
+    __init__) and when they are set up (PC and factorization options, on
+    the first solve in calculateSolution), so both run inside the scope.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        nList = getattr(self, "nList", None)
+        if nList is None:                      # __init__(so, pList, nList, ...)
+            nList = kwargs.get("nList", args[2] if len(args) > 2 else [])
+        with _petsc_options_scope(_numerics_petsc_options(nList)):
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class NS_base(object):  # (HasTraits):
@@ -58,6 +117,7 @@ class NS_base(object):  # (HasTraits):
        }
     """
 
+    @_with_numerics_petsc_options
     def __init__(self,so,pList,nList,sList,opts,simFlagsList=None,TwoPhaseFlow=False):
         from . import Comm
         comm=Comm.get()
@@ -426,6 +486,7 @@ class NS_base(object):  # (HasTraits):
 
     ## compute the solution
 
+    @_with_numerics_petsc_options
     def calculateSolution(self,runName):
         """ Cacluate the PDEs numerical solution.
 
