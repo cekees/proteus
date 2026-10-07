@@ -1,7 +1,10 @@
 """Test-suite wide fixtures."""
+import os
 import sys
 
 import pytest
+
+_TEST_ROOT = os.path.dirname(os.path.abspath(__file__)) + os.sep
 
 
 @pytest.fixture(autouse=True)
@@ -35,14 +38,14 @@ def _restore_petsc_options():
 
 @pytest.fixture(autouse=True)
 def _restore_proteus_process_state():
-    """Put proteus.iproteus.opts, the default_p/n/so modules, proteus.Context and
-    the working directory back after each test.
+    """Put proteus.iproteus.opts, the default_p/n/so modules, proteus.Context,
+    sys.modules (for modules under test/) and the working directory back after
+    each test.
 
     opts is a process-wide object that tests import by reference and set
     (opts.hotStart, opts.dataDir, ...); a value one test sets otherwise holds
     for every test after it.
     """
-    import os
     cwd = os.getcwd()
     module = sys.modules.get("proteus.iproteus")
     saved = dict(vars(module.opts)) if module is not None else None
@@ -55,7 +58,23 @@ def _restore_proteus_process_state():
     context = sys.modules.get("proteus.Context")
     saved_context = ((context.context, context.contextOptionsString)
                      if context is not None else None)
+    modules_before = set(sys.modules)
     yield
+    # Model modules a test imports by bare name from its own directory
+    # (twp_navier_stokes_p, cylinder, ...) share names across test directories;
+    # left in sys.modules, the next test that imports that name from its own
+    # directory gets this one instead (cylinder2D/ibm_rans2p got
+    # conforming_rans3p's twp_navier_stokes_p: no RANS2P). Such modules
+    # imported during the test go again. Package-relative ones
+    # (HotStart_3P.NS_hotstart_so) have unique names and stay: tests keep and
+    # reload them.
+    for name in set(sys.modules) - modules_before:
+        if "." in name:
+            continue
+        added = sys.modules.get(name)
+        filename = getattr(added, "__file__", None) or ""
+        if os.path.abspath(filename).startswith(_TEST_ROOT):
+            del sys.modules[name]
     if saved is not None:
         vars(module.opts).clear()
         vars(module.opts).update(saved)
