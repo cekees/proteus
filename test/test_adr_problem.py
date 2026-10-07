@@ -230,3 +230,90 @@ def test_emitted_pn_files_reproduce_the_output_bitwise_under_parun(poisson_spec,
     recorded = domain_arrays(output["approximation"], tmp_path)
     assert set(mine) == set(recorded)
     assert all(numpy.array_equal(mine[k], recorded[k]) for k in recorded)
+
+
+@pytest.fixture
+def kovasznay_spec(tmp_path):
+    """Kovasznay flow, Taylor-Hood, velocity given all round: p up to a constant."""
+    pytest.importorskip("ymf.symbolic")
+    path = tmp_path / "kovasznay.ymf"
+    path.write_text('''
+Problem:
+  name: "Kovasznay"
+  physical_model: {provenance: human_specified}
+  strong_form:
+    provenance: human_specified
+    unknowns: [{name: v, rank: 1}, p]
+    equation_formulation: "Navier-Stokes"
+    equations:
+      - "∇·(ρ v⊗v) − μΔv + ∇p = 0  in Ω"
+      - "∇·v = 0  in Ω"
+    domain: "Ω = [-0.5, 1.0] × [-0.5, 1.5]"
+    boundary_regions: [{name: outer, geometry: "∂Ω"}]
+    boundary_conditions:
+      - {region: outer, variable: v, type: dirichlet,
+         formula: "(1 - exp(λx) cos(2πy), λ/(2π) exp(λx) sin(2πy))"}
+    coefficients:
+      ρ: {value: 1.0}
+      μ: {value: 0.025}
+      λ: "ρ/(2μ) - sqrt(ρ²/(4μ²) + 4π²)"
+  weak_forms:
+    - label: mixed
+      provenance: human_specified
+      derivation: "integrate by parts"
+      solution_spaces: {trial: "H1² × L2", test: "H1_0² × L2"}
+      bilinear: "..."
+      linear: "..."
+      stabilization_method: none
+solution_paths:
+  analytical:
+    - name: exact
+      provenance: human_specified
+      method: closed_form
+      solution:
+        formula: |-
+          v = (1 - exp(λx) cos(2πy), λ/(2π) exp(λx) sin(2πy))
+          p = (1 - exp(2λx))/2
+  discretizations:
+    - name: taylor_hood
+      provenance: human_specified
+      from_weak_form: mixed
+      finite_element: {velocity: {family: CG, order: 2}, pressure: {family: CG, order: 1}}
+      mesh: {cells: [4, 8]}
+      solver: {type: nonlinear}
+''', encoding="utf-8")
+    return path
+
+
+def test_a_pressure_up_to_a_constant_is_solved_in_the_null_space(kovasznay_spec, tmp_path):
+    import numpy
+    out = ymf_run(kovasznay_spec, "--outdir", tmp_path, "--emit-pn")
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "L2(p)*" in out.stdout
+    table = rows(out.stdout)
+    assert 2.5 < float(table[1][2]) and 1.5 < float(table[1][6])      # v_0 P2, p P1 rates
+    from ymf import closure
+    from ymf.archive import domain_arrays, read_ymf
+    archive = tmp_path / "kovasznay.archive.ymf"
+    _, outputs, _ = closure.load(archive)
+    output = outputs[[k for k in outputs if "/cells=4/" in k][0]]
+    assert output["verification"]["modulo_constants"] == ["p"]
+    discrete = output["transformations"]["adr_to_discrete"]
+    assert discrete["null_space"] == {"constant": ["p"]}
+    assert discrete["linear_solver"] == "KSP_petsc4py"
+    assert output["transformations"]["solve"]["by"]["threads"]["OMP_NUM_THREADS"] == "1"
+    check = ymf_run(archive, "--check")
+    assert check.returncode == 0 and check.stdout.count("reproduced, bitwise") == 2, check.stdout[-2000:]
+    # and the emitted files reproduce it under parun, single-threaded
+    stem = closure.file_stem("kovasznay", [k for k in outputs if "/cells=4/" in k][0])
+    work = tmp_path / "pn"
+    work.mkdir()
+    for suffix in ("_p", "_n", "_so"):
+        (work / (stem + suffix + ".py")).write_text((tmp_path / (stem + suffix + ".py")).read_text())
+    env = dict(os.environ, OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", VECLIB_MAXIMUM_THREADS="1")
+    parun = os.path.join(os.path.dirname(sys.executable), "parun")
+    run = subprocess.run([parun, stem + "_so.py"], cwd=work, capture_output=True, text=True, env=env)
+    assert run.returncode == 0, run.stdout[-2000:] + run.stderr[-2000:]
+    mine = domain_arrays(read_ymf(work / (stem + "_pn.ymf"))[0], work)
+    recorded = domain_arrays(output["approximation"], tmp_path)
+    assert all(numpy.array_equal(mine[k], recorded[k]) for k in recorded)

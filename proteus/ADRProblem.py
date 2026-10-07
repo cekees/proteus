@@ -254,6 +254,12 @@ def physics(problem, name):
     p.L = tuple(u - l for u, l in zip(upper, lower)) + (1.0,) * (3 - dim)
     p.x0 = tuple(lower) + (0.0,) * (3 - dim)
     p.coefficients = ADRCoefficients(adr)
+    constant = problem.get("up_to_constant") or []
+    if constant:
+        # determined only up to a constant: the linear solver keeps it in
+        # the null space of the operator (see numerics)
+        p.coefficients.nullSpace = "ConstantComponentsNullSpace"
+        p.coefficients.nullSpaceComponents = [names.index(c) for c in constant]
 
     tol = 1e-8 * max(p.L[:dim])
     by_component = {}
@@ -339,6 +345,19 @@ def velocity_pressure(problem):
     return vectors[0], scalars[0]
 
 
+#: PETSc options for a singular operator (a constant in its null space)
+NULL_SPACE_SOLVER = {"ksp_type": "gmres", "pc_type": "lu",
+                     "pc_factor_mat_solver_type": "mumps", "mat_mumps_icntl_24": "1",
+                     "ksp_rtol": "1e-14", "ksp_atol": "1e-14", "ksp_max_it": "50"}
+
+
+def _set_petsc_options(prefix, options):
+    from petsc4py import PETSc
+    database = PETSc.Options()
+    for key, value in options.items():
+        database.setValue(prefix + key, value)
+
+
 def numerics(problem, spaces, cells, time=None, quadrature_order=None,
              stabilization="none", coefficients=None, levels=1,
              tolerance=None, max_iterations=None):
@@ -420,6 +439,20 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None,
     n.matrix = LinearAlgebraTools.SparseMatrix
     n.multilevelLinearSolver = LinearSolvers.LU
     n.levelLinearSolver = LinearSolvers.LU
+    if problem.get("up_to_constant"):
+        # A singular operator: LU through PETSc (MUMPS, which detects the
+        # null pivot) inside GMRES, which removes the null space. The
+        # petsc4py solver wants the Dirichlet DOFs kept in the system with
+        # their rows replaced, not eliminated; setup() sets that flux.
+        if any(f == "DG" for f, _ in spaces.values()):
+            raise ValueError("a null space with DG spaces is not wired up")
+        n.multilevelLinearSolver = n.levelLinearSolver = LinearSolvers.KSP_petsc4py
+        n.linearSmoother = None
+        n.linear_solver_options_prefix = "adr_"
+        n.linTolFac = 0.0
+        n.l_atol_res = 1.0e-14
+        n.petsc_options = dict(NULL_SPACE_SOLVER)
+        _set_petsc_options(n.linear_solver_options_prefix, n.petsc_options)
     return n
 
 
@@ -446,6 +479,11 @@ def describe(problem, n):
                              "max_iterations": int(n.maxNonlinearIts)},
         "linear_solver": _name(n.levelLinearSolver),
     }
+    if getattr(n, "petsc_options", None):
+        out["petsc_options"] = {n.linear_solver_options_prefix + k: v
+                                for k, v in n.petsc_options.items()}
+    if problem.get("up_to_constant"):
+        out["null_space"] = {"constant": list(problem["up_to_constant"])}
     if getattr(n, "subgridError", None) is not None:
         out["subgrid_error"] = _name(n.subgridError)
     if getattr(n, "numericalFluxType", None) is not None:
@@ -456,7 +494,12 @@ def describe(problem, n):
 
 
 def l2_errors(model, problem, t):
-    """L2 error of each component with an exact solution, by quadrature."""
+    """L2 error of each component with an exact solution, by quadrature.
+
+    For a component the problem determines only up to a constant
+    (``problem["up_to_constant"]``), the error modulo constants: its mean
+    is removed first.
+    """
     names = problem["adr"]["components"]
     dim = problem["adr"]["dim"]
     q = model.q
@@ -464,7 +507,11 @@ def l2_errors(model, problem, t):
     for name, code in problem.get("exact", {}).items():
         i = names.index(name)
         exact = _Field(code, dim).uOfXT(q['x'], t)
-        errors[name] = float(numpy.sqrt(numpy.sum((q[('u', i)] - exact) ** 2 * q[('dV_u', i)])))
+        error = q[('u', i)] - exact
+        if name in (problem.get("up_to_constant") or []):
+            # modulo constants: the problem does not determine one
+            error = error - numpy.sum(error * q[('dV_u', i)]) / numpy.sum(q[('dV_u', i)])
+        errors[name] = float(numpy.sqrt(numpy.sum(error ** 2 * q[('dV_u', i)])))
     return errors
 
 
@@ -487,6 +534,9 @@ def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
                  tolerance=tolerance, max_iterations=max_iterations)
     if problem.get("periodic"):
         n.periodicDirichletConditions = p.periodicDirichletConditions
+    if problem.get("up_to_constant"):
+        n.numericalFluxType = NumericalFlux.StrongDirichletFactory(p.fluxBoundaryConditions,
+                                                                   keepDOFs=True)
     if time is None:
         system = {"tnList": [0.0, 1.0]}
     else:
@@ -580,6 +630,8 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
     def doc(what):
         return ['"""%s for %s.' % (what, name), ""] + about + [
             "Written by proteus.ADRProblem.emit_pn; run with parun %s_so.py." % name,
+            "For bitwise the same result, run it as the original was: one thread,",
+            "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 parun ...",
             "Components: %s." % ", ".join("%d = %s" % (i, nm) for i, nm in enumerate(names)),
             '"""']
 
@@ -621,6 +673,12 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
             P += ["        # added by %s: equation %d couples to %s"
                   % (type(n.subgridError).__name__, i, ", ".join(names[k] for k in added)),
                   "        self.stencil[%d].update(%r)" % (i, added)]
+    if getattr(c, "nullSpaceComponents", None):
+        P += ["        # %s: determined only up to a constant, which the linear solver"
+              % ", ".join(names[k] for k in c.nullSpaceComponents),
+              "        # keeps in the null space of the operator",
+              "        self.nullSpace = %r" % c.nullSpace,
+              "        self.nullSpaceComponents = %r" % list(c.nullSpaceComponents)]
     if getattr(c, "vectorComponents", None) is not None:
         P += ["        self.vectorComponents = %r" % list(c.vectorComponents),
               "        self.vectorName = %r" % c.vectorName]
@@ -741,7 +799,8 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
         "from proteus import (FemTools, LinearAlgebraTools, LinearSolvers, NonlinearSolvers,",
         "                     NumericalFlux, Quadrature, StepControl, SubgridError, TimeIntegration)",
         "from %s_p import %s" % (name, ", ".join(["coefficients", "nd"] + (
-            ["periodicDirichletConditions"] if periodic else []))),
+            ["periodicDirichletConditions"] if periodic else []) + (
+            ["fluxBoundaryConditions"] if problem.get("up_to_constant") else []))),
         "",
         "femSpaces = {"]
     N += ["    %d: %s,   # %s" % (i, _spelled(FemTools, n.femSpaces[i]), names[i])
@@ -752,7 +811,12 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
           % n.elementBoundaryQuadrature.order]
     N.append("%s = %d   # %d cells per side" % (" = ".join(["nnx", "nny", "nnz"][:dim]), n.nnx, cells))
     N.append("nLevels = %d   # uniform refinements of that mesh, plus one" % n.nLevels)
-    if n.numericalFluxType is not default_n.numericalFluxType:
+    if problem.get("up_to_constant"):
+        N += ["# strong Dirichlet conditions with the DOFs kept in the system (rows",
+              "# replaced by u = g), the layout KSP_petsc4py expects",
+              "numericalFluxType = NumericalFlux.StrongDirichletFactory(fluxBoundaryConditions,",
+              "                                                         keepDOFs=True)"]
+    elif n.numericalFluxType is not default_n.numericalFluxType:
         N.append("numericalFluxType = %s" % _spelled(NumericalFlux, n.numericalFluxType))
     if n.subgridError is not None:
         if not isinstance(n.subgridError, SubgridError.NavierStokesASGS_velocity_pressure):
@@ -779,6 +843,17 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
           "matrix = %s" % _spelled(LinearAlgebraTools, n.matrix),
           "multilevelLinearSolver = %s" % _spelled(LinearSolvers, n.multilevelLinearSolver),
           "levelLinearSolver = %s" % _spelled(LinearSolvers, n.levelLinearSolver)]
+    if getattr(n, "petsc_options", None):
+        N += ["# a singular operator: MUMPS LU (null pivot detection) inside GMRES,",
+              "# which removes the null space the coefficients declare",
+              "linearSmoother = None",
+              "linear_solver_options_prefix = %r" % n.linear_solver_options_prefix,
+              "linTolFac = %r" % n.linTolFac,
+              "l_atol_res = %r" % n.l_atol_res,
+              "from petsc4py import PETSc",
+              "_options = PETSc.Options()"]
+        N += ["_options.setValue(%r, %r)" % (n.linear_solver_options_prefix + k, v)
+              for k, v in n.petsc_options.items()]
 
     # ---- so ----
     S = doc("The system") + [

@@ -32,10 +32,20 @@ as a second output, ``<key>~2``.
 This is the front end, so it imports sympy through ymf.symbolic. Proteus
 itself (proteus.ADRProblem) never does: it is handed plain data.
 """
+import os
+
+# Bitwise reproducibility needs a fixed order of floating-point operations.
+# Threaded BLAS (inside MUMPS, say) sums in a different order on each run,
+# so the threads are pinned to one before anything numeric is loaded --
+# unless the caller set them, in which case the record says so.
+THREADS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+           "MKL_NUM_THREADS")
+for _variable in THREADS:
+    os.environ.setdefault(_variable, "1")
+
 import argparse
 import datetime
 import math
-import os
 import platform
 import subprocess
 import sys
@@ -104,7 +114,8 @@ def software():
     return {"ymf": ymf.__version__, "ymf_git": commit(ymf),
             "proteus": proteus.__version__, "proteus_git": commit(proteus),
             "sympy": sympy.__version__, "numpy": numpy.__version__,
-            "python": platform.python_version(), "platform": platform.platform()}
+            "python": platform.python_version(), "platform": platform.platform(),
+            "threads": {v: os.environ[v] for v in THREADS}}
 
 
 def now():
@@ -183,7 +194,9 @@ def solve(doc, problem, name, realization, outdir, files, inline, env):
             "solve": {"by": env, "created": now()},
         },
         "storage": "inline" if inline else files + ".h5",
-        "verification": {"l2_errors": errors},
+        "verification": dict({"l2_errors": errors}, **(
+            {"modulo_constants": list(problem["up_to_constant"])}
+            if problem.get("up_to_constant") else {})),
         "approximation": domain,
     }
 
@@ -246,7 +259,9 @@ def override(doc, names, field, values, flag):
 def report(problem, rows):
     """The convergence table of one discretization."""
     names = list(problem["exact"])
-    print("  cells  " + "".join("  L2(%s)    rate  " % n for n in names) + "  output")
+    print("  cells  " + "".join("  L2(%s)%s  rate  " % (
+        n, "*" if n in (problem.get("up_to_constant") or []) else " ") for n in names)
+          + "  output" + ("   (* modulo constants)" if problem.get("up_to_constant") else ""))
     previous = None
     for key, realization, output, status in rows:
         finest = int(realization["cells"]) * 2 ** (int(realization.get("levels", 1)) - 1)
