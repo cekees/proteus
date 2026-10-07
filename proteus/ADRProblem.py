@@ -30,7 +30,8 @@ from proteus import (FemTools, LinearAlgebraTools, LinearSolvers, NonlinearSolve
                      NumericalFlux, Quadrature, StepControl, TimeIntegration, defaults)
 from proteus.TransportCoefficients import TC_base
 
-__all__ = ["ADRCoefficients", "physics", "numerics", "run", "l2_errors", "ELEMENTS"]
+__all__ = ["ADRCoefficients", "physics", "numerics", "run", "emit_pn", "describe",
+           "l2_errors", "ELEMENTS"]
 
 
 def _compile(code):
@@ -82,7 +83,7 @@ class ADRCoefficients(TC_base):
 
         mass, advection, diffusion, potential, reaction, hamiltonian = {}, {}, {}, {}, {}, {}
         sdInfo = {}
-        self._terms = []   # (key, compiled code, slice) to fill on evaluate
+        self._terms = []   # (key, compiled code, slice, source) to fill on evaluate
         for i, eq in enumerate(adr["equations"]):
             def flags(block, constant_key=i):
                 # ymf says how a coefficient depends on each unknown, and
@@ -146,11 +147,11 @@ class ADRCoefficients(TC_base):
             self.vectorName = stem
 
     def _add(self, key, code, last=None):
-        self._terms.append((key, _compile(code), last))
+        self._terms.append((key, _compile(code), last, code))
 
     def evaluate(self, t, c):
         ns = self._eval.namespace(t, c, self._needs_gradients)
-        for key, code, last in self._terms:
+        for key, code, last, _ in self._terms:
             if key not in c:
                 continue
             value = eval(code, _GLOBALS, ns)
@@ -467,6 +468,40 @@ def l2_errors(model, problem, t):
     return errors
 
 
+def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
+          levels=1, tolerance=None, max_iterations=None):
+    """The problem as solved, its physics and numerics, and the system settings.
+
+    Returns ``(problem, p, n, system)``: the problem (reordered pressure
+    first for SUPG/PSPG), the Physics_base and Numerics_base, and a dict of
+    the System_base settings (``tnList``, and for a time-dependent solve
+    ``dt_system_fixed``). :func:`run` solves this; :func:`emit_pn` writes it
+    out as p, n and so files.
+    """
+    if (stabilization or "none").lower() == "supg/pspg":
+        velocity, pressure = velocity_pressure(problem)
+        problem = reorder(problem, [pressure] + velocity)
+    p = physics(problem, name)
+    n = numerics(problem, spaces, cells, time, stabilization=stabilization,
+                 coefficients=p.coefficients, levels=levels,
+                 tolerance=tolerance, max_iterations=max_iterations)
+    if problem.get("periodic"):
+        n.periodicDirichletConditions = p.periodicDirichletConditions
+    if time is None:
+        system = {"tnList": [0.0, 1.0]}
+    else:
+        if not problem.get("time"):
+            raise ValueError("a time step was given for a problem with no time interval")
+        t0, t1 = (float(v) for v in problem["time"])
+        outputs = int(time.get("outputs", 1))
+        p.T = t1
+        # The system-level controller sets each step's size; the model's
+        # own DT alone does not, and the run would take one step per output.
+        system = {"tnList": [t0 + (t1 - t0) * k / outputs for k in range(outputs + 1)],
+                  "dt_system_fixed": float(time["dt"])}
+    return problem, p, n, system
+
+
 def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
         opts=None, levels=1, tolerance=None, max_iterations=None):
     """Solve; return (NS_base, the finest level model, L2 errors at the end).
@@ -477,34 +512,293 @@ def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
     archive Proteus writes holds the numerical approximation only; what
     produced it is the caller's to record (see :func:`describe`).
     """
-    from proteus import NumericalSolution, default_s
+    from proteus import NumericalSolution, SplitOperator, default_s
     if opts is None:
         from proteus.iproteus import opts
-    if (stabilization or "none").lower() == "supg/pspg":
-        velocity, pressure = velocity_pressure(problem)
-        problem = reorder(problem, [pressure] + velocity)
-    p = physics(problem, name)
-    n = numerics(problem, spaces, cells, time, stabilization=stabilization,
-                 coefficients=p.coefficients, levels=levels,
-                 tolerance=tolerance, max_iterations=max_iterations)
-    if problem.get("periodic"):
-        n.periodicDirichletConditions = p.periodicDirichletConditions
+    problem, p, n, system = setup(problem, spaces, cells, time, name, stabilization,
+                                  levels, tolerance, max_iterations)
     so = defaults.System_base(name=name, pnList=[(p, n)], sList=[default_s])
-    if time is None:
-        so.tnList = [0.0, 1.0]
-    else:
-        if not problem.get("time"):
-            raise ValueError("a time step was given for a problem with no time interval")
-        t0, t1 = (float(v) for v in problem["time"])
-        outputs = int(time.get("outputs", 1))
-        so.tnList = [t0 + (t1 - t0) * k / outputs for k in range(outputs + 1)]
-        p.T = t1
-        # The system-level controller sets each step's size; the model's
-        # own DT alone does not, and the run would take one step per output.
-        from proteus import SplitOperator
+    so.tnList = system["tnList"]
+    if "dt_system_fixed" in system:
         so.systemStepControllerType = SplitOperator.Sequential_FixedStep
-        so.dt_system_fixed = float(time["dt"])
+        so.dt_system_fixed = system["dt_system_fixed"]
     ns = NumericalSolution.NS_base(so, [p], [n], so.sList, opts)
     ns.calculateSolution(name)
     model = ns.modelList[0].levelModelList[-1]
     return ns, model, l2_errors(model, problem, so.tnList[-1])
+
+
+# --- writing a problem out as p, n and so files ---------------------------------
+
+
+def _spelled(module, obj):
+    """``Module.Name`` for a class, preferring an alias to a ``*_base`` name
+    (StepControl.FixedStep, not StepControl.SC_base)."""
+    names = sorted(k for k, v in vars(module).items() if v is obj)
+    better = [k for k in names if not k.endswith("_base")]
+    return "%s.%s" % (module.__name__.rsplit(".", 1)[-1], (better or names or [obj.__name__])[0])
+
+
+def _coordinates(dim):
+    return ["x", "y", "z"][:dim]
+
+
+def _function(dim, code):
+    """A lambda of the coordinates and t, around one code string."""
+    return "lambda %s, t: %s" % (", ".join(_coordinates(dim)), code)
+
+
+def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
+            levels=1, tolerance=None, max_iterations=None, directory=".", header=None):
+    """Write the problem as a classic Proteus ``<name>_p.py``, ``_n.py`` and ``_so.py``.
+
+    The files say in Python exactly what :func:`run` builds in memory: the
+    settings are read from the objects :func:`setup` returns, and the
+    coefficients from the same code strings, so ``parun <name>_so.py``
+    solves bitwise the same problem. They are written to be read: one
+    function per boundary condition and region, the coefficients one term
+    per line. The system's name is ``<name>_pn``, so a run of the files
+    does not overwrite the archive of the run they describe.
+
+    ``header`` is a line or two of text for each file's docstring (say, the
+    output it reproduces). Returns the three paths.
+    """
+    import os
+    import pprint
+    from proteus import SubgridError
+    problem, p, n, system = setup(problem, spaces, cells, time, name, stabilization,
+                                  levels, tolerance, max_iterations)
+    c = p.coefficients
+    adr = problem["adr"]
+    dim = adr["dim"]
+    names = list(adr["components"])
+    xyz = _coordinates(dim)
+    lower, upper = list(problem["geometry"]["lower"]), list(problem["geometry"]["upper"])
+    tol = 1e-8 * max(p.L[:dim])
+    about = [header] if header else []
+
+    def doc(what):
+        return ['"""%s for %s.' % (what, name), ""] + about + [
+            "Written by proteus.ADRProblem.emit_pn; run with parun %s_so.py." % name,
+            "Components: %s." % ", ".join("%d = %s" % (i, nm) for i, nm in enumerate(names)),
+            '"""']
+
+    # ---- p ----
+    P = doc("Physics") + [
+        "import numpy",
+        "from proteus.default_p import *",
+        "from proteus.TransportCoefficients import TC_base",
+        "",
+        "nd = %d" % dim,
+        "name = %r" % name,
+        "# the old-style box: domain None, with L and x0, hands nnx/nny/nnz to the mesher",
+        "domain = None",
+        "L = %r" % (tuple(p.L),),
+        "x0 = %r" % (tuple(p.x0),),
+    ]
+    if time is not None:
+        P.append("T = %r" % p.T)
+    P += ["", "",
+          "class Coefficients(TC_base):",
+          '    """dm_i/dt + div(f_i - sum_k a_ik grad(phi_k)) + r_i + H_i = 0"""',
+          "",
+          "    def __init__(self):",
+          "        TC_base.__init__(",
+          "            self, nc=%d, variableNames=%r," % (c.nc, list(c.variableNames))]
+    for key in ("mass", "advection", "diffusion", "potential", "reaction", "hamiltonian"):
+        P.append("            %s=%r," % (key, getattr(c, key)))
+    P.append("            sparseDiffusionTensors={%s})" % ", ".join(
+        "%r: (numpy.array(%r, 'i'), numpy.array(%r, 'i'))" % (k, list(map(int, r)), list(map(int, cl)))
+        for k, (r, cl) in c.sdInfo.items()))
+    # What the numerics added to the coefficients' stencil (SUPG/PSPG couples
+    # the continuity equation to the pressure) is written here: parun loads
+    # the p file without caching it, so the n file's import makes a second
+    # Coefficients, and a stencil entry added to that one alone is lost.
+    plain = ADRCoefficients(adr).stencil
+    for i, row in enumerate(c.stencil):
+        added = sorted(set(row) - set(plain[i]))
+        if added:
+            P += ["        # added by %s: equation %d couples to %s"
+                  % (type(n.subgridError).__name__, i, ", ".join(names[k] for k in added)),
+                  "        self.stencil[%d].update(%r)" % (i, added)]
+    if getattr(c, "vectorComponents", None) is not None:
+        P += ["        self.vectorComponents = %r" % list(c.vectorComponents),
+              "        self.vectorName = %r" % c.vectorName]
+    P += ["", "    def evaluate(self, t, c):"]
+    P += ["        %s = c['x'][..., %d]" % (v, k) for k, v in enumerate(xyz)]
+    for j, nm in enumerate(names):
+        P.append("        %s = c[('u', %d)]" % (nm, j))
+    if c._needs_gradients:
+        for j, nm in enumerate(names):
+            P.append("        if ('grad(u)', %d) in c:" % j)
+            P += ["            grad_%s_%d = c[('grad(u)', %d)][..., %d]" % (nm, k, j, k)
+                  for k in range(dim)]
+    for key, _, last, code in c._terms:
+        target = "c[%r][...]" % (key,) if last is None else "c[%r][..., %d]" % (key, last)
+        P.append("        if %r in c: %s = %s" % (key, target, code))
+    P += ["", "", "coefficients = Coefficients()", "", "",
+          "class Field(object):",
+          '    """A function of the coordinates and t, as initial or boundary data."""',
+          "",
+          "    def __init__(self, f):",
+          "        self.f = f",
+          "",
+          "    def uOfXT(self, X, t):",
+          "        X = numpy.asarray(X)",
+          "        value = self.f(%s, t)" % ", ".join("X[..., %d]" % k for k in range(dim)),
+          "        return value + 0.0 * X[..., 0] if numpy.ndim(X) > 1 else value",
+          "",
+          "    def uOfX(self, X):",
+          "        return self.uOfXT(X, 0.0)",
+          ""]
+    exact = problem.get("exact", {})
+    initial = problem.get("initial", {})
+    P += ["", "analyticalSolution = {"]
+    P += ["    %d: Field(%s),   # %s" % (i, _function(dim, exact[nm]), nm)
+          for i, nm in enumerate(names) if nm in exact]
+    P += ["}", "# a steady problem with no initial condition starts Newton from zero,",
+          "# never from the exact solution", "initialConditions = {"]
+    P += ["    %d: Field(%s),   # %s" % (i, _function(dim, initial.get(nm, "0.0")), nm)
+          for i, nm in enumerate(names)]
+    P += ["}", "", "tol = %r" % tol]
+
+    by_component = {}
+    for e in problem["dirichlet"]:
+        by_component.setdefault(e["component"], []).append(e)
+    for i, nm in enumerate(names):
+        entries = by_component.get(nm, [])
+        P += ["", "",
+              "def getDBC_%s(X, flag):" % nm,
+              "    if flag == 0:     # an interior node",
+              "        return None"]
+        if entries:
+            P.append("    %s = %s" % (", ".join(xyz), ", ".join("X[%d]" % k for k in range(dim))))
+        for e in entries:
+            test = "True" if e["where"] is None else e["where"]
+            P += ["    if %s:   # region %s" % (test, e["region"]),
+                  "        return lambda X, t: Field(%s).uOfXT(X, t)" % _function(dim, e["value"])]
+        P.append("    return None")
+    P += ["", "", "dirichletConditions = {%s}" % ", ".join(
+        "%d: getDBC_%s" % (i, nm) for i, nm in enumerate(names))]
+
+    periodic = {e["component"]: list(e["axes"]) for e in problem.get("periodic", [])}
+    if periodic:
+        P += ["", "",
+              "# Periodic: a node on either face of a periodic axis is keyed by its",
+              "# coordinates with that axis snapped to the lower face; equal keys share",
+              "# a degree of freedom. A node a Dirichlet condition claims is not periodic.",
+              "LOWER = %r" % (lower,),
+              "UPPER = %r" % (upper,),
+              "",
+              "",
+              "def on_faces(X, axes):",
+              "    return [a for a in axes",
+              "            if abs(X[a] - LOWER[a]) <= tol or abs(X[a] - UPPER[a]) <= tol]",
+              "",
+              "",
+              "def periodic(getDBC, axes):",
+              "    def getPDBC(X, flag):",
+              "        if getDBC(X, flag if flag else 1) is not None:",
+              "            return None",
+              "        on = on_faces(X, axes)",
+              "        if not on:",
+              "            return None",
+              "        key = numpy.array([round(float(v), 8) for v in X[:3]])",
+              "        for a in on:",
+              "            key[a] = LOWER[a]",
+              "        return key",
+              "    return getPDBC",
+              "",
+              "",
+              "def zero_on_faces(axes):",
+              "    # the two faces' fluxes cancel, so each is set to zero",
+              "    def getAFBC(X, flag):",
+              "        if on_faces(X, axes):",
+              "            return lambda X, t: 0.0",
+              "        return None",
+              "    return getAFBC",
+              "",
+              "",
+              "periodicDirichletConditions = {%s}" % ", ".join(
+                  "%d: periodic(getDBC_%s, %r)" % (i, nm, periodic[nm]) if nm in periodic
+                  else "%d: lambda X, flag: None" % i for i, nm in enumerate(names)),
+              "advectiveFluxBoundaryConditions = {%s}" % ", ".join(
+                  "%d: zero_on_faces(%r)" % (i, periodic[nm]) if nm in periodic
+                  else "%d: lambda X, flag: None" % i for i, nm in enumerate(names))]
+    else:
+        P += ["advectiveFluxBoundaryConditions = {%s}" % ", ".join(
+            "%d: lambda X, flag: None" % i for i in range(len(names)))]
+    P += ["diffusiveFluxBoundaryConditions = {%s}" % ", ".join(
+              "%d: {%s}" % (i, ", ".join("%d: lambda X, flag: None" % k for k in sorted(d)))
+              for i, d in sorted(p.diffusiveFluxBoundaryConditions.items())),
+          "# advective fluxes through the boundary come from the trace",
+          "fluxBoundaryConditions = %r" % (p.fluxBoundaryConditions,)]
+
+    # ---- n ----
+    from proteus import default_n
+    N = doc("Numerics") + [
+        "from proteus.default_n import *",
+        "from proteus import (FemTools, LinearAlgebraTools, LinearSolvers, NonlinearSolvers,",
+        "                     NumericalFlux, Quadrature, StepControl, SubgridError, TimeIntegration)",
+        "from %s_p import %s" % (name, ", ".join(["coefficients", "nd"] + (
+            ["periodicDirichletConditions"] if periodic else []))),
+        "",
+        "femSpaces = {"]
+    N += ["    %d: %s,   # %s" % (i, _spelled(FemTools, n.femSpaces[i]), names[i])
+          for i in sorted(n.femSpaces)]
+    N += ["}",
+          "elementQuadrature = Quadrature.SimplexGaussQuadrature(nd, %d)" % n.elementQuadrature.order,
+          "elementBoundaryQuadrature = Quadrature.SimplexGaussQuadrature(nd - 1, %d)"
+          % n.elementBoundaryQuadrature.order]
+    N.append("%s = %d   # %d cells per side" % (" = ".join(["nnx", "nny", "nnz"][:dim]), n.nnx, cells))
+    N.append("nLevels = %d   # uniform refinements of that mesh, plus one" % n.nLevels)
+    if n.numericalFluxType is not default_n.numericalFluxType:
+        N.append("numericalFluxType = %s" % _spelled(NumericalFlux, n.numericalFluxType))
+    if n.subgridError is not None:
+        if not isinstance(n.subgridError, SubgridError.NavierStokesASGS_velocity_pressure):
+            raise ValueError("emit_pn does not know how to write %s" % type(n.subgridError).__name__)
+        N.append("subgridError = SubgridError.NavierStokesASGS_velocity_pressure("
+                 "coefficients, nd, lag=False)")
+    if n.timeIntegration is TimeIntegration.NoIntegration:
+        N.append("timeIntegration = TimeIntegration.NoIntegration   # steady")
+    else:
+        N += ["timeIntegration = %s" % _spelled(TimeIntegration, n.timeIntegration),
+              "stepController = %s" % _spelled(StepControl, n.stepController),
+              "DT = %r" % n.DT]
+    if periodic:
+        N += ["# the serial periodic path: the parallel one numbers every component's",
+              "# periodic DOFs with component 0's space, which breaks mixed spaces",
+              "parallelPeriodic = False"]
+    N += ["multilevelNonlinearSolver = %s" % _spelled(NonlinearSolvers, n.multilevelNonlinearSolver),
+          "levelNonlinearSolver = %s" % _spelled(NonlinearSolvers, n.levelNonlinearSolver),
+          "fullNewtonFlag = %r" % n.fullNewtonFlag,
+          "maxNonlinearIts = %d" % n.maxNonlinearIts,
+          "maxLineSearches = %d" % n.maxLineSearches,
+          "tolFac = %r" % n.tolFac,
+          "nl_atol_res = %r" % n.nl_atol_res,
+          "matrix = %s" % _spelled(LinearAlgebraTools, n.matrix),
+          "multilevelLinearSolver = %s" % _spelled(LinearSolvers, n.multilevelLinearSolver),
+          "levelLinearSolver = %s" % _spelled(LinearSolvers, n.levelLinearSolver)]
+
+    # ---- so ----
+    S = doc("The system") + [
+        "from proteus.default_so import *",
+        "from proteus import default_s",
+        "",
+        "name = %r   # not %r: a run of these files keeps clear of the original's archive"
+        % (name + "_pn", name),
+        "pnList = [(%r, %r)]" % (name + "_p", name + "_n"),
+        "sList = [default_s]",
+        "tnList = %s" % pprint.pformat(system["tnList"])]
+    if "dt_system_fixed" in system:
+        S += ["# the system's controller sets each step; the model's DT alone does not",
+              "systemStepControllerType = Sequential_FixedStep",
+              "dt_system_fixed = %r" % system["dt_system_fixed"]]
+
+    paths = []
+    for suffix, lines in (("_p", P), ("_n", N), ("_so", S)):
+        path = os.path.join(directory, name + suffix + ".py")
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        paths.append(path)
+    return paths

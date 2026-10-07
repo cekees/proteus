@@ -16,6 +16,11 @@ discrete problem -> solve), the L2 errors against the exact solution, and
 the approximation itself, its arrays in ``<stem>_<digest>.h5`` beside the
 archive or, with ``--inline``, in the archive.
 
+With ``--emit-pn`` it also writes each output's problem as the classic
+Proteus files ``<stem>_<digest>_p.py``, ``_n.py`` and ``_so.py``: what
+proteus.ADRProblem builds in memory, as readable Python that ``parun``
+runs, bitwise the same.
+
 Like make, it computes only the outputs the archive lacks. ``--cells`` and
 ``--levels`` override the discretizations' ``mesh``, and the archive
 records the override. ``--check`` reruns the outputs already there too, and
@@ -109,6 +114,31 @@ def now():
 # --- one output ----------------------------------------------------------------
 
 
+def run_arguments(doc, problem, name, realization):
+    """ADRProblem.run's arguments for one discretization on one realization."""
+    from ymf import closure
+    entry = closure.realize(next(d for d in doc["solution_paths"]["discretizations"]
+                                 if d["name"] == name), realization)
+    spaces = element_spaces(problem, entry.get("finite_element") or {})
+    solver = entry.get("solver") or {}
+    return {"spaces": {c: tuple(s) for c, s in spaces.items()},
+            "cells": int(realization["cells"]),
+            "time": time_stepping(entry, problem),
+            "stabilization": stabilization_of(doc, entry),
+            "levels": int(realization.get("levels", 1)),
+            "tolerance": solver.get("tolerance"),
+            "max_iterations": solver.get("max_iterations")}
+
+
+def emit(doc, problem, name, realization, outdir, files, key, archive):
+    """Write the p, n and so files of one output; return their paths."""
+    from proteus import ADRProblem
+    return ADRProblem.emit_pn(
+        problem, name=files, directory=outdir,
+        header="Output %s of %s." % (key, os.path.basename(archive)),
+        **run_arguments(doc, problem, name, realization))
+
+
 def solve(doc, problem, name, realization, outdir, files, inline, env):
     """Run one discretization on one realization; return its output record.
 
@@ -117,26 +147,18 @@ def solve(doc, problem, name, realization, outdir, files, inline, env):
     the .xmf is derived from it.
     """
     from proteus import ADRProblem, Profiling
-    from ymf import closure
     from ymf.archive import inline_domain, read_ymf
+    from ymf import closure
     Profiling.logLevel = 1
     Profiling.verbose = False
-    entry = closure.realize(next(d for d in doc["solution_paths"]["discretizations"]
-                                 if d["name"] == name), realization)
-    spaces = element_spaces(problem, entry.get("finite_element") or {})
-    time = time_stepping(entry, problem)
-    stabilization = stabilization_of(doc, entry)
-    solver = entry.get("solver") or {}
-    cells, levels = int(realization["cells"]), int(realization.get("levels", 1))
+    kwargs = run_arguments(doc, problem, name, realization)
+    stabilization = kwargs["stabilization"]
     from proteus.iproteus import opts
     opts.dataDir = outdir
     cwd = os.getcwd()
     os.chdir(outdir)
     try:
-        ns, _, errors = ADRProblem.run(
-            problem, {c: tuple(s) for c, s in spaces.items()}, cells, time, name=files,
-            stabilization=stabilization, levels=levels,
-            tolerance=solver.get("tolerance"), max_iterations=solver.get("max_iterations"))
+        ns, _, errors = ADRProblem.run(problem, name=files, **kwargs)
     finally:
         os.chdir(cwd)
     solved = problem
@@ -258,6 +280,9 @@ def main(argv=None):
                         help="rerun the outputs already in the archive too, and compare")
     parser.add_argument("--keep-different", action="store_true",
                         help="with --check: keep a differing rerun as <key>~N")
+    parser.add_argument("--emit-pn", action="store_true",
+                        help="also write each output's problem as Proteus p, n and so files, "
+                             "<stem>_<digest>_{p,n,so}.py, which parun runs")
     parser.add_argument("--prune", action="store_true",
                         help="drop outputs of an earlier version of the input from the "
                              "archive (their files are left in place)")
@@ -368,6 +393,13 @@ def main(argv=None):
                 refused.append((key, found))
                 rows.append((key, realization, outputs[key], "DIFFERENT, refused"))
         report(problem, rows)
+        if args.emit_pn:
+            for key, realization, _, status in rows:
+                if "refused" in status:
+                    continue
+                paths = emit(doc, problem, name, realization, outdir,
+                             closure.file_stem(stem, key), key, archive)
+                print("  %s: %s" % (key.split("/")[-1], ", ".join(map(os.path.basename, paths))))
 
     closure.write(archive, doc, outputs)
     if new:

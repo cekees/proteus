@@ -208,3 +208,25 @@ def test_an_inline_multilevel_run_is_self_contained_and_reproducible(poisson_spe
     assert nodes.shape == (81, 3)        # the finest level: 2 cells refined twice -> 8x8
     out = ymf_run(archive, "--check")
     assert out.returncode == 0 and "reproduced, bitwise" in out.stdout, out.stdout[-2000:]
+
+
+def test_emitted_pn_files_reproduce_the_output_bitwise_under_parun(poisson_spec, tmp_path):
+    import numpy
+    out = ymf_run(poisson_spec, "--cells", "4", "--outdir", tmp_path, "--emit-pn")
+    assert out.returncode == 0, out.stderr[-2000:]
+    from ymf import closure
+    from ymf.archive import domain_arrays, read_ymf
+    _, outputs, _ = closure.load(tmp_path / "poisson.archive.ymf")
+    ((key, output),) = outputs.items()
+    stem = closure.file_stem("poisson", key)
+    work = tmp_path / "pn"
+    work.mkdir()
+    for suffix in ("_p", "_n", "_so"):
+        (work / (stem + suffix + ".py")).write_text((tmp_path / (stem + suffix + ".py")).read_text())
+    parun = os.path.join(os.path.dirname(sys.executable), "parun")
+    run = subprocess.run([parun, stem + "_so.py"], cwd=work, capture_output=True, text=True)
+    assert run.returncode == 0, run.stdout[-2000:] + run.stderr[-2000:]
+    mine = domain_arrays(read_ymf(work / (stem + "_pn.ymf"))[0], work)
+    recorded = domain_arrays(output["approximation"], tmp_path)
+    assert set(mine) == set(recorded)
+    assert all(numpy.array_equal(mine[k], recorded[k]) for k in recorded)
