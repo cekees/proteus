@@ -109,9 +109,10 @@ def test_same_names_in_another_directory_do_not_cross_over(model, tmp_path_facto
         name = None
     """)
     write(other, "m_n", """
-        from m_p import coefficients, T
+        import m_p
+        from m_p import coefficients
         from proteus.default_n import *
-        seen_T = T
+        seen_T = m_p.T        # not a bare T: a star import may bind its own
     """)
     defaults.load_physics("m_p", str(model))
     p = defaults.load_physics("m_p", str(other))
