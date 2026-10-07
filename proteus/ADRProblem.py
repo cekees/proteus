@@ -351,13 +351,6 @@ NULL_SPACE_SOLVER = {"ksp_type": "gmres", "pc_type": "lu",
                      "ksp_rtol": "1e-14", "ksp_atol": "1e-14", "ksp_max_it": "50"}
 
 
-def _set_petsc_options(prefix, options):
-    from petsc4py import PETSc
-    database = PETSc.Options()
-    for key, value in options.items():
-        database.setValue(prefix + key, value)
-
-
 def numerics(problem, spaces, cells, time=None, quadrature_order=None,
              stabilization="none", coefficients=None, levels=1,
              tolerance=None, max_iterations=None):
@@ -451,8 +444,9 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None,
         n.linear_solver_options_prefix = "adr_"
         n.linTolFac = 0.0
         n.l_atol_res = 1.0e-14
-        n.petsc_options = dict(NULL_SPACE_SOLVER)
-        _set_petsc_options(n.linear_solver_options_prefix, n.petsc_options)
+        # data, not a write to PETSc's options database: NS_base sets them
+        # while it builds and runs the solvers, then puts the database back
+        n.petscOptions = dict(NULL_SPACE_SOLVER)
     return n
 
 
@@ -479,9 +473,9 @@ def describe(problem, n):
                              "max_iterations": int(n.maxNonlinearIts)},
         "linear_solver": _name(n.levelLinearSolver),
     }
-    if getattr(n, "petsc_options", None):
+    if getattr(n, "petscOptions", None):
         out["petsc_options"] = {n.linear_solver_options_prefix + k: v
-                                for k, v in n.petsc_options.items()}
+                                for k, v in n.petscOptions.items()}
     if problem.get("up_to_constant"):
         out["null_space"] = {"constant": list(problem["up_to_constant"])}
     if getattr(n, "subgridError", None) is not None:
@@ -662,17 +656,6 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
     P.append("            sparseDiffusionTensors={%s})" % ", ".join(
         "%r: (numpy.array(%r, 'i'), numpy.array(%r, 'i'))" % (k, list(map(int, r)), list(map(int, cl)))
         for k, (r, cl) in c.sdInfo.items()))
-    # What the numerics added to the coefficients' stencil (SUPG/PSPG couples
-    # the continuity equation to the pressure) is written here: parun loads
-    # the p file without caching it, so the n file's import makes a second
-    # Coefficients, and a stencil entry added to that one alone is lost.
-    plain = ADRCoefficients(adr).stencil
-    for i, row in enumerate(c.stencil):
-        added = sorted(set(row) - set(plain[i]))
-        if added:
-            P += ["        # added by %s: equation %d couples to %s"
-                  % (type(n.subgridError).__name__, i, ", ".join(names[k] for k in added)),
-                  "        self.stencil[%d].update(%r)" % (i, added)]
     if getattr(c, "nullSpaceComponents", None):
         P += ["        # %s: determined only up to a constant, which the linear solver"
               % ", ".join(names[k] for k in c.nullSpaceComponents),
@@ -843,17 +826,18 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
           "matrix = %s" % _spelled(LinearAlgebraTools, n.matrix),
           "multilevelLinearSolver = %s" % _spelled(LinearSolvers, n.multilevelLinearSolver),
           "levelLinearSolver = %s" % _spelled(LinearSolvers, n.levelLinearSolver)]
-    if getattr(n, "petsc_options", None):
+    if getattr(n, "petscOptions", None):
         N += ["# a singular operator: MUMPS LU (null pivot detection) inside GMRES,",
               "# which removes the null space the coefficients declare",
               "linearSmoother = None",
               "linear_solver_options_prefix = %r" % n.linear_solver_options_prefix,
               "linTolFac = %r" % n.linTolFac,
               "l_atol_res = %r" % n.l_atol_res,
-              "from petsc4py import PETSc",
-              "_options = PETSc.Options()"]
-        N += ["_options.setValue(%r, %r)" % (n.linear_solver_options_prefix + k, v)
-              for k, v in n.petsc_options.items()]
+              "# options for this model's solvers, relative to the prefix; NS_base sets",
+              "# them while it builds and runs the solvers, then restores the database",
+              "petscOptions = {"]
+        N += ["    %r: %r," % (k, v) for k, v in n.petscOptions.items()]
+        N += ["}"]
 
     # ---- so ----
     S = doc("The system") + [
