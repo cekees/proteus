@@ -103,8 +103,14 @@ def plain(value):
     return value
 
 
-def solve(doc, problem, discretization, cells, outdir, name):
-    """Run one discretization on one mesh; return (errors, archive path)."""
+def solve(doc, problem, discretization, cells, outdir, name, levels=1, inline=False):
+    """Run one discretization on one mesh; return (errors, archive path).
+
+    ``cells`` sizes the coarsest mesh; ``levels`` > 1 refines it uniformly
+    that many times less one (Proteus's nLevels), and the solution and
+    errors are on the finest. ``inline`` writes the arrays into the .ymf
+    itself instead of an .h5 beside it.
+    """
     from proteus import ADRProblem, Profiling
     Profiling.logLevel = 1
     Profiling.verbose = False
@@ -113,8 +119,9 @@ def solve(doc, problem, discretization, cells, outdir, name):
     weak = {w["label"]: w for w in doc["Problem"].get("weak_forms", [])}.get(
         str(discretization.get("from_weak_form")), {})
     stabilization = (weak.get("stabilization_method") or "none").strip().lower()
-    run = {"discretization": discretization["name"], "cells": cells,
-           "spaces": spaces, "time": time, "stabilization": stabilization}
+    run = {"discretization": discretization["name"], "cells": cells, "levels": levels,
+           "spaces": spaces, "time": time, "stabilization": stabilization,
+           "storage": "inline" if inline else "hdf5"}
     extra = {"ymf_run": RECORD_VERSION, "spec": plain(doc), "run": run,
              "adr": problem, "provenance": dict(software(), created=datetime.datetime.now(
                  datetime.timezone.utc).isoformat(timespec="seconds"))}
@@ -125,14 +132,21 @@ def solve(doc, problem, discretization, cells, outdir, name):
     try:
         _, _, errors = ADRProblem.run(problem, {c: tuple(s) for c, s in spaces.items()},
                                       cells, time, name=name, stabilization=stabilization,
-                                      extra=extra)
+                                      extra=extra, levels=levels)
     finally:
         os.chdir(cwd)
     # the errors are known only after the solve; add them to the record
     path = os.path.join(outdir, name + ".ymf")
-    from ymf.archive import read_ymf, write_ymf
+    from ymf.archive import inline_domain, read_ymf, write_ymf
     domain, extra = read_ymf(path)
     extra["results"] = {"l2_errors": errors}
+    if inline:
+        # copy the arrays in, then drop the .h5 this run wrote and derive the
+        # .xmf again from the self-contained archive
+        from ymf.xdmf import write_xdmf
+        domain = inline_domain(domain, outdir)
+        os.remove(os.path.join(outdir, name + ".h5"))
+        write_xdmf(domain, os.path.join(outdir, name + ".xmf"), ymf_extra=extra)
     write_ymf(domain, path, extra=extra)
     return errors, path
 
@@ -169,12 +183,15 @@ def run_spec(path, args):
             "" if time is None else ", backward Euler dt=%g on (%g, %g]" % (
                 time["dt"], problem["time"][0], problem["time"][1])))
         names = list(problem["exact"])
-        print("  cells  " + "".join("  L2(%s)    rate  " % n for n in names))
+        print("  cells  " + "".join("  L2(%s)    rate  " % n for n in names)
+              + ("" if args.levels == 1 else "   (finest of %d levels)" % args.levels))
         previous = None
         for cells in args.cells:
             errors, _ = solve(doc, problem, d, cells, args.outdir,
-                              "%s_%s_%d" % (stem, d["name"], cells))
-            row = "  %5d  " % cells
+                              "%s_%s_%d%s" % (stem, d["name"], cells,
+                                              "" if args.levels == 1 else "x%d" % args.levels),
+                              levels=args.levels, inline=args.inline)
+            row = "  %5d  " % (cells * 2 ** (args.levels - 1))
             for n in names:
                 rate = ""
                 if previous and previous[n] > 0 and errors[n] > 0:
@@ -202,7 +219,8 @@ def run_archive(path, args):
     stem = os.path.splitext(os.path.basename(path))[0]
     name = stem + "_rerun"
     errors, rerun_path = solve(doc, problem, discretization, int(run["cells"]),
-                               args.outdir, name)
+                               args.outdir, name, levels=int(run.get("levels", 1)),
+                               inline=run.get("storage") == "inline")
     print("%s: reran %s on %d cells -> %s" % (path, run["discretization"], run["cells"], rerun_path))
     print("  errors: %s" % ", ".join("%s %.6e" % kv for kv in errors.items()))
     if not args.check:
@@ -213,8 +231,7 @@ def run_archive(path, args):
     recorded = extra.get("results", {}).get("l2_errors", {})
     if recorded != errors:
         failures.append("errors differ: recorded %s, rerun %s" % (recorded, errors))
-    failures += compare_heavy_data(os.path.splitext(path)[0] + ".h5",
-                                   os.path.splitext(rerun_path)[0] + ".h5")
+    failures += compare_arrays(path, rerun_path)
     if failures:
         print("NOT IDEMPOTENT:\n  " + "\n  ".join(failures))
         return 1
@@ -222,24 +239,23 @@ def run_archive(path, args):
     return 0
 
 
-def compare_heavy_data(a, b):
-    """Every numerical dataset of two archives' .h5 files, compared exactly."""
-    import h5py
+def compare_arrays(a, b):
+    """Every array of two archives, compared exactly, however each is stored."""
     import numpy
+    from ymf.archive import domain_arrays, read_ymf
+    arrays = []
+    for path in (a, b):
+        domain, _ = read_ymf(path)
+        arrays.append(domain_arrays(domain, os.path.dirname(os.path.abspath(path))))
     failures = []
-    with h5py.File(a, "r") as fa, h5py.File(b, "r") as fb:
-        names = []
-        fa.visititems(lambda n, o: names.append(n) if isinstance(o, h5py.Dataset) else None)
-        numeric = [n for n in names if fa[n].dtype.kind in "fiu"]
-        if not numeric:
-            failures.append("%s holds no numerical datasets" % a)
-        for n in numeric:
-            if n not in fb:
-                failures.append("%s: missing from the rerun" % n)
-            elif not numpy.array_equal(fa[n][()], fb[n][()]):
-                diff = numpy.max(numpy.abs(fa[n][()] - fb[n][()]))
-                failures.append("%s: differs (max |difference| %.3e)" % (n, diff))
-        print("  compared %d numerical datasets" % len(numeric))
+    if set(arrays[0]) != set(arrays[1]):
+        failures.append("the archives hold different fields: %s"
+                        % sorted(set(arrays[0]) ^ set(arrays[1])))
+    for where in sorted(set(arrays[0]) & set(arrays[1])):
+        x, y = arrays[0][where], arrays[1][where]
+        if x.dtype != y.dtype or x.shape != y.shape or not numpy.array_equal(x, y):
+            failures.append("%s: differs" % where)
+    print("  compared %d arrays" % len(arrays[0]))
     return failures
 
 
@@ -249,6 +265,12 @@ def main(argv=None):
     parser.add_argument("--discretization", help="run only this one (by name)")
     parser.add_argument("--cells", type=int, nargs="+", default=[4, 8, 16],
                         help="cells per side of each mesh in the sequence")
+    parser.add_argument("--levels", type=int, default=1,
+                        help="mesh levels: refine each mesh uniformly levels-1 times "
+                             "and solve on the finest (Proteus nLevels)")
+    parser.add_argument("--inline", action="store_true",
+                        help="write the arrays into the .ymf itself: one self-contained "
+                             "file (plus its .xmf), no .h5")
     parser.add_argument("--outdir", default=".", help="where archives are written")
     parser.add_argument("--check", action="store_true",
                         help="for an archive: verify the rerun reproduces it exactly")

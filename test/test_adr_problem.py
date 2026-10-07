@@ -127,8 +127,9 @@ def test_a_spec_runs_end_to_end_and_converges(poisson_spec, tmp_path):
     from ymf.archive import read_ymf
     _, extra = read_ymf(tmp_path / "poisson_P1_8.ymf")
     assert extra["spec"]["Problem"]["strong_form"]["equations"] == ["-Δu = 2π² sin(πx) sin(πy)  in Ω"]
-    assert extra["run"] == {"discretization": "P1", "cells": 8, "spaces": {"u": ["CG", 1]},
-                            "time": None, "stabilization": "none"}
+    assert extra["run"] == {"discretization": "P1", "cells": 8, "levels": 1,
+                            "spaces": {"u": ["CG", 1]}, "time": None,
+                            "stabilization": "none", "storage": "hdf5"}
     assert set(extra["results"]["l2_errors"]) == {"u"}
 
 
@@ -137,3 +138,17 @@ def test_an_archive_reruns_to_bitwise_identical_results(poisson_spec, tmp_path):
     out = ymf_run(tmp_path / "poisson_P1_4.ymf", "--check", "--outdir", tmp_path)
     assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
     assert "idempotent" in out.stdout
+
+
+def test_an_inline_multilevel_run_is_self_contained_and_reproducible(poisson_spec, tmp_path):
+    out = ymf_run(poisson_spec, "--cells", "2", "--levels", "3", "--inline", "--outdir", tmp_path)
+    assert out.returncode == 0, out.stderr[-2000:]
+    names = sorted(p.name for p in tmp_path.glob("poisson_P1_2x3.*"))
+    assert names == ["poisson_P1_2x3.xmf", "poisson_P1_2x3.ymf"]       # no .h5
+    from ymf.archive import read_ymf, domain_arrays
+    domain, extra = read_ymf(tmp_path / "poisson_P1_2x3.ymf")
+    assert (extra["run"]["cells"], extra["run"]["levels"], extra["run"]["storage"]) == (2, 3, "inline")
+    nodes = [a for k, a in domain_arrays(domain).items() if k.endswith("Geometry")][-1]
+    assert nodes.shape == (81, 3)        # the finest level: 2 cells refined twice -> 8x8
+    out = ymf_run(tmp_path / "poisson_P1_2x3.ymf", "--check", "--outdir", tmp_path)
+    assert out.returncode == 0 and "idempotent" in out.stdout, out.stdout[-2000:]

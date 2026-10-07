@@ -339,7 +339,7 @@ def velocity_pressure(problem):
 
 
 def numerics(problem, spaces, cells, time=None, quadrature_order=None,
-             stabilization="none", coefficients=None):
+             stabilization="none", coefficients=None, levels=1):
     """The discrete problem.
 
     ``spaces`` maps each scalar component to a (family, order) pair;
@@ -367,7 +367,9 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None,
     n.nnx = n.nny = cells + 1
     if dim == 3:
         n.nnz = cells + 1
-    n.nLevels = 1
+    # nLevels > 1: the box mesh above is the coarsest, refined uniformly
+    # levels-1 times; the solution of record is on the finest.
+    n.nLevels = int(levels)
     if any(f == "DG" for f, _ in spaces.values()):
         n.numericalFluxType = NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG_exterior \
             if all(f == "CG" for f, _ in spaces.values()) else \
@@ -431,7 +433,7 @@ def l2_errors(model, problem, t):
 
 
 def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
-        extra=None, opts=None):
+        extra=None, opts=None, levels=1):
     """Solve; return (NS_base, the finest level model, L2 errors at the end).
 
     ``time`` is None for a steady solve, or ``{"dt": ...}`` to step through
@@ -448,7 +450,7 @@ def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
         problem = reorder(problem, [pressure] + velocity)
     p = physics(problem, name)
     n = numerics(problem, spaces, cells, time, stabilization=stabilization,
-                 coefficients=p.coefficients)
+                 coefficients=p.coefficients, levels=levels)
     if problem.get("periodic"):
         n.periodicDirichletConditions = p.periodicDirichletConditions
     so = defaults.System_base(name=name, pnList=[(p, n)], sList=[default_s])
