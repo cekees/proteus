@@ -1,24 +1,28 @@
 #!/usr/bin/env python
-"""Solve a YMF problem with Proteus, reproducibly, end to end.
+"""Solve a YMF problem with Proteus, reproducibly: make for archives.
 
-    ymf_run examples/poisson.ymf                       # every discretization
+    ymf_run examples/poisson.ymf                     # every discretization
     ymf_run spec.ymf --discretization taylor_hood --cells 4 8 16
-    ymf_run out/poisson_P1_linear_8.ymf                # rerun an archive
-    ymf_run out/poisson_P1_linear_8.ymf --check        # ...and compare
+    ymf_run out/poisson.archive.ymf                  # fill in what is missing
+    ymf_run out/poisson.archive.ymf --check          # rerun all, and compare
 
-The input is either a problem specification (monolithic, or composed with
-``extends``) or an archive this tool wrote. For a specification it runs each
-discretization (or the one named) on each mesh of the sequence and prints
-the L2 error of every unknown against the exact solution, with observed
-rates. Each run writes an archive, <stem>_<discretization>_<cells>.ymf plus
-its .h5 and .xmf, whose ``extra`` records everything needed to reproduce
-it: the composed specification (self-contained), the run configuration,
-the generated ADR form, software versions and the errors.
+The input is a problem specification (monolithic, or composed with
+``extends``, possibly of an archive) or an archive. Its archive -- one per
+input, ``<outdir>/<stem>.archive.ymf`` -- is the input as realized,
+followed by ``outputs``: one per discretization and mesh, keyed by a hash
+of the part of the input that produced it (see ymf.closure). Each holds
+the transformations that produced it (strong form -> ADR form -> Proteus's
+discrete problem -> solve), the L2 errors against the exact solution, and
+the approximation itself, its arrays in ``<stem>_<digest>.h5`` beside the
+archive or, with ``--inline``, in the archive.
 
-Given such an archive instead, it reruns exactly that run from the record
-alone. With ``--check`` it then verifies the pipeline is idempotent: the
-regenerated ADR form must equal the recorded one and every numerical
-dataset must be bitwise identical to the original's.
+Like make, it computes only the outputs the archive lacks. ``--cells`` and
+``--levels`` override the discretizations' ``mesh``, and the archive
+records the override. ``--check`` reruns the outputs already there too, and
+compares each to its record: the ADR form, the errors and every array,
+bitwise. A match is noted under ``reproduced``. A difference is refused,
+with the differences listed, unless ``--keep-different`` keeps the rerun
+as a second output, ``<key>~2``.
 
 This is the front end, so it imports sympy through ymf.symbolic. Proteus
 itself (proteus.ADRProblem) never does: it is handed plain data.
@@ -30,9 +34,6 @@ import os
 import platform
 import subprocess
 import sys
-
-#: archive format of the run record in ``extra``
-RECORD_VERSION = 1
 
 
 def element_spaces(problem, finite_element):
@@ -63,6 +64,7 @@ def element_spaces(problem, finite_element):
 
 
 def time_stepping(discretization, problem):
+    """None for a steady solve, else {"dt", "outputs"} (of a realized entry)."""
     block = discretization.get("discretization") or {}
     if "time_integration" not in block:
         return None
@@ -73,6 +75,12 @@ def time_stepping(discretization, problem):
         raise SystemExit("%s steps in time, but the problem's domain gives no time "
                          "interval (', t ∈ (t0, t1]')" % discretization["name"])
     return {"dt": float(block["dt"]), "outputs": int(block.get("outputs", 1))}
+
+
+def stabilization_of(doc, discretization):
+    weak = {w["label"]: w for w in doc["Problem"].get("weak_forms", [])}.get(
+        str(discretization.get("from_weak_form")), {})
+    return (weak.get("stabilization_method") or "none").strip().lower()
 
 
 def software():
@@ -94,199 +102,285 @@ def software():
             "python": platform.python_version(), "platform": platform.platform()}
 
 
-def plain(value):
-    """The composed spec as plain YAML-safe data (strictyaml gives dicts already)."""
-    if isinstance(value, dict):
-        return {str(k): plain(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [plain(v) for v in value]
-    return value
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
-def solve(doc, problem, discretization, cells, outdir, name, levels=1, inline=False):
-    """Run one discretization on one mesh; return (errors, archive path).
+# --- one output ----------------------------------------------------------------
 
-    ``cells`` sizes the coarsest mesh; ``levels`` > 1 refines it uniformly
-    that many times less one (Proteus's nLevels), and the solution and
-    errors are on the finest. ``inline`` writes the arrays into the .ymf
-    itself instead of an .h5 beside it.
+
+def solve(doc, problem, name, realization, outdir, files, inline, env):
+    """Run one discretization on one realization; return its output record.
+
+    ``files`` names what Proteus writes (``<files>.h5``); the .ymf and .xmf
+    it writes beside it are dropped, since the archive holds the record and
+    the .xmf is derived from it.
     """
     from proteus import ADRProblem, Profiling
+    from ymf import closure
+    from ymf.archive import inline_domain, read_ymf
     Profiling.logLevel = 1
     Profiling.verbose = False
-    spaces = element_spaces(problem, discretization.get("finite_element") or {})
-    time = time_stepping(discretization, problem)
-    weak = {w["label"]: w for w in doc["Problem"].get("weak_forms", [])}.get(
-        str(discretization.get("from_weak_form")), {})
-    stabilization = (weak.get("stabilization_method") or "none").strip().lower()
-    run = {"discretization": discretization["name"], "cells": cells, "levels": levels,
-           "spaces": spaces, "time": time, "stabilization": stabilization,
-           "storage": "inline" if inline else "hdf5"}
-    extra = {"ymf_run": RECORD_VERSION, "spec": plain(doc), "run": run,
-             "adr": problem, "provenance": dict(software(), created=datetime.datetime.now(
-                 datetime.timezone.utc).isoformat(timespec="seconds"))}
+    entry = closure.realize(next(d for d in doc["solution_paths"]["discretizations"]
+                                 if d["name"] == name), realization)
+    spaces = element_spaces(problem, entry.get("finite_element") or {})
+    time = time_stepping(entry, problem)
+    stabilization = stabilization_of(doc, entry)
+    solver = entry.get("solver") or {}
+    cells, levels = int(realization["cells"]), int(realization.get("levels", 1))
     from proteus.iproteus import opts
     opts.dataDir = outdir
     cwd = os.getcwd()
     os.chdir(outdir)
     try:
-        _, _, errors = ADRProblem.run(problem, {c: tuple(s) for c, s in spaces.items()},
-                                      cells, time, name=name, stabilization=stabilization,
-                                      extra=extra, levels=levels)
+        ns, _, errors = ADRProblem.run(
+            problem, {c: tuple(s) for c, s in spaces.items()}, cells, time, name=files,
+            stabilization=stabilization, levels=levels,
+            tolerance=solver.get("tolerance"), max_iterations=solver.get("max_iterations"))
     finally:
         os.chdir(cwd)
-    # the errors are known only after the solve; add them to the record
-    path = os.path.join(outdir, name + ".ymf")
-    from ymf.archive import inline_domain, read_ymf, write_ymf
-    domain, extra = read_ymf(path)
-    extra["results"] = {"l2_errors": errors}
+    solved = problem
+    if stabilization == "supg/pspg":          # run() solved it pressure first
+        velocity, pressure = ADRProblem.velocity_pressure(problem)
+        solved = ADRProblem.reorder(problem, [pressure] + velocity)
+    discrete = dict(ADRProblem.describe(solved, ns.nList[0]), stabilization=stabilization)
+
+    domain, _ = read_ymf(os.path.join(outdir, files + ".ymf"))
+    for suffix in (".ymf", ".xmf"):
+        os.remove(os.path.join(outdir, files + suffix))
     if inline:
-        # copy the arrays in, then drop the .h5 this run wrote and derive the
-        # .xmf again from the self-contained archive
-        from ymf.xdmf import write_xdmf
         domain = inline_domain(domain, outdir)
-        os.remove(os.path.join(outdir, name + ".h5"))
-        write_xdmf(domain, os.path.join(outdir, name + ".xmf"), ymf_extra=extra)
-    write_ymf(domain, path, extra=extra)
-    return errors, path
+        os.remove(os.path.join(outdir, files + ".h5"))
+    return {
+        "input": {"sha256": closure.input_digest(doc, name, realization)},
+        "realization": realization,
+        "transformations": {
+            "strong_to_adr": {"by": "ymf.symbolic %s" % env["ymf"], "adr": problem},
+            "adr_to_discrete": dict({"by": "proteus.ADRProblem %s" % env["proteus"]},
+                                    **discrete),
+            "solve": {"by": env, "created": now()},
+        },
+        "storage": "inline" if inline else files + ".h5",
+        "verification": {"l2_errors": errors},
+        "approximation": domain,
+    }
 
 
-def run_spec(path, args):
-    from ymf import load_ymf
-    from ymf.symbolic import adr_problem
-    doc = load_ymf(path)
-    problem = adr_problem(doc)
-    discretizations = doc["solution_paths"]["discretizations"]
-    if args.discretization:
-        discretizations = [d for d in discretizations if d["name"] == args.discretization]
-        if not discretizations:
-            raise SystemExit("no discretization named %r" % args.discretization)
-    weak_forms = {w["label"]: w for w in doc["Problem"].get("weak_forms", [])}
-    from proteus.ADRProblem import STABILIZATIONS
-    stem = os.path.splitext(os.path.basename(path))[0]
-    print("%s: %s" % (path, doc["Problem"]["name"]))
-    print("unknowns: %s" % ", ".join("%s (%s)" % (n, ", ".join(c)) for n, c in problem["unknowns"].items()))
-    for d in discretizations:
-        weak = weak_forms.get(str(d.get("from_weak_form")), {})
-        method = (weak.get("stabilization_method") or "none").strip()
-        if method.lower() not in STABILIZATIONS:
-            # Running it without would solve a different weak form under
-            # this branch's name.
-            print("\n%s -- skipped: its weak form %r needs %s stabilization, which "
-                  "is not wired up yet" % (d["name"], weak.get("label"), method))
-            continue
-        spaces = element_spaces(problem, d.get("finite_element") or {})
-        time = time_stepping(d, problem)
-        print("\n%s -- %s%s%s" % (
-            d["name"], ", ".join("%s %s%d" % (c, f, o) for c, (f, o) in spaces.items()),
-            "" if method.lower() == "none" else ", " + method,
-            "" if time is None else ", backward Euler dt=%g on (%g, %g]" % (
-                time["dt"], problem["time"][0], problem["time"][1])))
-        names = list(problem["exact"])
-        print("  cells  " + "".join("  L2(%s)    rate  " % n for n in names)
-              + ("" if args.levels == 1 else "   (finest of %d levels)" % args.levels))
-        previous = None
-        for cells in args.cells:
-            errors, _ = solve(doc, problem, d, cells, args.outdir,
-                              "%s_%s_%d%s" % (stem, d["name"], cells,
-                                              "" if args.levels == 1 else "x%d" % args.levels),
-                              levels=args.levels, inline=args.inline)
-            row = "  %5d  " % (cells * 2 ** (args.levels - 1))
-            for n in names:
-                rate = ""
-                if previous and previous[n] > 0 and errors[n] > 0:
-                    rate = "%5.2f" % math.log2(previous[n] / errors[n])
-                row += "  %.3e %5s  " % (errors[n], rate)
-            print(row, flush=True)
-            previous = errors
-
-
-def run_archive(path, args):
-    """Rerun the run an archive records; with --check, compare the two."""
-    import yaml
-    from ymf import validate_ymf
-    from ymf.archive import read_ymf
-    from ymf.symbolic import adr_problem
-    _, extra = read_ymf(path)
-    if not extra or "run" not in extra or "spec" not in extra:
-        raise SystemExit("%s does not record a ymf_run run (no spec and run in extra)" % path)
-    # Validate the embedded spec exactly as a spec file would be.
-    doc = validate_ymf(yaml.safe_dump(extra["spec"], allow_unicode=True, sort_keys=False))
-    problem = adr_problem(doc)
-    run = extra["run"]
-    discretization = next(d for d in doc["solution_paths"]["discretizations"]
-                          if d["name"] == run["discretization"])
-    stem = os.path.splitext(os.path.basename(path))[0]
-    name = stem + "_rerun"
-    errors, rerun_path = solve(doc, problem, discretization, int(run["cells"]),
-                               args.outdir, name, levels=int(run.get("levels", 1)),
-                               inline=run.get("storage") == "inline")
-    print("%s: reran %s on %d cells -> %s" % (path, run["discretization"], run["cells"], rerun_path))
-    print("  errors: %s" % ", ".join("%s %.6e" % kv for kv in errors.items()))
-    if not args.check:
-        return 0
-    failures = []
-    if problem != extra["adr"]:
-        failures.append("the regenerated ADR form differs from the recorded one")
-    recorded = extra.get("results", {}).get("l2_errors", {})
-    if recorded != errors:
-        failures.append("errors differ: recorded %s, rerun %s" % (recorded, errors))
-    failures += compare_arrays(path, rerun_path)
-    if failures:
-        print("NOT IDEMPOTENT:\n  " + "\n  ".join(failures))
-        return 1
-    print("  idempotent: same ADR form, same errors, every numerical dataset bitwise identical")
-    return 0
-
-
-def compare_arrays(a, b):
-    """Every array of two archives, compared exactly, however each is stored."""
+def differences(recorded, rerun, outdir):
+    """What differs between two records of one output (empty if nothing)."""
     import numpy
-    from ymf.archive import domain_arrays, read_ymf
-    arrays = []
-    for path in (a, b):
-        domain, _ = read_ymf(path)
-        arrays.append(domain_arrays(domain, os.path.dirname(os.path.abspath(path))))
-    failures = []
+    from ymf.archive import domain_arrays
+    out = []
+    a = recorded["transformations"]["strong_to_adr"]["adr"]
+    b = rerun["transformations"]["strong_to_adr"]["adr"]
+    if a != b:
+        out.append("the ADR form differs")
+    a, b = recorded["verification"]["l2_errors"], rerun["verification"]["l2_errors"]
+    for n in sorted(set(a) | set(b)):
+        if a.get(n) != b.get(n):
+            out.append("L2(%s): recorded %r, rerun %r" % (n, a.get(n), b.get(n)))
+    arrays = [domain_arrays(recorded["approximation"], outdir),
+              domain_arrays(rerun["approximation"], outdir)]
     if set(arrays[0]) != set(arrays[1]):
-        failures.append("the archives hold different fields: %s"
-                        % sorted(set(arrays[0]) ^ set(arrays[1])))
+        out.append("different fields: %s" % sorted(set(arrays[0]) ^ set(arrays[1])))
     for where in sorted(set(arrays[0]) & set(arrays[1])):
         x, y = arrays[0][where], arrays[1][where]
-        if x.dtype != y.dtype or x.shape != y.shape or not numpy.array_equal(x, y):
-            failures.append("%s: differs" % where)
-    print("  compared %d arrays" % len(arrays[0]))
-    return failures
+        if x.dtype != y.dtype or x.shape != y.shape:
+            out.append("%s: %s%s, rerun %s%s" % (where, x.dtype, x.shape, y.dtype, y.shape))
+        elif not numpy.array_equal(x, y):
+            diff = numpy.abs(x.astype(float) - y.astype(float))
+            out.append("%s: %d of %d values differ, by up to %.3e"
+                       % (where, int((diff > 0).sum()), diff.size, float(diff.max())))
+    return out
+
+
+def discard(output, outdir):
+    """Remove the file of an output that is not being kept."""
+    if output["storage"] != "inline":
+        os.remove(os.path.join(outdir, output["storage"]))
+
+
+# --- the archive -------------------------------------------------------------------
+
+
+def override(doc, names, field, values, flag):
+    """Set ``mesh.<field>`` of the named discretizations, as a recorded override."""
+    value = values if len(values) > 1 else values[0]
+    for d in doc["solution_paths"]["discretizations"]:
+        if d["name"] not in names:
+            continue
+        mesh = d.setdefault("mesh", {})
+        if field == "levels" and "cells" not in mesh:
+            del d["mesh"]
+            continue                       # no mesh to refine; reported later
+        if mesh.get(field) == value:
+            continue
+        doc.setdefault("composition", {}).setdefault("overrides", []).append({
+            "path": "solution_paths.discretizations[%s].mesh.%s" % (d["name"], field),
+            "was": mesh.get(field), "now": value, "set_by": flag})
+        mesh[field] = value
+
+
+def report(problem, rows):
+    """The convergence table of one discretization."""
+    names = list(problem["exact"])
+    print("  cells  " + "".join("  L2(%s)    rate  " % n for n in names) + "  output")
+    previous = None
+    for key, realization, output, status in rows:
+        finest = int(realization["cells"]) * 2 ** (int(realization.get("levels", 1)) - 1)
+        errors = output["verification"]["l2_errors"]
+        row = "  %5d  " % finest
+        for n in names:
+            rate = ""
+            if previous and previous.get(n, 0) > 0 and errors[n] > 0:
+                rate = "%5.2f" % math.log2(previous[n] / errors[n])
+            row += "  %.3e %5s  " % (errors[n], rate)
+        print(row + "  " + key.split("/")[-1] + "  " + status, flush=True)
+        previous = errors
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("input", help="a spec .ymf, or an archive .ymf this tool wrote")
-    parser.add_argument("--discretization", help="run only this one (by name)")
-    parser.add_argument("--cells", type=int, nargs="+", default=[4, 8, 16],
-                        help="cells per side of each mesh in the sequence")
-    parser.add_argument("--levels", type=int, default=1,
-                        help="mesh levels: refine each mesh uniformly levels-1 times "
-                             "and solve on the finest (Proteus nLevels)")
+    parser.add_argument("input", help="a spec .ymf, or an archive")
+    parser.add_argument("--discretization", action="append",
+                        help="run only this one (by name; repeatable)")
+    parser.add_argument("--cells", type=int, nargs="+",
+                        help="override mesh.cells: cells per side of each coarsest mesh")
+    parser.add_argument("--levels", type=int, nargs="+",
+                        help="override mesh.levels: refine uniformly levels-1 times and "
+                             "solve on the finest (Proteus nLevels)")
     parser.add_argument("--inline", action="store_true",
-                        help="write the arrays into the .ymf itself: one self-contained "
-                             "file (plus its .xmf), no .h5")
-    parser.add_argument("--outdir", default=".", help="where archives are written")
+                        help="write new outputs' arrays into the archive itself, no .h5")
+    parser.add_argument("--outdir",
+                        help="where the archive goes (default: beside an archive input, "
+                             "else the current directory)")
     parser.add_argument("--check", action="store_true",
-                        help="for an archive: verify the rerun reproduces it exactly")
+                        help="rerun the outputs already in the archive too, and compare")
+    parser.add_argument("--keep-different", action="store_true",
+                        help="with --check: keep a differing rerun as <key>~N")
+    parser.add_argument("--prune", action="store_true",
+                        help="drop outputs of an earlier version of the input from the "
+                             "archive (their files are left in place)")
     args = parser.parse_args(argv)
-    args.outdir = os.path.abspath(args.outdir)
-    os.makedirs(args.outdir, exist_ok=True)
 
-    from ymf.archive import YmfArchiveError, read_ymf
-    try:
-        read_ymf(args.input)
-        is_archive = True
-    except YmfArchiveError:
-        is_archive = False
-    if is_archive:
-        return run_archive(args.input, args)
-    run_spec(args.input, args)
+    from ymf import closure
+    from ymf.cli import archive2xmf
+    from ymf.compose import _is_archive_text
+    from ymf.symbolic import adr_problem
+
+    with open(args.input, encoding="utf-8") as f:
+        input_is_archive = _is_archive_text(f.read())
+    stem = closure.archive_stem(args.input)
+    if args.outdir:
+        outdir = os.path.abspath(args.outdir)
+    elif input_is_archive:
+        outdir = os.path.dirname(os.path.abspath(args.input))
+    else:
+        outdir = os.getcwd()
+    os.makedirs(outdir, exist_ok=True)
+    archive = os.path.join(outdir, stem + ".archive.ymf")
+
+    # Outputs come from the input (an archive, or what it extends) and from
+    # the archive of an earlier run of this input.
+    doc, outputs, dropped = closure.load(args.input)
+    doc = closure.plain(doc)
+    for key, why in dropped.items():
+        print("not inherited: %s (%s)" % (key, why))
+    if os.path.abspath(args.input) != archive and os.path.exists(archive):
+        _, existing, _ = closure.load(archive)
+        for key, output in existing.items():
+            outputs.setdefault(key, output)
+
+    names = [d["name"] for d in doc["solution_paths"]["discretizations"]]
+    selected = args.discretization or names
+    unknown = sorted(set(selected) - set(names))
+    if unknown:
+        raise SystemExit("no discretization named %s (have %s)"
+                         % (", ".join(unknown), ", ".join(names)))
+    flags = "".join(" --discretization " + n for n in args.discretization or [])
+    for field in ("cells", "levels"):
+        values = getattr(args, field)
+        if values:
+            override(doc, selected, field, values, "ymf_run%s --%s %s"
+                     % (flags, field, " ".join(map(str, values))))
+
+    outputs, stale = closure.partition(doc, outputs)
+    if stale:
+        print("%s holds outputs of an earlier version of the input:" % archive)
+        for key, why in stale.items():
+            print("  %s: %s" % (key, why))
+        if not args.prune:
+            raise SystemExit("refusing to drop them: rerun with --prune, or use another --outdir")
+
+    problem = adr_problem(doc)
+    from proteus.ADRProblem import STABILIZATIONS
+    print("%s: %s" % (args.input, doc["Problem"]["name"]))
+    print("unknowns: %s" % ", ".join("%s (%s)" % (n, ", ".join(c))
+                                    for n, c in problem["unknowns"].items()))
+    env = software()
+    planned = list(closure.planned_outputs(doc))
+    new, refused = [], []
+    for name in selected:
+        entry = next(d for d in doc["solution_paths"]["discretizations"] if d["name"] == name)
+        mine = [(k, r) for k, n, r in planned if n == name]
+        if not mine:
+            print("\n%s -- no mesh: give it one (mesh: {cells: [4, 8]}) or pass --cells" % name)
+            continue
+        method = stabilization_of(doc, entry)
+        if method not in STABILIZATIONS:
+            # Running it without would solve a different weak form under
+            # this branch's name.
+            print("\n%s -- skipped: its weak form needs %s stabilization, which is "
+                  "not wired up yet" % (name, method))
+            continue
+        spaces = element_spaces(problem, entry.get("finite_element") or {})
+        print("\n%s -- %s%s" % (name, ", ".join("%s %s%d" % (c, f, o)
+                                                for c, (f, o) in spaces.items()),
+                                "" if method == "none" else ", " + method))
+        rows = []
+        for key, realization in mine:
+            if key in outputs and not args.check:
+                rows.append((key, realization, outputs[key], "in the archive"))
+                continue
+            n = 1
+            while ("%s~%d" % (key, n) if n > 1 else key) in outputs:
+                n += 1
+            slot = "%s~%d" % (key, n) if n > 1 else key
+            output = solve(doc, problem, name, realization, outdir,
+                           closure.file_stem(stem, slot), args.inline, env)
+            if key not in outputs:
+                outputs[key] = output
+                new.append(key)
+                rows.append((key, realization, output, "new"))
+                continue
+            found = differences(outputs[key], output, outdir)
+            if not found:
+                discard(output, outdir)
+                outputs[key].setdefault("reproduced", []).append(
+                    {"created": output["transformations"]["solve"]["created"], "by": env})
+                rows.append((key, realization, outputs[key], "reproduced, bitwise"))
+            elif args.keep_different:
+                outputs[slot] = output
+                new.append(slot)
+                rows.append((slot, realization, output, "DIFFERENT, kept"))
+            else:
+                discard(output, outdir)
+                refused.append((key, found))
+                rows.append((key, realization, outputs[key], "DIFFERENT, refused"))
+        report(problem, rows)
+
+    closure.write(archive, doc, outputs)
+    if new:
+        archive2xmf(archive, outdir, new)
+    print("\nwrote %s: %d outputs, %d new" % (archive, len(outputs), len(new)))
+    if refused:
+        print("\nNOT REPRODUCED (--keep-different keeps a differing rerun):")
+        for key, found in refused:
+            print("  %s\n    %s" % (key, "\n    ".join(found)))
+        return 1
+    if args.check:
+        print("every rerun reproduced its record: same ADR form, same errors, "
+              "every array bitwise identical")
     return 0
 
 

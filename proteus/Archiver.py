@@ -55,11 +55,6 @@ class AR_base(object):
         self.readOnly = readOnly
         self.n_datasets = 0
         self.archived_domain = None
-        #Anything without an XDMF equivalent that the archive should carry:
-        #typically the YMF problem specification and the run configuration
-        #that produced this output, so the archive records -- and can
-        #reproduce -- the run. Written as the .ymf's ``extra`` at close.
-        self.extra = None
         import datetime
         #filename += datetime.datetime.now().isoformat()
         self.global_sync = global_sync
@@ -470,7 +465,7 @@ class AR_base(object):
         self.clear_xml()
         if domain is not None:
             ymf_path = os.path.join(self.dataDir, self.filename + ".ymf")
-            write_ymf(domain, ymf_path, extra=self.extra)
+            write_ymf(domain, ymf_path)
             logEvent("Wrote YMF archive " + ymf_path)
             #The .xmf is derived from the same domain, for viewers, and is
             #written through the handle opened in __init__ -- the legacy
@@ -478,7 +473,7 @@ class AR_base(object):
             #accumulate in that tree it would truncate this file back to an
             #empty collection. Phase 4 replaces this with an on-demand
             #converter and drops the .xmf from the write path entirely.
-            tree = build_xdmf_tree(domain, ymf_extra=self.extra)
+            tree = build_xdmf_tree(domain)
             indentXML(tree.getroot())
             self.xmlFileGlobal.write(XDMF_HEADER)
             tree.write(self.xmlFileGlobal, encoding="utf-8")

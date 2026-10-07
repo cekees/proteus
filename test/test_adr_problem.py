@@ -118,37 +118,93 @@ def ymf_run(*args):
                           capture_output=True, text=True)
 
 
-def test_a_spec_runs_end_to_end_and_converges(poisson_spec, tmp_path):
+def rows(stdout):
+    return [line.split() for line in stdout.splitlines() if line.strip()[:1].isdigit()]
+
+
+def test_a_spec_runs_end_to_end_into_its_archive(poisson_spec, tmp_path):
     out = ymf_run(poisson_spec, "--cells", "4", "8", "--outdir", tmp_path)
     assert out.returncode == 0, out.stderr[-2000:]
-    rows = [line.split() for line in out.stdout.splitlines() if line.strip()[:1].isdigit()]
-    assert [r[0] for r in rows] == ["4", "8"]
-    assert 1.8 < float(rows[1][2]) < 2.2          # P1 in L2
-    from ymf.archive import read_ymf
-    _, extra = read_ymf(tmp_path / "poisson_P1_8.ymf")
-    assert extra["spec"]["Problem"]["strong_form"]["equations"] == ["-Δu = 2π² sin(πx) sin(πy)  in Ω"]
-    assert extra["run"] == {"discretization": "P1", "cells": 8, "levels": 1,
-                            "spaces": {"u": ["CG", 1]}, "time": None,
-                            "stabilization": "none", "storage": "hdf5"}
-    assert set(extra["results"]["l2_errors"]) == {"u"}
+    table = rows(out.stdout)
+    assert [r[0] for r in table] == ["4", "8"] and [r[-1] for r in table] == ["new", "new"]
+    assert 1.8 < float(table[1][2]) < 2.2          # P1 in L2
+    from ymf import closure
+    spec, outputs, _ = closure.load(tmp_path / "poisson.archive.ymf")
+    assert spec["Problem"]["strong_form"]["equations"] == ["-Δu = 2π² sin(πx) sin(πy)  in Ω"]
+    assert spec["solution_paths"]["discretizations"][0]["mesh"] == {"cells": [4, 8]}
+    assert spec["composition"]["overrides"][0]["set_by"] == "ymf_run --cells 4 8"
+    key = [k for k in outputs if "/cells=8/" in k][0]
+    output = outputs[key]
+    assert output["realization"] == {"cells": 8, "levels": 1}
+    assert output["input"]["sha256"].startswith(key.rsplit("/", 1)[1])
+    discrete = output["transformations"]["adr_to_discrete"]
+    assert discrete["spaces"] == {"u": "C0_AffineLinearOnSimplexWithNodalBasis"}
+    assert discrete["mesh"] == {"nodes_per_side": 9, "levels": 1}
+    assert set(output["verification"]["l2_errors"]) == {"u"}
+    files = sorted(p.name for p in tmp_path.iterdir() if p.suffix in (".h5", ".xmf"))
+    assert files == sorted(closure.file_stem("poisson", k) + s
+                           for k in outputs for s in (".h5", ".xmf"))
+
+
+def test_like_make_it_computes_only_what_is_missing(poisson_spec, tmp_path):
+    assert ymf_run(poisson_spec, "--cells", "4", "--outdir", tmp_path).returncode == 0
+    out = ymf_run(poisson_spec, "--cells", "4", "8", "--outdir", tmp_path)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert [r[-1] for r in rows(out.stdout)] == ["archive", "new"]    # "in the archive"
+    assert "2 outputs, 1 new" in out.stdout
 
 
 def test_an_archive_reruns_to_bitwise_identical_results(poisson_spec, tmp_path):
     assert ymf_run(poisson_spec, "--cells", "4", "--outdir", tmp_path).returncode == 0
-    out = ymf_run(tmp_path / "poisson_P1_4.ymf", "--check", "--outdir", tmp_path)
+    archive = tmp_path / "poisson.archive.ymf"
+    out = ymf_run(archive, "--check")
     assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
-    assert "idempotent" in out.stdout
+    assert "reproduced, bitwise" in out.stdout
+    from ymf import closure
+    _, outputs, _ = closure.load(archive)
+    (output,) = outputs.values()
+    assert len(output["reproduced"]) == 1
+
+
+def test_a_differing_rerun_is_refused_unless_kept(poisson_spec, tmp_path):
+    assert ymf_run(poisson_spec, "--cells", "4", "--outdir", tmp_path).returncode == 0
+    archive = tmp_path / "poisson.archive.ymf"
+    # tamper with the record, as a different machine's result would differ
+    from ymf.archive import read_document, write_document
+    document = read_document(archive)
+    (output,) = document["outputs"].values()
+    output["verification"]["l2_errors"]["u"] *= 1.5
+    write_document(archive, document)
+    out = ymf_run(archive, "--check")
+    assert out.returncode == 1 and "NOT REPRODUCED" in out.stdout and "L2(u)" in out.stdout
+    out = ymf_run(archive, "--check", "--keep-different")
+    assert out.returncode == 0, out.stdout[-2000:]
+    keys = list(read_document(archive)["outputs"])
+    assert len(keys) == 2 and keys[1] == keys[0] + "~2"
+
+
+def test_an_edited_spec_does_not_silently_replace_the_archive(poisson_spec, tmp_path):
+    assert ymf_run(poisson_spec, "--cells", "4", "--outdir", tmp_path).returncode == 0
+    poisson_spec.write_text(poisson_spec.read_text().replace('"Poisson"', '"Poisson, renamed"'))
+    out = ymf_run(poisson_spec, "--cells", "4", "--outdir", tmp_path)
+    assert out.returncode != 0 and "earlier version of the input" in out.stdout
+    out = ymf_run(poisson_spec, "--cells", "4", "--outdir", tmp_path, "--prune")
+    assert out.returncode == 0 and "1 outputs, 1 new" in out.stdout
 
 
 def test_an_inline_multilevel_run_is_self_contained_and_reproducible(poisson_spec, tmp_path):
     out = ymf_run(poisson_spec, "--cells", "2", "--levels", "3", "--inline", "--outdir", tmp_path)
     assert out.returncode == 0, out.stderr[-2000:]
-    names = sorted(p.name for p in tmp_path.glob("poisson_P1_2x3.*"))
-    assert names == ["poisson_P1_2x3.xmf", "poisson_P1_2x3.ymf"]       # no .h5
-    from ymf.archive import read_ymf, domain_arrays
-    domain, extra = read_ymf(tmp_path / "poisson_P1_2x3.ymf")
-    assert (extra["run"]["cells"], extra["run"]["levels"], extra["run"]["storage"]) == (2, 3, "inline")
-    nodes = [a for k, a in domain_arrays(domain).items() if k.endswith("Geometry")][-1]
+    from ymf import closure
+    from ymf.archive import domain_arrays
+    archive = tmp_path / "poisson.archive.ymf"
+    _, outputs, _ = closure.load(archive)
+    ((key, output),) = outputs.items()
+    assert "/cells=2/levels=3/" in key and output["storage"] == "inline"
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        ["poisson.ymf", "poisson.archive.ymf", closure.file_stem("poisson", key) + ".xmf"])
+    nodes = [a for k, a in domain_arrays(output["approximation"]).items()
+             if k.endswith("Geometry")][-1]
     assert nodes.shape == (81, 3)        # the finest level: 2 cells refined twice -> 8x8
-    out = ymf_run(tmp_path / "poisson_P1_2x3.ymf", "--check", "--outdir", tmp_path)
-    assert out.returncode == 0 and "idempotent" in out.stdout, out.stdout[-2000:]
+    out = ymf_run(archive, "--check")
+    assert out.returncode == 0 and "reproduced, bitwise" in out.stdout, out.stdout[-2000:]

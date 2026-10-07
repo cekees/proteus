@@ -339,7 +339,8 @@ def velocity_pressure(problem):
 
 
 def numerics(problem, spaces, cells, time=None, quadrature_order=None,
-             stabilization="none", coefficients=None, levels=1):
+             stabilization="none", coefficients=None, levels=1,
+             tolerance=None, max_iterations=None):
     """The discrete problem.
 
     ``spaces`` maps each scalar component to a (family, order) pair;
@@ -348,6 +349,8 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None,
     :data:`STABILIZATIONS`; ``supg/pspg`` installs Proteus's residual-based
     velocity-pressure stabilization (ASGS), which needs the problem in
     pressure-first order (see :func:`reorder`) and its ``coefficients``.
+    ``tolerance`` and ``max_iterations`` set Newton's absolute residual
+    tolerance (default 1e-10) and iteration limit (default 25).
     """
     adr = problem["adr"]
     dim = adr["dim"]
@@ -409,14 +412,46 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None,
     n.multilevelNonlinearSolver = NonlinearSolvers.Newton
     n.levelNonlinearSolver = NonlinearSolvers.Newton
     n.fullNewtonFlag = True
-    n.maxNonlinearIts = 25
+    n.maxNonlinearIts = int(max_iterations or 25)
     n.maxLineSearches = 0
     n.tolFac = 0.0
-    n.nl_atol_res = 1.0e-10
+    n.nl_atol_res = float(tolerance or 1.0e-10)
     n.matrix = LinearAlgebraTools.SparseMatrix
     n.multilevelLinearSolver = LinearSolvers.LU
     n.levelLinearSolver = LinearSolvers.LU
     return n
+
+
+def _name(obj):
+    return obj.__name__ if isinstance(obj, type) else type(obj).__name__
+
+
+def describe(problem, n):
+    """The discrete problem ``n`` (from :func:`numerics`), as plain data.
+
+    Names the Proteus classes each choice resolved to, so that a record of
+    the run says exactly what was solved, not only what was asked for.
+    """
+    names = problem["adr"]["components"]
+    out = {
+        "spaces": {names[i]: _name(space) for i, space in sorted(n.femSpaces.items())},
+        "quadrature": {"element": int(n.elementQuadrature.order),
+                       "boundary": int(n.elementBoundaryQuadrature.order)},
+        "mesh": {"nodes_per_side": int(n.nnx), "levels": int(n.nLevels)},
+        "time_integration": ("none" if n.timeIntegration is TimeIntegration.NoIntegration
+                             else _name(n.timeIntegration)),
+        "nonlinear_solver": {"type": _name(n.levelNonlinearSolver),
+                             "atol": float(n.nl_atol_res),
+                             "max_iterations": int(n.maxNonlinearIts)},
+        "linear_solver": _name(n.levelLinearSolver),
+    }
+    if getattr(n, "subgridError", None) is not None:
+        out["subgrid_error"] = _name(n.subgridError)
+    if getattr(n, "numericalFluxType", None) is not None:
+        out["numerical_flux"] = _name(n.numericalFluxType)
+    if n.timeIntegration is not TimeIntegration.NoIntegration:
+        out["time_step"] = float(n.DT)
+    return out
 
 
 def l2_errors(model, problem, t):
@@ -433,14 +468,14 @@ def l2_errors(model, problem, t):
 
 
 def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
-        extra=None, opts=None, levels=1):
+        opts=None, levels=1, tolerance=None, max_iterations=None):
     """Solve; return (NS_base, the finest level model, L2 errors at the end).
 
     ``time`` is None for a steady solve, or ``{"dt": ...}`` to step through
     the problem's own time interval (``problem["time"]``); ``outputs`` (1 by
-    default) sets how many evenly spaced archive frames to write. ``extra``
-    is stored in the archive (see AR_base.extra): pass the specification
-    and run configuration to make the archive reproduce its own run.
+    default) sets how many evenly spaced archive frames to write. The
+    archive Proteus writes holds the numerical approximation only; what
+    produced it is the caller's to record (see :func:`describe`).
     """
     from proteus import NumericalSolution, default_s
     if opts is None:
@@ -450,7 +485,8 @@ def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
         problem = reorder(problem, [pressure] + velocity)
     p = physics(problem, name)
     n = numerics(problem, spaces, cells, time, stabilization=stabilization,
-                 coefficients=p.coefficients, levels=levels)
+                 coefficients=p.coefficients, levels=levels,
+                 tolerance=tolerance, max_iterations=max_iterations)
     if problem.get("periodic"):
         n.periodicDirichletConditions = p.periodicDirichletConditions
     so = defaults.System_base(name=name, pnList=[(p, n)], sList=[default_s])
@@ -469,8 +505,6 @@ def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
         so.systemStepControllerType = SplitOperator.Sequential_FixedStep
         so.dt_system_fixed = float(time["dt"])
     ns = NumericalSolution.NS_base(so, [p], [n], so.sList, opts)
-    if extra is not None:
-        ns.ar[0].extra = extra
     ns.calculateSolution(name)
     model = ns.modelList[0].levelModelList[-1]
     return ns, model, l2_errors(model, problem, so.tnList[-1])
