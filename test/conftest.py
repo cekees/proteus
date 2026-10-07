@@ -31,3 +31,43 @@ def _restore_petsc_options():
     for name, value in before.items():
         if after.get(name) != value:
             database.setValue(name, value)
+
+
+@pytest.fixture(autouse=True)
+def _restore_proteus_process_state():
+    """Put proteus.iproteus.opts, the default_p/n/so modules, proteus.Context and
+    the working directory back after each test.
+
+    opts is a process-wide object that tests import by reference and set
+    (opts.hotStart, opts.dataDir, ...); a value one test sets otherwise holds
+    for every test after it.
+    """
+    import os
+    cwd = os.getcwd()
+    module = sys.modules.get("proteus.iproteus")
+    saved = dict(vars(module.opts)) if module is not None else None
+    # default_p/default_n/default_so are modules model files star-import their
+    # defaults from; a test that assigns to one (POD did: numerics = default_n,
+    # then numerics.subgridError = ...) changes every later model's defaults
+    defaults_modules = dict((name, dict(vars(sys.modules[name])))
+                            for name in ("proteus.default_p", "proteus.default_n",
+                                         "proteus.default_so") if name in sys.modules)
+    context = sys.modules.get("proteus.Context")
+    saved_context = ((context.context, context.contextOptionsString)
+                     if context is not None else None)
+    yield
+    if saved is not None:
+        vars(module.opts).clear()
+        vars(module.opts).update(saved)
+    for name, saved_vars in defaults_modules.items():
+        namespace = vars(sys.modules[name])
+        for key in list(namespace):
+            if key not in saved_vars:
+                del namespace[key]
+        namespace.update(saved_vars)
+    if saved_context is not None:
+        # Context.contextOptionsString (parun -C) is read by every model module
+        # that calls Context.Options; one a test leaves set reconfigures every
+        # later model (IFEM's refinement=N renamed MCorr's output).
+        context.context, context.contextOptionsString = saved_context
+    os.chdir(cwd)

@@ -4,6 +4,7 @@ Fine-scale heat equation solver
 The equation is du/du - Laplace u + u + f(x,y,z,t) = 0
 """
 from proteus.iproteus import *
+from proteus import defaults
 
 class Heat(TransportCoefficients.TC_base):
     """
@@ -62,7 +63,9 @@ class Initial(object):
 a0 = 1.0
 T = 1.0
 
-physics = default_p
+# an object of its own: assigning to default_p itself changed the defaults
+# every later model in the process starts from
+physics = defaults.Physics_base()
 physics.nd = 3; #Three dimensions
 physics.L=(1.0,1.0,1.0) #spatial domain: unit cube
 A  =[[a0,0.0,0.0],
@@ -77,7 +80,7 @@ physics.initialConditions = {0:Initial()}
 nDTout = 100
 DT = T/float(nDTout)
 
-numerics=default_n
+numerics = defaults.Numerics_base()
 numerics.timeIntegration=TimeIntegration.BackwardEuler
 numerics.femSpaces = {0:FemTools.C0_AffineLinearOnSimplexWithNodalBasis} #piecewise linears
 numerics.elementQuadrature = Quadrature.SimplexGaussQuadrature(physics.nd,2) #Quadrature rule for elements
@@ -102,7 +105,7 @@ numerics.periodicDirichletConditions=None
 #
 # split operator options (trivial since we're not splitting)
 #
-so = default_so
+so = defaults.System_base()
 so.sList=[default_s]
 # this is a time interval from 0 to 1
 so.tnList = [i*DT for i in range(nDTout+1)]

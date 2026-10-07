@@ -7,6 +7,7 @@ The equation is
 .. math: \frac{\partial u}{\partial t} + \nabla \cdot (\frac{1}{2} u^2 - \epsilon \nabla u) = 0
 """
 from proteus.iproteus import *
+from proteus import defaults
 
 class Burgers(TransportCoefficients.TC_base):
     """
@@ -95,7 +96,9 @@ class Initial(object):
 a0 = 1.0e-2
 T = 1.0
 
-physics = default_p
+# an object of its own: assigning to default_p itself changed the defaults
+# every later model in the process starts from
+physics = defaults.Physics_base()
 physics.nd = nd; #
 physics.name = "burgers_{0}d".format(physics.nd)
 physics.L=(1.0,)*nd #spatial domain: unit cube
@@ -114,7 +117,7 @@ physics.fluxBoundaryConditions = {0:'outFlow'}
 nDTout = 100
 DT = T/float(nDTout)
 
-numerics=default_n
+numerics = defaults.Numerics_base()
 numerics.timeIntegration = TimeIntegration.BackwardEuler_cfl
 numerics.stepController = StepControl.Min_dt_cfl_controller
 numerics.runCFL=0.99
@@ -150,7 +153,7 @@ numerics.numericalFluxType = NumericalFlux.NoFlux
 #
 # split operator options (trivial since we're not splitting)
 #
-so = default_so
+so = defaults.System_base()
 so.sList=[default_s]
 # this is a time interval from 0 to 1
 so.tnList = [i*DT for i in range(nDTout+1)]
