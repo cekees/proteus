@@ -36,6 +36,103 @@ def load_source(modname, filename):
     loader.exec_module(module)
     return module
 
+# ---------------------------------------------------------------------------
+# Loading a model set: an so module and its p and n modules
+#
+# Two things are wanted at once, and plain imports give only one of them:
+#
+# - Every load starts fresh. A run's modules are executed again, from fresh
+#   defaults, even when the same process (a pytest session) has loaded them
+#   before; nothing a previous run executed leaks into this one.
+#
+# - Within one run, the modules are ordinary modules. A numerics module that
+#   does `from my_p import coefficients` gets the very object the physics
+#   object holds, so what numerics does to physics -- stabilization adding
+#   a coupling to the coefficients' stencil, physics-based preconditioning
+#   reading them -- happens to the physics that is solved.
+#
+# load_source alone gives the first and breaks the second: the numerics
+# module's import executes the p file a second time (and caches that copy
+# in sys.modules for the rest of the process, so it leaks too). So the
+# loaders share a model set: the modules of the files in a model directory
+# are imported normally, registered under their names, while a load runs;
+# kept with the set between loads of the same run; and taken out of
+# sys.modules again afterwards, with whatever was there before put back.
+# A set starts at load_system, or when a module already in the set is
+# loaded again (that is a new run).
+# ---------------------------------------------------------------------------
+
+class _ModelSet(object):
+    """The modules of one run, and the physics objects made from them."""
+
+    def __init__(self):
+        self.modules = {}   # absolute file name -> module
+        self.physics = []   # [module, physics object, {key: value as snapshotted}]
+
+
+_model_set = _ModelSet()
+
+
+def _new_model_set():
+    global _model_set
+    _model_set = _ModelSet()
+    return _model_set
+
+
+def _module_file(path, name):
+    return os.path.abspath(os.path.join(path, name + ".py"))
+
+
+def _load_module(name, path):
+    """Import ``path/name.py`` as module ``name`` within the current model set.
+
+    The modules of ``path`` already in the set are visible under their names
+    while it runs; everything else from ``path`` is executed fresh. Returns
+    the module. sys.path and sys.modules are restored afterwards.
+    """
+    path = os.path.abspath(path)
+    model_set = _model_set
+    if _module_file(path, name) in model_set.modules:
+        model_set = _new_model_set()          # loaded again: a new run
+    local = set(f[:-3] for f in os.listdir(path) if f.endswith(".py"))
+    saved = dict((n, sys.modules.pop(n)) for n in local if n in sys.modules)
+    for n in local:
+        module = model_set.modules.get(_module_file(path, n))
+        if module is not None:
+            sys.modules[n] = module
+    sys.path.insert(0, path)
+    importlib.invalidate_caches()
+    try:
+        module = importlib.import_module(name)
+    finally:
+        sys.path.remove(path)
+        for n in local:
+            loaded = sys.modules.pop(n, None)
+            if loaded is not None and getattr(loaded, "__file__", None) and \
+               os.path.abspath(loaded.__file__) == _module_file(path, n):
+                model_set.modules[_module_file(path, n)] = loaded
+        sys.modules.update(saved)
+    return module
+
+
+def _resync_physics():
+    """Carry what later modules rebound in a physics module into its object.
+
+    A numerics module may rebind a name in a physics module (``my_p.T = 1``)
+    after the physics object was made. Only names whose binding changed since
+    the object was made are copied, so a caller's own edits to the object
+    (setting its name, say) are not undone.
+    """
+    for entry in _model_set.physics:
+        module, physics_object, snapshot = entry
+        for k, v in module.__dict__.items():
+            if k in physics_excluded_keys:
+                continue
+            if k not in snapshot or snapshot[k] is not v:
+                physics_object.__dict__[k] = v
+                snapshot[k] = v
+
+
 if sys.version_info.major < 3:  # Python 2?
     # Using exec avoids a SyntaxError in Python 3.
     exec("""def reraise(exc_type, exc_value, exc_traceback=None):
@@ -112,14 +209,20 @@ def reset_default_p():
         default_p.__dict__[k] = v
 
 def load_physics(pModule, path='.'):
+    """A Physics_base from module ``pModule`` in ``path``, freshly executed.
+
+    It joins the current model set (see _load_module), so a numerics module
+    loaded after it shares its module, and its coefficients.
+    """
     reset_default_p()
-    sys.path.append(path)
-    p = load_source(pModule, os.path.join(path, pModule+".py"))
-    sys.path.remove(path)
+    p = _load_module(pModule, path)
     physics_object = Physics_base()
+    snapshot = {}
     for k,v in p.__dict__.items():
         if k not in physics_excluded_keys:
             physics_object.__dict__[k] = v
+            snapshot[k] = v
+    _model_set.physics.append([p, physics_object, snapshot])
     return physics_object
 
 numerics_default_keys = []
@@ -203,10 +306,16 @@ def reset_default_n():
         default_n.__dict__[k] = v
 
 def load_numerics(nModule, path='.'):
+    """A Numerics_base from module ``nModule`` in ``path``, freshly executed.
+
+    It joins the current model set, so its imports of physics modules loaded
+    for this run get those modules -- and what it does to them (a subgrid
+    error class adding to the coefficients' stencil, say) reaches the
+    physics objects.
+    """
     reset_default_n()
-    sys.path.append(path)
-    n = load_source(nModule, os.path.join(path, nModule+".py"))
-    sys.path.remove(path)
+    n = _load_module(nModule, path)
+    _resync_physics()
     numerics_object = Numerics_base()
     for k,v in n.__dict__.items():
         if k not in numerics_excluded_keys:
@@ -244,12 +353,35 @@ def reset_default_so():
         default_so.__dict__[k] = v
 
 def load_system(soModule, path='.'):
+    """A System_base from module ``soModule`` in ``path``; starts a model set."""
     reset_default_so()
-    sys.path.append(path)
-    so = load_source(soModule, os.path.join(path, soModule+".py"))
-    sys.path.remove(path)
+    _new_model_set()
+    so = _load_module(soModule, path)
     system_object = System_base()
     for k,v in so.__dict__.items():
         if k not in system_excluded_keys:
             system_object.__dict__[k] = v
     return system_object
+
+
+def load_models(soModule, path='.'):
+    """Load an so module and every p and n module it names, as one model set.
+
+    Returns ``(so, pList, nList)``. Entries of ``so.pnList`` that are
+    already objects are passed through. A physics object without a name is
+    named after its module, as parun does.
+    """
+    so = load_system(soModule, path)
+    pList, nList = [], []
+    for pModule, nModule in so.pnList:
+        if isinstance(pModule, Physics_base):
+            pList.append(pModule)
+            nList.append(nModule)
+            continue
+        pList.append(load_physics(pModule, path))
+        if pList[-1].name is None:
+            pList[-1].name = pModule
+        nList.append(load_numerics(nModule, path))
+    if so.name is None:
+        so.name = soModule
+    return so, pList, nList

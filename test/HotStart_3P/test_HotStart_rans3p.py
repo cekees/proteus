@@ -42,7 +42,27 @@ class Test_HotStart_rans3p(object):
         self.example_setting("T=0.1 vspaceOrder=2 onlySaveFinalSolution=True isHotStart=True", h5_filename="solution_p2", check_result=True, isHotstart=True,hotstart_t=0.1)
 
 
-    def example_setting(self, pre_setting, h5_filename, check_result=False, isHotstart=False, hotstart_t=0.0):
+    def example_setting(self, *args, **kwargs):
+        # This sets process-wide state -- the hot start options on
+        # iproteus.opts and Context.contextOptionsString -- that every later
+        # NS_base in the process would otherwise inherit (each later test
+        # then tries to restart from an archive that does not exist).
+        missing = object()           # opts has no hotStartTime until set
+        saved = dict((k, getattr(opts, k, missing)) for k in
+                     ("profile", "gatherArchive", "hotStart", "hotStartTime"))
+        saved_context = Context.contextOptionsString
+        try:
+            return self._example_setting(*args, **kwargs)
+        finally:
+            for k, v in saved.items():
+                if v is missing:
+                    if hasattr(opts, k):
+                        delattr(opts, k)
+                else:
+                    setattr(opts, k, v)
+            Context.contextOptionsString = saved_context
+
+    def _example_setting(self, pre_setting, h5_filename, check_result=False, isHotstart=False, hotstart_t=0.0):
         Context.contextOptionsString = pre_setting
         from . import NS_hotstart_so as my_so
         reload(my_so)

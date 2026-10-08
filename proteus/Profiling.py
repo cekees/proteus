@@ -72,7 +72,9 @@ def openLog(filename,level,logLocation=None):
     elif logAllProcesses:
         logFile=open(filename_full+repr(procID),'w')
     logLevel = level
-    for string,level,data in preInitBuffer:
+    # written once: a later openLog must not replay them again
+    buffered, preInitBuffer = preInitBuffer, []
+    for string,level,data in buffered:
         logEvent(string,level,data)
 
 def closeLog():
@@ -81,11 +83,20 @@ def closeLog():
         logFile.close()
     except:
         pass
+    # Closed is the same as not opened yet: later events are buffered for the
+    # next openLog instead of written to a closed file. (Model modules are
+    # executed afresh on every load, so they log between one test's closeLog
+    # and the next one's openLog.)
+    logFile = None
 
 def logEvent(stringIn, level=1, data=None):
-    global logLevel,procID,logAllProcesses,flushBuffer,preInitBuffer
+    global logLevel,procID,logAllProcesses,flushBuffer,preInitBuffer,logFile,verbose
     if procID is not None:
-        if logAllProcesses or procID==0:
+        if (logAllProcesses or procID==0) and logFile is None:
+            # this process logs, but its log is closed: keep the event for
+            # the next openLog
+            preInitBuffer.append((stringIn,level,data))
+        elif logAllProcesses or procID==0:
             if level < logLevel:
                 if logAllProcesses and procID is not None and stringIn is not None:
                     string = "Proc %d : " % procID
@@ -97,7 +108,6 @@ def logEvent(stringIn, level=1, data=None):
                         string += repr(data)
                     string +='\n'
                     string = ("[%8.4f] " % (time() - startTime)) + string
-                    global logFile,verbose
                     logFile.write(string)
                     if flushBuffer:
                         logFile.flush()
