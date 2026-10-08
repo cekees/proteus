@@ -916,7 +916,7 @@ class TriangulatedSurfaceDomain(D_base):
     def __init__(self,vertices,triangles,
                  name="DefaultTriangulatedSurfaceDomain",units="m"):
         D_base.__init__(self,3,name,units)
-        self.nodes=nodes
+        self.nodes=vertices
         self.triangles=triangles
     def readSTL(self,fileprefix):
         """
