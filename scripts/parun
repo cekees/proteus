@@ -345,8 +345,8 @@ if opts.SWEs:
         pList.append(proteus.defaults.load_physics(pModule,path=path_models))
         if pList[-1].name == None:
             pList[-1].name = pModule
-            log("Loading n module = "+nModule)
-            nList.append(proteus.defaults.load_numerics(nModule,path=path_models))
+        log("Loading n module = "+nModule)
+        nList.append(proteus.defaults.load_numerics(nModule,path=path_models))
     if so.sList == []:
         for i in range(len(so.pnList)):
             s = default_s

@@ -96,7 +96,7 @@ class TC_base(object):
 #                  stress= {0:{0:'linear',1:'linear',2:'linear'},
 #                           1:{0:'linear',1:'linear',2:'linear'},
 #                           2:{0:'linear',1:'linear',2:'linear'}}
-                 sparseDiffusionTensors = {},
+                 sparseDiffusionTensors = None,
                  useSparseDiffusion = True,
                  movingDomain=False):
         """
@@ -120,7 +120,12 @@ class TC_base(object):
         self.stress=stress
         self.sd = useSparseDiffusion
         self.movingDomain=movingDomain
-        self.sdInfo = sparseDiffusionTensors#{(0,0):(rowptr,colind),...}}
+        #{(0,0):(rowptr,colind),...}. A dict of its own: Transport fills in a
+        #full tensor's layout for each diffusion term missing from it, sized by
+        #the mesh's dimension, and with the old `= {}` default every coefficients
+        #object made without one shared a single dict -- the first model's
+        #layout (a 1D one, say) was then used by every later model.
+        self.sdInfo = {} if sparseDiffusionTensors is None else sparseDiffusionTensors
         self.elementIntegralKeys=[]
         self.elementBoundaryIntegralKeys=[]
         self.stencil=[set() for ci in range(self.nc)]

@@ -128,6 +128,12 @@ def run_ranks(tmp_path, n_ranks, global_sync):
     datadir = str(tmp_path / "archive")
     env = dict(os.environ, GLOBAL_SYNC="1" if global_sync else "0",
                DATADIR=datadir)
+    # More ranks than cores (3 on a 2-core CI runner): Open MPI refuses
+    # unless told it may oversubscribe -- OMPI_MCA_* for Open MPI 4,
+    # PRTE_MCA_* for Open MPI 5's PRRTE launcher. MPICH oversubscribes by
+    # default and ignores both.
+    env.setdefault("OMPI_MCA_rmaps_base_oversubscribe", "1")
+    env.setdefault("PRTE_MCA_rmaps_default_mapping_policy", ":oversubscribe")
     cmd = [sys.executable, "-c", RANK_SCRIPT]
     if n_ranks > 1:
         cmd = [MPIEXEC, "-n", str(n_ranks)] + cmd

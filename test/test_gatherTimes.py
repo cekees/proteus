@@ -15,9 +15,21 @@ import pytest
 h5py = pytest.importorskip("h5py")
 pytest.importorskip("ymf")
 
-from test_archive_v1_compat import write_v1_archive  # noqa: E402
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCRIPT = os.path.join(HERE, "..", "scripts", "gatherTimes")
 
-SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "gatherTimes")
+
+def _load_sibling(name):
+    # CI runs pytest with --import-mode=importlib, which does not put test/
+    # on sys.path, so `from test_archive_v1_compat import ...` only works
+    # locally. Load the helper module from its file instead.
+    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+write_v1_archive = _load_sibling("test_archive_v1_compat").write_v1_archive
 NFRAMES = 5
 
 

@@ -335,9 +335,18 @@ class StrongDirichlet(NF_base):
                                                                                 ebqe[('v',cj)],
                                                                                 fluxJacobian_exterior[ci][cj])
 
-def StrongDirichletFactory(fluxBoundaryConditionsDict={}):
+def StrongDirichletFactory(fluxBoundaryConditionsDict={}, keepDOFs=False):
+    """Strong Dirichlet conditions with the given flux boundary conditions.
+
+    By default the Dirichlet degrees of freedom are eliminated from the
+    global system. With ``keepDOFs`` they stay in it and their rows are
+    replaced by u = g instead, which is the layout the parallel and petsc4py
+    linear solvers (KSP_petsc4py) expect.
+    """
     class MyStrongDirichlet(StrongDirichlet):
         hasInterior=False
+        useWeakDirichletConditions=keepDOFs
+        useStrongDirichletConstraints=keepDOFs
         def setFluxBoundaryConditions(self):
             self.fluxBoundaryConditions=fluxBoundaryConditionsDict
     return MyStrongDirichlet

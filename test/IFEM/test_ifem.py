@@ -110,8 +110,12 @@ def run_case(test, order, scifem):
         "test={0} unstructured=False refinement={1} "
         "immersedSCIFEM_switch={2}".format(test, REFINEMENT, 1.0 if scifem else 0.0))
 
-    p = defaults.load_physics("ladr_ss_2d_p", CI_DIR)
-    n = defaults.load_numerics("ladr_ss_2d_c0p{0}_n".format(order), CI_DIR)
+    try:
+        p = defaults.load_physics("ladr_ss_2d_p", CI_DIR)
+        n = defaults.load_numerics("ladr_ss_2d_c0p{0}_n".format(order), CI_DIR)
+    finally:
+        # read at load time only; left set, it reconfigures every later model
+        Context.contextOptionsString = None
 
     so = defaults.System_base()
     so.name = p.name

@@ -4437,6 +4437,54 @@ class NavierStokesConstantPressure(SolverNullSpace):
         null_space_vector.assemblyEnd()
         self.global_null_space = [null_space_vector]
 
+class ConstantComponentsNullSpace(SolverNullSpace):
+    """Constants in some components only: e.g. the pressure of an
+    incompressible flow whose velocity is given on the whole boundary.
+
+    The components are ``coefficients.nullSpaceComponents`` (indices).
+    The vector is 1 on every free degree of freedom of those components,
+    0 elsewhere, normalized; it is set as both the null space and the
+    transpose null space of the operator, so KSP also removes it from the
+    right-hand side. That is right when the constant is in the left null
+    space too, as it is for a velocity-pressure system with Dirichlet
+    velocity: the continuity rows tested with q = 1 sum to the boundary
+    flux of interior basis functions, which is zero.
+
+    Serial only for now: the vector is laid out with the model's
+    offset/stride over the free global degrees of freedom.
+    """
+    def __init__(self, proteus_ksp):
+        super(ConstantComponentsNullSpace, self).__init__(proteus_ksp)
+
+    @staticmethod
+    def get_name():
+        return 'constant_components'
+
+    def apply_ns(self, par_b):
+        try:
+            self.components_null_space
+        except AttributeError:
+            if p4pyPETSc.COMM_WORLD.size > 1:
+                raise NotImplementedError("ConstantComponentsNullSpace is serial only")
+            model = self.get_global_ksp().par_L.pde
+            vector = par_b.copy()
+            values = vector.getArray()
+            values.fill(0.0)
+            n = 0
+            for ci in model.coefficients.nullSpaceComponents:
+                for k in range(model.nFreeDOF_global[ci]):
+                    values[model.offset[ci] + model.stride[ci] * k] = 1.0
+                n += model.nFreeDOF_global[ci]
+            values /= sqrt(n)
+            vector.assemblyBegin()
+            vector.assemblyEnd()
+            self.components_null_space = p4pyPETSc.NullSpace().create(
+                constant=False, vectors=[vector], comm=p4pyPETSc.COMM_WORLD)
+        operator = self.get_global_ksp().ksp.getOperators()[0]
+        operator.setNullSpace(self.components_null_space)
+        operator.setTransposeNullSpace(self.components_null_space)
+
+
 class ConstantNullSpace(SolverNullSpace):
     def __init__(self,
                  proteus_ksp):
