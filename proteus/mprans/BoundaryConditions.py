@@ -351,15 +351,44 @@ class BC_RANS(BoundaryConditions.BC_Base):
         self.dissipation_dirichlet.setConstantBC(1e-10)
         self.dissipation_diffusive.setConstantBC(0.)
 
-        if orientation[0] == 1. or orientation[0] == -1.:
+        # Free the velocity component NORMAL to the boundary (zero normal
+        # viscous stress) and leave the tangential components to the Nitsche
+        # penalty from their Dirichlet values. Weak enforcement is the point:
+        # continuity still passes normal flux, the inertial terms are upwinded,
+        # and only the viscous/diffusive fluxes are selectively damped.
+        #
+        # This identifies the normal component by axis alignment, so it only
+        # works when the boundary is aligned with a coordinate axis. The test
+        # used exact float equality against +/-1, which fails on an orientation
+        # that is numerically 0.9999999999999999 and, more importantly, is
+        # silent: a non-axis-aligned boundary got NO diffusive condition at all
+        # and every component stayed damped, with nothing in the log to say so.
+        #
+        # TODO: damping the tangential components and freeing the normal one on
+        # an arbitrarily oriented boundary needs a genuine VECTOR boundary
+        # condition, not a per-component one. Symmetric damping of all three is
+        # not obviously wrong in the meantime -- it still admits normal flux,
+        # increasingly damped under refinement -- so the behaviour below is
+        # unchanged for tilted boundaries. It is only no longer silent.
+        axis_tol = 1.0e-8
+        aligned = [abs(abs(float(orientation[i])) - 1.0) < axis_tol for i in range(3)]
+        if aligned[0]:
             self.u_diffusive.setConstantBC(0.)
             self.us_diffusive.setConstantBC(0.)
-        if orientation[1] == 1. or orientation[1] == -1.:
+        if aligned[1]:
             self.v_diffusive.setConstantBC(0.)
             self.vs_diffusive.setConstantBC(0.)
-        if orientation[2] == 1. or orientation[2] == -1.:
+        if aligned[2]:
             self.w_diffusive.setConstantBC(0.)
             self.ws_diffusive.setConstantBC(0.)
+        if not any(aligned):
+            logEvent("WARNING: setAtmosphere on a boundary that is not axis "
+                     "aligned (orientation = %s). The normal velocity component "
+                     "cannot be identified per-component, so ALL components keep "
+                     "their Dirichlet damping and none is left free. This still "
+                     "admits normal flux through the weak enforcement, but it is "
+                     "not the intended tangential-only damping -- that needs a "
+                     "vector boundary condition." % (str(orientation),))
         
         if kInflow is not None:
             self.k_dirichlet.setConstantBC(kInflow)
