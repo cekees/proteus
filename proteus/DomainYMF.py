@@ -1,0 +1,210 @@
+"""A proteus ``Domain`` <-> a YMF domain block.
+
+A YMF domain says what *kind* of region it is -- a box, a boundary
+representation, an already-discretized mesh, or a reference to a file in
+another language -- and Proteus's fourteen Domain classes fall into exactly
+those four. See ``ymf.domain`` for the format and the reasoning.
+
+What is translated is the region and how its boundary is named. Two things
+Proteus's Domain classes also carry are deliberately not:
+
+* **Meshing policy** -- ``MeshOptions``, ``he``, ``length_scale``,
+  ``use_gmsh``. How a region becomes a mesh is not what the region is, and
+  a YMF spec states it under ``discretizations[].mesh``.
+* **Runtime state** -- ``shape_list``, ``auxiliaryVariables``, ``use_plex``,
+  ``useSpatialTools``, ``BC``/``BCbyFlag``. Not data, and not round-trippable.
+
+So ``to_ymf`` is lossy by design with respect to the *object*, and lossless
+with respect to the *domain*. Where a class carries region state the format
+cannot hold, it raises rather than quietly dropping it.
+"""
+
+from proteus import Domain
+
+__all__ = ["DomainTranslationError", "to_ymf", "from_ymf"]
+
+
+class DomainTranslationError(ValueError):
+    """A domain cannot be translated without losing part of the region."""
+
+
+def _plain(value):
+    """numpy arrays and tuples -> lists of plain numbers, for YAML."""
+    if value is None:
+        return None
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if hasattr(value, "item"):           # numpy scalar
+        return value.item()
+    return value
+
+
+def _shared(domain):
+    block = {"name": domain.name, "units": domain.units}
+    if getattr(domain, "boundaryTags", None):
+        block["boundary_tags"] = dict(domain.boundaryTags)
+    return block
+
+
+def _regions(domain):
+    points = _plain(getattr(domain, "regions", None)) or []
+    flags = _plain(getattr(domain, "regionFlags", None)) or []
+    out = []
+    for i, point in enumerate(points):
+        entry = {"point": point}
+        if i < len(flags):
+            entry["flag"] = int(flags[i])
+        out.append(entry)
+    return out
+
+
+def _piecewise_linear(domain, dimension):
+    block = dict(_shared(domain), kind="piecewise_linear", dimension=dimension)
+    block["vertices"] = _plain(domain.vertices)
+    for attr, key in (("segments", "segments"), ("facets", "facets"),
+                      ("volumes", "volumes"), ("holes", "holes")):
+        value = _plain(getattr(domain, attr, None))
+        if value:
+            block[key] = value
+    for attr, key in (("vertexFlags", "vertex_flags"),
+                      ("segmentFlags", "segment_flags"),
+                      ("facetFlags", "facet_flags")):
+        value = _plain(getattr(domain, attr, None))
+        if value:
+            block[key] = [int(v) for v in value]
+    regions = _regions(domain)
+    if regions:
+        block["regions"] = regions
+    return block
+
+
+#: Classes that are a path and a format rather than geometry, by format name.
+_FILE_FORMATS = {
+    "Mesh2DMDomain": "2dm",
+    "Mesh3DMDomain": "3dm",
+    "MeshHexDomain": "hex",
+    "MeshTetgenDomain": "tetgen",
+}
+
+#: Classes holding a live object, which no document can carry.
+_NOT_DATA = {
+    "PUMIDomain": "an AdaptManager and checkpoint state",
+    "DMPlexDomain": "a PETSc DMPlex object",
+}
+
+
+def to_ymf(domain):
+    """Translate a proteus ``Domain`` into a YMF domain block."""
+    kind = type(domain).__name__
+
+    if kind in _NOT_DATA:
+        raise DomainTranslationError(
+            "%s holds %s, which is a live object rather than a description of "
+            "a region; there is nothing to write. Give the domain it was built "
+            "from instead." % (kind, _NOT_DATA[kind]))
+
+    if isinstance(domain, Domain.InterpolatedBathymetryDomain):
+        raise DomainTranslationError(
+            "InterpolatedBathymetryDomain carries bathy and bathyGridDim "
+            "alongside its PSLG, and a YMF domain has nowhere to put them. "
+            "Writing it as kind: piecewise_linear would silently drop the "
+            "bathymetry, which is the point of the class.")
+
+    if isinstance(domain, Domain.RectangularDomain):
+        lower = [float(v) for v in domain.x[:domain.nd]]
+        upper = [float(a + b) for a, b in zip(lower, domain.L[:domain.nd])]
+        return dict(_shared(domain), kind="box", dimension=domain.nd,
+                    lower=lower, upper=upper)
+
+    if isinstance(domain, Domain.TriangulatedSurfaceDomain):
+        # already a mesh: the archive's own vocabulary says it
+        triangles = _plain(domain.triangles)
+        return dict(_shared(domain), kind="discrete", dimension=3,
+                    topology={"type": "Triangle",
+                              "number_of_elements": len(triangles),
+                              "values": triangles},
+                    geometry={"type": "XYZ", "values": _plain(domain.nodes)})
+
+    if isinstance(domain, Domain.GMSH_3D_Domain):
+        return dict(_shared(domain), kind="file", dimension=domain.nd,
+                    format="gmsh_geo", path=str(domain.geofile))
+
+    if kind in _FILE_FORMATS:
+        return dict(_shared(domain), kind="file", dimension=domain.nd,
+                    format=_FILE_FORMATS[kind], path=str(domain.meshfile))
+
+    # ExtrudedTriangulation is a PLC once built, so it writes as one; how it
+    # was constructed is not part of the region.
+    if isinstance(domain, Domain.PiecewiseLinearComplexDomain):
+        return _piecewise_linear(domain, 3)
+    if isinstance(domain, Domain.PlanarStraightLineGraphDomain):
+        return _piecewise_linear(domain, 2)
+
+    raise DomainTranslationError(
+        "no YMF translation for %s; it is not a box, a boundary "
+        "representation, a mesh or a file reference" % (kind,))
+
+
+_FILE_CLASSES = {v: getattr(Domain, k) for k, v in _FILE_FORMATS.items()}
+
+
+def from_ymf(block):
+    """Build a proteus ``Domain`` from a YMF domain block."""
+    from ymf.domain import validate_domain_block
+
+    validate_domain_block(block)
+    kind = block["kind"]
+    name = block.get("name", "ymf_domain")
+    units = block.get("units", "m")
+
+    if kind == "box":
+        lower, upper = block["lower"], block["upper"]
+        domain = Domain.RectangularDomain(
+            L=[float(b - a) for a, b in zip(lower, upper)],
+            x=[float(a) for a in lower], name=name, units=units)
+        if block.get("boundary_tags"):
+            domain.boundaryTags = dict(block["boundary_tags"])
+        return domain
+
+    if kind == "file":
+        fmt = block["format"]
+        if fmt == "gmsh_geo":
+            raise DomainTranslationError(
+                "GMSH_3D_Domain needs a characteristic length (he) that a "
+                "domain block does not carry; it is meshing policy. Build it "
+                "with the he from discretizations[].mesh.")
+        if fmt not in _FILE_CLASSES:
+            raise DomainTranslationError(
+                "no proteus Domain reads format %r; known: %s"
+                % (fmt, ", ".join(sorted(_FILE_CLASSES))))
+        return _FILE_CLASSES[fmt](block["path"])
+
+    if kind == "discrete":
+        topology, geometry = block["topology"], block["geometry"]
+        if topology.get("type") != "Triangle":
+            raise DomainTranslationError(
+                "proteus has a discrete domain class for triangulated "
+                "surfaces only; this one is %r" % (topology.get("type"),))
+        return Domain.TriangulatedSurfaceDomain(
+            geometry["values"], topology["values"], name=name, units=units)
+
+    # piecewise_linear
+    common = dict(vertices=block["vertices"], name=name, units=units,
+                  holes=block.get("holes"),
+                  regions=[r["point"] for r in block.get("regions", [])] or None,
+                  regionFlags=[r["flag"] for r in block.get("regions", [])
+                               if "flag" in r] or None,
+                  vertexFlags=block.get("vertex_flags"))
+    if block.get("dimension", 2) == 3:
+        domain = Domain.PiecewiseLinearComplexDomain(
+            facets=block.get("facets"), facetFlags=block.get("facet_flags"),
+            **common)
+    else:
+        domain = Domain.PlanarStraightLineGraphDomain(
+            segments=block.get("segments"),
+            segmentFlags=block.get("segment_flags"), **common)
+    if block.get("boundary_tags"):
+        domain.boundaryTags = dict(block["boundary_tags"])
+    return domain
