@@ -4372,6 +4372,16 @@ class NavierStokesConstantPressure(SolverNullSpace):
 
     @staticmethod
     def apply_to_schur_block(global_ksp):
+        # The Schur preconditioner objects call this unconditionally from their
+        # setUp, but the PC that PETSc actually built is whatever the options
+        # file asked for: a -<prefix>_pc_type asm (or hypre, or lu) overrides
+        # the fieldsplit that proteus set up, and then getFieldSplitSubKSP
+        # raises PETSC_ERR_SUP and every rank dies in the first linear solve.
+        # There is no Schur block to put a null space on in that case; apply_ns
+        # has already attached the constant-pressure vector to the monolithic
+        # operator, which is the whole of what this null space needs.
+        if global_ksp.pc.getType() != 'fieldsplit':
+            return
         nsp = p4pyPETSc.NullSpace().create(comm=p4pyPETSc.COMM_WORLD,
                                            vectors = (),
                                            constant = True)
