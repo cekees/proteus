@@ -8,10 +8,12 @@ those four. See ``ymf.domain`` for the format and the reasoning.
 What is translated is the region and how its boundary is named. Two things
 Proteus's Domain classes also carry are deliberately not:
 
-* **Meshing policy** -- ``MeshOptions``, ``he``, ``length_scale``,
-  ``use_gmsh``. How a region becomes a mesh is not what the region is, and
-  a YMF spec states it under ``discretizations[].mesh``.
-* **Runtime state** -- ``shape_list``, ``auxiliaryVariables``, ``use_plex``,
+* **Meshing policy** -- everything on the object
+  ``MeshTools.getMeshOptions(domain)`` returns: ``he``, ``use_gmsh``,
+  ``use_plex``, ``regionConstraints``, partitioning, refinement levels. How a
+  region becomes a mesh is not what the region is, and a YMF spec states it
+  under ``discretizations[].mesh``.
+* **Runtime state** -- ``shape_list``, ``auxiliaryVariables``,
   ``useSpatialTools``, ``BC``/``BCbyFlag``. Not data, and not round-trippable.
 
 So ``to_ymf`` is lossy by design with respect to the *object*, and lossless
@@ -107,10 +109,12 @@ def to_ymf(domain):
 
     if isinstance(domain, Domain.InterpolatedBathymetryDomain):
         raise DomainTranslationError(
-            "InterpolatedBathymetryDomain carries bathy and bathyGridDim "
-            "alongside its PSLG, and a YMF domain has nowhere to put them. "
-            "Writing it as kind: piecewise_linear would silently drop the "
-            "bathymetry, which is the point of the class.")
+            "InterpolatedBathymetryDomain is a boundary representation with a "
+            "field sampled over its interior -- a PSLG and an overlapping "
+            "discrete field, both of which are the domain. A YMF domain is "
+            "one kind at a time and has nowhere to put the second, so writing "
+            "this as kind: piecewise_linear would drop the bathymetry, which "
+            "is the whole of what the class adds.")
 
     if isinstance(domain, Domain.RectangularDomain):
         lower = [float(v) for v in domain.x[:domain.nd]]
@@ -128,6 +132,13 @@ def to_ymf(domain):
                     geometry={"type": "XYZ", "values": _plain(domain.nodes)})
 
     if isinstance(domain, Domain.GMSH_3D_Domain):
+        if domain.length_scale != 1.0 or list(domain.permute_dims) != [0, 1, 2]:
+            raise DomainTranslationError(
+                "this GMSH_3D_Domain rescales by %r and permutes its axes to "
+                "%r, which is how the .geo file's coordinates map into the "
+                "domain -- description, not meshing. A YMF kind: file block "
+                "carries only format and path, so it cannot say it."
+                % (domain.length_scale, list(domain.permute_dims)))
         return dict(_shared(domain), kind="file", dimension=domain.nd,
                     format="gmsh_geo", path=str(domain.geofile))
 
@@ -171,10 +182,10 @@ def from_ymf(block):
     if kind == "file":
         fmt = block["format"]
         if fmt == "gmsh_geo":
-            raise DomainTranslationError(
-                "GMSH_3D_Domain needs a characteristic length (he) that a "
-                "domain block does not carry; it is meshing policy. Build it "
-                "with the he from discretizations[].mesh.")
+            # the constructor appends the suffix it was given
+            path = block["path"]
+            base = path[:-4] if path.endswith(".geo") else path
+            return Domain.GMSH_3D_Domain(geofile=base, name=name, units=units)
         if fmt not in _FILE_CLASSES:
             raise DomainTranslationError(
                 "no proteus Domain reads format %r; known: %s"

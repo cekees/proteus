@@ -6,9 +6,10 @@ mesh, or a reference to a file in another language -- and Proteus's
 fourteen Domain classes fall into exactly those four.
 
 What is translated is the region and how its boundary is named. Meshing
-policy (MeshOptions, he, use_gmsh) and runtime state (shape_list,
-auxiliaryVariables, use_plex, BC) are not: the first is how a region
-becomes a mesh rather than what the region is, and a spec states it under
+policy (everything on MeshTools.getMeshOptions(domain): he, use_gmsh,
+use_plex, regionConstraints) and runtime state (shape_list,
+auxiliaryVariables, BC) are not: the first is how a region becomes a mesh
+rather than what the region is, and a spec states it under
 discretizations[].mesh; the second is not data at all.
 
 So the translation is lossy with respect to the *object* and lossless with
@@ -113,12 +114,26 @@ def test_a_bathymetry_domain_refuses_rather_than_dropping_the_bathymetry():
             segments=[[0, 1], [1, 2], [2, 0]]))
 
 
-def test_a_gmsh_geometry_cannot_be_rebuilt_without_meshing_policy():
-    """he is a meshing parameter, so a domain block does not carry it."""
+def test_a_gmsh_geometry_round_trips_without_its_meshing_policy():
+    """he is meshing policy, so it stays behind and the .geo link survives."""
     block = to_ymf(Domain.GMSH_3D_Domain(geofile="flume", he=0.1))
     assert block["kind"] == "file" and block["format"] == "gmsh_geo"
-    with pytest.raises(DomainTranslationError, match="he"):
-        from_ymf(block)
+    assert block["path"] == "flume.geo"
+    assert "he" not in block
+
+    rebuilt = from_ymf(block)
+    assert isinstance(rebuilt, Domain.GMSH_3D_Domain)
+    assert rebuilt.geofile == "flume.geo"
+    assert rebuilt.polyfile == "flume"
+    assert to_ymf(rebuilt) == block
+
+
+def test_a_rescaled_gmsh_geometry_refuses_rather_than_dropping_the_mapping():
+    """length_scale and permute_dims map the file into the domain."""
+    with pytest.raises(DomainTranslationError, match="permutes its axes"):
+        to_ymf(Domain.GMSH_3D_Domain(geofile="flume", length_scale=0.001))
+    with pytest.raises(DomainTranslationError, match="permutes its axes"):
+        to_ymf(Domain.GMSH_3D_Domain(geofile="flume", permute_dims=[0, 2, 1]))
 
 
 def test_an_unknown_file_format_says_which_it_knows():

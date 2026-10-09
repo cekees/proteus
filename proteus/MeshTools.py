@@ -6846,7 +6846,10 @@ class MeshOptions(object):
         self.nd = nd
         self.he = 1.
         self.use_gmsh = False
+        self.use_plex = False
         self.genMesh = True
+        # max area/volume per region, parallel to domain.regions
+        self.regionConstraints = []
         self.outputFiles_name = 'mesh'
         self.outputFiles = {'poly': True,     
                             'ply': False,        
@@ -6965,6 +6968,49 @@ class MeshOptions(object):
         self.outputFiles['ply'] = ply
         self.outputFiles['asymptote'] = asymptote
         self.outputFiles['geo'] = geo
+
+
+def getMeshOptions(domain):
+    """
+    The MeshOptions governing how a domain gets discretized.
+
+    Meshing policy is not part of what a domain *is*, so a domain does not
+    carry it as description; it is attached here, on first use, and owned by
+    this module.  Everything that decides how a region becomes a mesh --
+    element size, generator choice, partitioning, refinement levels, region
+    size constraints -- belongs on the object this returns.
+
+    Parameters
+    ----------
+    domain: proteus.Domain.D_base
+        the domain to be meshed
+
+    Returns
+    -------
+    MeshOptions
+        the options for this domain, created with the domain's dimension if
+        none have been attached yet
+    """
+    meshOptions = domain.__dict__.get('_meshOptions')
+    if meshOptions is None:
+        meshOptions = MeshOptions(domain.nd)
+        domain.__dict__['_meshOptions'] = meshOptions
+    return meshOptions
+
+
+def setMeshOptions(domain, meshOptions):
+    """
+    Attach mesh options to a domain, replacing any already attached.
+
+    Parameters
+    ----------
+    domain: proteus.Domain.D_base
+        the domain to be meshed
+    meshOptions: MeshOptions
+        the options to use for it
+    """
+    domain.__dict__['_meshOptions'] = meshOptions
+    return meshOptions
 
 
 def msh2simplex(fileprefix, nd):
@@ -7099,7 +7145,7 @@ def msh2simplex(fileprefix, nd):
 
 def generateMesh(physics,numerics,generatePartitionedMeshFromFiles=False):
     try:
-        meshOptions = physics.domain.MeshOptions
+        meshOptions = getMeshOptions(physics.domain)
         assert(not (meshOptions.genMesh == True and
                     meshOptions.nn == None and 
                     meshOptions.nnx  == None and
@@ -7118,6 +7164,11 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
     # convenience function to generate a mesh using triangle/tetgen/gmsh
     comm = Comm.get()
     name = domain.name
+    # meshOptions may be an old-style numerics module rather than a
+    # MeshOptions (see the fallback in generateMesh).  The generator choice
+    # and the characteristic length have only ever come from the options
+    # attached to the domain, so read those two from there.
+    domainMeshOptions = getMeshOptions(domain)
     # this is the perfect place to create a factory function which takes in an instance and outputs a corresponding mesh
     # support for old-style domain input
 
@@ -7394,7 +7445,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                                                    os.path.exists(domain.polyfile+".node") and
                                                    os.path.exists(domain.polyfile+".face"))):
             logEvent("Running gmsh to generate 3D mesh for "+name, level=1)
-            gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s}  -format mesh  -clmax {2:f}".format(domain.geofile, domain.name+".mesh", 0.5*domain.he)
+            gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s}  -format mesh  -clmax {2:f}".format(domain.geofile, domain.name+".mesh", 0.5*domainMeshOptions.he)
 
             logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
 
@@ -7465,7 +7516,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
     elif isinstance(domain, Domain.PlanarStraightLineGraphDomain):
         fileprefix = None
         # run mesher
-        if domain.use_gmsh is True:
+        if domainMeshOptions.use_gmsh is True:
             fileprefix = domain.geofile
             if comm.isMaster() and (not (os.path.exists(fileprefix+".ele") and
                                          os.path.exists(fileprefix+".node") and
@@ -7513,7 +7564,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                                               parallelPartitioningType=meshOptions.parallelPartitioningType)
     elif isinstance(domain, Domain.PiecewiseLinearComplexDomain):
         import sys
-        if domain.use_gmsh is True:
+        if domainMeshOptions.use_gmsh is True:
             fileprefix = domain.geofile
         else:
             fileprefix = domain.polyfile
@@ -7521,7 +7572,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
                 not (os.path.exists(fileprefix+".ele") and
                      os.path.exists(fileprefix+".node") and
                      os.path.exists(fileprefix+".face")))):
-            if domain.use_gmsh is True:
+            if domainMeshOptions.use_gmsh is True:
                 if not os.path.exists(fileprefix+".msh"):
                     logEvent("Running gmsh to generate 3D mesh for "+name, level=1)
                     gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s} -format msh2".format(fileprefix+'.geo', domain.geofile+'.msh')

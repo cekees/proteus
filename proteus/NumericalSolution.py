@@ -235,14 +235,15 @@ class NS_base(object):  # (HasTraits):
                     raise RuntimeError("No support for domains in more than three dimensions")
 
                 #Ensuring backwards compatibility with isolated mesh generation routines
-                p.domain.MeshOptions.nnx, p.domain.MeshOptions.nny,p.domain.MeshOptions.nnz= n.nnx,n.nny,n.nnz
-                p.domain.MeshOptions.nn = n.nn 
-                p.domain.MeshOptions.nLevels = n.nLevels
-                p.domain.MeshOptions.hex = n.hex
-                p.domain.MeshOptions.quad = n.quad
-                p.domain.MeshOptions.triangleFlag=n.triangleFlag
-                p.domain.MeshOptions.triangleOptions=n.triangleOptions
-                p.domain.MeshOptions.genMesh=p.genMesh
+                meshOptions = MeshTools.getMeshOptions(p.domain)
+                meshOptions.nnx, meshOptions.nny, meshOptions.nnz = n.nnx,n.nny,n.nnz
+                meshOptions.nn = n.nn
+                meshOptions.nLevels = n.nLevels
+                meshOptions.hex = n.hex
+                meshOptions.quad = n.quad
+                meshOptions.triangleFlag=n.triangleFlag
+                meshOptions.triangleOptions=n.triangleOptions
+                meshOptions.genMesh=p.genMesh
         try:
             mlMesh = self.pList[0].domain.mesh
         except:
