@@ -139,11 +139,11 @@ def test_a_future_version_is_still_refused(tmp_path):
 
 def test_a_global_v1_archive_reads_as_uniform_steps(tmp_path):
     domain = read_domain(write_v1_archive(str(tmp_path / "run.h5"), n_steps=3))
-    (collection,) = domain["TimeCollections"]
-    assert len(collection["Data"]) == 3
-    for step in collection["Data"]:
-        assert "SpatialCollection" not in step
-        assert step["Topology"]["Type"] == "Triangle"
+    (collection,) = domain["time_collections"]
+    assert len(collection["data"]) == 3
+    for step in collection["data"]:
+        assert "spatial_collection" not in step
+        assert step["topology"]["type"] == "Triangle"
 
 
 def test_a_per_subdomain_v1_archive_reads_as_spatial_steps(tmp_path):
@@ -154,17 +154,17 @@ def test_a_per_subdomain_v1_archive_reads_as_spatial_steps(tmp_path):
     """
     domain = read_domain(
         write_v1_archive(str(tmp_path / "run.h5"), n_steps=2, n_ranks=3))
-    (collection,) = domain["TimeCollections"]
-    for step in collection["Data"]:
-        assert len(step["SpatialCollection"]) == 3
+    (collection,) = domain["time_collections"]
+    for step in collection["data"]:
+        assert len(step["spatial_collection"]) == 3
 
 
 def test_a_single_rank_per_subdomain_v1_archive_is_not_mistaken_for_global(tmp_path):
     """The case shape alone gets wrong."""
     domain = read_domain(
         write_v1_archive(str(tmp_path / "run.h5"), n_steps=2, n_ranks=1))
-    for step in domain["TimeCollections"][0]["Data"]:
-        assert "SpatialCollection" in step, \
+    for step in domain["time_collections"][0]["data"]:
+        assert "spatial_collection" in step, \
             "a one-rank per-subdomain archive was read as global"
 
 
@@ -173,7 +173,7 @@ def test_v1_times_are_recovered_from_wherever_they_were_kept(tmp_path, n_ranks):
     """Global kept the time inside the fragment; per-rank on the dataset."""
     domain = read_domain(
         write_v1_archive(str(tmp_path / "run.h5"), n_steps=4, n_ranks=n_ranks))
-    times = [step["Time"] for step in domain["TimeCollections"][0]["Data"]]
+    times = [step["time"] for step in domain["time_collections"][0]["data"]]
     np.testing.assert_allclose(times, [0.0, 0.1, 0.2, 0.3])
 
 
@@ -187,7 +187,7 @@ def test_v1_collection_names_are_discovered(tmp_path):
     domain = read_domain(write_v1_archive(
         str(tmp_path / "run.h5"), n_steps=2,
         collections=("Mesh Spatial_Domain", "Mesh_c0p2_Lagrange")))
-    names = [c["Name"] for c in domain["TimeCollections"]]
+    names = [c["name"] for c in domain["time_collections"]]
     # spaces became underscores in the dataset names 1.9.x wrote, so the
     # recovered name is the underscored form. Callers match on a substring
     # ("Spatial_Domain"), which still works.
@@ -201,7 +201,7 @@ def test_field_data_is_not_mistaken_for_metadata(tmp_path):
         f["u_0"] = np.zeros(4, dtype="d")      # looks like <name>_<step>
         f["elements_3"] = np.zeros((2, 3), dtype="i")
     domain = read_domain(path)
-    assert [c["Name"] for c in domain["TimeCollections"]] == \
+    assert [c["name"] for c in domain["time_collections"]] == \
         ["Mesh_Spatial_Domain"]
 
 
@@ -257,7 +257,7 @@ def test_gather_times_regenerates_a_document_from_a_v1_archive(tmp_path,
     from ymf.archive import read_ymf
 
     domain, _ = read_ymf("run_complete.ymf")
-    assert len(domain["TimeCollections"][0]["Data"]) == 3
+    assert len(domain["time_collections"][0]["data"]) == 3
     root = parse("run_complete.xmf").getroot()
     assert len(root.find("Domain").find("Grid").findall("Grid")) == 3
 

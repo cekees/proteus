@@ -78,7 +78,7 @@ def poisson_spec(tmp_path):
     pytest.importorskip("strictyaml")
     path = tmp_path / "poisson.ymf"
     path.write_text('''
-Problem:
+model:
   name: "Poisson"
   physical_model: {provenance: human_specified}
   strong_form:
@@ -87,7 +87,7 @@ Problem:
     equation_formulation: "Poisson"
     equations: ["-Δu = 2π² sin(πx) sin(πy)  in Ω"]
     domain: "Ω = [0, 1] × [0, 1]"
-    boundary_regions: [{name: wall, geometry: "∂Ω"}]
+    boundary_regions: [{name: wall, where: "∂Ω"}]
     boundary_conditions: [{region: wall, variable: u, type: dirichlet, value: 0.0}]
   weak_forms:
     - label: galerkin
@@ -130,7 +130,7 @@ def test_a_spec_runs_end_to_end_into_its_archive(poisson_spec, tmp_path):
     assert 1.8 < float(table[1][2]) < 2.2          # P1 in L2
     from ymf import closure
     spec, outputs, _ = closure.load(tmp_path / "poisson.archive.ymf")
-    assert spec["Problem"]["strong_form"]["equations"] == ["-Δu = 2π² sin(πx) sin(πy)  in Ω"]
+    assert spec["model"]["strong_form"]["equations"] == ["-Δu = 2π² sin(πx) sin(πy)  in Ω"]
     assert spec["solution_paths"]["discretizations"][0]["mesh"] == {"cells": [4, 8]}
     assert spec["composition"]["overrides"][0]["set_by"] == "ymf_run --cells 4 8"
     key = [k for k in outputs if "/cells=8/" in k][0]
@@ -238,7 +238,7 @@ def kovasznay_spec(tmp_path):
     pytest.importorskip("ymf.symbolic")
     path = tmp_path / "kovasznay.ymf"
     path.write_text('''
-Problem:
+model:
   name: "Kovasznay"
   physical_model: {provenance: human_specified}
   strong_form:
@@ -249,7 +249,7 @@ Problem:
       - "∇·(ρ v⊗v) − μΔv + ∇p = 0  in Ω"
       - "∇·v = 0  in Ω"
     domain: "Ω = [-0.5, 1.0] × [-0.5, 1.5]"
-    boundary_regions: [{name: outer, geometry: "∂Ω"}]
+    boundary_regions: [{name: outer, where: "∂Ω"}]
     boundary_conditions:
       - {region: outer, variable: v, type: dirichlet,
          formula: "(1 - exp(λx) cos(2πy), λ/(2π) exp(λx) sin(2πy))"}

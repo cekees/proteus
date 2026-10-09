@@ -171,18 +171,18 @@ def read_domain(datadir):
 
 def test_serial_per_rank_archive_is_written_as_ymf(tmp_path):
     domain = read_domain(run_ranks(tmp_path, 1, global_sync=False))
-    (collection,) = domain["TimeCollections"]
-    assert collection["Name"] == "Mesh Spatial_Domain"
-    assert len(collection["Data"]) == 2
-    assert [s["Time"] for s in collection["Data"]] == [0.0, 0.5]
+    (collection,) = domain["time_collections"]
+    assert collection["name"] == "Mesh Spatial_Domain"
+    assert len(collection["data"]) == 2
+    assert [s["time"] for s in collection["data"]] == [0.0, 0.5]
 
 
 def test_serial_global_sync_archive_has_uniform_steps(tmp_path):
     domain = read_domain(run_ranks(tmp_path, 1, global_sync=True))
-    (collection,) = domain["TimeCollections"]
-    for step in collection["Data"]:
-        assert "SpatialCollection" not in step
-        assert step["Topology"]["Type"] == "Triangle"
+    (collection,) = domain["time_collections"]
+    for step in collection["data"]:
+        assert "spatial_collection" not in step
+        assert step["topology"]["type"] == "Triangle"
 
 
 def test_metadata_is_yaml_not_xml(tmp_path):
@@ -194,7 +194,7 @@ def test_metadata_is_yaml_not_xml(tmp_path):
     from ymf.archive import load_grid
 
     grid = load_grid(payload)
-    assert grid["Topology"]["Type"] == "Triangle"
+    assert grid["topology"]["type"] == "Triangle"
 
 
 def test_the_metadata_format_version_is_recorded(tmp_path):
@@ -255,12 +255,12 @@ def test_a_future_version_marker_is_refused(tmp_path):
 @pytest.mark.parametrize("n_ranks", [2, 3])
 def test_every_rank_contributes_a_grid_to_each_step(tmp_path, n_ranks):
     domain = read_domain(run_ranks(tmp_path, n_ranks, global_sync=False))
-    (collection,) = domain["TimeCollections"]
-    assert len(collection["Data"]) == 2
-    for step in collection["Data"]:
-        subs = step["SpatialCollection"]
+    (collection,) = domain["time_collections"]
+    assert len(collection["data"]) == 2
+    for step in collection["data"]:
+        subs = step["spatial_collection"]
         assert len(subs) == n_ranks
-        assert [g["Name"] for g in subs] == [
+        assert [g["name"] for g in subs] == [
             "Grid_p%d" % r for r in range(n_ranks)
         ]
 
@@ -275,10 +275,10 @@ def test_differently_sized_ranks_are_not_truncated(tmp_path, n_ranks):
     others and their topology counts would come back wrong or unparseable.
     """
     domain = read_domain(run_ranks(tmp_path, n_ranks, global_sync=False))
-    (collection,) = domain["TimeCollections"]
-    for step in collection["Data"]:
-        counts = [g["Topology"]["NumberOfElements"]
-                  for g in step["SpatialCollection"]]
+    (collection,) = domain["time_collections"]
+    for step in collection["data"]:
+        counts = [g["topology"]["number_of_elements"]
+                  for g in step["spatial_collection"]]
         assert counts == [4 + r for r in range(n_ranks)]
 
 
@@ -329,16 +329,16 @@ def test_global_sync_hides_the_decomposition(tmp_path, n_ranks):
     grids -- carrying the global counts.
     """
     domain = read_domain(run_ranks(tmp_path, n_ranks, global_sync=True))
-    (collection,) = domain["TimeCollections"]
+    (collection,) = domain["time_collections"]
     expected_nodes = sum(6 + r for r in range(n_ranks))
     expected_elements = sum(4 + r for r in range(n_ranks))
-    for step in collection["Data"]:
-        assert "SpatialCollection" not in step, \
+    for step in collection["data"]:
+        assert "spatial_collection" not in step, \
             "the decomposition leaked into a global archive"
-        assert step["Topology"]["NumberOfElements"] == expected_elements
-        assert step["Geometry"]["DataItem"]["Dimensions"] == [expected_nodes, 3]
-        (attr,) = step["Attributes"]
-        assert attr["DataItem"]["Dimensions"] == [expected_nodes]
+        assert step["topology"]["number_of_elements"] == expected_elements
+        assert step["geometry"]["data_item"]["dimensions"] == [expected_nodes, 3]
+        (attr,) = step["attributes"]
+        assert attr["data_item"]["dimensions"] == [expected_nodes]
 
 
 @pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
@@ -514,10 +514,10 @@ def test_the_domain_can_be_read_from_the_h5_alone(tmp_path, global_sync):
     datadir = run_ranks(tmp_path, 1, global_sync=global_sync)
     os.remove(os.path.join(datadir, "mpitest.ymf"))
     domain = readArchiveDomain("mpitest", dataDir=datadir)
-    (collection,) = domain["TimeCollections"]
-    assert len(collection["Data"]) == 2
+    (collection,) = domain["time_collections"]
+    assert len(collection["data"]) == 2
     # the recorded layout decides the shape, not a caller's guess
-    has_spatial = "SpatialCollection" in collection["Data"][0]
+    has_spatial = "spatial_collection" in collection["data"][0]
     assert has_spatial == (not global_sync)
 
 
@@ -541,7 +541,7 @@ def test_gather_times_rebuilds_both_sidecars_from_the_h5(tmp_path):
     from ymf.archive import read_ymf
 
     domain, _ = read_ymf(os.path.join(datadir, "mpitest_complete.ymf"))
-    assert len(domain["TimeCollections"][0]["Data"]) == 2
+    assert len(domain["time_collections"][0]["data"]) == 2
     from xml.etree.ElementTree import parse
 
     root = parse(os.path.join(datadir, "mpitest_complete.xmf")).getroot()
@@ -556,7 +556,7 @@ def test_gather_times_can_truncate_while_rebuilding(tmp_path):
     from ymf.archive import read_ymf
 
     domain, _ = read_ymf(os.path.join(datadir, "mpitest_complete.ymf"))
-    assert len(domain["TimeCollections"][0]["Data"]) == 1
+    assert len(domain["time_collections"][0]["data"]) == 1
 
 
 def test_gather_times_needs_no_xmf_to_seed_from(tmp_path):

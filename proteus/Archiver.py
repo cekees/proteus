@@ -250,9 +250,9 @@ class AR_base(object):
         if domain is None:
             return []
         times = []
-        for collection in domain.get("TimeCollections", []):
-            for step in collection["Data"]:
-                times.append(step["Time"])
+        for collection in domain.get("time_collections", []):
+            for step in collection["data"]:
+                times.append(step["time"])
             #every collection covers the same instants, so one is enough
             break
         return times
@@ -333,8 +333,8 @@ class AR_base(object):
                 if step_is_global:
                     #one already-global grid: its pieces are the archive
                     g = grids[0]
-                    add_uniform_step(domain, t, g["Topology"], g["Geometry"],
-                                     g.get("Attributes", []), collection=ci)
+                    add_uniform_step(domain, t, g["topology"], g["geometry"],
+                                     g.get("attributes", []), collection=ci)
                 else:
                     #one grid per rank, presented as a single instant
                     add_spatial_step(domain, t, grids, collection=ci)
@@ -799,13 +799,13 @@ class AR_base(object):
                                 "Center": center})
         values = SubElement(attribute, "DataItem",
                             {"Format": self.dataItemFormat,
-                             "DataType": item["DataType"],
-                             "Precision": str(item["Precision"]),
+                             "DataType": item["data_type"],
+                             "Precision": str(item["precision"]),
                              "Dimensions": " ".join(
-                                 str(d) for d in item["Dimensions"])})
+                                 str(d) for d in item["dimensions"])})
 
         if self.hdfFile is not None:
-            values.text = item["Data"]
+            values.text = item["data"]
             if self.global_sync:
                 self.create_dataset_sync(dataset_name,
                                          offsets=sync_offsets,
@@ -818,7 +818,7 @@ class AR_base(object):
             numpy.savetxt(text_path, data)
             # Attached to the DataItem this call created -- see the note above.
             SubElement(values, "xi:include",
-                       {"parse": "text", "href": item["Include"]})
+                       {"parse": "text", "href": item["include"]})
         return values
 
     def write_grid(self, collection, grid_name, t, tCount):

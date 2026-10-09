@@ -40,21 +40,21 @@ def gatherTimes(filename, dataDir='.', addname="_complete", tCount=None,
             "gatherTimes: %s holds no grid metadata to rebuild from"
             % (os.path.join(dataDir, filename + ".h5"),))
 
-    for collection in domain.get("TimeCollections", []):
-        steps = collection["Data"]
+    for collection in domain.get("time_collections", []):
+        steps = collection["data"]
         if tCount is None or tCount < 0:
-            print("%s: %d step(s)" % (collection["Name"], len(steps)))
+            print("%s: %d step(s)" % (collection["name"], len(steps)))
         elif tCount > len(steps):
             # Asking for steps the run never wrote is a mistake to report,
             # not a request to quietly write fewer.
             raise ValueError(
                 "asked for %d steps of %s but %s.h5 holds %d"
-                % (tCount, collection["Name"],
+                % (tCount, collection["name"],
                    os.path.join(dataDir, filename), len(steps)))
         else:
             print("%s: keeping %d of %d step(s)"
-                  % (collection["Name"], tCount, len(steps)))
-            collection["Data"] = steps[:tCount]
+                  % (collection["name"], tCount, len(steps)))
+            collection["data"] = steps[:tCount]
 
     out_base = os.path.join(dataDir, filename + addname)
     write_ymf(domain, out_base + ".ymf")

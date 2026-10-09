@@ -350,7 +350,7 @@ def test_a_declared_size_that_disagrees_with_the_data_is_rejected_in_serial():
     from ymf.archive import YmfArchiveError
 
     ar = StubArchive(global_sync=True, size=1)
-    with pytest.raises(YmfArchiveError, match="Dimensions"):
+    with pytest.raises(YmfArchiveError, match="dimensions"):
         ar.write_field(grid(), "phi_s", np.zeros(25), 0, dimensions=[81],
                        sync_offsets=np.array([0, 25]), sync_data=np.zeros(25))
 
@@ -377,5 +377,5 @@ def test_the_per_rank_path_keeps_the_check_at_any_size():
     from ymf.archive import YmfArchiveError
 
     ar = StubArchive(global_sync=False, size=8)
-    with pytest.raises(YmfArchiveError, match="Dimensions"):
+    with pytest.raises(YmfArchiveError, match="dimensions"):
         ar.write_field(grid(), "u", np.zeros(10), 0, dimensions=[99])

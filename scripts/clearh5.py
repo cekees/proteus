@@ -41,19 +41,19 @@ def clearh5(filename, dataDir='.', addname="_clean", tCount=None,
     domain, extra = read_ymf(source_base + ".ymf")
 
     kept_datasets = set()
-    for collection in domain.get("TimeCollections", []):
-        steps = collection["Data"][:tCount]
-        dropped = len(collection["Data"]) - len(steps)
+    for collection in domain.get("time_collections", []):
+        steps = collection["data"][:tCount]
+        dropped = len(collection["data"]) - len(steps)
         if dropped:
             print("%s: dropping %d step(s) past %d"
-                  % (collection["Name"], dropped, tCount))
-        collection["Data"] = steps
+                  % (collection["name"], dropped, tCount))
+        collection["data"] = steps
         for step in steps:
-            for grid in step.get("SpatialCollection", [step]):
-                for node in (grid["Topology"], grid["Geometry"]):
-                    kept_datasets.add(_dataset_of(node["DataItem"]))
-                for attribute in grid.get("Attributes", []):
-                    kept_datasets.add(_dataset_of(attribute["DataItem"]))
+            for grid in step.get("spatial_collection", [step]):
+                for node in (grid["topology"], grid["geometry"]):
+                    kept_datasets.add(_dataset_of(node["data_item"]))
+                for attribute in grid.get("attributes", []):
+                    kept_datasets.add(_dataset_of(attribute["data_item"]))
     kept_datasets.discard(None)
 
     out_base = os.path.join(dataDir, filename + addname)
@@ -77,7 +77,7 @@ def clearh5(filename, dataDir='.', addname="_clean", tCount=None,
 
 def _dataset_of(data_item):
     """The HDF5 dataset a DataItem references, or None for a text sidecar."""
-    reference = data_item.get("Data")
+    reference = data_item.get("data")
     if reference is None:
         return None
     return reference.split(":/")[-1]
