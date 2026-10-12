@@ -526,6 +526,8 @@ if opts.batchFileName != "":
 run = True
 running = True
 runNumber=0
+# nonzero if any run gave up after a failed system step
+exitStatus = 0
 while running:
 
     if opts.setupOnly:
@@ -578,10 +580,14 @@ while running:
                       runName + '_init_prof')
 
         if doCalculate:
-            dispatch(ns.calculateSolution,
-                     (runName,),
-                     {},
-                     runName + '_run_prof')
+            systemStepFailed = dispatch(ns.calculateSolution,
+                                        (runName,),
+                                        {},
+                                        runName + '_run_prof')
+            # reduce so every rank exits with the same status
+            if comm.globalMax(int(bool(systemStepFailed))):
+                log("%s run number %i failed: system step failed" % (so.name, runNumber))
+                exitStatus = 1
 
         log("Completed %s run number %i" %(so.name,runNumber))
         import gc
@@ -597,17 +603,17 @@ if opts.viewer:
                 vtkViewers.g.app.exec_()
             for w in list(vtkViewers.windowDict.values()):
                 w.compManager.StopServices()
-            sys.exit()
+            sys.exit(exitStatus)
         except:
             pass
     else:
         try:
             for w in list(vtkViewers.windowDict.values()):
                 w.compManager.StartServices()
-            sys.exit()
+            sys.exit(exitStatus)
         except:
             pass
     if 'viewerType' in dir(Viewers) and Viewers.viewerType == 'matlab':
         Viewers.viewerPipe.write("quit \n")
 
-sys.exit(0)
+sys.exit(exitStatus)
