@@ -21,8 +21,6 @@ from proteus import *
 from warnings import *
 import optparse
 import sys
-sys.path.append("/home/nathawani/proteus/proteus")
-
 
 usage = "usage: %prog [options] [main.py] [soModule.py] [pModule.py nModule.py]"
 parser = optparse.OptionParser(usage=usage)
