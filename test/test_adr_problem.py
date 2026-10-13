@@ -236,6 +236,7 @@ def test_emitted_pn_files_reproduce_the_output_bitwise_under_parun(poisson_spec,
 def kovasznay_spec(tmp_path):
     """Kovasznay flow, Taylor-Hood, velocity given all round: p up to a constant."""
     pytest.importorskip("ymf.symbolic")
+    pytest.importorskip("strictyaml")
     path = tmp_path / "kovasznay.ymf"
     path.write_text('''
 model:
