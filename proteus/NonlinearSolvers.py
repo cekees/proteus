@@ -809,7 +809,7 @@ class ExplicitConsistentMassMatrixShallowWaterEquationsSolver(Newton):
 
 class ExplicitLumpedMassMatrix(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """
@@ -851,7 +851,7 @@ class ExplicitLumpedMassMatrix(Newton):
         
 class ExplicitLumpedMassMatrixForRichards(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """
@@ -877,7 +877,7 @@ class ExplicitLumpedMassMatrixForRichards(Newton):
 
 class ExplicitConsistentMassMatrixWithRedistancing(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """
@@ -982,7 +982,7 @@ class ExplicitConsistentMassMatrixWithRedistancing(Newton):
 
 class ExplicitConsistentMassMatrixForVOF(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """
@@ -1018,7 +1018,7 @@ class ExplicitConsistentMassMatrixForVOF(Newton):
 
 class ExplicitConsistentMassMatrixForRichards(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """
@@ -1054,7 +1054,7 @@ class ExplicitConsistentMassMatrixForRichards(Newton):
 
 class NewtonWithL2ProjectionForMassCorrection(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """

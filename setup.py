@@ -414,7 +414,17 @@ EXTENSIONS_TO_BUILD = [
         language='c++',
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
     ),
-   
+    Extension(
+        # proteus/richards/ADR.py does `from .cADR import *`. This entry was
+        # dropped in merge 9e2aca55 (2026-08-12); see erdc/proteus#1285.
+        'richards.cADR',
+        sources=['proteus/richards/cADR.cpp'],
+        depends=['proteus/richards/ADR.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_xtensor_include(),
+        language='c++',
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
+    ),
+
     Extension(
         'm_comp_co2.cm_comp_co2',
         sources=['proteus/m_comp_co2/cm_comp_co2.cpp'],

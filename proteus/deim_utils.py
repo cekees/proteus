@@ -58,7 +58,7 @@ def generate_svd_decomposition(archive,nsnap,val_name,outbase):
     return U,s,V
 
 def calculate_deim_indices(Uin):
-    """
+    r"""
     input: Uin n x m array of basis vectors for nonlinear function snapshots
     output: rho, m vector of indices \rho_i for extracting $\vec F$ values
 

@@ -193,7 +193,7 @@ class Dispatcher(object):
 
     def profile_function(self, func, args, kwargs, profile_name):
         """
-        Profile a Proteus function using the call: func(*args, **kwargs)
+        Profile a Proteus function using the call: ``func(*args, **kwargs)``
 
         Returns the output of the function call.
         """

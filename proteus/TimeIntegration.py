@@ -11,16 +11,16 @@ from .Profiling import logEvent
 from .Comm import globalMax
 
 class TI_base(object):
-    """
+    r"""
     The base class for time discretizations of tightly coupled systems
     of transport equations.
 
     The purpose of time integration objects is to construct
-    approximations:
+    approximations::
 
-    m_t, dm_t -- the time derivatives and their derivatives  w.r.t. u
-    u_*, du_* -- the solution variables and their derivatives w.r.t. u
-    f_*, df_*,... --the coefficients and their derivatives w.r.t. u
+      m_t, dm_t -- the time derivatives and their derivatives  w.r.t. u
+      u_*, du_* -- the solution variables and their derivatives w.r.t. u
+      f_*, df_*,... --the coefficients and their derivatives w.r.t. u
 
     The objects provide a set_dt function for setting the time step as
     well as functions for SUGGESTING the time step. The StepController
@@ -37,7 +37,9 @@ class TI_base(object):
     method and results in the steady state scalar
     transport equation:
 
-    \\deld ( f - a \\grad phi) + r = 0
+    .. math::
+
+       \deld ( f - a \grad \phi ) + r = 0
 
     NoIntegration is an alias for this class.
     """
@@ -1513,7 +1515,7 @@ class VBDF(TI_base):
         self.dt_history[:] = oldTime.dt_history[:]
 
     def computeErrorEstimate(self):
-        """calculate :math:`\vec{e}^{n+1}`
+        r"""calculate :math:`\vec{e}^{n+1}`
 
         depending on order of approximation To be consistent, this
         must be called after step taken but before update time history
@@ -1521,17 +1523,16 @@ class VBDF(TI_base):
         Initially, use
 
         .. math::
-        
+
             (\vec y^{n+1}-\vec y^{n+1,p})/2
 
         for first order and
 
-        .. math:
-        
+        .. math::
+
             r/(1+r)(\vec y^{n+1}-(1+r)\vec y^{n}+r\vec y^{n-1})
 
         for second order.
-
         """
         #mwf debug
         #import pdb
@@ -1612,38 +1613,38 @@ class VBDF(TI_base):
 #mwf hack for cfl calculations
 from . import cfemIntegrals
 class ExplicitRK_base(TI_base):
-    """
+    r"""
     base class for explicit RK schemes which can be written in
     the Shu Osher 88 (Cockburn Shu 89) style generic formula
 
     u^0 = u^n
-    u^l = \\sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \\Delta t L(u^{k},t^n + d_{k} \\Delta t^n)
+    u^l = \sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \Delta t L(u^{k},t^n + d_{k} \Delta t^n)
     u^{n+1} = u^{m}
 
     We will try to include these schemes in a Rothe framework rather than MOL
 
     so in calculate element coefficients, at stage number l, u_t will be replaced with
 
-      u_t --> (u - \\sum_{k=0}^{l-1} \alpha_{l,k} u^k)/\\Delta t
+      u_t --> (u - \sum_{k=0}^{l-1} \alpha_{l,k} u^k)/\Delta t
 
     or
 
-      u_t -->  (u - \\sum_{k=0}^{l-1} \alpha_{l,k} u^k)
+      u_t -->  (u - \sum_{k=0}^{l-1} \alpha_{l,k} u^k)
 
-    depending on whether \\Delta t is assumed to be in the mass matrix or not
+    depending on whether \Delta t is assumed to be in the mass matrix or not
 
     The spatial residual at stage l will be replaced with (in calculateElementSpatialResidual)
 
-      r --> \\sum_{k=0,l-1} \beta_{l,k} r_k
+      r --> \sum_{k=0,l-1} \beta_{l,k} r_k
 
     or
 
-      r --> \\Delta t \\sum_{k=0,l-1} \beta_{l,k} r_k
+      r --> \Delta t \sum_{k=0,l-1} \beta_{l,k} r_k
 
-    depending on whether \\Delta t is assumed to be in the mass matrix or not
+    depending on whether \Delta t is assumed to be in the mass matrix or not
     Here r_k corresponds to
 
-       L(u^{k},t^n + d_{k} \\Delta t^n)
+       L(u^{k},t^n + d_{k} \Delta t^n)
 
 
     Substeps in NumericalSolution framework correspond to stage values
@@ -1779,12 +1780,12 @@ class ExplicitRK_base(TI_base):
         #end ci
     #
     def setCoefficients(self):
-        """set alpha,beta, d for
+        r"""set alpha,beta, d for
 
         .. math::
 
             u^0 = u^n
-            u^l = \\sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \\Delta t L(u^{k},t^n + d_{k} \\Delta t^n)
+            u^l = \sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \Delta t L(u^{k},t^n + d_{k} \Delta t^n)
             u^{n+1} = u^{m}
 
         must be implemented in derived class
@@ -1797,7 +1798,7 @@ class ExplicitRK_base(TI_base):
             beta[l,k]  -->  beta_{l+1,k}
             dcoefs[k]  -->  d_{k+1} 
 
-        because of the whole caching\\delayed eval deal second index
+        because of the whole caching\delayed eval deal second index
         (k) is actual level
 
         """
@@ -1816,10 +1817,10 @@ class ExplicitRK_base(TI_base):
         if self.lstage < 0 or self.lstage > self.nStages:
             logEvent("""stage= %d out of allowed bounds [0,%d]""" % (self.lstage,self.nStages))
     def calculateElementCoefficients(self,q):
-        """
+        r"""
         set m_t as
 
-              m_t --> (m - \\sum_{k=0}^{l-1} \alpha_{l,k} m^k)/\\Delta t
+              m_t --> (m - \sum_{k=0}^{l-1} \alpha_{l,k} m^k)/\Delta t
 
         """
         if self.dt <= 1.0e-24:
@@ -1853,10 +1854,10 @@ class ExplicitRK_base(TI_base):
             #end if q has key
         #end ci
     def calculateElementCoefficientsNoDtInMass(self,q):
-        """
+        r"""
         set m_t as
 
-              m_t --> (m - \\sum_{k=0}^{l-1} \alpha_{l,k} m^k)
+              m_t --> (m - \sum_{k=0}^{l-1} \alpha_{l,k} m^k)
 
         """
         assert self.dt > 1.0e-24,"dt = %d too small in calculateElementCoefficients" % self.dt
@@ -1878,10 +1879,10 @@ class ExplicitRK_base(TI_base):
         #end ci
 
     def calculateElementSpatialResidual(self,elementResidual):
-        """
+        r"""
         The spatial residual at stage l will be replaced with (in calculateElementSpatialResidual)
 
-           r --> \\sum_{k=0,l-1} \beta_{l,k} r_k
+           r --> \sum_{k=0,l-1} \beta_{l,k} r_k
 
 
         """
@@ -1898,10 +1899,10 @@ class ExplicitRK_base(TI_base):
         #end ci
     #end calculateElementSpatialResidual
     def calculateElementSpatialResidualNoDtInMass(self,elementResidual):
-        """
+        r"""
         The spatial residual at stage l will be replaced with (in calculateElementSpatialResidual)
 
-          r --> \\Delta t \\sum_{k=0,l-1} \beta_{l,k} r_k
+          r --> \Delta t \sum_{k=0,l-1} \beta_{l,k} r_k
 
 
         """
@@ -2110,13 +2111,13 @@ class ExplicitRK_base(TI_base):
 
 
 class LinearSSPRKintegration(ExplicitRK_base):
-    """
+    r"""
     implementation of Explicit RK schemes for ODE that are SSP for
     linear operators (aka) spatial discretizations in
 
     .. math::
 
-        \\od{\vec y}{t} = \\mat{L}\vec y
+        \od{\vec y}{t} = \mat{L}\vec y
 
     See Gottlieb, Shu, Tadmor siam review article and notes
 
@@ -2125,22 +2126,21 @@ class LinearSSPRKintegration(ExplicitRK_base):
     .. math::
 
         u^0 = u^n
-        u^l = u^{l-1} + \\Delta t L(u^{l-1}) l = 1,...,m-1
-        u^m = \\sum_{k=0}^{l-1}\alpha_{m,k}u^k +
-              \alpha_{m,m-1} \\Delta t L(u^{m-1})
+        u^l = u^{l-1} + \Delta t L(u^{l-1}) l = 1,...,m-1
+        u^m = \sum_{k=0}^{l-1}\alpha_{m,k}u^k +
+              \alpha_{m,m-1} \Delta t L(u^{m-1})
         u^{n+1} = u^m
 
         so \alpha_{l,l-1} = 1, \beta_{l,l-1} = 1.0  l < m,
-           \beta_{m,m-1}  = \alph_{m,m-1}
+           \beta_{m,m-1}  = \alpha_{m,m-1}
 
     Apparently,
 
     .. math::
-         d_{l} = l \\Delta t l < m,
+         d_{l} = l \Delta t l < m,
          d_m = 1.0
-      
-    which doesn't make a lot of sense for time dependent problems
 
+    which doesn't make a lot of sense for time dependent problems
     """
     def __init__(self,transport,order=1,runCFL=0.1,usingSSPRKNewton=False):
         ExplicitRK_base.__init__(self,transport,timeOrder=order,nStages=order,runCFL=runCFL,
@@ -2148,26 +2148,29 @@ class LinearSSPRKintegration(ExplicitRK_base):
 
 
     def setCoefficients(self):
-        """
-        alpha matrix in Gottlieb, Shu, Tadmor review paper
+        r"""
+        alpha matrix in Gottlieb, Shu, Tadmor review paper::
 
-          u^{l} = \\sum_{k=0}^{l-1}\alpha_{l,k}u^k
+          u^{l} = \sum_{k=0}^{l-1}\alpha_{l,k}u^k
 
         so \alpha_{l,l-1} = 1  for l < m
 
-        beta matrix multiplies
-          \beta_{l,k} \\Delta t L(u^{k},t^n + d_{k} \\Delta t^n)
+        beta matrix multiplies::
 
-        so
+          \beta_{l,k} \Delta t L(u^{k},t^n + d_{k} \Delta t^n)
+
+        so::
+
           \beta_{l,l-1} = 1.0 for l < m
           \beta_{m,m-1}   = \alpha_{m,m-1}
 
-        Note that
+        Note that::
+
           alpha[l,k] -->  alpha_{l+1,k}
           beta[l,k]  -->  beta_{l+1,k}
-          dcoefs[k]  -->  d_{k+1} because of the whole caching\\ delayed eval deal
-        second index (k) is actual level
+          dcoefs[k]  -->  d_{k+1} because of the whole caching\ delayed eval deal
 
+        second index (k) is actual level
         """
         order = self.timeOrder; stages = self.nStages
         assert order == stages, "LinearSSPRK problem order (%s) != stages (%s) " % (order,stages)
@@ -2212,46 +2215,52 @@ class LinearSSPRKintegration(ExplicitRK_base):
 
 
 class SSPRKPIintegration(ExplicitRK_base):
-    """So called SSP RK integration with limiting step at end of each
+    r"""So called SSP RK integration with limiting step at end of each
     phase This one holds the original TVD RK schemes up to 3rd order
     1st order is Forward Euler
 
     2nd order
 
     .. math::
-        u^1 = u^n + \\Delta t L(u^n)
-        u^2 = 0.5(u^n + u^1) + 0.5\\Delta t L(u^1,t^n + \\Delta t^n), same stage values etc linear SSPRK
+
+        u^1 = u^n + \Delta t L(u^n)
+
+        u^2 = 0.5(u^n + u^1) + 0.5\Delta t L(u^1,t^n + \Delta t^n), same stage values etc linear SSPRK
 
     3rd order
 
     .. math::
-        u^1 =  u^n + \\Delta t L(u^n,t^n)
-        u^2 = 0.75 u^n + 0.25u^1  + 0.25\\Delta t L(u^1,t^n + \\Delta t^n),
-        u^3 = 1/3 u^n + 2/3 u^2 + 2/3 \\Delta t L(u^2,t^n + 0.5\\Delta t^n)
+
+        u^1 =  u^n + \Delta t L(u^n,t^n)
+
+        u^2 = 0.75 u^n + 0.25u^1  + 0.25\Delta t L(u^1,t^n + \Delta t^n),
+
+        u^3 = 1/3 u^n + 2/3 u^2 + 2/3 \Delta t L(u^2,t^n + 0.5\Delta t^n)
 
     generic formula is
 
     .. math::
 
         u^0 = u^n
-        u^l = \\sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_l \\Delta t L(u^{l-1},t^n + d_{l-1} \\Delta t^n)
+
+        u^l = \sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_l \Delta t L(u^{l-1},t^n + d_{l-1} \Delta t^n)
+
         u^{n+1} = u^{m}
 
-    so :math:`beta_l --> beta_{l,k-1}` in our basic framework
+    so :math:`beta_l \to beta_{l,k-1}` in our basic framework
 
     Try to put this into Rothe paradigm with linear implicit mass matrix
     evaluation by saying at stage l
-    
+
     .. math::
 
-        m_t \approx \frac{u^l - \\sum_{k=0}^{l-1}\alpha_{l,k}u^k}{\\Delta t}
+        m_t \approx \frac{u^l - \sum_{k=0}^{l-1}\alpha_{l,k}u^k}{\Delta t}
 
     spatial residual --> spatial residual * beta_l
 
     and solve system for :math:`u^l`
 
     The limiting right now assumes same space for each component
-
     """
     def __init__(self,transport,order=1,runCFL=0.1,limiterType=None,usingSSPRKNewton=False):
         ExplicitRK_base.__init__(self,transport,timeOrder=order,nStages=order,runCFL=runCFL,
