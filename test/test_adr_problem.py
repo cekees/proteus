@@ -69,6 +69,75 @@ def test_supg_pspg_refuses_systems_that_are_not_velocity_pressure():
         ADRProblem.velocity_pressure({"unknowns": {"u": ["u"], "w": ["w"]}})
 
 
+def neumann_poisson():
+    """-Laplace(u) = -4 on the unit square, u = x^2 + y^2.
+
+    Dirichlet on three sides; on x = 1 the outward diffusive flux
+    q.n = -(grad u).n = -2x. Written as Proteus's ADR residual,
+    -div(a grad u) + r = 0, so r = +4.
+    """
+    return {
+        "adr": {
+            "dim": 2, "components": ["u"],
+            "equations": [{
+                "component": "u",
+                "diffusion": {"u": {"rowptr": [0, 1, 2], "colind": [0, 1],
+                                    "a": ["1.0", "1.0"], "da": {}, "depends_on": {}}},
+                "reaction": {"r": "4.0", "dr": {}, "depends_on": {}},
+            }],
+        },
+        "domain": {"lower": [0.0, 0.0], "upper": [1.0, 1.0]},
+        "dirichlet": [{"component": "u", "region": "three_sides",
+                       "where": "x <= tol or y <= tol or y >= 1.0 - tol",
+                       "value": "x**2 + y**2"}],
+        "neumann": [{"component": "u", "region": "right",
+                     "where": "x >= 1.0 - tol", "value": "-2.0*x"}],
+        "exact": {"u": "x**2 + y**2"},
+    }
+
+
+def test_a_neumann_face_converges_at_the_right_rate():
+    """The sharp check: without the flux the solution does not converge at all.
+
+    Dropping the condition leaves x = 1 with the natural zero-flux condition,
+    which solves a different problem -- the error stalls near 2.2e-1 and the
+    rate goes slightly negative. Getting the sign wrong is worse still. So
+    second-order convergence here is evidence the value AND its sign reach
+    Proteus intact.
+    """
+    problem = neumann_poisson()
+    errors = [ADRProblem.run(problem, {"u": ("CG", 1)}, cells)[2]["u"]
+              for cells in (8, 16)]
+    assert errors[0] < 1.0e-2
+    rate = numpy.log2(errors[0] / errors[1])
+    assert 1.8 < rate < 2.2, (errors, rate)
+
+
+def test_a_neumann_condition_needs_something_to_flux():
+    problem = neumann_poisson()
+    del problem["adr"]["equations"][0]["diffusion"]
+    with pytest.raises(ValueError, match="no diffusion term"):
+        ADRProblem.physics(problem, "adr")
+
+
+def test_a_neumann_condition_on_a_nonexistent_unknown_is_refused():
+    problem = neumann_poisson()
+    problem["neumann"][0]["component"] = "v"
+    with pytest.raises(ValueError, match="not an unknown"):
+        ADRProblem.physics(problem, "adr")
+
+
+def test_the_emitted_p_file_carries_the_neumann_flux(tmp_path):
+    """parun has to solve the same problem the library just did."""
+    ADRProblem.emit_pn(neumann_poisson(), {"u": ("CG", 1)}, 8,
+                       name="neu", directory=str(tmp_path))
+    text = (tmp_path / "neu_p.py").read_text()
+    assert "def getDFBC_u(X, flag):" in text
+    assert "diffusiveFluxBoundaryConditions = {0: {0: getDFBC_u}}" in text
+    # the value and its sign, not just the hook
+    assert "-2.0*x" in text or "-2.0 * x" in text
+
+
 # --- end to end, through ymf_run ---------------------------------------------------
 
 

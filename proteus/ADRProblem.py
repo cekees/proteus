@@ -207,6 +207,72 @@ def _dirichlet(entries, dim, tol):
     return getDBC
 
 
+def _neumann_targets(problem, adr, names):
+    """``{component index: (potential index, entries)}`` for the neumann conditions.
+
+    A neumann condition prescribes the outward diffusive flux, so it attaches
+    to a (component, potential) pairing of the equation's diffusion term.
+    With one diffusion term the pairing is unambiguous; with several it is
+    not, and guessing would put the flux silently on the wrong potential.
+
+    Shared by :func:`physics` and :func:`emit_pn` so the two cannot disagree
+    about which pairing carries the condition.
+    """
+    by_component = {}
+    for e in problem.get("neumann") or []:
+        by_component.setdefault(e["component"], []).append(e)
+    targets = {}
+    for i, eq in enumerate(adr["equations"]):
+        here = by_component.pop(names[i], [])
+        if not here:
+            continue
+        potentials = list(eq.get("diffusion", {}))
+        if not potentials:
+            raise ValueError(
+                "neumann condition on %s, which has no diffusion term: there "
+                "is no diffusive flux to prescribe" % (names[i],))
+        if len(potentials) > 1 and names[i] not in potentials:
+            raise ValueError(
+                "neumann condition on %s, whose equation diffuses %s: say "
+                "which potential the flux belongs to"
+                % (names[i], ", ".join(sorted(potentials))))
+        phi = names[i] if names[i] in potentials else potentials[0]
+        targets[i] = (names.index(phi), here)
+    if by_component:
+        raise ValueError("neumann condition on %s, which is not an unknown"
+                         % ", ".join(sorted(by_component)))
+    return targets
+
+
+def _neumann(entries, dim, tol):
+    """getDFBC(x, flag) for one (component, potential) pair.
+
+    The value is the OUTWARD diffusive flux q.n with q = -a grad u, which is
+    what Proteus's diffusiveFluxBoundaryConditions wants: see
+    test/poisson_2d/poisson_het_2d_p.py, whose getDiffFluxBC2 returns
+    dot(-A grad u, n) and is checked against an exact solution.
+
+    Unlike getDBC this is called only at exterior boundary quadrature
+    points, so there is no interior sentinel to guard against. Returning
+    None leaves the face to the natural condition, which for a diffusion
+    term is zero flux.
+    """
+    tests = [(None if e["where"] is None else _compile(e["where"]), _Field(e["value"], dim))
+             for e in entries]
+
+    def getDFBC(x, flag):
+        ns = {"tol": tol, "x": x[0]}
+        if dim > 1:
+            ns["y"] = x[1]
+        if dim > 2:
+            ns["z"] = x[2]
+        for where, field in tests:
+            if where is None or eval(where, _GLOBALS, ns):
+                return lambda x, t, field=field: field.uOfXT(x, t)
+        return None
+    return getDFBC
+
+
 def _periodic(axes, lower, upper, tol, dirichlet):
     """getPDBC(x, flag): the key point that identifies periodic copies of a node.
 
@@ -282,10 +348,15 @@ def physics(problem, name):
     p.advectiveFluxBoundaryConditions = {
         i: _zero_on_periodic_faces(periodic.get(n, []), lower, upper, tol)
         for i, n in enumerate(names)}
+    targets = _neumann_targets(problem, adr, names)
     p.diffusiveFluxBoundaryConditions = {i: {} for i in range(len(names))}
     for i, eq in enumerate(adr["equations"]):
+        target, entries = targets.get(i, (None, []))
         for phi in eq.get("diffusion", {}):
-            p.diffusiveFluxBoundaryConditions[i][names.index(phi)] = (lambda x, flag: None)
+            ck = names.index(phi)
+            p.diffusiveFluxBoundaryConditions[i][ck] = (
+                _neumann(entries, dim, tol) if ck == target
+                else (lambda x, flag: None))
     # Advective fluxes through the boundary are computed from the solution's
     # trace -- on Dirichlet boundaries, the boundary data -- so inflow and
     # outflow are both handled; 'noFlow' would drop the term.
@@ -769,8 +840,24 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
     else:
         P += ["advectiveFluxBoundaryConditions = {%s}" % ", ".join(
             "%d: lambda X, flag: None" % i for i in range(len(names)))]
+    targets = _neumann_targets(problem, adr, names)
+    for i, (ck, entries) in sorted(targets.items()):
+        P += ["", "",
+              "# the OUTWARD diffusive flux q.n, with q = -a grad %s" % names[i],
+              "def getDFBC_%s(X, flag):" % names[i],
+              "    %s = %s" % (", ".join(xyz), ", ".join("X[%d]" % k for k in range(dim)))]
+        for e in entries:
+            test = "True" if e["where"] is None else e["where"]
+            P += ["    if %s:   # region %s" % (test, e["region"]),
+                  "        return lambda X, t: Field(%s).uOfXT(X, t)" % _function(dim, e["value"])]
+        P += ["    # elsewhere the natural condition: zero diffusive flux",
+              "    return None"]
+    if targets:
+        P.append("")
     P += ["diffusiveFluxBoundaryConditions = {%s}" % ", ".join(
-              "%d: {%s}" % (i, ", ".join("%d: lambda X, flag: None" % k for k in sorted(d)))
+              "%d: {%s}" % (i, ", ".join(
+                  ("%d: getDFBC_%s" % (k, names[i])) if targets.get(i, (None,))[0] == k
+                  else "%d: lambda X, flag: None" % k for k in sorted(d)))
               for i, d in sorted(p.diffusiveFluxBoundaryConditions.items())),
           "# advective fluxes through the boundary come from the trace",
           "fluxBoundaryConditions = %r" % (p.fluxBoundaryConditions,)]
