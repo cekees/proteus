@@ -93,7 +93,7 @@ def time_stepping(discretization, problem):
 
 
 def stabilization_of(doc, discretization):
-    weak = {w["label"]: w for w in doc["Problem"].get("weak_forms", [])}.get(
+    weak = {w["label"]: w for w in doc["model"].get("weak_forms", [])}.get(
         str(discretization.get("from_weak_form")), {})
     return (weak.get("stabilization_method") or "none").strip().lower()
 
@@ -354,7 +354,7 @@ def main(argv=None):
 
     problem = adr_problem(doc)
     from proteus.ADRProblem import STABILIZATIONS
-    print("%s: %s" % (args.input, doc["Problem"]["name"]))
+    print("%s: %s" % (args.input, doc["model"]["name"]))
     print("unknowns: %s" % ", ".join("%s (%s)" % (n, ", ".join(c))
                                     for n, c in problem["unknowns"].items()))
     env = software()

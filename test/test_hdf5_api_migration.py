@@ -291,7 +291,7 @@ def test_clearh5_truncates_every_collection(tmp_path, monkeypatch, clearh5_modul
     from ymf.archive import read_ymf
 
     domain, _ = read_ymf("run_clean.ymf")
-    assert [(c["Name"], len(c["Data"])) for c in domain["TimeCollections"]] == [
+    assert [(c["name"], len(c["data"])) for c in domain["time_collections"]] == [
         ("Mesh Spatial_Domain", 3), ("Mesh_c0p2_Lagrange", 3)]
 
 
@@ -319,13 +319,13 @@ def test_clearh5_leaves_no_dangling_reference(tmp_path, monkeypatch,
 
     domain, _ = read_ymf("run_clean.ymf")
     with h5py.File("run_clean.h5", "r") as f:
-        for collection in domain["TimeCollections"]:
-            for step in collection["Data"]:
-                for grid in step.get("SpatialCollection", [step]):
-                    nodes = [grid["Topology"], grid["Geometry"]]
-                    nodes += grid.get("Attributes", [])
+        for collection in domain["time_collections"]:
+            for step in collection["data"]:
+                for grid in step.get("spatial_collection", [step]):
+                    nodes = [grid["topology"], grid["geometry"]]
+                    nodes += grid.get("attributes", [])
                     for node in nodes:
-                        ref = node["DataItem"]["Data"].split(":/")[-1]
+                        ref = node["data_item"]["data"].split(":/")[-1]
                         assert ref in f, ref
 
 

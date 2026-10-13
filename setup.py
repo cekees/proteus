@@ -1077,6 +1077,18 @@ def setup_given_extensions(extensions):
               'mpi4py',
               'petsc4py',
               'h5py',
+              # The archive of record is a .ymf file written through
+              # ymf.archive (pyyaml only). The heavy front end,
+              # ymf[symbolic]/ymf[frontend] (sympy, strictyaml, pint), is
+              # deliberately not required. ymf is not on PyPI or
+              # conda-forge yet, so install it first (the environment
+              # files do, from git). Not a direct "ymf @ git+..."
+              # reference: pip re-fetches those even when ymf is
+              # installed, which fails on offline compute nodes and
+              # replaces an editable checkout. No version floor either:
+              # a --no-build-isolation build without setuptools_scm
+              # reports ymf as 0.0.0.
+              'ymf',
           ],
           extras_require={
               'test': ['pytest', 'pytest-cov', 'pytest-xdist', 'pytest-forked', 'matplotlib'],

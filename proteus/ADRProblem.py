@@ -242,11 +242,11 @@ def _zero_on_periodic_faces(axes, lower, upper, tol):
 
 
 def physics(problem, name):
-    """The continuous problem: geometry, coefficients, boundary and initial data."""
+    """The continuous problem: domain, coefficients, boundary and initial data."""
     adr = problem["adr"]
     dim = adr["dim"]
     names = adr["components"]
-    lower, upper = problem["geometry"]["lower"], problem["geometry"]["upper"]
+    lower, upper = problem["domain"]["lower"], problem["domain"]["upper"]
     p = defaults.Physics_base(nd=dim, name=name)
     # The old-style box route (domain None, L and x0) is the one that hands
     # the numerics' nnx/nny/nnz to the mesh generator.
@@ -617,7 +617,7 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
     dim = adr["dim"]
     names = list(adr["components"])
     xyz = _coordinates(dim)
-    lower, upper = list(problem["geometry"]["lower"]), list(problem["geometry"]["upper"])
+    lower, upper = list(problem["domain"]["lower"]), list(problem["domain"]["upper"])
     tol = 1e-8 * max(p.L[:dim])
     about = [header] if header else []
 

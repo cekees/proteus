@@ -129,6 +129,60 @@ jobs:
           environment-file: environment-ci.yml
           activate-environment: proteus-dev
 
+      # ymf comes from "git+https://github.com/cekees/ymf.git@main" in the
+      # environment file -- a moving branch, resolved at run time, because ymf
+      # is on neither PyPI nor conda-forge. So the same proteus commit passes
+      # or fails depending on when it ran relative to an ymf merge, and the
+      # skew is invisible until it surfaces as a few hundred KeyErrors deep in
+      # the suite. cekees/proteus#46 lost a debugging session to exactly that:
+      # 272 failures, all of them ymf.archive still writing the capitalized
+      # keys this branch had already renamed, because the run started 11 hours
+      # before cekees/ymf#2 merged.
+      #
+      # Record what this leg actually resolved, so the next one is a glance
+      # rather than a bisect across two repositories. Diagnostics only: every
+      # lookup is guarded, and nothing here can fail the build.
+      - name: Record the ymf this leg resolved
+        shell: bash -l {0}
+        run: |
+          python - <<'PY'
+          import json
+          import importlib.metadata as md
+
+          try:
+              dist = md.distribution("ymf")
+              print("ymf version:   %s" % dist.version)
+              raw = dist.read_text("direct_url.json")
+              info = json.loads(raw) if raw else {}
+              vcs = info.get("vcs_info") or {}
+              if vcs.get("commit_id"):
+                  url = info.get("url", "")
+                  print("ymf commit:    %s" % vcs["commit_id"])
+                  print("ymf requested: %s @ %s"
+                        % (url or "?", vcs.get("requested_revision", "?")))
+                  print("ymf commit at: %s/commit/%s"
+                        % (url.removesuffix(".git"), vcs["commit_id"]))
+              elif info.get("dir_info") is not None:
+                  print("ymf source:    local directory %s (editable=%s)"
+                        % (info.get("url", "?"), info["dir_info"].get("editable", False)))
+              else:
+                  print("ymf source:    not a direct URL install (%s)"
+                        % (info or "no direct_url.json",))
+          except Exception as exc:
+              print("ymf provenance unavailable: %r" % (exc,))
+
+          # The vocabulary proteus.Archiver reads back out of ymf.archive.
+          # A disagreement here is what a proteus/ymf skew looks like before
+          # it becomes a KeyError in a few hundred tests.
+          try:
+              import numpy
+              from ymf.archive import data_item_for
+              item = data_item_for(numpy.zeros(1), data="f.h5:/x")
+              print("ymf DataItem:  %s" % " ".join(sorted(item)))
+          except Exception as exc:
+              print("ymf DataItem keys unavailable: %r" % (exc,))
+          PY
+
       - name: Build sdist
         shell: bash -l {0}
         run: |

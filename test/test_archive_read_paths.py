@@ -275,9 +275,9 @@ class _StubArchive:
 
         self.hdfFile = None
         self.archived_domain = {
-            "TimeCollections": [
-                {"Name": "Mesh Spatial_Domain",
-                 "Data": [{"Time": t} for t in times]}
+            "time_collections": [
+                {"name": "Mesh Spatial_Domain",
+                 "data": [{"time": t} for t in times]}
             ]
         }
         self.archived_times = AR_base.archived_times.__get__(self)

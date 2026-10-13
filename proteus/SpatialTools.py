@@ -1597,8 +1597,9 @@ def _generateMesh(domain):
     # ----- MESH GENERATION ----- #
     # --------------------------- #
     from proteus import Comm
+    from proteus import MeshTools
     comm = Comm.get()
-    mesh = domain.MeshOptions
+    mesh = MeshTools.getMeshOptions(domain)
     if comm.isMaster():
         if mesh.outputFiles['poly'] is True:
             domain.writePoly(mesh.outputFiles_name)
