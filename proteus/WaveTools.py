@@ -438,7 +438,7 @@ def  vel_mode(x,  t, kDir, kAbs,  omega,  phi,  amplitude,  mwl, depth, vDir, gA
 def sigma(omega,omega0):
     """Calculates sigma function for JONSWAP spectrum
 
-    See http://www.wikiwaves.org/Ocean-Wave_Sectra
+    See https://www.wikiwaves.org/index.php/Ocean-Wave_Spectra
 
     Parameters
     ----------
