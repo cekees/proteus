@@ -132,3 +132,55 @@ def test_interface(dim):
     assert 0.8 <= np.median(crossing) / hphi <= 1.25
     assert np.percentile(crossing, 90) / hphi <= 1.6
     assert imbalance(local) <= 1.10
+
+
+# Serial element counts after one SPR adaptation
+SPR_ELEMENTS = {('target', 2): 1633, ('target', 3): 5862,
+                ('ratio', 2): 1152, ('ratio', 3): 36439}
+
+
+def front(nodes, dim, width=0.02):
+    """A smooth field with a steep front on the circle/sphere of radius 0.3."""
+    return np.tanh(circle_distance(nodes, dim) / width)
+
+
+@pytest.mark.parametrize('dim', [2, 3])
+@pytest.mark.parametrize('mode', ['target', 'ratio'])
+def test_spr(dim, mode):
+    """SCOREC's SPR (Zienkiewicz-Zhu) estimator refines toward the steep front."""
+    target = 3000 if dim == 2 else 15000
+    spr = dict(sprField=b'front', sprTargetElements=target if mode == 'target' else 0,
+               sprAdaptRatio=0.25)
+    domain = setup_adapter(dim, [b'error_spr'], hmax=0.25, hmin=0.004, numIterations=5,
+                           **spr)
+    adapter = domain.AdaptManager.PUMIAdapter
+    before, local = convert(domain)
+    values = front(local.nodeArray, dim)
+    adapter.transferFieldToPUMI(b'front', np.ascontiguousarray(values.reshape(-1, 1)))
+
+    adapter.adaptPUMIMesh(b'')
+    after, local = convert(domain)
+
+    lengths = edge_lengths(local)
+    requested = np.zeros((local.nNodes_global, 1))
+    adapter.transferFieldToProteus(b'proteus_size', requested)
+    ratio = lengths / requested[local.edgeNodesArray, 0].mean(axis=1)
+    distance = np.abs(circle_distance(local.nodeArray, dim)[local.edgeNodesArray]).min(axis=1)
+    near = np.concatenate(mpi.allgather(lengths[distance < 0.03]))
+    far = np.concatenate(mpi.allgather(lengths[distance > 0.2]))
+    ratio = np.concatenate(mpi.allgather(ratio))
+    conforming = np.mean((ratio > 1 / np.sqrt(2)) & (ratio < np.sqrt(2)))
+    print('spr %s dim=%i ranks=%i' % (mode, dim, comm.size()),
+          dict(before=before.nElements_global, n=after.nElements_global,
+               imb=round(imbalance(local), 3), conforming=round(float(conforming), 3),
+               near_median=round(float(np.median(near)), 4),
+               far_median=round(float(np.median(far)), 4)))
+
+    # Measured 2026-10-13 at 1, 2 and 4 ranks (counts agree within 0.8%):
+    # target mode reaches about 0.54 (2D) and 0.39 (3D) of the requested element
+    # count, so SPR's target is approximate; 88-90% of edges conform; edges at
+    # the front are 0.36-0.72 of the length of edges far from it.
+    assert after.nElements_global == pytest.approx(SPR_ELEMENTS[mode, dim], rel=0.15)
+    assert conforming >= 0.8
+    assert np.median(near) <= 0.8 * np.median(far)
+    assert imbalance(local) <= 1.10
