@@ -36,6 +36,7 @@ cdef extern from "MeshAdaptPUMI/MeshAdaptPUMI.h":
         int transferElementFieldToProteus(char*, double*, int, int)
         int transferPropertiesToPUMI(double*, double*,double*,double,double,double,double)
         int setAdaptProperties(vector[string],bint, double,double,double,int,double,double,bint,int)
+        int setSPRProperties(char*, double, long)
         int transferModelInfo(int*,int*,int*,int*,int*,int*,int)
         int transferBCtagsToProteus(int*, int, int*, int*,double*)
         int transferBCsToProteus()
@@ -125,7 +126,7 @@ cdef class MeshAdapt:
         cdef vector[string] sizeInputs
         for entry in manager.sizeInputs:
             sizeInputs.push_back(entry)
-        return self.thisptr.setAdaptProperties(
+        status = self.thisptr.setAdaptProperties(
                     sizeInputs,
                     manager.adapt,
                     manager.hmax,
@@ -137,6 +138,19 @@ cdef class MeshAdapt:
                     manager.logging,
                     manager.numIterations
         )
+        if b'error_spr' in manager.sizeInputs:
+            self.setSPRProperties(manager.sprField, manager.sprAdaptRatio,
+                                  manager.sprTargetElements)
+        return status
+
+    def setSPRProperties(self, fieldName, adaptRatio=0.1, targetElements=0):
+        """Configure the SPR error estimator used by sizeInputs b'error_spr'.
+
+        fieldName names a nodal field already transferred to PUMI. The size
+        field targets adaptRatio times the current estimated error, or about
+        targetElements elements when targetElements > 0.
+        """
+        return self.thisptr.setSPRProperties(fieldName, adaptRatio, targetElements)
 
 
     def transferModelInfo(self, np.ndarray[int,ndim=1,mode="c"] numModelEntities,
@@ -202,6 +216,9 @@ class AdaptManager():
        self.numIterations= 5
        self.targetError= 0
        self.gradingFactor= 1.5
+       self.sprField = b'phi'
+       self.sprAdaptRatio = 0.1
+       self.sprTargetElements = 0
        self.logging= 0
        self.maxAspectRatio=100.0
        self.maType = "" 

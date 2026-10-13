@@ -88,6 +88,10 @@ MeshAdaptPUMIDrvr::MeshAdaptPUMIDrvr()
   initialReconstructed = 0;
   maxAspect = 2.0;//maxAspectRatio;
   hasIBM=hasInterface=hasVMS=hasERM=hasAniso=hasAnalyticSphere=useProteus=useProteusAniso=0;
+  hasSPR=0;
+  sprFieldName = "phi";
+  sprAdaptRatio = 0.1;
+  sprTargetElements = 0;
 }
 
 MeshAdaptPUMIDrvr::~MeshAdaptPUMIDrvr()
@@ -706,6 +710,8 @@ int MeshAdaptPUMIDrvr::adaptPUMIMesh(const char* inputString)
     assert(vmsErrH1);
     getERMSizeField(total_error);
   }
+  if(hasSPR)
+    getSPRSizeField();
   if(hasAnalyticSphere)
   {
     setSphereSizeField();
@@ -1013,6 +1019,14 @@ void MeshAdaptPUMIDrvr::set_nAdapt(int numberAdapt)
   return;
 }
 
+int MeshAdaptPUMIDrvr::setSPRProperties(const char* fieldName, double adaptRatio, long targetElements)
+{
+  sprFieldName = fieldName;
+  sprAdaptRatio = adaptRatio;
+  sprTargetElements = targetElements;
+  return 0;
+}
+
 int MeshAdaptPUMIDrvr::setAdaptProperties(std::vector<std::string> sizeInputs,bool in_adapt, double in_hmax,double in_hmin,double in_hphi, int in_numAdaptSteps, double in_targetError, double in_gradingFactor, bool in_logging, int in_numIterations)
 {
     size_field_config.clear();
@@ -1028,6 +1042,8 @@ int MeshAdaptPUMIDrvr::setAdaptProperties(std::vector<std::string> sizeInputs,bo
             hasVMS=1;
         if(*it == "error_erm")
             hasERM=1;
+        if(*it == "error_spr")
+            hasSPR=1;
     }
     hmin=in_hmin; 
     hmax=in_hmax; 

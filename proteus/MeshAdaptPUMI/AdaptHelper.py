@@ -654,6 +654,10 @@ class PUMI_helper:
               else:
                 sys.exit("Haven't been implemented code yet to cover this behavior.")
             
+            if(b'error_spr' in self.domain.AdaptManager.sizeInputs and
+               self.nSolveSteps % domain.AdaptManager.numAdaptSteps == 0):
+                adaptMeshNow=True
+                logEvent("Need to Adapt")
             if(b'pseudo' in self.domain.AdaptManager.sizeInputs):
                 adaptMeshNow=True
 
