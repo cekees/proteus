@@ -289,8 +289,27 @@ latex_documents = [
 # not chapters.
 #latex_use_parts = False
 
+# LaTeX macros usable in docstring math, for both the HTML (MathJax) and
+# LaTeX builds: name -> (definition, number of arguments)
+math_macros = {
+    'grad': (r'\nabla', 0),
+    'deld': (r'\nabla\cdot', 0),
+    'outer': (r'\otimes', 0),
+    'ds': (r'\,\mathrm{d}s', 0),
+    'ten': (r'\mathbf{#1}', 1),
+    'mat': (r'\mathbf{#1}', 1),
+    'pd': (r'\frac{\partial #1}{\partial #2}', 2),
+    'od': (r'\frac{\mathrm{d} #1}{\mathrm{d} #2}', 2),
+}
+mathjax3_config = {
+    'tex': {'macros': {name: [body, nargs] if nargs else body
+                       for name, (body, nargs) in math_macros.items()}},
+}
+
 # Additional stuff for the LaTeX preamble.
-latex_elements['preamble'] = r'\input{macros}'
+latex_elements['preamble'] = '\n'.join(
+    r'\providecommand{\%s}[%d]{%s}' % (name, nargs, body)
+    for name, (body, nargs) in math_macros.items())
 
 # If true, show page references after internal links.
 #latex_show_pagerefs = False
@@ -414,8 +433,6 @@ epub_copyright = u'2020, The Proteus Team'
 todo_include_todos = False
 
 graphviz_output_format = 'svg'
-
-mathjax_pth = "https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-MML-AM_CHTM"
 
 breathe_projects = {
     "Proteus C++": "../build/capi/xml"
