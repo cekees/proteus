@@ -305,11 +305,11 @@ def main(argv=None):
 
     from ymf import closure
     from ymf.cli import archive2xmf
-    from ymf.compose import _is_archive_text
+    from ymf.archive import is_archive_text
     from ymf.symbolic import adr_problem
 
     with open(args.input, encoding="utf-8") as f:
-        input_is_archive = _is_archive_text(f.read())
+        input_is_archive = is_archive_text(f.read())
     stem = closure.archive_stem(args.input)
     if args.outdir:
         outdir = os.path.abspath(args.outdir)
