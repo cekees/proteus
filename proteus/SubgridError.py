@@ -1679,16 +1679,18 @@ class SkewStabilization_1(object):
 
 
 class AdvectionDiffusionReactionTransientSubscales_ASGS(AdvectionDiffusionReaction_ASGS):
-    """
+    r"""
     track subgrid scales in time with Backward Euler
 
-    \\delta u^{n+1} = -\tau_t\tilde{R}_h
+    .. math::
 
-    \tilde{R}_h = R_h - m^{\\prime,k}\frac{\\delta u^{n}}{\\Delta t^{n+1}}
+       \delta u^{n+1} &= -\tau_t\tilde{R}_h
 
-    \tau_t = \frac{\\Delta t^{n+1}\tau_s}{m^{prime,n+1}\tau_s + \\Delta t^{n+1}}
+       \tilde{R}_h &= R_h - m^{\prime,k}\frac{\delta u^{n}}{\Delta t^{n+1}}
 
-    \tau_s = normal spatial tau, supposed to have \tau_s \approx \\mathcal{L}^{-1}_{s}
+       \tau_t &= \frac{\Delta t^{n+1}\tau_s}{m^{prime,n+1}\tau_s + \Delta t^{n+1}}
+
+       \tau_s &= \text{normal spatial tau, supposed to have } \tau_s \approx \mathcal{L}^{-1}_{s}
 
     for now m^{prime} evaluated at k=n for subgrid error but not sure if this is right or not
 
