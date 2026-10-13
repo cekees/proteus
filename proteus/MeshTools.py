@@ -7073,14 +7073,14 @@ def generateMesh(physics,numerics,generatePartitionedMeshFromFiles=False):
                     meshOptions.nnz == None and
                     meshOptions.triangleOptions == None and
                     meshOptions.use_plex == False))
-        mlMesh = _generateMesh(physics.domain, meshOptions, generatePartitionedMeshFromFiles)
+        mlMesh = _generateMesh(physics.domain, meshOptions, generatePartitionedMeshFromFiles, numerics)
     except:
         meshOptions = numerics
         meshOptions.genMesh = physics.genMesh
-        mlMesh = _generateMesh(physics.domain, meshOptions, generatePartitionedMeshFromFiles)
+        mlMesh = _generateMesh(physics.domain, meshOptions, generatePartitionedMeshFromFiles, numerics)
     return mlMesh
 
-def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
+def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,numerics=None):
     # convenience function to generate a mesh using triangle/tetgen/gmsh
     comm = Comm.get()
     name = domain.name
@@ -7270,7 +7270,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False):
         import sys
         if(comm.size() >1 and meshOptions.parallelPartitioningType!=MeshParallelPartitioningTypes.element):
             sys.exit("The mesh must be partitioned by elements and NOT nodes for adaptivity functionality. Do this with: `meshOptions.setParallelPartitioningType('element')'.")
-        if comm.size() > 1 and n.conservativeFlux != None:
+        if comm.size() > 1 and getattr(numerics, 'conservativeFlux', None) is not None:
             sys.exit("ERROR: Element based partitions don't have a functioning conservative flux calculation. Set conservativeFlux to None in twp_navier_stokes")
         # ibaned: PUMI conversion #1
         if domain.nd == 3:
