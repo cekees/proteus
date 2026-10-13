@@ -1340,7 +1340,7 @@ class LevelModel(proteus.mprans.RANS2P.LevelModel):
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["eb_adjoint_sigma"] = self.eb_adjoint_sigma
-        argsDict["elementDiameter"] = self.elementDiameter,  # mesh.elementDiametersArray
+        argsDict["elementDiameter"] = self.elementDiameter  # mesh.elementDiametersArray
         argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["hFactor"] = self.stabilization.hFactor
         argsDict["nElements_global"] = self.mesh.nElements_global
@@ -1394,7 +1394,7 @@ class LevelModel(proteus.mprans.RANS2P.LevelModel):
         argsDict["sdInfo_u_u_colind"] = self.coefficients.sdInfo[(1, 1)][1]
         argsDict["sdInfo_u_v_rowptr"] = self.coefficients.sdInfo[(1, 2)][0]
         argsDict["sdInfo_u_v_colind"] = elf.coefficients.sdInfo[(1, 2)][1]
-        argsDict["sdInfo_u_w_rowptr"] = self.coefficients.sdInfo[(1, 3)][0], 
+        argsDict["sdInfo_u_w_rowptr"] = self.coefficients.sdInfo[(1, 3)][0]
         argsDict["sdInfo_u_w_colind"] = self.coefficients.sdInfo[(1, 3)][1]
         argsDict["sdInfo_v_v_rowptr"] = self.coefficients.sdInfo[(2, 2)][0]
         argsDict["sdInfo_v_v_colind"] = self.coefficients.sdInfo[(2, 2)][1]
@@ -1571,7 +1571,7 @@ class LevelModel(proteus.mprans.RANS2P.LevelModel):
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["eb_adjoint_sigma"] = self.eb_adjoint_sigma
-        argsDict["elementDiameter"] = self.elementDiameter,  # mesh.elementDiametersArray
+        argsDict["elementDiameter"] = self.elementDiameter  # mesh.elementDiametersArray
         argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["hFactor"] = self.stabilization.hFactor
         argsDict["nElements_global"] = self.mesh.nElements_global

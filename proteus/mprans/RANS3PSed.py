@@ -1995,7 +1995,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["q_numDiff_w_last"] = self.shockCapturing.numDiff_last[2]
         argsDict["sdInfo_u_u_rowptr"] = self.coefficients.sdInfo[(0, 0)][0]
         argsDict["sdInfo_u_u_colind"] = self.coefficients.sdInfo[(0, 0)][1]
-        argsDict["sdInfo_u_v_rowptr"] = self.coefficients.sdInfo[(0, 1)][0], 
+        argsDict["sdInfo_u_v_rowptr"] = self.coefficients.sdInfo[(0, 1)][0]
         argsDict["sdInfo_u_v_colind"] = self.coefficients.sdInfo[(0, 1)][1]
         argsDict["sdInfo_u_w_rowptr"] = self.coefficients.sdInfo[(0, 2)][0]
         argsDict["sdInfo_u_w_colind"] = self.coefficients.sdInfo[(0, 2)][1]
