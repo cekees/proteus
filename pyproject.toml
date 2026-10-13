@@ -1,3 +1,14 @@
 [build-system]
 requires = ["setuptools>=61.0","cython>=3.0,<4","pybind11>=2.11,<4","numpy>=1.25,<3","mpi4py"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+# CI runs with --import-mode=importlib, which does not put a test's own
+# directory on sys.path. Without this, local runs use the default prepend
+# mode, which does, so a test can import a sibling module by bare name
+# (`from test_x import helper`), pass locally, and then fail to collect in
+# CI -- where one collection error aborts the whole run. Running every
+# invocation in CI's mode makes that fail here first. Import a helper
+# relatively (`from . import x`, in a directory with __init__.py) or load
+# it by path.
+addopts = "--import-mode=importlib"
