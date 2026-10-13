@@ -737,7 +737,9 @@ int MeshAdaptPUMIDrvr::adaptPUMIMesh(const char* inputString)
       freeField(errRel_reg); 
   }
 */
-  isotropicIntersect();
+  // Uniform refinement splits every edge and needs no size field.
+  if(size_field_config != "uniform")
+    isotropicIntersect();
 
   if(logging_config=="on"){
     char namebuffer[50];
@@ -767,8 +769,8 @@ int MeshAdaptPUMIDrvr::adaptPUMIMesh(const char* inputString)
   for (int d = 0; d <= m->getDimension(); ++d)
     freeNumbering(local[d]);
 
-  apf::Field* adaptSize;
-  apf::Field* adaptFrame;
+  apf::Field* adaptSize = NULL;
+  apf::Field* adaptFrame = NULL;
 
   /// Adapt the mesh
   ma::Input* in;
@@ -803,7 +805,9 @@ int MeshAdaptPUMIDrvr::adaptPUMIMesh(const char* inputString)
   in->shouldRunMidParma = true;
   in->shouldRunPostParma = true;
   in->maximumImbalance = 1.05;
-  in->maximumIterations = numIter;
+  // configureUniformRefine() sets the number of refinements to one.
+  if(size_field_config != "uniform")
+    in->maximumIterations = numIter;
   if(size_field_config == "meshQuality")
   {
     in->shouldSnap = true;
@@ -851,8 +855,9 @@ int MeshAdaptPUMIDrvr::adaptPUMIMesh(const char* inputString)
     //m->writeNative(namebuffer);
   }
   //isReconstructed = 0; //this is needed to maintain consistency with the post-adapt conversion back to Proteus
-  apf::destroyField(adaptSize);
-  if(adapt_type_config=="anisotropic")
+  if(adaptSize)
+    apf::destroyField(adaptSize);
+  if(adaptFrame)
     apf::destroyField(adaptFrame);
   nAdapt++; //counter for number of adapt steps
 
@@ -1010,8 +1015,11 @@ void MeshAdaptPUMIDrvr::set_nAdapt(int numberAdapt)
 
 int MeshAdaptPUMIDrvr::setAdaptProperties(std::vector<std::string> sizeInputs,bool in_adapt, double in_hmax,double in_hmin,double in_hphi, int in_numAdaptSteps, double in_targetError, double in_gradingFactor, bool in_logging, int in_numIterations)
 {
+    size_field_config.clear();
     for (std::vector<std::string>::iterator it = sizeInputs.begin() ; it != sizeInputs.end(); ++it)
     {
+        if(*it == "uniform")
+            size_field_config = "uniform";
         if(*it == "ibm")
             hasIBM=1;
         if(*it == "interface")
