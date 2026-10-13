@@ -519,7 +519,7 @@ class VPP_P1nc_RT0(VelocityPostProcessingAlgorithmBase):
 
 
 class VPP_PWL_RT0(VelocityPostProcessingAlgorithmBase):
-    """Local Larson-Niklasson method with RT_0 representation for element
+    r"""Local Larson-Niklasson method with RT_0 representation for element
     velocities This is not the correct postprocessing for optimized NS
     codes
 
@@ -531,7 +531,7 @@ class VPP_PWL_RT0(VelocityPostProcessingAlgorithmBase):
 
     where :math:`p_i` is the vertex across from face i, :math:`|E|` is the volume of
     the element, and d is the space dimension the degrees of freedom
-    are :math:`V^i = \\int_{e_i}\vec v\\dot n_{i}\\ds`
+    are :math:`V^i = \int_{e_i}\vec v\dot n_{i}\ds`
 
     """
 #    TODO:
@@ -1263,7 +1263,7 @@ class VPP_PWL_RT1(VelocityPostProcessingAlgorithmBase):
 
 
 class VPP_PWL_BDM(VPP_PWL_RT0):
-    """Local Larson-Niklasson method with BDM1 representation for element
+    r"""Local Larson-Niklasson method with BDM1 representation for element
     velocities This is not the correct postprocessing for optimized NS
     codes
 
@@ -1274,7 +1274,7 @@ class VPP_PWL_BDM(VPP_PWL_RT0):
 
     .. math::
       
-      \vec N_i = \\lambda_{i/d}\vec e_{i%d}
+      \vec N_i = \lambda_{i/d}\vec e_{i \bmod d}
     
     That is the dofs are locally (say in 2d) :math:`[v^x_0,v^y_0,v^x_1,v^y_1,v^x_2,v^y_2]`
 
@@ -1980,7 +1980,7 @@ class VPP_PWL_RT0_OPT(VPP_PWL_RT0):
         return vx
 
 class VPP_PWL_BDM_OPT(VPP_PWL_RT0_OPT):
-    """Local Larson-Niklasson method with BDM1 representation for element
+    r"""Local Larson-Niklasson method with BDM1 representation for element
     velocities for optimized parallel codes
 
     Only difference from VPP_PWL_RT0_OPT should be steps for local
@@ -1990,7 +1990,7 @@ class VPP_PWL_BDM_OPT(VPP_PWL_RT0_OPT):
 
     .. math::
 
-      \vec N_i = \\lambda_{i%(d+1)} \vec e_{i/(d+1)}
+      \vec N_i = \lambda_{i \bmod (d+1)} \vec e_{i/(d+1)}
 
     Have to use BDM projection to get degrees of freedom
 
@@ -2109,7 +2109,7 @@ class VPP_PWL_BDM_OPT(VPP_PWL_RT0_OPT):
 
 
 class VPP_PWC_RT0(VelocityPostProcessingAlgorithmBase):
-    """Global piecewise constant Larson-Niklasson method with :math:`RT_0`
+    r"""Global piecewise constant Larson-Niklasson method with :math:`RT_0`
     representation for element velocities
 
     uses RT_0 representation in terms of local basis
@@ -2121,7 +2121,7 @@ class VPP_PWC_RT0(VelocityPostProcessingAlgorithmBase):
     where :math:`p_i` is the vertex across from face :math:`i`,
     :math:`|E|` is the volume of the element, and :math:`d` is the
     space dimension the degrees of freedom are :math:`V^i =
-    \\int_{e_i}\vec v\\dot n_{i}\\ds`
+    \int_{e_i}\vec v\dot n_{i}\ds`
 
     """
 #    TOOD:
@@ -2327,7 +2327,7 @@ class VPP_PWC_RT0(VelocityPostProcessingAlgorithmBase):
 
 
 class VPP_SUN_RT0(VelocityPostProcessingAlgorithmBase):
-    """Global piecewise constant Sun-Wheeler method with :math:`RT_0`
+    r"""Global piecewise constant Sun-Wheeler method with :math:`RT_0`
     representation for element velocities
 
     uses RT_0 representation in terms of local basis
@@ -2338,7 +2338,7 @@ class VPP_SUN_RT0(VelocityPostProcessingAlgorithmBase):
 
     where :math:`p_i` is the vertex across from face i, :math:`|E|` is
     the volume of the element, and d is the space dimension the
-    degrees of freedom are :math:`V^i = \\int_{e_i}\vec v\\dot n_{i}\\ds`
+    degrees of freedom are :math:`V^i = \int_{e_i}\vec v\dot n_{i}\ds`
 
     """
 #    TOOD:
@@ -2588,7 +2588,7 @@ class VPP_SUN_RT0(VelocityPostProcessingAlgorithmBase):
 
 
 class VPP_SUN_GS_RT0(VelocityPostProcessingAlgorithmBase):
-    """Local Sun-Wheeler "Gauss-Seidel" method with :math:`RT_0` representation
+    r"""Local Sun-Wheeler "Gauss-Seidel" method with :math:`RT_0` representation
     for element velocities
 
     uses :math:`RT_0` representation in terms of local basis
@@ -2599,7 +2599,7 @@ class VPP_SUN_GS_RT0(VelocityPostProcessingAlgorithmBase):
 
     where p_i is the vertex across from face i, :math:`|E|` is the
     volume of the element, and d is the space dimension the degrees of
-    freedom are :math:`V^i = \\int_{e_i}\vec v\\dot n_{i}\\ds`
+    freedom are :math:`V^i = \int_{e_i}\vec v\dot n_{i}\ds`
 
     """
     def __init__(self,vectorTransport=None,vtComponents=[0]):
@@ -2853,14 +2853,14 @@ class VPP_DG_RT0(VelocityPostProcessingAlgorithmBase):
         return vx
 
 class VPP_DG_BDM(VPP_DG_RT0):
-    """Project DG solution onto BDM1 local representation which is
+    r"""Project DG solution onto BDM1 local representation which is
     :math:`[P^1]^d` locally with continuous linear fluxes on each face
 
     use standard basis
 
     .. math::
 
-      \vec N_i = \\lambda_{i%(d+1)} \vec e_{i/(d+1)}
+      \vec N_i = \lambda_{i \bmod (d+1)} \vec e_{i/(d+1)}
 
     Have to use BDM projection to get degrees of freedom
 

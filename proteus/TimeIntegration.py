@@ -35,9 +35,11 @@ class TI_base(object):
 
     This base class implements no time integration
     method and results in the steady state scalar
-    transport equation::
+    transport equation:
 
-      deld ( f - a grad phi) + r = 0
+    .. math::
+
+       \deld ( f - a \grad \phi ) + r = 0
 
     NoIntegration is an alias for this class.
     """
@@ -1611,38 +1613,38 @@ class VBDF(TI_base):
 #mwf hack for cfl calculations
 from . import cfemIntegrals
 class ExplicitRK_base(TI_base):
-    """
+    r"""
     base class for explicit RK schemes which can be written in
     the Shu Osher 88 (Cockburn Shu 89) style generic formula
 
     u^0 = u^n
-    u^l = \\sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \\Delta t L(u^{k},t^n + d_{k} \\Delta t^n)
+    u^l = \sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \Delta t L(u^{k},t^n + d_{k} \Delta t^n)
     u^{n+1} = u^{m}
 
     We will try to include these schemes in a Rothe framework rather than MOL
 
     so in calculate element coefficients, at stage number l, u_t will be replaced with
 
-      u_t --> (u - \\sum_{k=0}^{l-1} \alpha_{l,k} u^k)/\\Delta t
+      u_t --> (u - \sum_{k=0}^{l-1} \alpha_{l,k} u^k)/\Delta t
 
     or
 
-      u_t -->  (u - \\sum_{k=0}^{l-1} \alpha_{l,k} u^k)
+      u_t -->  (u - \sum_{k=0}^{l-1} \alpha_{l,k} u^k)
 
-    depending on whether \\Delta t is assumed to be in the mass matrix or not
+    depending on whether \Delta t is assumed to be in the mass matrix or not
 
     The spatial residual at stage l will be replaced with (in calculateElementSpatialResidual)
 
-      r --> \\sum_{k=0,l-1} \beta_{l,k} r_k
+      r --> \sum_{k=0,l-1} \beta_{l,k} r_k
 
     or
 
-      r --> \\Delta t \\sum_{k=0,l-1} \beta_{l,k} r_k
+      r --> \Delta t \sum_{k=0,l-1} \beta_{l,k} r_k
 
-    depending on whether \\Delta t is assumed to be in the mass matrix or not
+    depending on whether \Delta t is assumed to be in the mass matrix or not
     Here r_k corresponds to
 
-       L(u^{k},t^n + d_{k} \\Delta t^n)
+       L(u^{k},t^n + d_{k} \Delta t^n)
 
 
     Substeps in NumericalSolution framework correspond to stage values
@@ -1778,12 +1780,12 @@ class ExplicitRK_base(TI_base):
         #end ci
     #
     def setCoefficients(self):
-        """set alpha,beta, d for
+        r"""set alpha,beta, d for
 
         .. math::
 
             u^0 = u^n
-            u^l = \\sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \\Delta t L(u^{k},t^n + d_{k} \\Delta t^n)
+            u^l = \sum_{k=0}^{l-1}\alpha_{l,k}u^k + \beta_{l,k} \Delta t L(u^{k},t^n + d_{k} \Delta t^n)
             u^{n+1} = u^{m}
 
         must be implemented in derived class
@@ -1796,7 +1798,7 @@ class ExplicitRK_base(TI_base):
             beta[l,k]  -->  beta_{l+1,k}
             dcoefs[k]  -->  d_{k+1} 
 
-        because of the whole caching\\delayed eval deal second index
+        because of the whole caching\delayed eval deal second index
         (k) is actual level
 
         """
@@ -1815,10 +1817,10 @@ class ExplicitRK_base(TI_base):
         if self.lstage < 0 or self.lstage > self.nStages:
             logEvent("""stage= %d out of allowed bounds [0,%d]""" % (self.lstage,self.nStages))
     def calculateElementCoefficients(self,q):
-        """
+        r"""
         set m_t as
 
-              m_t --> (m - \\sum_{k=0}^{l-1} \alpha_{l,k} m^k)/\\Delta t
+              m_t --> (m - \sum_{k=0}^{l-1} \alpha_{l,k} m^k)/\Delta t
 
         """
         if self.dt <= 1.0e-24:
@@ -1852,10 +1854,10 @@ class ExplicitRK_base(TI_base):
             #end if q has key
         #end ci
     def calculateElementCoefficientsNoDtInMass(self,q):
-        """
+        r"""
         set m_t as
 
-              m_t --> (m - \\sum_{k=0}^{l-1} \alpha_{l,k} m^k)
+              m_t --> (m - \sum_{k=0}^{l-1} \alpha_{l,k} m^k)
 
         """
         assert self.dt > 1.0e-24,"dt = %d too small in calculateElementCoefficients" % self.dt
@@ -1877,10 +1879,10 @@ class ExplicitRK_base(TI_base):
         #end ci
 
     def calculateElementSpatialResidual(self,elementResidual):
-        """
+        r"""
         The spatial residual at stage l will be replaced with (in calculateElementSpatialResidual)
 
-           r --> \\sum_{k=0,l-1} \beta_{l,k} r_k
+           r --> \sum_{k=0,l-1} \beta_{l,k} r_k
 
 
         """
@@ -1897,10 +1899,10 @@ class ExplicitRK_base(TI_base):
         #end ci
     #end calculateElementSpatialResidual
     def calculateElementSpatialResidualNoDtInMass(self,elementResidual):
-        """
+        r"""
         The spatial residual at stage l will be replaced with (in calculateElementSpatialResidual)
 
-          r --> \\Delta t \\sum_{k=0,l-1} \beta_{l,k} r_k
+          r --> \Delta t \sum_{k=0,l-1} \beta_{l,k} r_k
 
 
         """
@@ -2130,7 +2132,7 @@ class LinearSSPRKintegration(ExplicitRK_base):
         u^{n+1} = u^m
 
         so \alpha_{l,l-1} = 1, \beta_{l,l-1} = 1.0  l < m,
-           \beta_{m,m-1}  = \alph_{m,m-1}
+           \beta_{m,m-1}  = \alpha_{m,m-1}
 
     Apparently,
 

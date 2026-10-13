@@ -276,6 +276,7 @@ docs:
 	@echo "************************************"
 
 	-${PROTEUS_ENV} pip3 install sphinx sphinx_rtd_theme breathe exhale
+	@${PROTEUS_ENV} sh -c 'command -v dot' >/dev/null || { echo "graphviz 'dot' not found; inheritance diagrams need it (conda install graphviz)"; exit 1; }
 	cd docs && ${PROTEUS_ENV} PROTEUS=${PWD} make html
 
 	@echo "**********************************"

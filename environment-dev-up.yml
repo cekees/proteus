@@ -61,3 +61,5 @@ dependencies:
   - cffi >=1.17.1
   - jupyterlab >=4.6
   - llvm-openmp >=22.1
+  # provides `dot` for the docs inheritance diagrams
+  - graphviz
