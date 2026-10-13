@@ -87,7 +87,7 @@ class LinearSolver(object):
     def setResTol(self,rtol,atol):
         self.rtol_r = rtol
         self.atol_r = atol
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         pass
     def solve(self,u,r=None,b=None,par_u=None,par_b=None):
         pass
@@ -2509,7 +2509,7 @@ class Jacobi(LinearSolver):
         self.M=Vec(self.n)
         self.w=weight
         self.node_order=numpy.arange(self.n,dtype="i")
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         if type(self.L).__name__ == 'ndarray':
             self.M = self.w/numpy.diagonal(self.L)
         elif type(self.L).__name__ == 'SparseMatrix':
@@ -2561,7 +2561,7 @@ class GaussSeidel(LinearSolver):
         self.node_order=numpy.arange(self.n,dtype="i")
         self.w=weight
         self.sym=sym
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         if type(self.L).__name__ == 'ndarray':
             self.M = self.w/numpy.diagonal(self.L)
         elif type(self.L).__name__ == 'SparseMatrix':
@@ -2652,7 +2652,7 @@ class StarILU(LinearSolver):
         elif type(L).__name__ == 'SparseMatrix':
             self.node_order=numpy.arange(self.n,dtype="i")
             self.asmFactorObject = self.csmoothers.ASMFactor(L)
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         if type(self.L).__name__ == 'ndarray':
             self.subdomainSolvers=[]
             for i in range(self.n):
@@ -2735,7 +2735,7 @@ class StarBILU(LinearSolver):
         elif type(L).__name__ == 'SparseMatrix':
             self.node_order=numpy.arange(self.n,dtype="i")
             self.basmFactorObject = self.csmoothers.BASMFactor(L,bs)
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         if type(self.L).__name__ == 'ndarray':
             raise NotImplementedError
         elif type(self.L).__name__ == 'SparseMatrix':
@@ -2796,7 +2796,7 @@ class TwoLevel(LinearSolver):
         self.cr = Vec(prolong.shape[1])
         self.cdu = Vec(prolong.shape[1])
         self.prepareCoarse=prepareCoarse
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         self.preSmoother.prepare()
         self.postSmoother.prepare()
         if self.prepareCoarse is True:
@@ -2835,6 +2835,13 @@ class MultilevelLinearSolver(object):
             self.infoString += "**************End Level %i Info********************\n" % l
         self.infoString+="********************End Multilevel Linear Solver Info*********************\n"
         return self.infoString
+    def failed(self):
+        """Newton calls failed() on whatever linear solver it was handed.
+
+        MultilevelLinearSolver does not derive from LinearSolver, so it has to
+        answer for itself; the finest level is the one that produced the solve.
+        """
+        return self.solverList[-1].failed()
 
 class MGM(MultilevelLinearSolver):
     """
@@ -2869,7 +2876,7 @@ class MGM(MultilevelLinearSolver):
                                             printInfo=False))
         self.mgmSolver = self.solverList[self.nLevels-1]
         self.solverName = "TwoLevel"
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         for s in self.solverList:
             s.prepare()
 
@@ -2916,7 +2923,7 @@ class NI(MultilevelLinearSolver):
             for l in range(self.nLevels):
                 self.tolList[l] = rtol
             self.atol_r = atol
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         if b is not None:
             currentMesh = self.levelDict[b.shape[0]]
         else:
@@ -2949,7 +2956,12 @@ class NI(MultilevelLinearSolver):
         if self.tolList is not None:
             self.switchToResidualConvergence(self.levelSolverList[currentMesh],
                                              self.tolList[currentMesh])
-        self.levelSolverList[currentMesh].solve(u,r,b,initialGuessIsZero)
+        # LinearSolver.solve is (u,r,b,par_u,par_b,initialGuessIsZero): passing
+        # initialGuessIsZero positionally put it in the par_u slot. The coarse
+        # level solves above still carry no parallel vectors -- NI needs a
+        # per-level ParVec for that, which is not built yet.
+        self.levelSolverList[currentMesh].solve(u=u,r=r,b=b,par_u=par_u,par_b=par_b,
+                                                initialGuessIsZero=initialGuessIsZero)
         self.infoString += "**************Start Level %i Info********************\n" % currentMesh
         self.infoString+=self.levelSolverList[currentMesh].info()
         self.infoString += "**************End Level %i Info********************\n" % currentMesh
@@ -2999,6 +3011,10 @@ class NI(MultilevelLinearSolver):
 
     def info(self):
         return self.infoString
+    def failed(self):
+        """NI sets solverList to [self]*nLevels, so the inherited failed()
+        would recurse; ask the finest level solver instead."""
+        return self.levelSolverList[-1].failed()
 """
 A function for setting up a multilevel linear solver.
 """
@@ -3040,7 +3056,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
         multilevelLinearSolverType == StarBILU or
         multilevelLinearSolverType == MGM):
         levelLinearSolverType = multilevelLinearSolverType
-        printLevelLinearSolverInfo = printSolverInfo
+        printLevelSolverInfo = printSolverInfo
         computeLevelSolverRates = computeSolverRates
     nLevels = len(linearOperatorList)
     multilevelLinearSolver = None
@@ -3122,7 +3138,13 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                                      computeRates = computeSmootherRates,
                                                      printInfo = printSmootherInfo))
                 else:
-                    logEvent("smootherType unrecognized")
+                    # Leaving this as a log message left preSmootherList short,
+                    # so MGM.__init__ failed later with a bare IndexError that
+                    # named neither the option nor the cause.
+                    raise ValueError(
+                        "MGM requires a smoother, but linearSmoother=%r is not one "
+                        "of Jacobi, GaussSeidel, StarILU, StarBILU."
+                        % (smootherType,))
             else:
                 preSmootherList.append([])
                 postSmootherList.append([])
@@ -3149,7 +3171,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                                       rtol_r = relativeToleranceList[l],
                                                       atol_r = absoluteTolerance,
                                                       computeRates = computeLevelSolverRates,
-                                                      printInfo = printLevelLinearSolverInfo,
+                                                      printInfo = printLevelSolverInfo,
                                                       prefix=solver_options_prefix,
                                                       Preconditioner=smootherType,
                                                       connectionList = connectivityListList[l],
