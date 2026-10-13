@@ -10,6 +10,27 @@
 
 namespace proteus
 {
+namespace {
+// PETSc falls back to MATPARTITIONINGCURRENT, which keeps the input
+// partition, when it was built with none of ParMETIS, Chaco, Party or
+// PT-Scotch. Say so once instead of silently running on a poor partition.
+void warnIfNotRepartitioning(const MPI_Comm& comm, MatPartitioning part)
+{
+  static bool warned = false;
+  int size, rank;
+  MPI_Comm_size(comm, &size);
+  MPI_Comm_rank(comm, &rank);
+  MatPartitioningType type;
+  MatPartitioningGetType(part, &type);
+  if (!warned && size > 1 && type && std::strcmp(type, MATPARTITIONINGCURRENT) == 0)
+    {
+      warned = true;
+      if (rank == 0)
+        std::cerr<<"PROTEUS WARNING: PETSc mesh partitioner is '"<<type
+                 <<"', which keeps the initial partition. Build PETSc with PT-Scotch or ParMETIS, or set -mat_partitioning_type."<<std::endl;
+    }
+}
+}
 //todo add overlap for element based partitions
 int partitionElementsOriginal(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nElements_overlap)
 {
@@ -106,6 +127,7 @@ int partitionElementsOriginal(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, in
   MatPartitioningCreate(PROTEUS_COMM_WORLD,&petscPartition);
   MatPartitioningSetAdjacency(petscPartition,petscAdjacency);
   MatPartitioningSetFromOptions(petscPartition);
+  warnIfNotRepartitioning(PROTEUS_COMM_WORLD, petscPartition);
 
   //get a petsc index set that has the new submdomain number for each element
   IS elementPartitioningIS_new;
@@ -636,6 +658,7 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
   MatPartitioningCreate(PROTEUS_COMM_WORLD,&petscPartition);
   MatPartitioningSetAdjacency(petscPartition,petscAdjacency);
   MatPartitioningSetFromOptions(petscPartition);
+  warnIfNotRepartitioning(PROTEUS_COMM_WORLD, petscPartition);
 
   //get petsc index set that has the new subdomain number for each node
   IS nodePartitioningIS_new;
@@ -1914,6 +1937,7 @@ int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char
   ierr = MatPartitioningCreate(PROTEUS_COMM_WORLD,&petscPartition);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   ierr = MatPartitioningSetAdjacency(petscPartition,petscAdjacency);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   ierr = MatPartitioningSetFromOptions(petscPartition);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  warnIfNotRepartitioning(PROTEUS_COMM_WORLD, petscPartition);
   ierr = MatPartitioningSetVertexWeights(petscPartition,vertex_weights_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   ierr = MatPartitioningSetPartitionWeights(petscPartition,partition_weights);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   //get petsc index set that has the new subdomain number for each node
@@ -3888,6 +3912,7 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
   ierr = MatPartitioningCreate(PROTEUS_COMM_WORLD,&petscPartition);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   ierr = MatPartitioningSetAdjacency(petscPartition,petscAdjacency);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   ierr = MatPartitioningSetFromOptions(petscPartition);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+  warnIfNotRepartitioning(PROTEUS_COMM_WORLD, petscPartition);
   ierr = MatPartitioningSetVertexWeights(petscPartition,vertex_weights_subdomain);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   ierr = MatPartitioningSetPartitionWeights(petscPartition,partition_weights);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   //get petsc index set that has the new subdomain number for each node
@@ -5337,6 +5362,7 @@ int partitionElements(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nEleme
   MatPartitioningCreate(PROTEUS_COMM_WORLD,&petscPartition);
   MatPartitioningSetAdjacency(petscPartition,petscAdjacency);
   MatPartitioningSetFromOptions(petscPartition);
+  warnIfNotRepartitioning(PROTEUS_COMM_WORLD, petscPartition);
 
   //get a petsc index set that has the new submdomain number for each element
   IS elementPartitioningIS_new;

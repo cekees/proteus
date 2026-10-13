@@ -257,8 +257,8 @@ PROTEUS_PETSC_INCLUDE_DIRS = [PROTEUS_PETSC_INCLUDE_DIR,PROTEUS_PETSC_LIB_DIR]#,
 PROTEUS_SCOREC_INCLUDE_DIR, PROTEUS_SCOREC_LIB_DIR = get_flags('scorec')
 PROTEUS_PARMETIS_INCLUDE_DIR, PROTEUS_PARMETIS_LIB_DIR = get_flags('parmetis')
 PROTEUS_ZOLTAN_INCLUDE_DIR, PROTEUS_ZOLTAN_LIB_DIR = get_flags('zoltan')
-PROTEUS_SCOREC_INCLUDE_DIRS = [PROTEUS_SCOREC_INCLUDE_DIR, PROTEUS_PETSC_INCLUDE_DIR, PROTEUS_ZOLTAN_INCLUDE_DIR, PROTEUS_PARMETIS_INCLUDE_DIR, PROTEUS_MPI_INCLUDE_DIR, PROTEUS_LAPACK_INCLUDE_DIR, PROTEUS_BLAS_INCLUDE_DIR]
-PROTEUS_SCOREC_LIB_DIRS =     [PROTEUS_SCOREC_LIB_DIR,     PROTEUS_PETSC_LIB_DIR,     PROTEUS_ZOLTAN_LIB_DIR, PROTEUS_PARMETIS_LIB_DIR,     PROTEUS_MPI_LIB_DIR, PROTEUS_LAPACK_LIB_DIR, PROTEUS_BLAS_LIB_DIR,'/usr/lib/x86_64-linux-gnu/']
+PROTEUS_SCOREC_INCLUDE_DIRS = [PROTEUS_SCOREC_INCLUDE_DIR, PROTEUS_PETSC_INCLUDE_DIR, PROTEUS_MPI_INCLUDE_DIR, PROTEUS_LAPACK_INCLUDE_DIR, PROTEUS_BLAS_INCLUDE_DIR]
+PROTEUS_SCOREC_LIB_DIRS =     [PROTEUS_SCOREC_LIB_DIR,     PROTEUS_PETSC_LIB_DIR,     PROTEUS_MPI_LIB_DIR, PROTEUS_LAPACK_LIB_DIR, PROTEUS_BLAS_LIB_DIR,'/usr/lib/x86_64-linux-gnu/']
 PROTEUS_SCOREC_LIBS = [
     'spr',
     'ma',
@@ -270,11 +270,34 @@ PROTEUS_SCOREC_LIBS = [
     'gmi',
     'pcu',
     'lion',
-    'zoltan',
-    'parmetis',
-    'metis',
     'sam',
     'bz2']+PROTEUS_PETSC_LIBS
+
+def _scorec_is_static(lib_dir):
+    """True when only a static libma is installed in lib_dir."""
+    if glob.glob(pjoin(lib_dir, 'libma.so*')) or os.path.exists(pjoin(lib_dir, 'libma.dylib')):
+        return False
+    return os.path.exists(pjoin(lib_dir, 'libma.a'))
+
+# proteus calls no Zoltan, ParMETIS or METIS API itself; MeshAdapt reaches
+# them through apf_zoltan and apf_metis, which a shared SCOREC build already
+# links. Only a static SCOREC build needs those archives and whichever
+# partitioner libraries it was configured with spelled out here.
+PROTEUS_SCOREC_STATIC = _scorec_is_static(PROTEUS_SCOREC_LIB_DIR)
+PROTEUS_SCOREC_PARTITIONER_LIB_DIRS = []
+if PROTEUS_SCOREC_STATIC:
+    PROTEUS_SCOREC_LIBS.insert(PROTEUS_SCOREC_LIBS.index('apf_zoltan') + 1, 'apf_metis')
+    _partitioner_libs = []
+    for _lib, _lib_dir in (('zoltan', PROTEUS_ZOLTAN_LIB_DIR),
+                           ('parmetis', PROTEUS_PARMETIS_LIB_DIR),
+                           ('metis', get_flags('metis')[1])):
+        if glob.glob(pjoin(_lib_dir, 'lib' + _lib + '.*')):
+            _partitioner_libs.append(_lib)
+            if _lib_dir not in PROTEUS_SCOREC_PARTITIONER_LIB_DIRS:
+                PROTEUS_SCOREC_PARTITIONER_LIB_DIRS.append(_lib_dir)
+    _sam_index = PROTEUS_SCOREC_LIBS.index('sam')
+    PROTEUS_SCOREC_LIBS[_sam_index:_sam_index] = _partitioner_libs
+    PROTEUS_SCOREC_LIB_DIRS += PROTEUS_SCOREC_PARTITIONER_LIB_DIRS
 
 PROTEUS_SCOREC_EXTRA_LINK_ARGS = []
 PROTEUS_SCOREC_EXTRA_COMPILE_ARGS = ['-g','-DMESH_INFO']
@@ -347,8 +370,7 @@ if sys.platform.startswith('linux'):
     PROTEUS_EXTRA_LINK_ARGS += ['-Wl,-rpath,' + PROTEUS_HDF5_LIB_DIR]
     PROTEUS_EXTRA_LINK_ARGS += ['-Wl,-rpath,' + PROTEUS_PETSC_LIB_DIR]
     PROTEUS_EXTRA_LINK_ARGS += ['-Wl,-rpath,' + PROTEUS_SCOREC_LIB_DIR]
-    PROTEUS_EXTRA_LINK_ARGS += ['-Wl,-rpath,' + PROTEUS_PARMETIS_LIB_DIR]
-    PROTEUS_EXTRA_LINK_ARGS += ['-Wl,-rpath,' + PROTEUS_ZOLTAN_LIB_DIR]
+    PROTEUS_EXTRA_LINK_ARGS += ['-Wl,-rpath,' + d for d in PROTEUS_SCOREC_PARTITIONER_LIB_DIRS]
     PROTEUS_EXTRA_LINK_ARGS += ['-Wl,-rpath,' + PROTEUS_LAPACK_LIB_DIR]
     PROTEUS_EXTRA_LINK_ARGS += ['-Wl,-rpath,' + PROTEUS_BLAS_LIB_DIR]
     PROTEUS_EXTRA_LINK_ARGS += ['-Wl,-rpath,' + PROTEUS_CHRONO_LIB_DIR]
