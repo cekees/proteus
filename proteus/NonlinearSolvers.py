@@ -9,6 +9,12 @@ import numpy as np
 from math import *
 import math #to disambiguate math.log and log
 from .LinearAlgebraTools import *
+# The nonlinear smoothers and FasTwoLevel each hold a placeholder LinearSolver
+# so that NonlinearSolver's machinery has something to talk to; without this
+# import every one of them raised NameError on construction, which is why the
+# whole FAS stack had never run. LinearSolvers does not import this module, so
+# there is no cycle.
+from .LinearSolvers import LinearSolver
 from .Profiling import *
 
 from . import csmoothers
@@ -2855,7 +2861,7 @@ class NLStarILU(NonlinearSolver):
                     self.subdomainIndecesList[i][J].update([i,j])
         elif type(self.J).__name__ == 'SparseMatrix':
             self.node_order=numpy.arange(self.F.dim-1,-1,-1,dtype='i')
-            self.asmFactorObject = self.csmoothers.ASMFactor(self.J)
+            self.asmFactorObject = csmoothers.ASMFactor(self.J)
 
     def prepareSubdomains(self):
         if type(self.J).__name__ == 'ndarray':
@@ -2872,7 +2878,7 @@ class NLStarILU(NonlinearSolver):
                 self.subdomainSolvers.append(LU(self.subdomainJ[i]))
                 self.subdomainSolvers[i].prepare()
         elif type(self.J).__name__ == 'SparseMatrix':
-            self.csmoothers.asm_NR_prepare(self.J,self.asmFactorObject)
+            csmoothers.asm_NR_prepare(self.J,self.asmFactorObject)
 
     def solve(self,u,r=None,b=None,par_u=None,par_r=None):
         r=self.solveInitialize(u,r,b)
@@ -2902,7 +2908,7 @@ class NLStarILU(NonlinearSolver):
                     for J,j in enumerate(self.connectionList[i]):
                         self.du[j] += self.subdomainDU[i][J+1]
             elif type(self.J).__name__ == 'SparseMatrix':
-                self.csmoothers.asm_NR_solve(self.J,self.w,self.asmFactorObject,self.node_order,r,self.du)
+                csmoothers.asm_NR_solve(self.J,self.w,self.asmFactorObject,self.node_order,r,self.du)
             u -= self.du
             self.computeResidual(u,r,b)
         else:
@@ -3343,7 +3349,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                                      du=duList[l],
                                                      weight=relaxationFactor,
                                                      maxIts=postSmooths,
-                                                     convergenceTest=smootherFullNewtonFlag,
+                                                     convergenceTest=smootherConvergenceTest,
                                                      computeRates = computeSmootherRates,
                                                      printInfo=printSmootherInfo,
                                                      fullNewton=smootherFullNewtonFlag))
@@ -3404,7 +3410,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                             du=duList[l],
                                             weight=relaxationFactor,
                                             maxIts=postSmooths,
-                                            convergenceTest=smootherFullNewtonFlag,
+                                            convergenceTest=smootherConvergenceTest,
                                             computeRates = computeSmootherRates,
                                             printInfo=printSmootherInfo,
                                             fullNewton=smootherFullNewtonFlag,
@@ -3658,7 +3664,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                                        EWtol=EWtol,
                                                        maxLSits=maxLSits ))
         except:
-            raise RuntimeError("Unknown level nonlinear solver "+ levelNonlinearSolverType)
+            raise RuntimeError("Unknown level nonlinear solver %r" % (levelNonlinearSolverType,))
     if multilevelNonlinearSolverType == NLNI:
         multilevelNonlinearSolver = NLNI(fList = nonlinearOperatorList,
                                          solverList = levelNonlinearSolverList,
@@ -3684,7 +3690,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                                               computeRates = computeSolverRates,
                                                               printInfo = printSolverInfo)
     else:
-        raise RuntimeError("!!!!!!!!!!!!!!!!!!!!!!!!!Unknown multilevelNonlinearSolverType " + multilevelNonlinearSolverType)
+        raise RuntimeError("!!!!!!!!!!!!!!!!!!!!!!!!!Unknown multilevelNonlinearSolverType %r" % (multilevelNonlinearSolverType,))
 
     #add minimal configuration for parallel?
     for levelSolver in multilevelNonlinearSolver.solverList:

@@ -3295,7 +3295,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                                   printInfo = printLevelSolverInfo))
         levelLinearSolver = levelLinearSolverList
     else:
-        raise RuntimeError("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Unknown level linear solver "+ levelLinearSolverType)
+        raise RuntimeError("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Unknown level linear solver %r" % (levelLinearSolverType,))
     if multilevelLinearSolverType == NI:
         multilevelLinearSolver = NI(solverList = levelLinearSolverList,
                                     prolongList = prolongList,
