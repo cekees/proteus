@@ -1769,7 +1769,10 @@ class MultilevelMesh(Mesh):
         if self.nodeParentsArrayList is not None and not recalculate:
             return self.nodeParentsArrayList
         nLevels = len(self.meshList)
-        self.nodeParentsArrayList = [None]
+        #accumulate locally and publish only on success: a hierarchy that turns
+        #out not to be nested raises partway through, and a half-built list
+        #cached on self would be returned intact by the next call.
+        nodeParentsArrayList = [None]
         for l in range(nLevels-1):
             coarseMesh = self.meshList[l]
             fineMesh = self.meshList[l+1]
@@ -1779,6 +1782,19 @@ class MultilevelMesh(Mesh):
             fineNodes = np.asarray(fineMesh.nodeArray)
             elementNodes = np.asarray(coarseMesh.elementNodesArray)
             nNodes_element = elementNodes.shape[1]
+
+            #the identity block below assumes the fine level kept the coarse
+            #numbering. That is what globallyRefine* does, but a hierarchy built
+            #any other way -- by coarsening a given fine mesh, say -- need not,
+            #and then every entry here would be quietly wrong rather than
+            #missing, so check it rather than assume it.
+            if not np.array_equal(fineNodes[:nNodes_coarse],coarseNodes):
+                raise ValueError(
+                    "level %i's nodes are not a prefix of level %i's, so the "
+                    "levels do not share a node numbering and a fine node "
+                    "cannot be named by a pair of coarse nodes. This hierarchy "
+                    "needs the geometric transfer operators."
+                    % (l,l+1))
 
             parents = np.zeros((nNodes_fine,2),'i')
             inherited = np.arange(nNodes_coarse,dtype='i')
@@ -1813,8 +1829,40 @@ class MultilevelMesh(Mesh):
                     "refinement and the nodal transfer operators do not apply "
                     "(first few: %s)"
                     % (l+1,len(missing),nNodes_fine-nNodes_coarse,missing[:5]))
-            self.nodeParentsArrayList.append(parents)
+            nodeParentsArrayList.append(parents)
+        self.nodeParentsArrayList = nodeParentsArrayList
         return self.nodeParentsArrayList
+
+    def isNodallyNested(self):
+        """Whether the combinatorial nodal transfer operators apply here.
+
+        They need two things, both of which uniform refinement of a single
+        coarse mesh gives and neither of which holds in general:
+
+        * each level's nodes are a prefix of the next level's, so the levels
+          share a node numbering;
+        * every node a level adds is the midpoint of an edge of the level
+          below, so it can be named by a pair of coarser nodes.
+
+        Hierarchies that fail this are not unusual and are worth supporting --
+        a weakly non-hierarchical refinement whose new vertices do not sit on
+        parent edges, or a hierarchy built by coarsening a given fine mesh,
+        where the levels need not share any node numbering at all. For those
+        the transfer operators have to be built the general way, by evaluating
+        coarse basis functions at the fine space's interpolation conditions,
+        which is what MultilevelProjectionOperators does. That path stays: this
+        predicate exists so the cheaper one is only ever taken when it is
+        actually valid, rather than assumed.
+
+        Note that this is a question about the *mesh*. Whether the nodal
+        operators apply also depends on the finite element space -- see
+        nodalTransfersApply.
+        """
+        try:
+            self.calculateNodeParents()
+        except ValueError:
+            return False
+        return True
 
     def useHierarchicalGeometry(self):
         """Keep node coordinates only on the finest level.

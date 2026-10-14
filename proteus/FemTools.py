@@ -7196,6 +7196,38 @@ class StressBoundaryConditions(object):
                         self.stressTraceBoundaryConditionsDict[(ebNE,k)] = g
             #k
         #ebNE
+def nodalTransfersApply(multilevelMesh,femSpaceDictList):
+    """Whether the combinatorial nodal transfer operators apply to this problem.
+
+    They are a specialization, not a replacement. Two conditions, and both the
+    mesh and the spaces have a say:
+
+    * the hierarchy must be nodally nested -- see
+      MeshTools.MultilevelMesh.isNodallyNested, which rules out weakly
+      non-hierarchical refinements whose new vertices miss the parent edges,
+      and hierarchies built by coarsening a fine mesh, where the levels need
+      not share a node numbering at all;
+    * every space must put its degrees of freedom exactly on the mesh
+      vertices, i.e. use a NodalDOFMap. Higher-order Lagrange
+      (QuadraticLagrangeDOFMap), modal and discontinuous spaces
+      (DiscontinuousGalerkinDOFMap) and the non-conforming P1 space
+      (ElementBoundaryDOFMap, whose dofs sit at face barycenters) all have
+      degrees of freedom that are not vertices, so naming a fine dof by a pair
+      of coarse vertices is meaningless for them.
+
+    When this is False the operators must be built the general way, by
+    evaluating coarse basis functions against the fine space's interpolation
+    conditions -- MultilevelProjectionOperators. That path is the fallback and
+    stays: this function exists so the cheap path is taken only where it is
+    provably valid, never by assumption.
+    """
+    for femSpaceDict in femSpaceDictList:
+        for femSpace in femSpaceDict.values():
+            if not isinstance(femSpace.dofMap,NodalDOFMap):
+                return False
+    return multilevelMesh.isNodallyNested()
+
+
 class MultilevelProjectionOperators(object):
     """
     A class that takes a hierarchical (multiLevel) mesh and generates
