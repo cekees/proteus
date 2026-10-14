@@ -6523,20 +6523,19 @@ class MultilevelTransport(object):
                 #which is a block-Jacobi approximation rather than the direct
                 #solve the caller asked for, and would quietly return a
                 #different answer in parallel than in serial.
-                #StarILU and StarBILU are deliberately absent. Their local
-                #solves invert a block around each node, and near a partition
-                #boundary that block spans rows this rank does not own, whose
-                #entries in the subdomain matrix are incomplete. The iteration
-                #then converges to the wrong fixed point rather than merely
-                #converging differently -- measured on the 2D Poisson problem,
-                #two ranks reach 7.0144 against 7.0345 in serial and stay
-                #there at 5000 iterations. Making them work needs correct local
-                #matrices, or stars restricted to owned rows.
+                #StarILU is usable once two things hold: its sweep is
+                #restricted to stars centred on nodes this rank owns, and the
+                #residual's ghost entries carry their owners' values before the
+                #local solves read them. Both are handled in LinearSolvers.
+                #
+                #StarBILU is absent because it returns a zero solution even in
+                #serial on the problems tested here, which is its own question;
+                #there is nothing to preserve in parallel until that is fixed.
                 #
                 #LU is absent for a different reason: it would factor the
                 #subdomain matrix, which is a block-Jacobi approximation rather
                 #than the direct solve the caller asked for.
-                parallelCapableSolvers = (KSP_petsc4py,Jacobi,GaussSeidel,MGM,NI)
+                parallelCapableSolvers = (KSP_petsc4py,Jacobi,GaussSeidel,StarILU,MGM,NI)
                 for (what,solver) in (("multilevelLinearSolver",options.multilevelLinearSolver),
                                       ("levelLinearSolver",options.levelLinearSolver),
                                       ("linearSmoother",getattr(options,'linearSmoother',None))):

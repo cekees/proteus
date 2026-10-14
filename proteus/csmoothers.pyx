@@ -275,7 +275,7 @@ cdef void smootherWrappers_asm_NR_prepare(superluWrappers.cSparseMatrix sm,
                     asmFactor.subdomain_L,
                     asmFactor.subdomain_pivots)
 
-def asm_NR_solve(A, w, asmFactor, node_order, R, dX):
+def asm_NR_solve(A, w, asmFactor, node_order, R, dX, nodes_to_sweep=-1):
     """
     
     Arguments
@@ -286,20 +286,28 @@ def asm_NR_solve(A, w, asmFactor, node_order, R, dX):
     node_order : np.array int
     R : np.array double
     dX : np.array double
+    nodes_to_sweep : int
+        How many entries of node_order to sweep; negative means all of them.
+        In parallel this is the number of nodes the rank owns, so that only
+        stars centred on an owned node are solved -- those are correct square
+        systems, where a star centred on a ghost node is built from a row the
+        subdomain holds only partially.
     """
     smootherWrappers_asm_NR_solve(A._cSparseMatrix,
                                   w,
                                   asmFactor._cASMFactor,
                                   node_order,
                                   R,
-                                  dX)
+                                  dX,
+                                  nodes_to_sweep)
 
 cdef void smootherWrappers_asm_NR_solve(superluWrappers.cSparseMatrix sm,
                                         double w,
                                         cASMFactor asmFactor,
                                         IDATA node_order,
                                         DDATA R,
-                                        DDATA dX):
+                                        DDATA dX,
+                                        int nodes_to_sweep):
     cdef SuperMatrix AS
     AS.Stype = superluWrappers._SLU_NR
     AS.Dtype = superluWrappers._SLU_D
@@ -317,7 +325,8 @@ cdef void smootherWrappers_asm_NR_solve(superluWrappers.cSparseMatrix sm,
                   &node_order[0],
                   asmFactor.subdomain_dX,
                   &dX[0],
-                  asmFactor.subdomain_pivots)
+                  asmFactor.subdomain_pivots,
+                  nodes_to_sweep)
 
 def basm_NR_prepare(A, basmFactor):
     """

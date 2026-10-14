@@ -72,7 +72,8 @@ void asm_NR_solve(SuperMatrix *A,
                   int *node_order, 
                   double** subdomain_dX,
                   double* dX, 
-                  PROTEUS_LAPACK_INTEGER** subdomainPivots); 
+                  PROTEUS_LAPACK_INTEGER** subdomainPivots,
+                  int nodes_to_sweep); 
 /*repeat for blocks and use full pivoting*/
 int basm_NR_init(int rowBlocks,
 		 SuperMatrix *A, 

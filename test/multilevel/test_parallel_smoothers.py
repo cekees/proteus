@@ -14,10 +14,21 @@ un-ghosted (KSP only ever reads its owned range, so it never needed them), and
 Transport asserted outright that the linear solver must be ``KSP_petsc4py`` in
 parallel.
 
-Damped Jacobi is pointwise, so with the ghosts current its iterates are
-exactly the serial ones and the solutions must agree to solver tolerance.
-Gauss-Seidel becomes processor-block Gauss-Seidel -- a different iteration,
-which need only reach the same solution.
+A Schwarz smoother needs two further things, because unlike Jacobi and
+Gauss-Seidel it reads the residual across a whole star rather than at the one
+unknown it is updating:
+
+* its sweep is restricted to stars centred on nodes the rank owns -- those are
+  correct square systems, since an owned row carries all of its columns, while
+  a star centred on a ghost node is built from a row the subdomain holds only
+  partially;
+* the residual's ghost entries are given their owners' values before the local
+  solves read them, or the iteration is driven by noise and stalls.
+
+The convergence test also has to use a real parallel norm. self.norm runs over
+the whole local vector, ghost rows included, where the residual is meaningless;
+counting them makes the reported norm wrong and rank-dependent. Reduced over
+owned entries it is the same number every decomposition computes.
 """
 import os
 import shutil
@@ -54,7 +65,7 @@ def _run(smoother, n_ranks):
     raise AssertionError(result.stdout + result.stderr)
 
 
-@pytest.mark.parametrize('smoother', ['Jacobi', 'GaussSeidel'])
+@pytest.mark.parametrize('smoother', ['Jacobi', 'GaussSeidel', 'StarILU'])
 @pytest.mark.parametrize('n_ranks', [2, 3])
 def test_smoother_reaches_the_serial_solution(smoother, n_ranks):
     serial = _run(smoother, 1)
@@ -64,15 +75,21 @@ def test_smoother_reaches_the_serial_solution(smoother, n_ranks):
         % (smoother, n_ranks, parallel, serial))
 
 
-@pytest.mark.parametrize('smoother', ['StarILU', 'StarBILU'])
-def test_schwarz_smoothers_are_refused_in_parallel(smoother):
-    """Their local solves span rows the rank does not own.
+@pytest.mark.parametrize('n_ranks', [2, 3])
+def test_jacobi_is_bit_for_bit_the_serial_iteration(n_ranks):
+    """Jacobi's update is pointwise, so the decomposition cannot change it.
 
-    The block inverted around a node near a partition boundary includes rows
-    whose entries in the subdomain matrix are incomplete, so the iteration
-    converges to the wrong fixed point rather than just converging differently
-    -- two ranks reach 7.0144 where serial reaches 7.0345, and stay there at
-    5000 iterations.  Silently returning that would be far worse than refusing.
+    Anything weaker than exact agreement here would mean a ghost value is
+    still being read stale somewhere.
+    """
+    assert _run('Jacobi', n_ranks) == _run('Jacobi', 1)
+
+
+def test_starbilu_is_refused_in_parallel():
+    """Excluded for a different reason than it used to be.
+
+    StarBILU returns a zero solution even in serial on this problem, so there
+    is nothing to preserve in parallel until that is understood.
     """
     mpiexec = _mpiexec()
     if mpiexec is None:
@@ -82,16 +99,7 @@ def test_schwarz_smoothers_are_refused_in_parallel(smoother):
     env = dict(os.environ)
     env['PYTHONPATH'] = os.pathsep.join(
         [p for p in sys.path if p] + [env.get('PYTHONPATH', '')]).strip(os.pathsep)
-    result = subprocess.run([mpiexec, '-n', '2', sys.executable, helper, smoother],
+    result = subprocess.run([mpiexec, '-n', '2', sys.executable, helper, 'StarBILU'],
                             capture_output=True, text=True, env=env)
     assert result.returncode != 0
     assert 'cannot be used in parallel' in result.stdout + result.stderr
-
-
-def test_the_schwarz_smoother_is_untouched_in_serial():
-    """Refusing it in parallel must not disturb the serial path.
-
-    Only StarILU is checked: StarBILU returns a zero solution even in serial
-    on this problem, which is its own question and not one this change touches.
-    """
-    assert _run('StarILU', 1) == pytest.approx(_run('Jacobi', 1), rel=1.0e-8)

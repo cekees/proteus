@@ -38,6 +38,7 @@ class LinearSolver(object):
                  computeRates = True,
                  printInfo = False):
         self.solverName = "Base Class"
+        self.par_u_current = None
         self.L = L
         self.n = L.shape[0]
         self.du = Vec(self.n)
@@ -110,6 +111,28 @@ class LinearSolver(object):
         #asking PETSc to scatter it raises "Vector is not ghosted".
         if par_u is not None and getattr(par_u,'nghosts',None):
             par_u.scatter_forward_insert()
+    def refreshResidualGhosts(self,par_u,r):
+        """Give the residual's ghost entries their owners' values.
+
+        computeResidual forms r = L u - b with the subdomain matrix, which is
+        correct only for the rows this rank owns; a ghost row is assembled from
+        a row the subdomain holds partially, so r there is meaningless.
+
+        Jacobi and Gauss-Seidel never read it -- their update for an owned
+        unknown uses that unknown's own residual entry. A Schwarz smoother
+        does: the star it solves around an owned node takes its right-hand side
+        from every node in the star, ghosts included. So those entries have to
+        come from their owners before the local solve, or the iteration is
+        driven by noise.
+        """
+        if par_u is None or not getattr(par_u,'nghosts',None):
+            return
+        par_r = getattr(self,'par_r_work',None)
+        if par_r is None or par_r.proteus_array is not r:
+            if r.size != par_u.proteus_array.size:
+                return
+            par_r = self.par_r_work = par_u.duplicate_with_array(r)
+        par_r.scatter_forward_insert()
     def computeResidual(self,u,r,b,initialGuessIsZero=False):
         if initialGuessIsZero:
             r[:]=b
@@ -120,7 +143,24 @@ class LinearSolver(object):
             elif type(self.L).__name__ == 'SparseMatrix':
                 self.L.matvec(u,r)
             r-=b
-    def solveInitialize(self,u,r,b,initialGuessIsZero=True):
+    def solveNorm(self,r):
+        """The norm the convergence test should use.
+
+        self.norm runs over the whole local vector, which in parallel includes
+        the ghost rows -- rows the subdomain holds only partially, where the
+        residual is meaningless. Counting them makes the reported norm both
+        wrong and rank-dependent, so the test either never fires or fires at
+        the wrong point. Over the owned entries, reduced across ranks, it is
+        the same number every decomposition computes and the same one a serial
+        run computes.
+        """
+        par_u = self.par_u_current
+        if par_u is None or not getattr(par_u,'nghosts',None):
+            return self.norm(r)
+        owned = par_u.dim_proc
+        return sqrt(globalSum(float(numpy.dot(r[:owned],r[:owned]))))
+    def solveInitialize(self,u,r,b,initialGuessIsZero=True,par_u=None):
+        self.par_u_current = par_u
         if r is None:
             if self.r is None:
                 self.r = Vec(self.n)
@@ -185,7 +225,7 @@ class LinearSolver(object):
             self.lastNorm_r = self.norm_r
     def converged(self,r):
         convergedFlag = False
-        self.norm_r = self.norm(r)
+        self.norm_r = self.solveNorm(r)
         self.norm_du = self.norm(self.du)
         if self.computeRates ==  True:
             self.computeConvergenceRates()
@@ -318,7 +358,7 @@ class LU(LinearSolver):
                                        self.denseFactor)
         #
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         self.du[:]=u
         self.converged(r)
         self.failed()
@@ -2547,7 +2587,7 @@ class Jacobi(LinearSolver):
         elif type(self.L).__name__ == 'SparseMatrix':
             self.csmoothers.jacobi_NR_prepare(self.L,self.w,1.0e-16,self.M)
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         while (not self.converged(r) and
                not self.failed()):
             if type(self.L).__name__ == 'ndarray':
@@ -2601,7 +2641,7 @@ class GaussSeidel(LinearSolver):
             self.csmoothers.gauss_seidel_NR_prepare(self.L,self.w,1.0e-16,self.M)
             #self.csmoothers.jacobi_NR_prepare(self.L,self.w,1.0e-16,self.M)
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         while (not self.converged(r) and
                not self.failed()):
             if type(self.L).__name__ == 'ndarray':
@@ -2703,7 +2743,7 @@ class StarILU(LinearSolver):
         elif type(self.L).__name__ == 'SparseMatrix':
             self.csmoothers.asm_NR_prepare(self.L,self.asmFactorObject)
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         while (not self.converged(r) and
                not self.failed()):
             self.du[:]=0.0
@@ -2726,7 +2766,17 @@ class StarILU(LinearSolver):
                     for J,j in enumerate(self.connectionList[i]):
                         self.du[j] += self.subdomainDU[i][J+1]
             elif type(self.L).__name__ == 'SparseMatrix':
-                self.csmoothers.asm_NR_solve(self.L,self.w,self.asmFactorObject,self.node_order,r,self.du)
+                #In parallel sweep only the stars centred on nodes this rank
+                #owns. A star centred on an owned node is a correct square
+                #system -- the owned row carries all of its columns -- while
+                #one centred on a ghost node is assembled from a row the
+                #subdomain holds only partially, and sweeping those stalls the
+                #iteration rather than converging it. The subdomain lists its
+                #owned nodes first, so node_order's leading entries are them.
+                ownedNodes = par_u.dim_proc if par_u is not None else -1
+                self.refreshResidualGhosts(par_u,r)
+                self.csmoothers.asm_NR_solve(self.L,self.w,self.asmFactorObject,
+                                             self.node_order,r,self.du,ownedNodes)
             u -= self.du
             self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
@@ -2776,7 +2826,7 @@ class StarBILU(LinearSolver):
         elif type(self.L).__name__ == 'SparseMatrix':
             self.csmoothers.basm_NR_prepare(self.L,self.basmFactorObject)
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         while (not self.converged(r) and
                not self.failed()):
             #mwf debug
@@ -2856,7 +2906,7 @@ class TwoLevel(LinearSolver):
             return False
         return LinearSolver.failed(self)
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         while (not self.converged(r) and
                not self.failed()):
             #LinearSolver.solve is (u,r,b,par_u,par_b,initialGuessIsZero):
