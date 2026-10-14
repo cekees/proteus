@@ -96,6 +96,72 @@ def neumann_poisson():
     }
 
 
+def hydrograph_heat():
+    """du/dt - Laplace(u) = f on the unit square, u = (x^2 + y^2)(1 + t).
+
+    f = (x^2 + y^2) - 4(1 + t), so the ADR reaction (residual form
+    m_t + div(-a grad u) + r = 0) is r = -f = 4 + 4t - x^2 - y^2.
+
+    On x = 1 the outward diffusive flux is -(grad u).n = -2x(1 + t) = -2(1+t),
+    given as a two-sample hydrograph over t in [0, 1]. Linear interpolation
+    is EXACT for it, so the solution still converges to the exact answer --
+    which is what makes this a test of the interpolation and not just of the
+    plumbing. Evaluating the table at a fixed time (ignoring t) gives -2
+    throughout and the solution is wrong.
+    """
+    return {
+        "adr": {
+            "dim": 2, "components": ["u"],
+            "equations": [{
+                "component": "u",
+                "mass": {"m": "u", "dm": {"u": "1"}, "depends_on": {"u": "linear"}},
+                "diffusion": {"u": {"rowptr": [0, 1, 2], "colind": [0, 1],
+                                    "a": ["1.0", "1.0"], "da": {}, "depends_on": {}}},
+                "reaction": {"r": "4.0 + 4.0*t - x**2 - y**2", "dr": {},
+                             "depends_on": {}},
+            }],
+        },
+        "domain": {"lower": [0.0, 0.0], "upper": [1.0, 1.0]},
+        "time": [0.0, 1.0],
+        "has_mass": True,
+        "dirichlet": [{"component": "u", "region": "three_sides",
+                       "where": "x <= tol or y <= tol or y >= 1.0 - tol",
+                       "value": "(x**2 + y**2)*(1.0 + t)"}],
+        "neumann": [{"component": "u", "region": "inflow",
+                     "where": "x >= 1.0 - tol",
+                     "series": [[0.0, -2.0], [1.0, -4.0]]}],
+        "initial": {"u": "x**2 + y**2"},
+        "exact": {"u": "(x**2 + y**2)*(1.0 + t)"},
+    }
+
+
+def test_a_hydrograph_is_interpolated_in_time():
+    """A two-sample table that is exact for the true flux still converges."""
+    problem = hydrograph_heat()
+    errors = [ADRProblem.run(problem, {"u": ("CG", 1)}, cells,
+                             time={"dt": 0.05})[2]["u"]
+              for cells in (8, 16)]
+    assert errors[0] < 2.0e-2, errors
+    rate = numpy.log2(errors[0] / errors[1])
+    assert rate > 1.5, (errors, rate)
+
+
+def test_a_hydrograph_holds_its_end_values():
+    """Outside the record the first and last samples hold; nothing extrapolates."""
+    flux = ADRProblem._flux({"series": [[0.0, -2.0], [1.0, -4.0]]}, 2)
+    assert flux(None, -5.0) == -2.0
+    assert flux(None, 0.5) == -3.0
+    assert flux(None, 99.0) == -4.0
+
+
+def test_the_emitted_p_file_carries_the_hydrograph_table(tmp_path):
+    ADRProblem.emit_pn(hydrograph_heat(), {"u": ("CG", 1)}, 8, time={"dt": 0.5},
+                       name="hyd", directory=str(tmp_path))
+    text = (tmp_path / "hyd_p.py").read_text()
+    assert "numpy.interp(t, T, Q)" in text
+    assert "[0.0, 1.0]" in text and "[-2.0, -4.0]" in text
+
+
 def test_a_neumann_face_converges_at_the_right_rate():
     """The sharp check: without the flux the solution does not converge at all.
 

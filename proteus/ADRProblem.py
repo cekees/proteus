@@ -244,6 +244,23 @@ def _neumann_targets(problem, adr, names):
     return targets
 
 
+def _flux(entry, dim):
+    """The ``(x, t)`` value of one flux condition: a formula or a hydrograph.
+
+    A hydrograph is tabulated rather than written, because a measured or
+    design discharge cannot be a formula. ``numpy.interp`` is linear between
+    samples and holds the end values outside the range, which is what a
+    hydrograph means by its first and last samples -- extrapolating a
+    discharge past the record is not something to do quietly.
+    """
+    if entry.get("series") is not None:
+        times = numpy.array([t for t, _ in entry["series"]], dtype=float)
+        values = numpy.array([v for _, v in entry["series"]], dtype=float)
+        return lambda x, t: float(numpy.interp(t, times, values))
+    field = _Field(entry["value"], dim)
+    return lambda x, t: field.uOfXT(x, t)
+
+
 def _neumann(entries, dim, tol):
     """getDFBC(x, flag) for one (component, potential) pair.
 
@@ -257,7 +274,7 @@ def _neumann(entries, dim, tol):
     None leaves the face to the natural condition, which for a diffusion
     term is zero flux.
     """
-    tests = [(None if e["where"] is None else _compile(e["where"]), _Field(e["value"], dim))
+    tests = [(None if e["where"] is None else _compile(e["where"]), _flux(e, dim))
              for e in entries]
 
     def getDFBC(x, flag):
@@ -266,9 +283,9 @@ def _neumann(entries, dim, tol):
             ns["y"] = x[1]
         if dim > 2:
             ns["z"] = x[2]
-        for where, field in tests:
+        for where, value in tests:
             if where is None or eval(where, _GLOBALS, ns):
-                return lambda x, t, field=field: field.uOfXT(x, t)
+                return value
         return None
     return getDFBC
 
@@ -848,8 +865,15 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
               "    %s = %s" % (", ".join(xyz), ", ".join("X[%d]" % k for k in range(dim)))]
         for e in entries:
             test = "True" if e["where"] is None else e["where"]
-            P += ["    if %s:   # region %s" % (test, e["region"]),
-                  "        return lambda X, t: Field(%s).uOfXT(X, t)" % _function(dim, e["value"])]
+            P.append("    if %s:   # region %s" % (test, e["region"]))
+            if e.get("series") is not None:
+                # linear between samples, end values held outside the range
+                P += ["        T = %r" % ([t for t, _ in e["series"]],),
+                      "        Q = %r" % ([v for _, v in e["series"]],),
+                      "        return lambda X, t: float(numpy.interp(t, T, Q))"]
+            else:
+                P.append("        return lambda X, t: Field(%s).uOfXT(X, t)"
+                         % _function(dim, e["value"]))
         P += ["    # elsewhere the natural condition: zero diffusive flux",
               "    return None"]
     if targets:
