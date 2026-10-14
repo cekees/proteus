@@ -1736,3 +1736,92 @@ if __name__ == '__main__':
 #         mgits +=1
 #         mgv.apply(w,jits,jits,0,f[1:n-1],u[1:n-1])
 #         rnorm = l2Norm(resList[0])
+
+
+def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None):
+    """The coarse-to-fine prolongation for a C0 nodal space, as a PETSc Mat.
+
+    Uniform refinement keeps each coarse node's number and adds the rest at
+    edge midpoints, so every fine node is described by a pair of coarse nodes
+    (see MeshTools.MultilevelMesh.calculateNodeParents). The prolongation then
+    needs no geometry at all: a fine node the refinement inherited copies its
+    coarse value, and one it added averages the two coarse nodes whose edge it
+    bisects.
+
+    That is what makes this work in parallel. Row i depends only on fine node
+    i's two parents, so a rank can fill every row it owns with no communication
+    and no access to the coarse mesh -- in contrast to building the operator
+    geometrically, which needs coarse basis functions evaluated at fine
+    interpolation points and so needs the coarse elements to be reachable.
+
+    Parameters
+    ----------
+    nodeParents : numpy.ndarray
+        (nNodes_fine, 2), in global coarse node numbers, as produced by
+        calculateNodeParents.
+    coarseNodeOffsets, fineNodeOffsets : numpy.ndarray
+        nodeOffsets_subdomain_owned for the two levels: rank r owns global
+        nodes [offsets[r], offsets[r+1]). Node-based partitioning numbers the
+        owned nodes contiguously in rank order, which is also how PETSc
+        distributes rows, so no index translation is needed.
+
+    Returns
+    -------
+    petsc4py Mat with fine rows and coarse columns.
+    """
+    if comm is None:
+        comm = Comm.get()
+    rank = comm.rank()
+    fine_lo,fine_hi = int(fineNodeOffsets[rank]),int(fineNodeOffsets[rank+1])
+    coarse_lo,coarse_hi = int(coarseNodeOffsets[rank]),int(coarseNodeOffsets[rank+1])
+    nFine_global = int(fineNodeOffsets[-1])
+    nCoarse_global = int(coarseNodeOffsets[-1])
+    assert nodeParents.shape[0] == nFine_global, (
+        "nodeParents has %i rows but the fine level has %i nodes"
+        % (nodeParents.shape[0],nFine_global))
+
+    owned = nodeParents[fine_lo:fine_hi]
+    inherited = owned[:,0] == owned[:,1]
+
+    prolong = p4pyPETSc.Mat().create(comm.comm.tompi4py())
+    prolong.setType('aij')
+    prolong.setSizes([[fine_hi-fine_lo,nFine_global],
+                      [coarse_hi-coarse_lo,nCoarse_global]])
+    #at most two coarse nodes per fine node; splitting the count into the part
+    #this rank owns and the rest keeps PETSc from over-allocating
+    local = numpy.where((owned >= coarse_lo) & (owned < coarse_hi),1,0)
+    d_nnz = numpy.where(inherited,local[:,0],local.sum(axis=1)).astype('i')
+    o_nnz = numpy.where(inherited,1-local[:,0],2-local.sum(axis=1)).astype('i')
+    prolong.setPreallocationNNZ((d_nnz,o_nnz))
+    prolong.setOption(p4pyPETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR,False)
+
+    for i in range(fine_hi-fine_lo):
+        row = fine_lo + i
+        a,b = int(owned[i,0]),int(owned[i,1])
+        if a == b:
+            prolong.setValues([row],[a],[1.0])
+        else:
+            prolong.setValues([row],[a,b],[0.5,0.5])
+    prolong.assemblyBegin()
+    prolong.assemblyEnd()
+    return prolong
+
+
+def nodalRestrictionScaling(prolong):
+    """Row sums of the restriction, for restricting *solutions* rather than residuals.
+
+    Restriction of a residual is the adjoint of prolongation, P^T. Restricting
+    a solution needs the row-sum-normalized operator the multilevel literature
+    writes as I-tilde (Kees et al. 2006, section 2.3), because P^T sums the
+    contributions of every fine node that sees a coarse node instead of
+    averaging them.
+
+    The row sums are P^T applied to a vector of ones, which PETSc assembles
+    across ranks itself -- so the global accumulation a hand-rolled version
+    would need on partition boundaries comes for free, and cannot be forgotten.
+    """
+    ones = prolong.createVecLeft()
+    ones.set(1.0)
+    rowSums = prolong.createVecRight()
+    prolong.multTranspose(ones,rowSums)
+    return rowSums

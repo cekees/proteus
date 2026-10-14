@@ -153,3 +153,43 @@ def test_nodal_prolongation_matches_the_geometric_operator():
             geometric[:, j] = column
 
         np.testing.assert_array_equal(combinatorial, geometric)
+
+
+@pytest.mark.parametrize('n_ranks', [1, 2, 3])
+def test_nodal_prolongation_assembles_in_parallel(n_ranks):
+    """The parent rule gives each rank its own rows with no communication.
+
+    Building the operator geometrically needs coarse basis functions evaluated
+    at fine interpolation points, so it needs the coarse elements to be
+    reachable -- which they are not, once the levels are partitioned
+    independently.  The parent rule needs only two integers per fine node, so
+    it works under any partitioning.
+    """
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    bindir = os.path.dirname(sys.executable)
+    mpiexec = None
+    for name in ('mpiexec', 'mpirun'):
+        candidate = os.path.join(bindir, name)
+        if os.path.exists(candidate):
+            mpiexec = candidate
+            break
+    if mpiexec is None:
+        mpiexec = shutil.which('mpiexec') or shutil.which('mpirun')
+    if mpiexec is None:
+        pytest.skip('no MPI launcher available')
+
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          'nodal_prolongation_mpi.py')
+    env = dict(os.environ)
+    env['PYTHONPATH'] = os.pathsep.join(
+        [p for p in sys.path if p] + [env.get('PYTHONPATH', '')]).strip(os.pathsep)
+
+    result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable, helper],
+                            capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.count('NODAL_PROLONGATION_OK') == n_ranks, (
+        result.stdout + result.stderr)
