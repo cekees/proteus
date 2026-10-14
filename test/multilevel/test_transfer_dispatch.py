@@ -13,6 +13,8 @@ Taking the cheap path where it does not apply would not raise; it would return
 a plausible, wrong operator.  So the predicate guarding it is tested from the
 negative side here, not just the positive one.
 """
+import os
+
 import numpy as np
 import pytest
 
@@ -87,3 +89,44 @@ def test_a_nodal_space_on_a_non_nested_hierarchy_still_falls_back():
     spaces = [{0: FemTools.C0_AffineLinearOnSimplexWithNodalBasis(mesh.subdomainMesh, 2)}
               for mesh in mlMesh.meshList]
     assert FemTools.nodalTransfersApply(mlMesh, spaces) is False
+
+
+@pytest.mark.parametrize('weak_dirichlet,applies', [(True, True), (False, False)])
+def test_eliminated_dirichlet_dofs_fall_back(weak_dirichlet, applies):
+    """The solvers transfer free unknowns, not vertices.
+
+    With weak Dirichlet conditions -- which is what a parallel run needs
+    anyway -- nothing is eliminated and the two numberings coincide.  Strong
+    conditions eliminate the constrained vertices, so the parent pairs stop
+    indexing the operator's rows and columns, and the general path has to take
+    over.
+    """
+    from proteus import (Context, LinearSolvers, NumericalSolution, default_s,
+                         default_so, defaults)
+    from proteus.iproteus import opts as runopts
+
+    modulepath = os.path.dirname(os.path.abspath(__file__))
+    Context.contextOptionsString = 'r=1'
+    p = defaults.load_physics('kees2006_adr_1d_p', modulepath)
+    n = defaults.load_numerics('kees2006_adr_1d_n', modulepath)
+    n.nLevels = 2
+    if not weak_dirichlet:
+        n.numericalFluxType = None
+    n.multilevelLinearSolver = LinearSolvers.LU
+    n.levelLinearSolver = LinearSolvers.LU
+    so = default_so
+    so.name = p.name = 'dispatch_dirichlet_%s' % weak_dirichlet
+    so.sList = [default_s]
+    runopts.logLevel = 1
+    runopts.verbose = False
+    ns = NumericalSolution.NS_base(so, [p], [n], so.sList, runopts)
+
+    model = ns.modelList[0]
+    eliminated = sum(lm.mesh.nNodes_global - lm.dirichletConditions[0].nFreeDOF_global
+                     for lm in model.levelModelList)
+    assert (eliminated == 0) is weak_dirichlet, (
+        "this test needs the two cases to actually differ; eliminated=%i" % eliminated)
+
+    assert FemTools.nodalTransfersApply(model.mlMeshSave,
+                                        model.trialSpaceDictList,
+                                        model.bcDictList) is applies

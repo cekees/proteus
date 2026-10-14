@@ -7196,7 +7196,8 @@ class StressBoundaryConditions(object):
                         self.stressTraceBoundaryConditionsDict[(ebNE,k)] = g
             #k
         #ebNE
-def nodalTransfersApply(multilevelMesh,femSpaceDictList):
+def nodalTransfersApply(multilevelMesh,femSpaceDictList,
+                        dofBoundaryConditionsDictList=None):
     """Whether the combinatorial nodal transfer operators apply to this problem.
 
     They are a specialization, not a replacement. Two conditions, and both the
@@ -7208,7 +7209,9 @@ def nodalTransfersApply(multilevelMesh,femSpaceDictList):
       and hierarchies built by coarsening a fine mesh, where the levels need
       not share a node numbering at all;
     * every space must put its degrees of freedom exactly on the mesh
-      vertices, i.e. use a NodalDOFMap. Higher-order Lagrange
+      vertices, i.e. use a NodalDOFMap, and -- when the boundary conditions are
+      supplied -- strong Dirichlet conditions must not have eliminated any of
+      them, since the solvers transfer free unknowns rather than vertices. Higher-order Lagrange
       (QuadraticLagrangeDOFMap), modal and discontinuous spaces
       (DiscontinuousGalerkinDOFMap) and the non-conforming P1 space
       (ElementBoundaryDOFMap, whose dofs sit at face barycenters) all have
@@ -7225,6 +7228,19 @@ def nodalTransfersApply(multilevelMesh,femSpaceDictList):
         for femSpace in femSpaceDict.values():
             if not isinstance(femSpace.dofMap,NodalDOFMap):
                 return False
+    if dofBoundaryConditionsDictList is not None:
+        #the solvers transfer *free* unknowns. When strong Dirichlet conditions
+        #eliminate dofs the free numbering stops coinciding with the vertex
+        #numbering, and the parent pairs -- which are vertex numbers -- no
+        #longer index the operator's rows and columns. Restricting the vertex
+        #operator to the free dofs is possible but needs a global free-dof
+        #numbering, which proteus only maintains for vertices, so defer to the
+        #general path instead of inventing one.
+        for (dofBoundaryConditionsDict,femSpaceDict) in zip(dofBoundaryConditionsDictList,
+                                                            femSpaceDictList):
+            for (cj,dofBoundaryConditions) in dofBoundaryConditionsDict.items():
+                if dofBoundaryConditions.nFreeDOF_global != femSpaceDict[cj].dim:
+                    return False
     return multilevelMesh.isNodallyNested()
 
 
