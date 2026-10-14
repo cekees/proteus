@@ -506,7 +506,22 @@ class KSP_petsc4py(LinearSolver):
         return failedFlag
 
     def info(self):
-        self.ksp.view()
+        """Summarise the last solve.
+
+        Every caller of info() either prints the result or concatenates it into
+        an infoString, so it has to return a string. This used to call
+        ksp.view(), which returns None and writes PETSc's full object dump to
+        stdout -- so NI raised TypeError the moment it logged a KSP level
+        solver, and any run that got that far was buried in dump output.
+        """
+        self.infoString = "************Start Linear Solver Info************\n"
+        self.infoString += "ksp type              =  %s \n" % self.ksp.getType()
+        self.infoString += "pc type               =  %s \n" % self.ksp.getPC().getType()
+        self.infoString += "its                   =  %i \n" % self.ksp.getIterationNumber()
+        self.infoString += "converged reason      =  %s \n" % self.ksp.getConvergedReason()
+        self.infoString += "residual norm         = %12.5e\n" % self.ksp.getResidualNorm()
+        self.infoString += "************End Linear Solver Info************\n"
+        return self.infoString
 
     def _setMatOperators(self):
         """ Initializes python context for the ksp matrix operator """
@@ -2913,7 +2928,8 @@ class NI(MultilevelLinearSolver):
                  tolList=None,
                  atol=None,
                  computeRates=True,
-                 printInfo=False):
+                 printInfo=False,
+                 par_duList=None):
         self.levelSolverList=solverList
         self.solverList = [self for n in range(len(solverList))]
         MultilevelLinearSolver.__init__(self,self.solverList,computeRates=computeRates,printInfo=printInfo)
@@ -2931,6 +2947,22 @@ class NI(MultilevelLinearSolver):
         self.levelDict[solverList[-1].n]=self.fineMesh
         self.uList.append([])
         self.bList.append([])
+        # Parallel counterparts of the per-level work vectors above. A level
+        # solver that talks to PETSc (KSP_petsc4py) needs a ParVec for every
+        # solve, not just the one on the finest level, and NI's coarse-level
+        # vectors are its own -- they are not the model's. Each one therefore
+        # gets a ParVec of its own, over NI's array but with that level's
+        # parallel layout, taken from the model's du vector for the level.
+        self.par_uList=[]
+        self.par_bList=[]
+        for l in range(self.fineMesh+1):
+            par_du = par_duList[l] if par_duList is not None else None
+            if par_du is None:
+                self.par_uList.append(None)
+                self.par_bList.append(None)
+            else:
+                self.par_uList.append(par_du.duplicate_with_array(self.uList[l]))
+                self.par_bList.append(par_du.duplicate_with_array(self.bList[l]))
         self.maxIts = maxIts
         self.tolList = tolList
         self.atol_r=atol
@@ -2963,7 +2995,10 @@ class NI(MultilevelLinearSolver):
             if self.tolList is not None:
                 self.switchToResidualConvergence(self.levelSolverList[l],
                                                  self.tolList[l])
-            self.levelSolverList[l].solve(u=self.uList[l],b=self.bList[l],initialGuessIsZero=initialGuessIsZero)
+            self.levelSolverList[l].solve(u=self.uList[l],b=self.bList[l],
+                                          par_u=self.par_uList[l],
+                                          par_b=self.par_bList[l],
+                                          initialGuessIsZero=initialGuessIsZero)
             initialGuessIsZero=False
             if self.tolList is not None:
                 self.revertToFixedIteration(self.levelSolverList[l])
@@ -2990,7 +3025,10 @@ class NI(MultilevelLinearSolver):
         for l in range(self.fineMesh):
             if self.tolList is not None:
                 self.switchToResidualConvergence(self.levelSolverList[l],self.tolList[l])
-            self.levelSolverList[l].solve(u=uList[l],b=bList[l],initialGuessIsZero=initialGuessIsZero)
+            self.levelSolverList[l].solve(u=uList[l],b=bList[l],
+                                          par_u=None if par_uList is None else par_uList[l],
+                                          par_b=None if par_bList is None else par_bList[l],
+                                          initialGuessIsZero=initialGuessIsZero)
             initialGuessIsZero=False
             if self.tolList is not None:
                 self.revertToFixedIteration(self.levelSolverList[l])
@@ -3000,7 +3038,11 @@ class NI(MultilevelLinearSolver):
             self.infoString += "**************End Level %i Info********************\n" % l
         if self.tolList is not None:
             self.switchToResidualConvergence(self.levelSolverList[self.fineMesh],self.tolList[self.fineMesh])
-        self.levelSolverList[self.fineMesh].solve(u=uList[self.fineMesh],b=bList[self.fineMesh],initialGuessIsZero=initialGuessIsZero)
+        self.levelSolverList[self.fineMesh].solve(
+            u=uList[self.fineMesh],b=bList[self.fineMesh],
+            par_u=None if par_uList is None else par_uList[self.fineMesh],
+            par_b=None if par_bList is None else par_bList[self.fineMesh],
+            initialGuessIsZero=initialGuessIsZero)
         self.infoString += "**************Start Level %i Info********************\n" % l
         self.infoString+=self.levelSolverList[self.fineMesh].info()
         self.infoString += "**************End Level %i Info********************\n" % l
@@ -3262,7 +3304,8 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                     tolList = relativeToleranceList,
                                     atol    = absoluteTolerance,
                                     printInfo= printSolverInfo,
-                                    computeRates = computeSolverRates)
+                                    computeRates = computeSolverRates,
+                                    par_duList = par_duList)
     elif (multilevelLinearSolverType == KSP_petsc4py or
           multilevelLinearSolverType == LU or
           multilevelLinearSolverType == Jacobi or

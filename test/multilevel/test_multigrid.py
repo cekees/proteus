@@ -39,8 +39,12 @@ SMOOTHERS = {
 }
 
 
-def _solve(multilevel, level, smoother, nLevels, tag):
-    """Solve the 2D heterogeneous Poisson problem, return (dofs, analytical)."""
+def _solve(multilevel, level, smoother, nLevels, tag, return_solution=True):
+    """Solve the 2D heterogeneous Poisson problem.
+
+    Returns ``(dofs, analytical)``, or the NumericalSolution itself when
+    ``return_solution`` is False and a test needs the solver objects.
+    """
     p = defaults.load_physics('poisson_het_2d_p', poissondir)
     n = defaults.load_numerics('poisson_het_2d_c0pk_n', poissondir)
     p.meshfile = os.path.join(poissondir, 'square4x4')
@@ -59,6 +63,8 @@ def _solve(multilevel, level, smoother, nLevels, tag):
     opts.verbose = False
     ns = NumericalSolution.NS_base(so, [p], [n], so.sList, opts)
     ns.calculateSolution(tag)
+    if not return_solution:
+        return ns
     fine = ns.modelList[0].levelModelList[-1]
     return np.array(fine.u[0].dof, copy=True), np.array(fine.u_analytical[0][0], copy=True)
 
@@ -136,3 +142,71 @@ def test_every_linear_solver_prepare_accepts_newton_its():
 def test_multilevel_solvers_expose_failed(cls):
     """Newton calls failed() on its linear solver right after prepare()."""
     assert callable(getattr(cls, 'failed', None))
+
+
+def test_nested_iteration_with_ksp_level_solvers(direct_solution):
+    """NI must be able to drive PETSc level solvers.
+
+    Every KSP_petsc4py solve needs a parallel vector, including the ones NI
+    runs on its coarser levels.  NI's coarse-level work vectors are its own,
+    not the model's, so they had no ParVec and NI raised AttributeError on
+    par_b the moment a KSP level solver was used -- in serial as well as in
+    parallel, because KSP_petsc4py always takes the parallel path.
+    """
+    reference, exact = direct_solution
+    u, _ = _solve(LinearSolvers.NI, LinearSolvers.KSP_petsc4py, None, 3, 'ni_ksp')
+    assert np.abs(u - reference).max() < 0.1 * np.abs(reference - exact).max()
+
+
+def test_ksp_info_returns_a_string():
+    """info() is concatenated into an infoString by every multilevel solver.
+
+    KSP_petsc4py.info() used to call ksp.view(), which returns None and dumps
+    the whole PETSc object to stdout, so NI raised TypeError as soon as it
+    logged a KSP level solver.
+    """
+    ns = _solve(LinearSolvers.NI, LinearSolvers.KSP_petsc4py, None, 2,
+                'ksp_info', return_solution=False)
+    level_solver = ns.lsList[0].levelSolverList[-1]
+    assert isinstance(level_solver, LinearSolvers.KSP_petsc4py)
+    assert isinstance(level_solver.info(), str)
+
+
+@pytest.mark.parametrize('n_ranks', [2])
+def test_parvec_duplicate_keeps_ghost_layout_under_mpi(n_ranks):
+    """duplicate_with_array must produce a genuinely ghosted vector.
+
+    Serial runs cannot catch a broken ghost layout, because serial ParVecs are
+    not ghosted at all, so this one goes through mpiexec.
+    """
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    # Prefer the launcher that ships with this interpreter's environment: a
+    # different MPI on PATH (e.g. Homebrew's) cannot launch a petsc4py built
+    # against the environment's own MPI, and silently gives every rank size 1.
+    bindir = os.path.dirname(sys.executable)
+    mpiexec = None
+    for name in ('mpiexec', 'mpirun'):
+        candidate = os.path.join(bindir, name)
+        if os.path.exists(candidate):
+            mpiexec = candidate
+            break
+    if mpiexec is None:
+        mpiexec = shutil.which('mpiexec') or shutil.which('mpirun')
+    if mpiexec is None:
+        pytest.skip('no MPI launcher available')
+
+    helper = os.path.join(modulepath, 'ghost_duplicate_mpi.py')
+    env = dict(os.environ)
+    # Make sure the subprocess imports the same proteus this test did.
+    env['PYTHONPATH'] = os.pathsep.join(
+        [p for p in sys.path if p] + [env.get('PYTHONPATH', '')]).strip(os.pathsep)
+
+    result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable, helper],
+                            capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.count('GHOST_DUPLICATE_OK') == n_ranks, (
+        result.stdout + result.stderr)

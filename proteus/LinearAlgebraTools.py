@@ -457,6 +457,15 @@ class ParVec_petsc4py(p4pyPETSc.Vec):
         self.blockVecType = blockVecType
         assert self.blockVecType == "simple", "petsc4py wrappers require self.blockVecType=simple"
         self.proteus_array = array
+        # Remember the layout so a sibling vector can be built over a different
+        # array (see duplicate_with_array). subdomain2global is kept here in its
+        # original, nodal form because the bs > 1 branch below replaces
+        # self.subdomain2global with a block-expanded copy.
+        self.bs = bs
+        self.n = n
+        self.N = N
+        self.nodal_subdomain2global = subdomain2global
+        self.ghosts_array = ghosts
         if nghosts is None:
             if blockVecType == "simple":
                 self.createWithArray(array,size=(blockSize*n,blockSize*N),bsize=1)
@@ -492,6 +501,26 @@ class ParVec_petsc4py(p4pyPETSc.Vec):
             #self.petsc_l2g.create(self.subdomain2global)
             #self.setLGMap(self.petsc_l2g)
         self.setFromOptions()
+    def duplicate_with_array(self,array):
+        """A new ParVec over `array`, carrying this vector's parallel layout.
+
+        petsc4py's own duplicate() allocates PETSc-owned storage, which is no
+        use when the caller already has a numpy array it needs the solvers to
+        read and write in place -- NI's per-level work vectors, for instance.
+        """
+        assert array.size == self.proteus_array.size, (
+            "array has %i entries but this vector's layout expects %i"
+            % (array.size, self.proteus_array.size))
+        return ParVec_petsc4py(array,
+                               self.bs,
+                               self.n,
+                               self.N,
+                               self.nghosts,
+                               self.nodal_subdomain2global,
+                               self.blockVecType,
+                               self.ghosts_array,
+                               self.proteus2petsc_subdomain,
+                               self.petsc2proteus_subdomain)
     def scatter_forward_insert(self):
         if self.proteus2petsc_subdomain is not None:
             self.proteus_array[:] = self.proteus_array[self.petsc2proteus_subdomain]
