@@ -2859,15 +2859,24 @@ class TwoLevel(LinearSolver):
         (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
         while (not self.converged(r) and
                not self.failed()):
-            self.preSmoother.solve(u,r,b,initialGuessIsZero)
+            #LinearSolver.solve is (u,r,b,par_u,par_b,initialGuessIsZero):
+            #passing initialGuessIsZero positionally put it in the par_u slot,
+            #which now matters -- the smoothers refresh their iterate's ghost
+            #entries through par_u, and a bool quietly disables that.
+            self.preSmoother.solve(u,r,b,par_u=par_u,par_b=par_b,
+                                   initialGuessIsZero=initialGuessIsZero)
             initialGuessIsZero=False
             self.restrict.matvec(r,self.cb)
             self.cdu[:]=0.0
+            #the coarse level's vectors are TwoLevel's own and have no parallel
+            #counterpart yet, so the coarse solve is still serial-only
             self.coarseSolver.solve(u=self.cdu,r=self.cr,b=self.cb,initialGuessIsZero=True)
             self.prolong.matvec(self.cdu,self.du)
             u-=self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
-            self.postSmoother.solve(u,r,b,initialGuessIsZero=False)
+            self.postSmoother.solve(u,r,b,par_u=par_u,par_b=par_b,
+                                    initialGuessIsZero=False)
 
 class MultilevelLinearSolver(object):
     """
