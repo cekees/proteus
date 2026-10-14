@@ -2801,6 +2801,24 @@ class TwoLevel(LinearSolver):
         self.postSmoother.prepare()
         if self.prepareCoarse is True:
             self.coarseSolver.prepare()
+    def failed(self):
+        """A fixed cycle count is this solver's convergence criterion.
+
+        MGM builds its levels with convergenceTest='its' and maxIts set to the
+        requested number of cycles, so ``its == maxIts`` is the *expected* exit,
+        not a failure. The inherited failed() reports any such exit as a
+        failure, so Newton saw linearSolverFailed on the very first step and
+        gave up -- MGM could never drive a nonlinear solve. Linear problems hid
+        this because they set maxNonlinearIts=1 and so only ever take the one
+        Newton step.
+
+        The iteration counter is still advanced here: solve() uses failed() as
+        the loop counter as well as the loop guard.
+        """
+        if self.convergenceTest == 'its':
+            self.its += 1
+            return False
+        return LinearSolver.failed(self)
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
         (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
         while (not self.converged(r) and
