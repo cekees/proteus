@@ -130,3 +130,88 @@ def test_eliminated_dirichlet_dofs_fall_back(weak_dirichlet, applies):
     assert FemTools.nodalTransfersApply(model.mlMeshSave,
                                         model.trialSpaceDictList,
                                         model.bcDictList) is applies
+
+
+def _build_transfers(force_geometric, tag, nLevels=3):
+    from proteus import (FemTools as _FemTools, LinearSolvers, NumericalSolution,
+                         default_n, default_s, default_so, defaults)
+    from proteus.iproteus import opts as runopts
+
+    poissondir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'poisson_2d')
+    saved = _FemTools.nodalTransfersApply
+    if force_geometric:
+        _FemTools.nodalTransfersApply = lambda *a, **k: False
+    try:
+        p = defaults.load_physics('poisson_het_2d_p', poissondir)
+        n = defaults.load_numerics('poisson_het_2d_c0pk_n', poissondir)
+        p.meshfile = os.path.join(poissondir, 'square4x4')
+        p.x0 = (0.0, 0.0, 0.0)
+        p.L = (1.0, 1.0, 1.0)
+        n.nLevels = nLevels
+        n.femSpaces[0] = default_n.C0_AffineLinearOnSimplexWithNodalBasis
+        n.numericalFluxType = default_n.Advection_DiagonalUpwind_Diffusion_SIPG_exterior
+        n.multilevelLinearSolver = LinearSolvers.LU
+        n.levelLinearSolver = LinearSolvers.LU
+        so = default_so
+        so.name = p.name = tag
+        so.sList = [default_s]
+        runopts.logLevel = 1
+        runopts.verbose = False
+        ns = NumericalSolution.NS_base(so, [p], [n], so.sList, runopts)
+        return ns.modelList[0].meshTransfers
+    finally:
+        _FemTools.nodalTransfersApply = saved
+
+
+def _dense(sparse, nrows, ncols):
+    out = np.zeros((nrows, ncols))
+    unit = np.zeros(ncols)
+    column = np.zeros(nrows)
+    for j in range(ncols):
+        unit[:] = 0.0
+        unit[j] = 1.0
+        column[:] = 0.0
+        sparse.matvec(unit, column)
+        out[:, j] = column
+    return out
+
+
+def test_both_branches_produce_the_same_operators():
+    """The nodal branch must be a shortcut, not a different operator.
+
+    Every family the solvers consume is compared, not just the prolongation:
+    FAS divides by restrictSumList, NLNI by restrict_bcSumListDict, and
+    NumericalSolution interpolates through interp_bcListDict, so a mismatch in
+    any of them would surface as a quietly worse solver rather than a failure.
+    """
+    geometric = _build_transfers(True, 'branch_geometric')
+    nodal = _build_transfers(False, 'branch_nodal')
+
+    assert nodal.useNodalTransfers, "the nodal branch was not taken"
+    assert not geometric.useNodalTransfers, "the geometric branch was not forced"
+
+    plain = ['prolongList', 'restrictList', 'restrictSumList']
+    per_component = ['prolong_bcListDict', 'restrict_bcListDict',
+                     'scaled_restrict_bcListDict', 'interp_bcListDict',
+                     'restrict_bcSumListDict']
+
+    for level in range(1, len(nodal.prolongList)):
+        for family in plain:
+            a = getattr(geometric, family)[level]
+            b = getattr(nodal, family)[level]
+            _compare(a, b, '%s[%i]' % (family, level))
+        for family in per_component:
+            a = getattr(geometric, family)[0][level]
+            b = getattr(nodal, family)[0][level]
+            _compare(a, b, '%s[0][%i]' % (family, level))
+
+
+def _compare(a, b, label):
+    if hasattr(a, 'shape') and not isinstance(a, np.ndarray):
+        nrows, ncols = a.shape
+        np.testing.assert_array_equal(_dense(a, nrows, ncols),
+                                      _dense(b, nrows, ncols),
+                                      err_msg=label)
+    else:
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b), err_msg=label)
