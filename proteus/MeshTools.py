@@ -1689,6 +1689,7 @@ class MultilevelMesh(Mesh):
     def __init__(self,levels=1):
         self.meshList=[]
         self.elementParents=None
+        self.nodeParentsArrayList=None
     def buildFromC(self,cmultilevelMesh):
         from . import cmeshTools
         self.cmultilevelMesh = cmultilevelMesh
@@ -1742,6 +1743,149 @@ class MultilevelMesh(Mesh):
                     #ef
                 #ec
             #l
+    def calculateNodeParents(self,recalculate=False):
+        """Record which coarse nodes each fine node descends from.
+
+        Uniform refinement is nested in two ways that the rest of proteus does
+        not currently exploit. Coarse node ``i`` keeps its number on the fine
+        level, because the refinement routines start numbering new nodes at the
+        coarse node count -- so ``fineMesh.nodeArray[:nNodes_coarse]`` is
+        exactly ``coarseMesh.nodeArray``. And every node the refinement adds is
+        the midpoint of a coarse element edge.
+
+        So each fine node is described by a pair of coarse nodes: ``(i,i)`` for
+        a node inherited from the coarse mesh, and the two endpoints of a coarse
+        edge for one that was added. That is enough to write down the transfer
+        operators for a nodal space without any geometry -- a fine node that is
+        a coarse node takes its value, and a midpoint takes the average of its
+        two parents -- which is both cheaper than evaluating coarse basis
+        functions at fine interpolation points and local to whichever rank owns
+        the fine node.
+
+        Sets ``nodeParentsArrayList[l]``, of shape (nNodes_global(l), 2), in the
+        node numbering of level ``l-1``. Entry 0 is None: the coarsest level has
+        no parent.
+        """
+        if self.nodeParentsArrayList is not None and not recalculate:
+            return self.nodeParentsArrayList
+        nLevels = len(self.meshList)
+        self.nodeParentsArrayList = [None]
+        for l in range(nLevels-1):
+            coarseMesh = self.meshList[l]
+            fineMesh = self.meshList[l+1]
+            nNodes_coarse = coarseMesh.nNodes_global
+            nNodes_fine = fineMesh.nNodes_global
+            coarseNodes = np.asarray(coarseMesh.nodeArray)
+            fineNodes = np.asarray(fineMesh.nodeArray)
+            elementNodes = np.asarray(coarseMesh.elementNodesArray)
+            nNodes_element = elementNodes.shape[1]
+
+            parents = np.zeros((nNodes_fine,2),'i')
+            inherited = np.arange(nNodes_coarse,dtype='i')
+            parents[:nNodes_coarse,0] = inherited
+            parents[:nNodes_coarse,1] = inherited
+
+            #every added node is the midpoint of some coarse element edge, so
+            #index the edge midpoints and look the added nodes up by position.
+            #the midpoints are formed as 0.5*(a+b) on both sides, so this is an
+            #exact match rather than a tolerance test.
+            pairs = [(i,j)
+                     for i in range(nNodes_element)
+                     for j in range(i+1,nNodes_element)]
+            midpointOf = {}
+            for (i,j) in pairs:
+                a = elementNodes[:,i]
+                b = elementNodes[:,j]
+                mid = 0.5*(coarseNodes[a] + coarseNodes[b])
+                for eN in range(mid.shape[0]):
+                    midpointOf.setdefault(mid[eN].tobytes(),(a[eN],b[eN]))
+            missing = []
+            for nN in range(nNodes_coarse,nNodes_fine):
+                parentPair = midpointOf.get(fineNodes[nN].tobytes())
+                if parentPair is None:
+                    missing.append(nN)
+                else:
+                    parents[nN,0],parents[nN,1] = parentPair
+            if missing:
+                raise ValueError(
+                    "level %i: %i of %i added nodes are not the midpoint of any "
+                    "coarse element edge, so this hierarchy is not a uniform "
+                    "refinement and the nodal transfer operators do not apply "
+                    "(first few: %s)"
+                    % (l+1,len(missing),nNodes_fine-nNodes_coarse,missing[:5]))
+            self.nodeParentsArrayList.append(parents)
+        return self.nodeParentsArrayList
+
+    def useHierarchicalGeometry(self):
+        """Keep node coordinates only on the finest level.
+
+        Because refinement numbers the nodes it adds after the ones it
+        inherited, every coarser level's node coordinates are literally a
+        prefix of the finest level's -- so each coarse level's nodeArray can be
+        a view into the finest array instead of its own copy.
+
+        The saving is the tail of a geometric series and so is bounded --
+        measured at 14% of the coordinate memory for a 3D hierarchy, and about
+        a third in 2D. The point is less the bytes than that the levels then
+        cannot disagree about where a shared node is, which is the property the
+        nodal transfer operators above are built on.
+
+        This is opt-in rather than the default because it makes the levels
+        alias: writing to a coarse nodeArray would move the fine mesh too, and
+        proteus does translate a mesh in place (MultilevelTetrahedralMesh
+        shifts level 0 by x/y/z while constructing). The views are handed back
+        read-only so that any such write raises instead of silently corrupting
+        the finer levels; move the finest level and re-call this instead.
+
+        Returns the number of bytes no longer duplicated.
+        """
+        if len(self.meshList) < 2:
+            return 0
+        finest = self.meshList[-1]
+        fineNodes = np.asarray(finest.nodeArray)
+        saved = 0
+        for l in range(len(self.meshList)-1):
+            mesh = self.meshList[l]
+            nNodes = mesh.nNodes_global
+            own = np.asarray(mesh.nodeArray)
+            if not np.array_equal(own,fineNodes[:nNodes]):
+                raise ValueError(
+                    "level %i's nodes are not a prefix of the finest level's, "
+                    "so this hierarchy cannot share geometry; it is not a "
+                    "uniform refinement of a single coarse mesh" % (l,))
+            view = fineNodes[:nNodes]
+            view.flags.writeable = False
+            mesh.nodeArray = view
+            saved += own.nbytes
+        return saved
+
+    def nodalProlongation(self,l):
+        """The prolongation from level ``l`` to ``l+1`` for a C0 nodal space.
+
+        Returned as (rowptr, colind, nzval) in CSR, with one row per fine node:
+        a fine node inherited from the coarse mesh copies its coarse value, and
+        a node the refinement added takes the average of the two coarse nodes
+        whose edge it bisects. For an affine-linear nodal space this is exactly
+        the interpolation of the coarse basis onto the fine nodes, which is what
+        makes it a drop-in for the geometrically-constructed operator.
+        """
+        parents = self.calculateNodeParents()[l+1]
+        nNodes_fine = parents.shape[0]
+        inherited = parents[:,0] == parents[:,1]
+        nnz = int(np.where(inherited,1,2).sum())
+        rowptr = np.zeros((nNodes_fine+1,),'i')
+        rowptr[1:] = np.cumsum(np.where(inherited,1,2))
+        colind = np.zeros((nnz,),'i')
+        nzval = np.zeros((nnz,),'d')
+        single = np.flatnonzero(inherited)
+        double = np.flatnonzero(~inherited)
+        colind[rowptr[single]] = parents[single,0]
+        nzval[rowptr[single]] = 1.0
+        colind[rowptr[double]] = parents[double,0]
+        colind[rowptr[double]+1] = parents[double,1]
+        nzval[rowptr[double]] = 0.5
+        nzval[rowptr[double]+1] = 0.5
+        return rowptr,colind,nzval
 
 class PointMesh(Mesh):
     #Elements=Nodes
