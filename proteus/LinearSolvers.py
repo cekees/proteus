@@ -93,6 +93,23 @@ class LinearSolver(object):
         pass
     def calculateEigenvalues(self):
         pass
+    def refreshGhosts(self,par_u):
+        """Make the ghost entries of u agree with their owners again.
+
+        The smoothers compute a correction for the unknowns this rank owns and
+        subtract it from the whole local vector, ghosts included -- but a ghost
+        entry's correction belongs to whichever rank owns it, so the values
+        left there are wrong. The next residual reads them (the subdomain
+        matrix couples owned rows to ghost columns), so they have to be
+        replaced by the owners' values before computeResidual runs.
+
+        Serial runs pass par_u=None and this does nothing.
+        """
+        #Transport builds par vectors several ways, and not all of them are
+        #ghosted -- a vector with no ghost entries has nothing to refresh, and
+        #asking PETSc to scatter it raises "Vector is not ghosted".
+        if par_u is not None and getattr(par_u,'nghosts',None):
+            par_u.scatter_forward_insert()
     def computeResidual(self,u,r,b,initialGuessIsZero=False):
         if initialGuessIsZero:
             r[:]=b
@@ -2539,6 +2556,7 @@ class Jacobi(LinearSolver):
             elif type(self.L).__name__ == "SparseMatrix":
                 self.csmoothers.jacobi_NR_solve(self.L,self.M,r,self.node_order,self.du)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
 
 class GaussSeidel(LinearSolver):
@@ -2606,6 +2624,7 @@ class GaussSeidel(LinearSolver):
                 self.csmoothers.gauss_seidel_NR_solve(self.L,self.M,r,self.node_order,self.du)
                 #self.csmoothers.jacobi_NR_solve(self.L,self.M,r,self.node_order,self.du)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
 
 class StarILU(LinearSolver):
@@ -2709,6 +2728,7 @@ class StarILU(LinearSolver):
             elif type(self.L).__name__ == 'SparseMatrix':
                 self.csmoothers.asm_NR_solve(self.L,self.w,self.asmFactorObject,self.node_order,r,self.du)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
 
 class StarBILU(LinearSolver):
@@ -2767,6 +2787,7 @@ class StarBILU(LinearSolver):
             elif type(self.L).__name__ == 'SparseMatrix':
                 self.csmoothers.basm_NR_solve(self.L,self.w,self.basmFactorObject,self.node_order,r,self.du)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
 class TwoLevel(LinearSolver):
     """

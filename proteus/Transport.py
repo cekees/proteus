@@ -6512,8 +6512,41 @@ class MultilevelTransport(object):
                 for ts in list(trialSpaceDict.values()):
                     if ts.dofMap.nDOF_all_processes != par_N:
                         mixed=True
-                assert(options.multilevelLinearSolver == KSP_petsc4py or
-                       options.levelLinearSolver == KSP_petsc4py), "Must use KSP_petsc4py in parallel"
+                #proteus's own smoothers refresh the ghost entries of their
+                #iterate through par_u after each local update, so they are
+                #usable in parallel: Jacobi's update is pointwise and gives the
+                #same iterates as in serial, while GaussSeidel becomes
+                #processor-block Gauss-Seidel and StarILU/StarBILU are already
+                #Schwarz methods. MGM and NI drive those.
+                #
+                #LU is still refused. It would factor the *subdomain* matrix,
+                #which is a block-Jacobi approximation rather than the direct
+                #solve the caller asked for, and would quietly return a
+                #different answer in parallel than in serial.
+                #StarILU and StarBILU are deliberately absent. Their local
+                #solves invert a block around each node, and near a partition
+                #boundary that block spans rows this rank does not own, whose
+                #entries in the subdomain matrix are incomplete. The iteration
+                #then converges to the wrong fixed point rather than merely
+                #converging differently -- measured on the 2D Poisson problem,
+                #two ranks reach 7.0144 against 7.0345 in serial and stay
+                #there at 5000 iterations. Making them work needs correct local
+                #matrices, or stars restricted to owned rows.
+                #
+                #LU is absent for a different reason: it would factor the
+                #subdomain matrix, which is a block-Jacobi approximation rather
+                #than the direct solve the caller asked for.
+                parallelCapableSolvers = (KSP_petsc4py,Jacobi,GaussSeidel,MGM,NI)
+                for (what,solver) in (("multilevelLinearSolver",options.multilevelLinearSolver),
+                                      ("levelLinearSolver",options.levelLinearSolver),
+                                      ("linearSmoother",getattr(options,'linearSmoother',None))):
+                    if solver is None:
+                        continue
+                    assert solver in parallelCapableSolvers, (
+                        "%s=%s cannot be used in parallel: it would return a "
+                        "different answer than in serial. Use one of %s."
+                        % (what,getattr(solver,'__name__',solver),
+                           [c.__name__ for c in parallelCapableSolvers]))
                 if mixed:
                     #
                     #calculate dimensions mixed multicomponent system
@@ -6741,8 +6774,13 @@ class MultilevelTransport(object):
                     logEvent("Allocating ghosted parallel vectors on rank %i" % comm.rank(),level=2)
                     par_u = ParVec_petsc4py(u,par_bs,par_n,par_N,par_nghost,subdomain2global)
                     par_r = ParVec_petsc4py(r,par_bs,par_n,par_N,par_nghost,subdomain2global)
-                    logEvent("Allocating un-ghosted parallel vectors on rank %i" % comm.rank(),level=2)
-                    par_du = ParVec_petsc4py(du,par_bs,par_n,par_N)
+                    logEvent("Allocating ghosted parallel vectors on rank %i" % comm.rank(),level=2)
+                    #du is ghosted like u and r. KSP never needed it to be --
+                    #it only ever reads the owned range -- but proteus's own
+                    #smoothers compute residuals with the subdomain matrix,
+                    #whose owned rows couple to ghost columns, so they have to
+                    #be able to refresh du's ghost entries after each update.
+                    par_du = ParVec_petsc4py(du,par_bs,par_n,par_N,par_nghost,subdomain2global)
                     logEvent("Allocating matrix on rank %i" % comm.rank(),level=2)
                     
                     try:
