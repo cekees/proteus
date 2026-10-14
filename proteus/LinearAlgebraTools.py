@@ -1825,3 +1825,80 @@ def nodalRestrictionScaling(prolong):
     rowSums = prolong.createVecRight()
     prolong.multTranspose(ones,rowSums)
     return rowSums
+
+
+class ParTransferOperator(object):
+    """A distributed transfer operator that behaves like a proteus SparseMat.
+
+    The multilevel solvers call ``prolong.matvec(x,y)`` on plain numpy arrays
+    holding a subdomain's unknowns, owned entries first and ghosts after. A
+    PETSc Mat works on the owned range instead, so this copies between the two
+    and refreshes the result's ghost entries, which the solvers read straight
+    away when they form the next residual.
+
+    ``shape`` reports the subdomain sizes rather than the global ones, because
+    that is what the callers size their own work vectors from.
+    """
+    def __init__(self,mat,columnTemplate,rowTemplate):
+        """mat maps the coarse level to the fine one.
+
+        columnTemplate and rowTemplate are ParVecs carrying the coarse and fine
+        parallel layouts; their arrays are not used, only their shapes.
+        """
+        self.mat = mat
+        self.columnTemplate = columnTemplate
+        self.rowTemplate = rowTemplate
+        self.nOwnedColumns = columnTemplate.dim_proc
+        self.nOwnedRows = rowTemplate.dim_proc
+        self.shape = [rowTemplate.proteus_array.size,
+                      columnTemplate.proteus_array.size]
+        self._columnVec = mat.createVecRight()
+        self._rowVec = mat.createVecLeft()
+        self._ghostRefresh = {}
+
+    def _parVecFor(self,array,template):
+        """A ParVec over this caller's array, so its ghosts can be refreshed.
+
+        The solvers reuse a handful of fixed buffers, so keep one per array
+        rather than rebuilding it on every matvec.
+        """
+        if not getattr(template,'nghosts',None):
+            return None
+        cached = self._ghostRefresh.get(id(array))
+        if cached is None or cached.proteus_array is not array:
+            if array.size != template.proteus_array.size:
+                return None
+            cached = self._ghostRefresh[id(array)] = template.duplicate_with_array(array)
+        return cached
+
+    def matvec(self,x,y):
+        self._columnVec.getArray()[:] = x[:self.nOwnedColumns]
+        self.mat.mult(self._columnVec,self._rowVec)
+        y[:self.nOwnedRows] = self._rowVec.getArray()
+        refresh = self._parVecFor(y,self.rowTemplate)
+        if refresh is not None:
+            refresh.scatter_forward_insert()
+        return y
+
+
+class ParTransposeTransferOperator(ParTransferOperator):
+    """The adjoint of a ParTransferOperator, for restricting residuals.
+
+    Restriction is the transpose of prolongation, so this shares the same Mat
+    rather than assembling a second one; the roles of the two layouts swap.
+    """
+    def __init__(self,mat,columnTemplate,rowTemplate):
+        ParTransferOperator.__init__(self,mat,columnTemplate,rowTemplate)
+        self.shape = [columnTemplate.proteus_array.size,
+                      rowTemplate.proteus_array.size]
+        self.nOwnedColumns,self.nOwnedRows = self.nOwnedRows,self.nOwnedColumns
+        self.columnTemplate,self.rowTemplate = rowTemplate,columnTemplate
+
+    def matvec(self,x,y):
+        self._rowVec.getArray()[:] = x[:self.nOwnedColumns]
+        self.mat.multTranspose(self._rowVec,self._columnVec)
+        y[:self.nOwnedRows] = self._columnVec.getArray()
+        refresh = self._parVecFor(y,self.rowTemplate)
+        if refresh is not None:
+            refresh.scatter_forward_insert()
+        return y

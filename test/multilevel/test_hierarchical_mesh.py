@@ -155,7 +155,7 @@ def test_nodal_prolongation_matches_the_geometric_operator():
         np.testing.assert_array_equal(combinatorial, geometric)
 
 
-@pytest.mark.parametrize('n_ranks', [1, 2, 3])
+@pytest.mark.parametrize('n_ranks', [1, 2, 3, 4])
 def test_nodal_prolongation_assembles_in_parallel(n_ranks):
     """The parent rule gives each rank its own rows with no communication.
 
@@ -164,6 +164,12 @@ def test_nodal_prolongation_assembles_in_parallel(n_ranks):
     reachable -- which they are not, once the levels are partitioned
     independently.  The parent rule needs only two integers per fine node, so
     it works under any partitioning.
+
+    The helper checks the operator against the *subdomain* meshes, which is
+    what makes this meaningful: the parents are numbered as the hierarchy was
+    built, partitioning renumbers the global nodes, and a version of this test
+    that sampled everything in the hierarchy's own numbering agreed with itself
+    while being unusable with a partitioned vector.
     """
     import os
     import shutil

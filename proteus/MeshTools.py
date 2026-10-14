@@ -613,6 +613,11 @@ class Mesh(object):
                                                                                     self.subdomainMesh.cmesh)
         #
         logEvent(memory("partitionMesh 3","MeshTools"),level=4)
+        #Partitioning renumbered the global nodes; keep the permutation so that
+        #anything built against the original numbering -- the multilevel
+        #hierarchy's node parents, for one -- can be read in the numbering
+        #nodeNumbering_subdomain2global refers to.
+        self.nodeNumbering_global_old2new = cpartitioning.getNodeNumbering_global_old2new(self.cmesh)
         self.subdomainMesh.buildFromC(self.subdomainMesh.cmesh)
         self.subdomainMesh.nElements_owned = self.elementOffsets_subdomain_owned[comm.rank()+1] - self.elementOffsets_subdomain_owned[comm.rank()]
         self.subdomainMesh.nNodes_owned = self.nodeOffsets_subdomain_owned[comm.rank()+1] - self.nodeOffsets_subdomain_owned[comm.rank()]
@@ -717,6 +722,11 @@ class Mesh(object):
         #
         logEvent(memory("partitionMesh 3","MeshTools"),level=4)
         self.buildFromCNoArrays(self.cmesh)
+        #Partitioning renumbered the global nodes; keep the permutation so that
+        #anything built against the original numbering -- the multilevel
+        #hierarchy's node parents, for one -- can be read in the numbering
+        #nodeNumbering_subdomain2global refers to.
+        self.nodeNumbering_global_old2new = cpartitioning.getNodeNumbering_global_old2new(self.cmesh)
         self.subdomainMesh.buildFromC(self.subdomainMesh.cmesh)
         self.subdomainMesh.nElements_owned = self.elementOffsets_subdomain_owned[comm.rank()+1] - self.elementOffsets_subdomain_owned[comm.rank()]
         self.subdomainMesh.nNodes_owned = self.nodeOffsets_subdomain_owned[comm.rank()+1] - self.nodeOffsets_subdomain_owned[comm.rank()]
@@ -1906,6 +1916,31 @@ class MultilevelMesh(Mesh):
             mesh.nodeArray = view
             saved += own.nbytes
         return saved
+
+    def partitionedNodeParents(self,l):
+        """calculateNodeParents()[l+1], in the partitioned global numbering.
+
+        calculateNodeParents works in the numbering the hierarchy was built
+        with. Partitioning renumbers the global nodes so each rank's owned ones
+        are contiguous, and it is that numbering -- the one
+        nodeNumbering_subdomain2global refers to -- that the solvers' vectors
+        and matrices use. The two are not the same, so a parent pair taken
+        straight from calculateNodeParents indexes the wrong unknowns once the
+        mesh has been partitioned.
+
+        An unpartitioned hierarchy has no permutation to apply and the parents
+        are returned unchanged, which is why this is safe to call either way.
+        """
+        parents = self.calculateNodeParents()[l+1]
+        coarseOld2New = getattr(self.meshList[l],'nodeNumbering_global_old2new',None)
+        fineOld2New = getattr(self.meshList[l+1],'nodeNumbering_global_old2new',None)
+        if coarseOld2New is None or fineOld2New is None:
+            return parents
+        coarseOld2New = np.asarray(coarseOld2New)
+        fineOld2New = np.asarray(fineOld2New)
+        partitioned = np.empty_like(parents)
+        partitioned[fineOld2New] = coarseOld2New[parents]
+        return partitioned
 
     def nodalProlongation(self,l):
         """The prolongation from level ``l`` to ``l+1`` for a C0 nodal space.

@@ -65,6 +65,22 @@ def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmes
         np.asarray(<int[:cmesh.mesh.subdomainp.nEdges_global]> cmesh.mesh.edgeNumbering_subdomain2global)
     )
 
+def getNodeNumbering_global_old2new(cmeshTools.CMesh cmesh):
+    """The permutation partitioning applied to the global node numbering.
+
+    Partitioning renumbers the nodes so that each rank's owned nodes are
+    contiguous, and nodeNumbering_subdomain2global refers to that new
+    numbering. Arrays built against the mesh's original numbering -- the
+    parent/child relations of a multilevel hierarchy, for instance -- have to
+    be read through this map before they can be used alongside the partitioned
+    vectors.
+
+    Returns None if the mesh has not been partitioned.
+    """
+    if cmesh.mesh.nodeNumbering_global_old2new == NULL:
+        return None
+    return np.asarray(<int[:cmesh.mesh.nNodes_global]> cmesh.mesh.nodeNumbering_global_old2new)
+
 def convertPUMIPartitionToPython(Comm comm, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
 #need to have Python handles for the cmesh arrays created from apf/PUMI mesh 
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh

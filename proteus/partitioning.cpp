@@ -687,6 +687,19 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
   //mwf original and correct I believe
   const PetscInt * nodeNumbering_global_old2new;//needs restore call
   ISGetIndices(nodeNumberingIS_global_old2new,&nodeNumbering_global_old2new);
+  /* Keep this permutation on the mesh. Partitioning renumbers the global nodes
+     so each rank's owned ones are contiguous, and it is that numbering which
+     nodeNumbering_subdomain2global refers to. Anything built against the
+     original numbering -- a multilevel hierarchy's node parents, say -- has to
+     be read through this map before it can be used alongside the partitioned
+     vectors, and nothing else records the way back. */
+  if (mesh.nodeNumbering_global_old2new != NULL)
+    delete [] mesh.nodeNumbering_global_old2new;
+  mesh.nodeNumbering_global_old2new = new int[mesh.nNodes_global];
+  for (int nN=0;nN<mesh.nNodes_global;nN++)
+    {
+      mesh.nodeNumbering_global_old2new[nN] = nodeNumbering_global_old2new[nN];
+    }
 
   //reverse mapping for node numbers as well
   valarray<int> nodeNumbering_global_new2old(mesh.nNodes_global);
