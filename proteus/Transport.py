@@ -4268,6 +4268,17 @@ class OneLevelTransport(NonlinearEquation):
                                         self.ebqe[('advectiveFlux',ci)],
                                         self.inflowFlux[ci])
     def setUnknowns(self,free_u):
+        # copyBetweenFreeUnknownsAndGlobalUnknowns indexes free_u from C with no
+        # bounds checking, so handing it a vector shorter than this level needs
+        # corrupts whatever happens to follow it in memory instead of raising --
+        # typically the dof arrays' own headers, which then surface far away as
+        # a nonsensical shape. Callers iterating a multilevel model have passed
+        # uList[0] for every level more than once, so check the contract here.
+        if free_u.size < self.dim:
+            raise ValueError(
+                "setUnknowns needs at least %i free unknowns for this level but "
+                "was given %i; a caller is probably passing the coarsest level's "
+                "vector for every level" % (self.dim, free_u.size))
         for cj in range(self.nc):
             assert len(self.dirichletConditions[cj].global2freeGlobal_global_dofs) == len(self.dirichletConditions[cj].global2freeGlobal_free_dofs)
             fromFreeToGlobal=1 #direction copying
@@ -6263,6 +6274,21 @@ class MultilevelTransport(object):
         for  cj in list(TrialSpaceTypeDict.keys()):
             self.trialSpaceListDict[cj]=[]
             self.bcListDict[cj]=[]
+        # In parallel the mesh transfers need a second, global set of spaces and
+        # Dirichlet conditions. The models themselves are built on subdomain
+        # meshes, but MultilevelProjectionOperators walks the multilevel mesh's
+        # elementChildrenArray, which is numbered globally -- feeding it the
+        # subdomain spaces indexes a subdomain-sized l2g with a global element
+        # number. The transfer operators are built against these global spaces
+        # and then restricted to each rank's owned rows; see
+        # MultilevelProjectionOperators. Every rank holding a global space per
+        # level does not scale, and goes away with level-consistent
+        # partitioning, which is tracked separately.
+        from . import Comm
+        _comm = Comm.get()
+        self.buildGlobalTransferSpaces = _comm.size() > 1
+        global_trialSpaceDictList = []
+        global_bcDictList = []
         for mesh in mlMesh.meshList:
             
             sdmesh = mesh.subdomainMesh # Linoj: mesh.subdomainMesh.nodeArray[:,2]=all zeros
@@ -6313,6 +6339,26 @@ class MultilevelTransport(object):
                                               for (cj,trialSpace) in trialSpaceDict.items()])
             logEvent("Setting Boundary Conditions-3")
             self.bcDictList.append(dirichletConditionsDict)
+            if self.buildGlobalTransferSpaces:
+                global_trialSpaceDict = dict(
+                    [(cj,TrialSpaceType(mesh,nd))
+                     for (cj,TrialSpaceType) in TrialSpaceTypeDict.items()])
+                if (options is None or options.periodicDirichletConditions is None
+                        or options.parallelPeriodic==True):
+                    global_dirichletConditionsDict = dict(
+                        [(cj,DOFBoundaryConditions(trialSpace,
+                                                   dirichletConditionsSetterDict[cj],
+                                                   useWeakDirichletConditions))
+                         for (cj,trialSpace) in global_trialSpaceDict.items()])
+                else:
+                    global_dirichletConditionsDict = dict(
+                        [(cj,DOFBoundaryConditions(trialSpace,
+                                                   dirichletConditionsSetterDict[cj],
+                                                   useWeakDirichletConditions,
+                                                   options.periodicDirichletConditions[cj]))
+                         for (cj,trialSpace) in global_trialSpaceDict.items()])
+                global_trialSpaceDictList.append(global_trialSpaceDict)
+                global_bcDictList.append(global_dirichletConditionsDict)
             logEvent("Setting Boundary Conditions-4")
             for cj in list(TrialSpaceTypeDict.keys()):
                 self.trialSpaceListDict[cj].append(trialSpaceDict[cj])
@@ -6783,12 +6829,21 @@ class MultilevelTransport(object):
         logEvent("Building Mesh Transfers",level=2)
         
         MultilevelProjectionOperatorType = MultilevelProjectionOperators
-        self.meshTransfers = MultilevelProjectionOperatorType(
-            mlMesh,
-            self.trialSpaceDictList,
-            self.offsetListList,
-            self.strideListList,
-            self.bcDictList)
+        if self.buildGlobalTransferSpaces:
+            self.meshTransfers = MultilevelProjectionOperatorType(
+                mlMesh,
+                global_trialSpaceDictList,
+                self.offsetListList,
+                self.strideListList,
+                global_bcDictList,
+                subdomainFemSpaceDictList=self.trialSpaceDictList)
+        else:
+            self.meshTransfers = MultilevelProjectionOperatorType(
+                mlMesh,
+                self.trialSpaceDictList,
+                self.offsetListList,
+                self.strideListList,
+                self.bcDictList)
         logEvent(memory("mesh transfers","MultilevelTransport"),level=4)
         #mwf hack keep reference to mlMesh in Transport ctor for now
         self.mlMeshSave = mlMesh

@@ -210,3 +210,36 @@ def test_parvec_duplicate_keeps_ghost_layout_under_mpi(n_ranks):
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.count('GHOST_DUPLICATE_OK') == n_ranks, (
         result.stdout + result.stderr)
+
+
+def test_set_unknowns_rejects_a_short_vector():
+    """setUnknowns must not be handed a vector shorter than the level needs.
+
+    cfemIntegrals.copyBetweenFreeUnknownsAndGlobalUnknowns indexes free_u from
+    C with no bounds checking, so a short vector corrupts adjacent memory --
+    typically the dof arrays' own headers, surfacing much later as a
+    nonsensical numpy shape rather than an error at the call.  Three call sites
+    in NumericalSolution passed uList[0] for *every* level model, which is
+    harmless only when nLevels == 1.
+    """
+    import numpy as np
+
+    ns = _solve(LinearSolvers.LU, LinearSolvers.LU, None, 2, 'short_vec',
+                return_solution=False)
+    fine = ns.modelList[0].levelModelList[-1]
+    coarse_sized = np.zeros(ns.modelList[0].levelModelList[0].dim, 'd')
+    assert coarse_sized.size < fine.dim, "levels are not actually different sizes"
+
+    with pytest.raises(ValueError, match='free unknowns'):
+        fine.setUnknowns(coarse_sized)
+
+
+def test_numerical_solution_saves_dofs_per_level():
+    """The save_dof blocks must index uList by level, not take uList[0]."""
+    import inspect
+
+    from proteus import NumericalSolution as _ns
+    source = inspect.getsource(_ns.NS_base.calculateSolution)
+    assert 'setUnknowns(m.uList[0])' not in source, (
+        "a save_dof block still passes the coarsest level's vector to every "
+        "level model")

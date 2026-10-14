@@ -650,7 +650,9 @@ class NS_base(object):  # (HasTraits):
                     for ci in range(0,lm.coefficients.nc):
                         lm.u_store[ci] = lm.u[ci].copy()
 
-                    lm.setUnknowns(m.uList[0])
+                    # lu is this level's unknown vector; uList[0] is the coarsest,
+                    # and setUnknowns indexes it from C with no bounds check.
+                    lm.setUnknowns(lu)
                     for ci in range(lm.coefficients.nc):
                         lm.u[ci].dof_last_last[:] = lm.u[ci].dof_last
                         lm.u[ci].dof_last[:] = lm.u[ci].dof
@@ -726,12 +728,12 @@ class NS_base(object):  # (HasTraits):
         if self.opts.save_dof:
             import copy
             for m in self.modelList:
-                for lm in m.levelModelList:
+                for level, lm in enumerate(m.levelModelList):
                     lm.u_store = lm.u.copy()
                     for ci in range(0,lm.coefficients.nc):
                         lm.u_store[ci] = lm.u[ci].copy()
 
-                    lm.setUnknowns(m.uList[0])
+                    lm.setUnknowns(m.uList[level])
                     for ci in range(lm.coefficients.nc):
                         lm.u[ci].dof_last_last[:] = lm.u[ci].dof_last
                         lm.u[ci].dof_last[:] = lm.u[ci].dof
@@ -796,11 +798,19 @@ class NS_base(object):  # (HasTraits):
                     if self.opts.save_dof:
                         import copy
                         for m in self.modelList:
-                            for lm in m.levelModelList:
+                            # uList is per level: with nLevels > 1 this used
+                            # uList[0] for every level model, so every level
+                            # above the coarsest handed setUnknowns a vector
+                            # shorter than its own dof count.
+                            # copyBetweenFreeUnknownsAndGlobalUnknowns indexes
+                            # it from C without bounds checking, which read off
+                            # the end -- harmless-looking in serial, corrupting
+                            # in parallel.
+                            for level, lm in enumerate(m.levelModelList):
                                 lm.u_store = lm.u.copy()
                                 for ci in range(lm.coefficients.nc):
                                     lm.u_store[ci] = lm.u[ci].copy()
-                                lm.setUnknowns(m.uList[0])
+                                lm.setUnknowns(m.uList[level])
                                 for ci in range(lm.coefficients.nc):
                                     lm.u[ci].dof_last_last[:] = lm.u[ci].dof_last
                                     lm.u[ci].dof_last[:] = lm.u[ci].dof

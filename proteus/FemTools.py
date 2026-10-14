@@ -7237,7 +7237,17 @@ class MultilevelProjectionOperators(object):
                  femSpaceDictList,
                  offsetListList,
                  strideListList,
-                 dofBoundaryConditionsDictList):
+                 dofBoundaryConditionsDictList,
+                 subdomainFemSpaceDictList=None):
+        """Build the inter-level transfer operators.
+
+        In parallel the caller passes *global* spaces and boundary conditions
+        in femSpaceDictList/dofBoundaryConditionsDictList, because the
+        multilevel mesh's elementChildrenArray is numbered globally, plus the
+        per-rank subdomain spaces in subdomainFemSpaceDictList so the operators
+        can be restricted to the rows each rank owns.
+        """
+        self.subdomainFemSpaceDictList = subdomainFemSpaceDictList
         self.nc = len(offsetListList[0])
         self.restrictList = [[]]
         self.rzvalList = [[]]
