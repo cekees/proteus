@@ -1872,6 +1872,8 @@ class ParTransferOperator(object):
         return cached
 
     def matvec(self,x,y):
+        assert x.size == self.shape[1], (x.size,self.shape)
+        assert y.size == self.shape[0], (y.size,self.shape)
         self._columnVec.getArray()[:] = x[:self.nOwnedColumns]
         self.mat.mult(self._columnVec,self._rowVec)
         y[:self.nOwnedRows] = self._rowVec.getArray()
@@ -1895,6 +1897,8 @@ class ParTransposeTransferOperator(ParTransferOperator):
         self.columnTemplate,self.rowTemplate = rowTemplate,columnTemplate
 
     def matvec(self,x,y):
+        assert x.size == self.shape[1], (x.size,self.shape)
+        assert y.size == self.shape[0], (y.size,self.shape)
         self._rowVec.getArray()[:] = x[:self.nOwnedColumns]
         self.mat.multTranspose(self._rowVec,self._columnVec)
         y[:self.nOwnedRows] = self._columnVec.getArray()

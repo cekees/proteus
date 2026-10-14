@@ -6882,9 +6882,53 @@ class MultilevelTransport(object):
                 self.strideListList,
                 self.bcDictList)
         logEvent(memory("mesh transfers","MultilevelTransport"),level=4)
+        if self.buildGlobalTransferSpaces:
+            self.useParallelNodalTransfers(mlMesh)
         #mwf hack keep reference to mlMesh in Transport ctor for now
         self.mlMeshSave = mlMesh
         
+    def useParallelNodalTransfers(self,mlMesh):
+        """Replace the transfer operators with distributed ones where possible.
+
+        MultilevelProjectionOperators builds global matrices, which cannot act
+        on a subdomain's vectors. For a nodally nested hierarchy of spaces whose
+        dofs are the mesh vertices the operators follow from the node parents
+        alone, so each rank can assemble the rows it owns and PETSc applies
+        them -- see LinearAlgebraTools.nodalProlongationMat. The parents have to
+        be read in the partitioned node numbering, which is what
+        partitionedNodeParents does.
+
+        Anything that does not qualify keeps the global operators. They do not
+        scale, but they are what makes a multilevel mesh constructible at all
+        in parallel for those cases, which beats refusing to run.
+        """
+        if not FemTools.nodalTransfersApply(mlMesh,
+                                            self.trialSpaceDictList,
+                                            self.bcDictList):
+            logEvent("mesh transfers stay global: this problem does not qualify "
+                     "for the nodal operators",level=2)
+            return
+        if len(self.trialSpaceDictList[0]) != 1:
+            logEvent("mesh transfers stay global: the distributed nodal "
+                     "operators do not handle multiple components yet",level=2)
+            return
+        mlMesh.calculateNodeParents()
+        prolongList = [[]]
+        restrictList = [[]]
+        for l in range(len(mlMesh.meshList)-1):
+            prolongMat = nodalProlongationMat(
+                mlMesh.partitionedNodeParents(l),
+                np.asarray(mlMesh.meshList[l].nodeOffsets_subdomain_owned),
+                np.asarray(mlMesh.meshList[l+1].nodeOffsets_subdomain_owned))
+            prolongList.append(ParTransferOperator(
+                prolongMat,self.par_uList[l],self.par_uList[l+1]))
+            restrictList.append(ParTransposeTransferOperator(
+                prolongMat,self.par_uList[l],self.par_uList[l+1]))
+        self.meshTransfers.prolongList = prolongList
+        self.meshTransfers.restrictList = restrictList
+        logEvent("mesh transfers assembled as distributed matrices over %i levels"
+                 % (len(mlMesh.meshList),),level=2)
+
     def setInitialConditions(self,getInitialConditionsDict,T=0.0):
         logEvent("Setting initial conditions on model "+self.name)
         self.t=T

@@ -2860,7 +2860,8 @@ class TwoLevel(LinearSolver):
                  norm = l2Norm,
                  convergenceTest = 'r',
                  computeRates = True,
-                 printInfo = True):
+                 printInfo = True,
+                 par_u_coarse=None):
         LinearSolver.__init__(self,L,
                               rtol_r,
                               atol_r,
@@ -2881,6 +2882,16 @@ class TwoLevel(LinearSolver):
         self.cb = Vec(prolong.shape[1])
         self.cr = Vec(prolong.shape[1])
         self.cdu = Vec(prolong.shape[1])
+        #The coarse level's work vectors belong to this solver, so nothing else
+        #holds a parallel counterpart for them. Without one the coarse solve
+        #runs on stale ghost values and the smoothers down there have nothing
+        #to refresh, which is what kept a parallel cycle from working.
+        if par_u_coarse is not None:
+            self.par_cb = par_u_coarse.duplicate_with_array(self.cb)
+            self.par_cr = par_u_coarse.duplicate_with_array(self.cr)
+            self.par_cdu = par_u_coarse.duplicate_with_array(self.cdu)
+        else:
+            self.par_cb = self.par_cr = self.par_cdu = None
         self.prepareCoarse=prepareCoarse
     def prepare(self,b=None,newton_its=None):
         self.preSmoother.prepare()
@@ -2920,7 +2931,9 @@ class TwoLevel(LinearSolver):
             self.cdu[:]=0.0
             #the coarse level's vectors are TwoLevel's own and have no parallel
             #counterpart yet, so the coarse solve is still serial-only
-            self.coarseSolver.solve(u=self.cdu,r=self.cr,b=self.cb,initialGuessIsZero=True)
+            self.coarseSolver.solve(u=self.cdu,r=self.cr,b=self.cb,
+                                    par_u=self.par_cdu,par_b=self.par_cb,
+                                    initialGuessIsZero=True)
             self.prolong.matvec(self.cdu,self.du)
             u-=self.du
             self.refreshGhosts(par_u)
@@ -2969,13 +2982,15 @@ class MGM(MultilevelLinearSolver):
                  coarseSolver,
                  mgItsList=[],
                  printInfo=False,
-                 computeRates=False):
+                 computeRates=False,
+                 par_duList=None):
         self.printInfo=printInfo
         self.nLevels = len(LList)
         self.solverList=[coarseSolver]
         for i in range(1,len(LList)):
             if mgItsList ==[]:
                 mgItsList.append(1)
+            par_u_coarse = par_duList[i-1] if par_duList is not None else None
             self.solverList.append(TwoLevel(prolong = prolongList[i],
                                             restrict = restrictList[i],
                                             coarseL = LList[i-1],
@@ -2986,15 +3001,23 @@ class MGM(MultilevelLinearSolver):
                                             maxIts = mgItsList[i],
                                             convergenceTest = 'its',
                                             computeRates=computeRates,
-                                            printInfo=False))
+                                            printInfo=False,
+                                            par_u_coarse=par_u_coarse))
         self.mgmSolver = self.solverList[self.nLevels-1]
         self.solverName = "TwoLevel"
     def prepare(self,b=None,newton_its=None):
         for s in self.solverList:
             s.prepare()
 
-    def solve(self,u,r=None,b=None,initialGuessIsZero=False):
-        self.mgmSolver.solve(u,r,b,initialGuessIsZero)
+    def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
+        #This passed initialGuessIsZero positionally into TwoLevel.solve's
+        #par_u slot -- the same slip NI and TwoLevel had. With the smoothers
+        #now reading par_u it is not cosmetic: without it they fall back to a
+        #norm over the local vector, so the ranks disagree about when to stop,
+        #take different numbers of iterations, and deadlock on the first
+        #collective after they diverge.
+        self.mgmSolver.solve(u=u,r=r,b=b,par_u=par_u,par_b=par_b,
+                             initialGuessIsZero=initialGuessIsZero)
 
 class NI(MultilevelLinearSolver):
     """
@@ -3297,7 +3320,8 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                 coarseSolver = coarseSolver,
                                 mgItsList = mgItsList,
                                 printInfo = printLevelSolverInfo,
-                                computeRates = computeLevelSolverRates)
+                                computeRates = computeLevelSolverRates,
+                                par_duList = par_duList)
         levelLinearSolverList = levelLinearSolver.solverList
     elif levelLinearSolverType == LU:
         for l in range(nLevels):
