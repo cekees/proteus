@@ -207,6 +207,32 @@ def _dirichlet(entries, dim, tol):
     return getDBC
 
 
+def _robin(entries, dim, tol):
+    """``get(x, flag)`` for one component's Robin conditions.
+
+    Returns None where no condition claims the point, else a callable
+    ``(x, t) -> (alpha, beta, g)`` for ``alpha*u + beta*(q.n) = g``.
+    NumericalFlux.RobinFactory turns that into the flux and its exact
+    derivative; see there for why this cannot be a flux boundary condition.
+    """
+    tests = [(None if e["where"] is None else _compile(e["where"]),
+              _Field(e["alpha"], dim), _Field(e["beta"], dim), _Field(e["g"], dim))
+             for e in entries]
+
+    def get(x, flag):
+        ns = {"tol": tol, "x": x[0]}
+        if dim > 1:
+            ns["y"] = x[1]
+        if dim > 2:
+            ns["z"] = x[2]
+        for where, alpha, beta, g in tests:
+            if where is None or eval(where, _GLOBALS, ns):
+                return lambda x, t, a=alpha, b=beta, gg=g: (
+                    a.uOfXT(x, t), b.uOfXT(x, t), gg.uOfXT(x, t))
+        return None
+    return get
+
+
 def _neumann_targets(problem, adr, names):
     """``{component index: (potential index, entries)}`` for the neumann conditions.
 
@@ -345,6 +371,18 @@ def physics(problem, name):
         p.coefficients.nullSpaceComponents = [names.index(c) for c in constant]
 
     tol = 1e-8 * max(p.L[:dim])
+    # A Robin point is not a Dirichlet point and carries no flux boundary
+    # condition: both are applied after the numerical flux runs (see
+    # OneLevelTransport.calculateExteriorElementBoundaryCoefficients) and
+    # would overwrite it. The Robin class is the only thing that may write
+    # the flux there.
+    p.robinConditions = {}
+    robin = {}
+    for e in problem.get("robin") or []:
+        robin.setdefault(e["component"], []).append(e)
+    for name in robin:
+        if name not in names:
+            raise ValueError("robin condition on %s, which is not an unknown" % name)
     by_component = {}
     for e in problem["dirichlet"]:
         by_component.setdefault(e["component"], []).append(e)
@@ -365,6 +403,8 @@ def physics(problem, name):
     p.advectiveFluxBoundaryConditions = {
         i: _zero_on_periodic_faces(periodic.get(n, []), lower, upper, tol)
         for i, n in enumerate(names)}
+    p.robinConditions = {i: _robin(robin[n], dim, tol)
+                         for i, n in enumerate(names) if n in robin}
     targets = _neumann_targets(problem, adr, names)
     p.diffusiveFluxBoundaryConditions = {i: {} for i in range(len(names))}
     for i, eq in enumerate(adr["equations"]):
@@ -619,6 +659,18 @@ def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
     if problem.get("up_to_constant"):
         n.numericalFluxType = NumericalFlux.StrongDirichletFactory(p.fluxBoundaryConditions,
                                                                    keepDOFs=True)
+    if p.robinConditions:
+        # alpha*u + beta*(q.n) = g needs the trace in the flux, so it is the
+        # numerical flux's job rather than a boundary condition's.
+        # Built on the same strongly-Dirichlet base the rest of this module
+        # uses, so the Dirichlet faces keep being eliminated and the outflow
+        # advective flux keeps being computed. Any numerical flux suppresses
+        # the one Transport would compute by default.
+        n.numericalFluxType = NumericalFlux.RobinFactory(
+            p.robinConditions,
+            base=NumericalFlux.StrongDirichletFactory(
+                p.fluxBoundaryConditions,
+                keepDOFs=bool(problem.get("up_to_constant"))))
     if time is None:
         system = {"tnList": [0.0, 1.0]}
     else:

@@ -96,6 +96,85 @@ def neumann_poisson():
     }
 
 
+def robin_poisson(alpha="1.0", beta="1.0", g="y**2 - 1.0"):
+    """-Laplace(u) = -4 on the unit square, u = x^2 + y^2.
+
+    On x = 1 the outward flux is q.n = -(grad u).n = -2, and u = 1 + y^2, so
+    alpha u + beta (q.n) = g holds with alpha = beta = 1 and g = y^2 - 1.
+    Dirichlet on the other three sides.
+    """
+    return {
+        "adr": {
+            "dim": 2, "components": ["u"],
+            "equations": [{
+                "component": "u",
+                "diffusion": {"u": {"rowptr": [0, 1, 2], "colind": [0, 1],
+                                    "a": ["1.0", "1.0"], "da": {}, "depends_on": {}}},
+                "reaction": {"r": "4.0", "dr": {}, "depends_on": {}},
+            }],
+        },
+        "domain": {"lower": [0.0, 0.0], "upper": [1.0, 1.0]},
+        "dirichlet": [{"component": "u", "region": "three_sides",
+                       "where": "x <= tol or y <= tol or y >= 1.0 - tol",
+                       "value": "x**2 + y**2"}],
+        "robin": [{"component": "u", "region": "right", "where": "x >= 1.0 - tol",
+                   "alpha": alpha, "beta": beta, "g": g}],
+        "exact": {"u": "x**2 + y**2"},
+    }
+
+
+def _rate(problem, cells=(8, 16), **kw):
+    errors = [ADRProblem.run(problem, {"u": ("CG", 1)}, c, **kw)[2]["u"] for c in cells]
+    return errors, numpy.log2(errors[0] / errors[1])
+
+
+def test_a_robin_face_converges_at_the_right_rate():
+    errors, rate = _rate(robin_poisson())
+    assert errors[0] < 1.0e-2
+    assert 1.8 < rate < 2.2, (errors, rate)
+
+
+def test_robin_coefficients_may_vary_along_the_boundary():
+    """alpha and beta are expressions, not just numbers."""
+    # alpha = 3, beta = 2  =>  g = 3(1 + y^2) + 2(-2)
+    errors, rate = _rate(robin_poisson(alpha="3.0", beta="2.0",
+                                       g="3.0*(1.0 + y**2) - 4.0"))
+    assert errors[0] < 1.0e-2
+    assert 1.8 < rate < 2.2, (errors, rate)
+
+
+def test_a_wrong_robin_right_hand_side_does_not_converge():
+    """The sharp check: g off by one stalls the error instead of refining."""
+    errors, rate = _rate(robin_poisson(g="y**2"))
+    assert errors[0] > 1.0e-1
+    assert rate < 0.5, (errors, rate)
+
+
+def test_robin_with_no_u_coefficient_is_the_neumann_answer():
+    """alpha = 0 reduces to a prescribed flux, down a different code path.
+
+    The Robin class writes the flux itself; a neumann condition is applied by
+    OneLevelTransport after the numerical flux runs. Agreeing to the bit is
+    what says the Robin flux has the same sign and magnitude.
+    """
+    robin, _ = _rate(robin_poisson(alpha="0.0", g="-2.0"))
+    neumann, _ = _rate(neumann_poisson())
+    assert robin == neumann
+
+
+def test_a_robin_condition_with_no_flux_coefficient_is_refused():
+    """beta = 0 is a Dirichlet condition and should be imposed strongly."""
+    with pytest.raises(ValueError, match="beta = 0"):
+        ADRProblem.run(robin_poisson(beta="0.0"), {"u": ("CG", 1)}, 4)
+
+
+def test_a_robin_condition_on_a_nonexistent_unknown_is_refused():
+    problem = robin_poisson()
+    problem["robin"][0]["component"] = "v"
+    with pytest.raises(ValueError, match="not an unknown"):
+        ADRProblem.physics(problem, "adr")
+
+
 def hydrograph_heat():
     """du/dt - Laplace(u) = f on the unit square, u = (x^2 + y^2)(1 + t).
 
