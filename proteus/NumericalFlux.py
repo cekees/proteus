@@ -932,6 +932,114 @@ class Advection_DiagonalUpwind_Diffusion_IIPG_exterior(NF_base):
                                                                                                 ebqe[('grad(v)',cj)],
                                                                                                 ebqe['penalty'],
                                                                                                 fluxJacobian_exterior[ci][cj])
+def RobinFactory(getRobinConditions, base=None):
+    """A Robin condition ``alpha*u + beta*(q.n) = g`` on the exterior boundary.
+
+    Rearranged, the outward diffusive flux is ``q.n = (g - alpha*u)/beta``,
+    which is a *function of the solution's trace*. That is the whole reason
+    this class has to exist: Proteus's diffusiveFluxBoundaryConditions take
+    ``(x, t)`` and nothing else, and
+    OneLevelTransport.calculateExteriorElementBoundaryCoefficients zeroes
+    ``dadvectiveFlux_left`` where one is set -- the existing design states
+    that a prescribed flux does not depend on u. A Robin flux does.
+
+    Parameters
+    ----------
+    getRobinConditions : dict
+        ``{ci: f(x, flag)}``, each returning ``None`` where the component has
+        no Robin condition, or a callable ``(x, t) -> (alpha, beta, g)``.
+        beta must be non-zero: beta = 0 is a Dirichlet condition, which
+        belongs in dirichletConditions where it can be imposed strongly.
+    base : class, optional
+        The numerical flux to build on, for everything that is not a Robin
+        point. The default is :func:`StrongDirichletFactory` with no flux
+        boundary conditions; pass one built with the problem's own
+        ``fluxBoundaryConditions`` to keep its outflow handling.
+
+        It must be an exterior-only, strongly-Dirichlet base, and the
+        default's two class attributes are why: ``NF_base`` has
+        ``hasInterior = True``, which makes Transport set up interior
+        numerical fluxes a CG discretization has no terms for, and
+        ``useWeakDirichletConditions = True``, which stops the Dirichlet
+        nodes being eliminated while nothing imposes them weakly either --
+        the system comes out singular rather than wrong, which at least
+        fails loudly.
+
+    A point carrying a Robin condition must not also carry a Dirichlet or a
+    diffusive-flux condition: those are applied after this class runs and
+    would overwrite it. :class:`ADRProblem` keeps them apart.
+    """
+    base = StrongDirichletFactory() if base is None else base
+
+    class Robin(base):
+        def __init__(self, vt, getPointwiseBoundaryConditions,
+                     getAdvectiveFluxBoundaryConditions,
+                     getDiffusiveFluxBoundaryConditions,
+                     getPeriodicBoundaryConditions=None):
+            base.__init__(self, vt, getPointwiseBoundaryConditions,
+                          getAdvectiveFluxBoundaryConditions,
+                          getDiffusiveFluxBoundaryConditions,
+                          getPeriodicBoundaryConditions)
+            #: ci -> [(ebNE, k, value(x, t)), ...]
+            self.robinConditions = {}
+            mesh = self.mesh
+            nq = self.vt.nElementBoundaryQuadraturePoints_elementBoundary
+            for ci in range(self.nc):
+                get = getRobinConditions.get(ci)
+                if get is None:
+                    continue
+                here = []
+                for ebNE in range(mesh.nExteriorElementBoundaries_global):
+                    ebN = mesh.exteriorElementBoundariesArray[ebNE]
+                    flag = mesh.elementBoundaryMaterialTypes[ebN]
+                    for k in range(nq):
+                        x = self.vt.ebqe['x'][ebNE, k]
+                        value = get(x, flag)
+                        if value is not None:
+                            here.append((ebNE, k, x, value))
+                            # not a Dirichlet point: the trace is unknown here
+                            self.isDOFBoundary[ci][ebNE, k] = 0
+                if here:
+                    self.robinConditions[ci] = here
+
+        def _robin(self, ci, ebNE, k, x, value, ebqe):
+            """(flux, d(flux)/du) at one Robin point."""
+            alpha, beta, g = value(x, self.vt.timeIntegration.t)
+            if beta == 0.0:
+                raise ValueError(
+                    "robin condition on component %d at %s has beta = 0, which "
+                    "is a Dirichlet condition; impose it strongly instead"
+                    % (ci, numpy.array(x[:3])))
+            u = ebqe[('u', ci)][ebNE, k]
+            return (g - alpha * u) / beta, -alpha / beta
+
+        def calculateExteriorNumericalFlux(self, inflowFlag, q, ebqe):
+            base.calculateExteriorNumericalFlux(self, inflowFlag, q, ebqe)
+            for ci, points in self.robinConditions.items():
+                for ck in range(self.nc):
+                    if ('diffusiveFlux', ck, ci) not in ebqe:
+                        continue
+                    for ebNE, k, x, value in points:
+                        flux, _ = self._robin(ci, ebNE, k, x, value, ebqe)
+                        ebqe[('diffusiveFlux', ck, ci)][ebNE, k] = flux
+
+        def updateExteriorNumericalFluxJacobian(self, l2g, inflowFlag, q, ebqe, dphi,
+                                                fluxJacobian_exterior, fluxJacobian_eb,
+                                                fluxJacobian_hj):
+            base.updateExteriorNumericalFluxJacobian(
+                self, l2g, inflowFlag, q, ebqe, dphi,
+                fluxJacobian_exterior, fluxJacobian_eb, fluxJacobian_hj)
+            # d(q.n)/du = -alpha/beta, exactly; chain it onto the trial
+            # functions the way the C kernels do for the other fluxes.
+            for ci, points in self.robinConditions.items():
+                for ebNE, k, x, value in points:
+                    _, dflux = self._robin(ci, ebNE, k, x, value, ebqe)
+                    fluxJacobian_exterior[ci][ci][ebNE, k, :] += (
+                        dflux * ebqe[('v', ci)][ebNE, k, :])
+    Robin.__name__ = "Robin_" + base.__name__
+    return Robin
+
+
 class ConstantAdvection_Diffusion_IIPG_exterior(NF_base):
     hasInterior=False
     def __init__(self,vt,getPointwiseBoundaryConditions,

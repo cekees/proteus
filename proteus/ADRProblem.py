@@ -189,7 +189,7 @@ def _dirichlet(entries, dim, tol):
     for the interior; it must return None there, and for boundary nodes
     no entry claims.
     """
-    tests = [(None if e["where"] is None else _compile(e["where"]), _Field(e["value"], dim))
+    tests = [(None if e["where"] is None else _compile(e["where"]), _value_of(e, dim))
              for e in entries]
 
     def getDBC(x, flag):
@@ -200,11 +200,123 @@ def _dirichlet(entries, dim, tol):
             ns["y"] = x[1]
         if dim > 2:
             ns["z"] = x[2]
-        for where, field in tests:
+        for where, value in tests:
             if where is None or eval(where, _GLOBALS, ns):
-                return lambda x, t, field=field: field.uOfXT(x, t)
+                return value
         return None
     return getDBC
+
+
+def _robin(entries, dim, tol):
+    """``get(x, flag)`` for one component's Robin conditions.
+
+    Returns None where no condition claims the point, else a callable
+    ``(x, t) -> (alpha, beta, g)`` for ``alpha*u + beta*(q.n) = g``.
+    NumericalFlux.RobinFactory turns that into the flux and its exact
+    derivative; see there for why this cannot be a flux boundary condition.
+    """
+    tests = [(None if e["where"] is None else _compile(e["where"]),
+              _Field(e["alpha"], dim), _Field(e["beta"], dim), _Field(e["g"], dim))
+             for e in entries]
+
+    def get(x, flag):
+        ns = {"tol": tol, "x": x[0]}
+        if dim > 1:
+            ns["y"] = x[1]
+        if dim > 2:
+            ns["z"] = x[2]
+        for where, alpha, beta, g in tests:
+            if where is None or eval(where, _GLOBALS, ns):
+                return lambda x, t, a=alpha, b=beta, gg=g: (
+                    a.uOfXT(x, t), b.uOfXT(x, t), gg.uOfXT(x, t))
+        return None
+    return get
+
+
+def _neumann_targets(problem, adr, names):
+    """``{component index: (potential index, entries)}`` for the neumann conditions.
+
+    A neumann condition prescribes the outward diffusive flux, so it attaches
+    to a (component, potential) pairing of the equation's diffusion term.
+    With one diffusion term the pairing is unambiguous; with several it is
+    not, and guessing would put the flux silently on the wrong potential.
+
+    Shared by :func:`physics` and :func:`emit_pn` so the two cannot disagree
+    about which pairing carries the condition.
+    """
+    by_component = {}
+    for e in problem.get("neumann") or []:
+        by_component.setdefault(e["component"], []).append(e)
+    targets = {}
+    for i, eq in enumerate(adr["equations"]):
+        here = by_component.pop(names[i], [])
+        if not here:
+            continue
+        potentials = list(eq.get("diffusion", {}))
+        if not potentials:
+            raise ValueError(
+                "neumann condition on %s, which has no diffusion term: there "
+                "is no diffusive flux to prescribe" % (names[i],))
+        if len(potentials) > 1 and names[i] not in potentials:
+            raise ValueError(
+                "neumann condition on %s, whose equation diffuses %s: say "
+                "which potential the flux belongs to"
+                % (names[i], ", ".join(sorted(potentials))))
+        phi = names[i] if names[i] in potentials else potentials[0]
+        targets[i] = (names.index(phi), here)
+    if by_component:
+        raise ValueError("neumann condition on %s, which is not an unknown"
+                         % ", ".join(sorted(by_component)))
+    return targets
+
+
+def _value_of(entry, dim):
+    """The ``(x, t)`` value one condition supplies: a formula or a table.
+
+    How a value is supplied is orthogonal to what kind of condition it is, so
+    this serves Dirichlet and flux conditions alike: a table under a flux is
+    a discharge hydrograph, under a Dirichlet condition a stage hydrograph or
+    a measured inlet value.
+
+    ``numpy.interp`` is linear between samples and holds the end values
+    outside the range, because extrapolating a record past its end is not
+    something to do quietly.
+    """
+    if entry.get("series") is not None:
+        times = numpy.array([t for t, _ in entry["series"]], dtype=float)
+        values = numpy.array([v for _, v in entry["series"]], dtype=float)
+        return lambda x, t: float(numpy.interp(t, times, values))
+    field = _Field(entry["value"], dim)
+    return lambda x, t: field.uOfXT(x, t)
+
+
+def _neumann(entries, dim, tol):
+    """getDFBC(x, flag) for one (component, potential) pair.
+
+    The value is the OUTWARD diffusive flux q.n with q = -a grad u, which is
+    what Proteus's diffusiveFluxBoundaryConditions wants: see
+    test/poisson_2d/poisson_het_2d_p.py, whose getDiffFluxBC2 returns
+    dot(-A grad u, n) and is checked against an exact solution.
+
+    Unlike getDBC this is called only at exterior boundary quadrature
+    points, so there is no interior sentinel to guard against. Returning
+    None leaves the face to the natural condition, which for a diffusion
+    term is zero flux.
+    """
+    tests = [(None if e["where"] is None else _compile(e["where"]), _value_of(e, dim))
+             for e in entries]
+
+    def getDFBC(x, flag):
+        ns = {"tol": tol, "x": x[0]}
+        if dim > 1:
+            ns["y"] = x[1]
+        if dim > 2:
+            ns["z"] = x[2]
+        for where, value in tests:
+            if where is None or eval(where, _GLOBALS, ns):
+                return value
+        return None
+    return getDFBC
 
 
 def _periodic(axes, lower, upper, tol, dirichlet):
@@ -262,6 +374,18 @@ def physics(problem, name):
         p.coefficients.nullSpaceComponents = [names.index(c) for c in constant]
 
     tol = 1e-8 * max(p.L[:dim])
+    # A Robin point is not a Dirichlet point and carries no flux boundary
+    # condition: both are applied after the numerical flux runs (see
+    # OneLevelTransport.calculateExteriorElementBoundaryCoefficients) and
+    # would overwrite it. The Robin class is the only thing that may write
+    # the flux there.
+    p.robinConditions = {}
+    robin = {}
+    for e in problem.get("robin") or []:
+        robin.setdefault(e["component"], []).append(e)
+    for name in robin:
+        if name not in names:
+            raise ValueError("robin condition on %s, which is not an unknown" % name)
     by_component = {}
     for e in problem["dirichlet"]:
         by_component.setdefault(e["component"], []).append(e)
@@ -282,10 +406,17 @@ def physics(problem, name):
     p.advectiveFluxBoundaryConditions = {
         i: _zero_on_periodic_faces(periodic.get(n, []), lower, upper, tol)
         for i, n in enumerate(names)}
+    p.robinConditions = {i: _robin(robin[n], dim, tol)
+                         for i, n in enumerate(names) if n in robin}
+    targets = _neumann_targets(problem, adr, names)
     p.diffusiveFluxBoundaryConditions = {i: {} for i in range(len(names))}
     for i, eq in enumerate(adr["equations"]):
+        target, entries = targets.get(i, (None, []))
         for phi in eq.get("diffusion", {}):
-            p.diffusiveFluxBoundaryConditions[i][names.index(phi)] = (lambda x, flag: None)
+            ck = names.index(phi)
+            p.diffusiveFluxBoundaryConditions[i][ck] = (
+                _neumann(entries, dim, tol) if ck == target
+                else (lambda x, flag: None))
     # Advective fluxes through the boundary are computed from the solution's
     # trace -- on Dirichlet boundaries, the boundary data -- so inflow and
     # outflow are both handled; 'noFlow' would drop the term.
@@ -531,6 +662,18 @@ def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
     if problem.get("up_to_constant"):
         n.numericalFluxType = NumericalFlux.StrongDirichletFactory(p.fluxBoundaryConditions,
                                                                    keepDOFs=True)
+    if p.robinConditions:
+        # alpha*u + beta*(q.n) = g needs the trace in the flux, so it is the
+        # numerical flux's job rather than a boundary condition's.
+        # Built on the same strongly-Dirichlet base the rest of this module
+        # uses, so the Dirichlet faces keep being eliminated and the outflow
+        # advective flux keeps being computed. Any numerical flux suppresses
+        # the one Transport would compute by default.
+        n.numericalFluxType = NumericalFlux.RobinFactory(
+            p.robinConditions,
+            base=NumericalFlux.StrongDirichletFactory(
+                p.fluxBoundaryConditions,
+                keepDOFs=bool(problem.get("up_to_constant"))))
     if time is None:
         system = {"tnList": [0.0, 1.0]}
     else:
@@ -573,6 +716,17 @@ def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
 
 
 # --- writing a problem out as p, n and so files ---------------------------------
+
+
+def _supplied_value(entry, dim):
+    """The ``return`` lines for one condition, written out: formula or table."""
+    if entry.get("series") is not None:
+        # linear between samples, end values held outside the range
+        return ["        T = %r" % ([t for t, _ in entry["series"]],),
+                "        Q = %r" % ([v for _, v in entry["series"]],),
+                "        return lambda X, t: float(numpy.interp(t, T, Q))"]
+    return ["        return lambda X, t: Field(%s).uOfXT(X, t)"
+            % _function(dim, entry["value"])]
 
 
 def _spelled(module, obj):
@@ -716,8 +870,8 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
             P.append("    %s = %s" % (", ".join(xyz), ", ".join("X[%d]" % k for k in range(dim))))
         for e in entries:
             test = "True" if e["where"] is None else e["where"]
-            P += ["    if %s:   # region %s" % (test, e["region"]),
-                  "        return lambda X, t: Field(%s).uOfXT(X, t)" % _function(dim, e["value"])]
+            P.append("    if %s:   # region %s" % (test, e["region"]))
+            P += _supplied_value(e, dim)
         P.append("    return None")
     P += ["", "", "dirichletConditions = {%s}" % ", ".join(
         "%d: getDBC_%s" % (i, nm) for i, nm in enumerate(names))]
@@ -769,8 +923,24 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
     else:
         P += ["advectiveFluxBoundaryConditions = {%s}" % ", ".join(
             "%d: lambda X, flag: None" % i for i in range(len(names)))]
+    targets = _neumann_targets(problem, adr, names)
+    for i, (ck, entries) in sorted(targets.items()):
+        P += ["", "",
+              "# the OUTWARD diffusive flux q.n, with q = -a grad %s" % names[i],
+              "def getDFBC_%s(X, flag):" % names[i],
+              "    %s = %s" % (", ".join(xyz), ", ".join("X[%d]" % k for k in range(dim)))]
+        for e in entries:
+            test = "True" if e["where"] is None else e["where"]
+            P.append("    if %s:   # region %s" % (test, e["region"]))
+            P += _supplied_value(e, dim)
+        P += ["    # elsewhere the natural condition: zero diffusive flux",
+              "    return None"]
+    if targets:
+        P.append("")
     P += ["diffusiveFluxBoundaryConditions = {%s}" % ", ".join(
-              "%d: {%s}" % (i, ", ".join("%d: lambda X, flag: None" % k for k in sorted(d)))
+              "%d: {%s}" % (i, ", ".join(
+                  ("%d: getDFBC_%s" % (k, names[i])) if targets.get(i, (None,))[0] == k
+                  else "%d: lambda X, flag: None" % k for k in sorted(d)))
               for i, d in sorted(p.diffusiveFluxBoundaryConditions.items())),
           "# advective fluxes through the boundary come from the trace",
           "fluxBoundaryConditions = %r" % (p.fluxBoundaryConditions,)]

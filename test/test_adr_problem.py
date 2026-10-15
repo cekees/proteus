@@ -69,6 +69,286 @@ def test_supg_pspg_refuses_systems_that_are_not_velocity_pressure():
         ADRProblem.velocity_pressure({"unknowns": {"u": ["u"], "w": ["w"]}})
 
 
+def neumann_poisson():
+    """-Laplace(u) = -4 on the unit square, u = x^2 + y^2.
+
+    Dirichlet on three sides; on x = 1 the outward diffusive flux
+    q.n = -(grad u).n = -2x. Written as Proteus's ADR residual,
+    -div(a grad u) + r = 0, so r = +4.
+    """
+    return {
+        "adr": {
+            "dim": 2, "components": ["u"],
+            "equations": [{
+                "component": "u",
+                "diffusion": {"u": {"rowptr": [0, 1, 2], "colind": [0, 1],
+                                    "a": ["1.0", "1.0"], "da": {}, "depends_on": {}}},
+                "reaction": {"r": "4.0", "dr": {}, "depends_on": {}},
+            }],
+        },
+        "domain": {"lower": [0.0, 0.0], "upper": [1.0, 1.0]},
+        "dirichlet": [{"component": "u", "region": "three_sides",
+                       "where": "x <= tol or y <= tol or y >= 1.0 - tol",
+                       "value": "x**2 + y**2"}],
+        "neumann": [{"component": "u", "region": "right",
+                     "where": "x >= 1.0 - tol", "value": "-2.0*x"}],
+        "exact": {"u": "x**2 + y**2"},
+    }
+
+
+def robin_poisson(alpha="1.0", beta="1.0", g="y**2 - 1.0"):
+    """-Laplace(u) = -4 on the unit square, u = x^2 + y^2.
+
+    On x = 1 the outward flux is q.n = -(grad u).n = -2, and u = 1 + y^2, so
+    alpha u + beta (q.n) = g holds with alpha = beta = 1 and g = y^2 - 1.
+    Dirichlet on the other three sides.
+    """
+    return {
+        "adr": {
+            "dim": 2, "components": ["u"],
+            "equations": [{
+                "component": "u",
+                "diffusion": {"u": {"rowptr": [0, 1, 2], "colind": [0, 1],
+                                    "a": ["1.0", "1.0"], "da": {}, "depends_on": {}}},
+                "reaction": {"r": "4.0", "dr": {}, "depends_on": {}},
+            }],
+        },
+        "domain": {"lower": [0.0, 0.0], "upper": [1.0, 1.0]},
+        "dirichlet": [{"component": "u", "region": "three_sides",
+                       "where": "x <= tol or y <= tol or y >= 1.0 - tol",
+                       "value": "x**2 + y**2"}],
+        "robin": [{"component": "u", "region": "right", "where": "x >= 1.0 - tol",
+                   "alpha": alpha, "beta": beta, "g": g}],
+        "exact": {"u": "x**2 + y**2"},
+    }
+
+
+def _rate(problem, cells=(8, 16), **kw):
+    errors = [ADRProblem.run(problem, {"u": ("CG", 1)}, c, **kw)[2]["u"] for c in cells]
+    return errors, numpy.log2(errors[0] / errors[1])
+
+
+def test_a_robin_face_converges_at_the_right_rate():
+    errors, rate = _rate(robin_poisson())
+    assert errors[0] < 1.0e-2
+    assert 1.8 < rate < 2.2, (errors, rate)
+
+
+def test_robin_coefficients_may_vary_along_the_boundary():
+    """alpha and beta are expressions, not just numbers."""
+    # alpha = 3, beta = 2  =>  g = 3(1 + y^2) + 2(-2)
+    errors, rate = _rate(robin_poisson(alpha="3.0", beta="2.0",
+                                       g="3.0*(1.0 + y**2) - 4.0"))
+    assert errors[0] < 1.0e-2
+    assert 1.8 < rate < 2.2, (errors, rate)
+
+
+def test_a_wrong_robin_right_hand_side_does_not_converge():
+    """The sharp check: g off by one stalls the error instead of refining."""
+    errors, rate = _rate(robin_poisson(g="y**2"))
+    assert errors[0] > 1.0e-1
+    assert rate < 0.5, (errors, rate)
+
+
+def test_robin_with_no_u_coefficient_is_the_neumann_answer():
+    """alpha = 0 reduces to a prescribed flux, down a different code path.
+
+    The Robin class writes the flux itself; a neumann condition is applied by
+    OneLevelTransport after the numerical flux runs. Agreeing to the bit is
+    what says the Robin flux has the same sign and magnitude.
+    """
+    robin, _ = _rate(robin_poisson(alpha="0.0", g="-2.0"))
+    neumann, _ = _rate(neumann_poisson())
+    assert robin == neumann
+
+
+def test_a_robin_condition_with_no_flux_coefficient_is_refused():
+    """beta = 0 is a Dirichlet condition and should be imposed strongly."""
+    with pytest.raises(ValueError, match="beta = 0"):
+        ADRProblem.run(robin_poisson(beta="0.0"), {"u": ("CG", 1)}, 4)
+
+
+def test_a_robin_condition_on_a_nonexistent_unknown_is_refused():
+    problem = robin_poisson()
+    problem["robin"][0]["component"] = "v"
+    with pytest.raises(ValueError, match="not an unknown"):
+        ADRProblem.physics(problem, "adr")
+
+
+def hydrograph_heat():
+    """du/dt - Laplace(u) = f on the unit square, u = (x^2 + y^2)(1 + t).
+
+    f = (x^2 + y^2) - 4(1 + t), so the ADR reaction (residual form
+    m_t + div(-a grad u) + r = 0) is r = -f = 4 + 4t - x^2 - y^2.
+
+    On x = 1 the outward diffusive flux is -(grad u).n = -2x(1 + t) = -2(1+t),
+    given as a two-sample hydrograph over t in [0, 1]. Linear interpolation
+    is EXACT for it, so the solution still converges to the exact answer --
+    which is what makes this a test of the interpolation and not just of the
+    plumbing. Evaluating the table at a fixed time (ignoring t) gives -2
+    throughout and the solution is wrong.
+    """
+    return {
+        "adr": {
+            "dim": 2, "components": ["u"],
+            "equations": [{
+                "component": "u",
+                "mass": {"m": "u", "dm": {"u": "1"}, "depends_on": {"u": "linear"}},
+                "diffusion": {"u": {"rowptr": [0, 1, 2], "colind": [0, 1],
+                                    "a": ["1.0", "1.0"], "da": {}, "depends_on": {}}},
+                "reaction": {"r": "4.0 + 4.0*t - x**2 - y**2", "dr": {},
+                             "depends_on": {}},
+            }],
+        },
+        "domain": {"lower": [0.0, 0.0], "upper": [1.0, 1.0]},
+        "time": [0.0, 1.0],
+        "has_mass": True,
+        "dirichlet": [{"component": "u", "region": "three_sides",
+                       "where": "x <= tol or y <= tol or y >= 1.0 - tol",
+                       "value": "(x**2 + y**2)*(1.0 + t)"}],
+        "neumann": [{"component": "u", "region": "inflow",
+                     "where": "x >= 1.0 - tol",
+                     "series": [[0.0, -2.0], [1.0, -4.0]]}],
+        "initial": {"u": "x**2 + y**2"},
+        "exact": {"u": "(x**2 + y**2)*(1.0 + t)"},
+    }
+
+
+def stage_hydrograph():
+    """du/dt - Laplace(u) = x on the unit square, u = (1 + t)x.
+
+    On x = 1 the value is 1 + t -- uniform along the face, varying in time --
+    which is what a stage record is: a gauge reading, not a formula. Given as
+    the two samples [[0, 1], [1, 2]], for which linear interpolation is
+    exact. The other three sides carry the formula.
+
+    This is the case a `type: hydrograph` could not express, because it was
+    wired to the flux path. Supplying a value by table is orthogonal to which
+    kind of condition it is.
+    """
+    return {
+        "adr": {
+            "dim": 2, "components": ["u"],
+            "equations": [{
+                "component": "u",
+                "mass": {"m": "u", "dm": {"u": "1"}, "depends_on": {"u": "linear"}},
+                "diffusion": {"u": {"rowptr": [0, 1, 2], "colind": [0, 1],
+                                    "a": ["1.0", "1.0"], "da": {}, "depends_on": {}}},
+                "reaction": {"r": "-x", "dr": {}, "depends_on": {}},
+            }],
+        },
+        "domain": {"lower": [0.0, 0.0], "upper": [1.0, 1.0]},
+        "time": [0.0, 1.0],
+        "has_mass": True,
+        "dirichlet": [
+            {"component": "u", "region": "gauge", "where": "x >= 1.0 - tol",
+             "series": [[0.0, 1.0], [1.0, 2.0]]},
+            {"component": "u", "region": "other_sides",
+             "where": "x <= tol or y <= tol or y >= 1.0 - tol",
+             "value": "(1.0 + t)*x"},
+        ],
+        "initial": {"u": "x"},
+        "exact": {"u": "(1.0 + t)*x"},
+    }
+
+
+def test_a_dirichlet_value_may_be_tabulated():
+    """A stage hydrograph: the gauge face is given by table, not formula.
+
+    u = (1 + t)x is linear in x, so P1 represents it exactly and the table is
+    exact for 1 + t; what is left is the solver's tolerance, ~1e-8. A frozen
+    table gives >1e-2 (next test), six orders away, so this threshold is not
+    a near thing.
+    """
+    errors, _ = _rate(stage_hydrograph(), time={"dt": 0.05})
+    assert errors[0] < 1.0e-7, errors
+
+
+def test_a_frozen_stage_table_does_not_track_the_solution():
+    """The sharp check: hold the gauge at its first reading and it is wrong."""
+    problem = stage_hydrograph()
+    problem["dirichlet"][0]["series"] = [[0.0, 1.0], [1.0, 1.0]]
+    errors, _ = _rate(problem, time={"dt": 0.05})
+    assert errors[0] > 1.0e-2, errors
+
+
+def test_the_emitted_p_file_carries_a_tabulated_dirichlet(tmp_path):
+    ADRProblem.emit_pn(stage_hydrograph(), {"u": ("CG", 1)}, 8, time={"dt": 0.5},
+                       name="stage", directory=str(tmp_path))
+    text = (tmp_path / "stage_p.py").read_text()
+    assert "def getDBC_u(X, flag):" in text
+    assert "numpy.interp(t, T, Q)" in text
+
+
+def test_a_hydrograph_is_interpolated_in_time():
+    """A two-sample table that is exact for the true flux still converges."""
+    problem = hydrograph_heat()
+    errors = [ADRProblem.run(problem, {"u": ("CG", 1)}, cells,
+                             time={"dt": 0.05})[2]["u"]
+              for cells in (8, 16)]
+    assert errors[0] < 2.0e-2, errors
+    rate = numpy.log2(errors[0] / errors[1])
+    assert rate > 1.5, (errors, rate)
+
+
+def test_a_table_holds_its_end_values():
+    """Outside the record the first and last samples hold; nothing extrapolates."""
+    flux = ADRProblem._value_of({"series": [[0.0, -2.0], [1.0, -4.0]]}, 2)
+    assert flux(None, -5.0) == -2.0
+    assert flux(None, 0.5) == -3.0
+    assert flux(None, 99.0) == -4.0
+
+
+def test_the_emitted_p_file_carries_the_hydrograph_table(tmp_path):
+    ADRProblem.emit_pn(hydrograph_heat(), {"u": ("CG", 1)}, 8, time={"dt": 0.5},
+                       name="hyd", directory=str(tmp_path))
+    text = (tmp_path / "hyd_p.py").read_text()
+    assert "numpy.interp(t, T, Q)" in text
+    assert "[0.0, 1.0]" in text and "[-2.0, -4.0]" in text
+
+
+def test_a_neumann_face_converges_at_the_right_rate():
+    """The sharp check: without the flux the solution does not converge at all.
+
+    Dropping the condition leaves x = 1 with the natural zero-flux condition,
+    which solves a different problem -- the error stalls near 2.2e-1 and the
+    rate goes slightly negative. Getting the sign wrong is worse still. So
+    second-order convergence here is evidence the value AND its sign reach
+    Proteus intact.
+    """
+    problem = neumann_poisson()
+    errors = [ADRProblem.run(problem, {"u": ("CG", 1)}, cells)[2]["u"]
+              for cells in (8, 16)]
+    assert errors[0] < 1.0e-2
+    rate = numpy.log2(errors[0] / errors[1])
+    assert 1.8 < rate < 2.2, (errors, rate)
+
+
+def test_a_neumann_condition_needs_something_to_flux():
+    problem = neumann_poisson()
+    del problem["adr"]["equations"][0]["diffusion"]
+    with pytest.raises(ValueError, match="no diffusion term"):
+        ADRProblem.physics(problem, "adr")
+
+
+def test_a_neumann_condition_on_a_nonexistent_unknown_is_refused():
+    problem = neumann_poisson()
+    problem["neumann"][0]["component"] = "v"
+    with pytest.raises(ValueError, match="not an unknown"):
+        ADRProblem.physics(problem, "adr")
+
+
+def test_the_emitted_p_file_carries_the_neumann_flux(tmp_path):
+    """parun has to solve the same problem the library just did."""
+    ADRProblem.emit_pn(neumann_poisson(), {"u": ("CG", 1)}, 8,
+                       name="neu", directory=str(tmp_path))
+    text = (tmp_path / "neu_p.py").read_text()
+    assert "def getDFBC_u(X, flag):" in text
+    assert "diffusiveFluxBoundaryConditions = {0: {0: getDFBC_u}}" in text
+    # the value and its sign, not just the hook
+    assert "-2.0*x" in text or "-2.0 * x" in text
+
+
 # --- end to end, through ymf_run ---------------------------------------------------
 
 
