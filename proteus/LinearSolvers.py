@@ -3178,6 +3178,67 @@ class NI(MultilevelLinearSolver):
         """NI sets solverList to [self]*nLevels, so the inherited failed()
         would recurse; ask the finest level solver instead."""
         return self.levelSolverList[-1].failed()
+def starILURelaxation():
+    """Default relaxation for StarILU: undamped in serial, damped in parallel.
+
+    In serial the sweep over stars is multiplicative -- each star sees the
+    updates of the ones before it -- and converges undamped. In parallel it is
+    multiplicative only within a rank; between ranks every owned node is
+    updated from the pre-sweep values on the other side, which makes it
+    additive there. Undamped, that additive coupling is not convergent for
+    every partition: on the 81-node Poisson mesh StarILU as a plain linear
+    solver diverges on 3 ranks (checksum 2e15) while converging on 1, 2 and 4,
+    and weights of 0.7 and below converge on all of them. 0.5 leaves margin,
+    since which partitions fail is not something to tune to.
+
+    Overridable through the relaxationFactor argument of
+    multilevelLinearSolverChooser.
+    """
+    from . import Comm
+    return 1.0 if Comm.get().size() == 1 else 0.5
+
+
+def mgmCoarseSolver(L,par_L,prefix='mgm_coarse_'):
+    """The solver for the coarsest level of a multigrid cycle.
+
+    In serial that is a sparse LU factorization of the level's matrix. In
+    parallel it must be an exact solve of the *global* coarse system, and a
+    rank's subdomain matrix is not that: factoring it (what LU does) solves
+    each rank's block on its own and drops the coupling between them. The cycle
+    then still converges, but to a rank-count-dependent iterate -- a
+    block-Jacobi coarse correction in place of the exact one -- and loses the
+    property that makes multigrid's rate independent of the mesh.
+
+    The coarse level is small by construction, so the natural parallel solve is
+    PETSc's redundant preconditioner: gather the coarse matrix, factor it in
+    full, and apply it with no iteration (KSP preonly). Every rank holds a copy,
+    which is cheap exactly because the level is coarse, and needs no external
+    direct-solver package.
+
+    The solver reads PETSc options under ``prefix``, so a run can replace it --
+    ``-mgm_coarse_pc_type gamg``, or ``-mgm_coarse_pc_type lu`` with
+    ``-mgm_coarse_pc_factor_mat_solver_type mumps`` -- when the coarse level is
+    not small. The defaults below only fill options the user has not set.
+    """
+    from . import Comm
+    if par_L is None or Comm.get().size() == 1:
+        return LU(L=L)
+    options = p4pyPETSc.Options(prefix)
+    for name,value in (('ksp_type','preonly'),
+                       ('pc_type','redundant'),
+                       ('redundant_pc_type','lu')):
+        if not options.hasName(name):
+            options[name] = value
+    #maxIts is left generous on purpose: preonly reports one iteration, and a
+    #solver whose iteration count equals maxIts is reported as having failed,
+    #which Newton acts on when this solver is the level-0 solver of a nested
+    #iteration.
+    return KSP_petsc4py(L,par_L,
+                        maxIts=100,
+                        convergenceTest='r',
+                        prefix=prefix)
+
+
 """
 A function for setting up a multilevel linear solver.
 """
@@ -3266,7 +3327,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                                         printInfo = printSmootherInfo))
                 elif smootherType == StarILU:
                     if relaxationFactor is None:
-                        relaxationFactor = 1.0
+                        relaxationFactor = starILURelaxation()
                     preSmootherList.append(StarILU(connectionList = connectivityListList[l],
                                                    L=linearOperatorList[l],
                                                    weight=relaxationFactor,
@@ -3311,7 +3372,10 @@ def multilevelLinearSolverChooser(linearOperatorList,
             else:
                 preSmootherList.append([])
                 postSmootherList.append([])
-                coarseSolver = LU(L=linearOperatorList[l])
+                coarseSolver = mgmCoarseSolver(linearOperatorList[l],
+                                               par_linearOperatorList[l]
+                                               if par_linearOperatorList is not None
+                                               else None)
         levelLinearSolver = MGM(prolongList = prolongList,
                                 restrictList = restrictList,
                                 LList = linearOperatorList,
@@ -3371,7 +3435,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
         levelLinearSolver = levelLinearSolverList
     elif levelLinearSolverType == StarILU:
         if relaxationFactor is None:
-            relaxationFactor=1.0
+            relaxationFactor=starILURelaxation()
         for l in range(nLevels):
             levelLinearSolverList.append(StarILU(connectionList = connectivityListList[l],
                                                  L=linearOperatorList[l],
