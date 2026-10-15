@@ -4133,11 +4133,16 @@ class MultilevelTetrahedralMesh(MultilevelMesh):
             if self.useC:
                 self.meshList.append(TetrahedralMesh())
                 self.meshList[0].generateTetrahedralMeshFromRectangularGrid(nx,ny,nz,Lx,Ly,Lz)
-                self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
-                self.buildFromC(self.cmultilevelMesh)
+                #Translate the coarse mesh *before* refining it. The C refinement copies
+                #the coarse nodes into every finer level, so shifting level 0 afterwards
+                #left the finer levels at the origin -- a different coordinate frame from
+                #level 0, so geometric transfers between them were wrong and the finest
+                #mesh, the one that is solved on, was not where the domain is.
                 self.meshList[0].nodeArray[:,0] += x
                 self.meshList[0].nodeArray[:,1] += y
                 self.meshList[0].nodeArray[:,2] += z
+                self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
+                self.buildFromC(self.cmultilevelMesh)
                 self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
                 for l in range(1,refinementLevels):
                     self.meshList.append(TetrahedralMesh())
@@ -5317,11 +5322,16 @@ class MultilevelTriangularMesh(MultilevelMesh):
             if self.useC:
                 self.meshList.append(TriangularMesh())
                 self.meshList[0].generateTriangularMeshFromRectangularGrid(nx,ny,Lx,Ly,triangleFlag=triangleFlag)
-                self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
-                self.buildFromC(self.cmultilevelMesh)
+                #Translate the coarse mesh *before* refining it. The C refinement copies
+                #the coarse nodes into every finer level, so shifting level 0 afterwards
+                #left the finer levels at the origin -- a different coordinate frame from
+                #level 0, so geometric transfers between them were wrong and the finest
+                #mesh, the one that is solved on, was not where the domain is.
                 self.meshList[0].nodeArray[:,0] += x
                 self.meshList[0].nodeArray[:,1] += y
                 self.meshList[0].nodeArray[:,2] += z
+                self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
+                self.buildFromC(self.cmultilevelMesh)
                 self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
                 for l in range(1,refinementLevels):
                     self.meshList.append(TriangularMesh())
@@ -6201,11 +6211,16 @@ class MultilevelEdgeMesh(MultilevelMesh):
         if self.useC:
             self.meshList.append(EdgeMesh())
             self.meshList[0].generateEdgeMeshFromRectangularGrid(nx,Lx)
-            self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
-            self.buildFromC(self.cmultilevelMesh)
+            #Translate the coarse mesh *before* refining it. The C refinement copies
+            #the coarse nodes into every finer level, so shifting level 0 afterwards
+            #left the finer levels at the origin -- a different coordinate frame from
+            #level 0, so geometric transfers between them were wrong and the finest
+            #mesh, the one that is solved on, was not where the domain is.
             self.meshList[0].nodeArray[:,0] += x
             self.meshList[0].nodeArray[:,1] += y
             self.meshList[0].nodeArray[:,2] += z
+            self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
+            self.buildFromC(self.cmultilevelMesh)
             self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
             for l in range(1,refinementLevels):
                 self.meshList.append(EdgeMesh())
