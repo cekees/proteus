@@ -6551,7 +6551,7 @@ class MultilevelTransport(object):
                 #LU is absent for a different reason: it would factor the
                 #subdomain matrix, which is a block-Jacobi approximation rather
                 #than the direct solve the caller asked for.
-                parallelCapableSolvers = (KSP_petsc4py,Jacobi,GaussSeidel,StarILU,MGM,NI)
+                parallelCapableSolvers = (KSP_petsc4py,Jacobi,GaussSeidel,StarILU,MGM,NI,petsc_MG)
                 for (what,solver) in (("multilevelLinearSolver",options.multilevelLinearSolver),
                                       ("levelLinearSolver",options.levelLinearSolver),
                                       ("linearSmoother",getattr(options,'linearSmoother',None))):

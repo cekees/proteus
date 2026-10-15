@@ -643,6 +643,12 @@ class KSP_petsc4py(LinearSolver):
                 self.preconditioner = petsc_ASM(par_L,
                                                 prefix)
                 self.pc = self.preconditioner.pc
+            elif Preconditioner == petsc_MG:
+                logEvent("NAHead Preconditioner MG")
+                self.preconditioner = petsc_MG(par_L,
+                                               prefix,
+                                               self.preconditionerOptions)
+                self.pc = self.preconditioner.pc
             if Preconditioner == Jacobi:
                 self.pccontext= Preconditioner(L,
                                                weight=1.0,
@@ -1313,6 +1319,97 @@ class petsc_ASM(KSP_Preconditioner):
         self.pc = p4pyPETSc.PC().create()
         self.pc.setOptionsPrefix(prefix)
         self.pc.setType('asm')
+
+    def setUp(self,
+              global_ksp=None,
+              newton_its=None):
+        self.pc.setUp()
+
+class MGHierarchy(object):
+    """The levels a petsc_MG preconditioner is assembled over.
+
+    ``operators[l]`` is level l's system matrix and ``interpolations[l]`` the
+    PETSc Mat taking level l-1 to level l, for every level *below* the one the
+    preconditioner belongs to -- that level's own matrix is the KSP's. Level 0
+    is the coarsest, as everywhere in proteus. ``interpolations[0]`` is unused
+    and kept None so the lists index like prolongList does.
+    """
+    def __init__(self,operators,interpolations):
+        assert len(interpolations) == len(operators) + 1, (len(operators),len(interpolations))
+        self.operators = operators
+        self.interpolations = interpolations
+
+    @property
+    def nLevels(self):
+        return len(self.operators) + 1
+
+
+class petsc_MG(KSP_Preconditioner):
+    """PETSc's geometric multigrid, PCMG, over proteus's own level hierarchy.
+
+    It uses the same two ingredients proteus's MGM does -- the transfer
+    operators from the multilevel mesh and one system matrix per level -- and
+    leaves everything else to PETSc: smoothers, cycle type and coarse solver
+    are PETSc options (``-mg_levels_ksp_type``, ``-pc_mg_cycle_type``, ...
+    under the solver's options prefix). That is what makes it a cross-check on
+    MGM: the same discretization and transfers with an independent
+    implementation of the cycle.
+
+    Only the coarse solve is configured here, because PETSc's default there
+    needs a parallel direct solver that a plain build lacks. As in
+    mgmCoarseSolver it gathers the coarse matrix and factors it in full
+    (``redundant``), and a user setting any ``mg_coarse_`` option takes
+    precedence.
+
+    The operators are the model's own re-discretized level matrices, not
+    Galerkin products, matching MGM. Their values are refreshed by whichever
+    solver owns each level, so this reads them as they stand at setUp.
+    """
+    def __init__(self,L,prefix=None,hierarchy=None):
+        """
+        Parameters
+        ----------
+        L : the global system matrix of the level this preconditioner is for.
+        prefix : str
+            Prefix handle for PETSc options.
+        hierarchy : MGHierarchy
+            The coarser levels and the transfers between them.
+        """
+        assert isinstance(hierarchy,MGHierarchy), (
+            "petsc_MG needs the level hierarchy; pass an MGHierarchy as "
+            "preconditionerOptions (multilevelLinearSolverChooser does this)")
+        self.PCType = 'mg'
+        self.L = L
+        self.hierarchy = hierarchy
+        self.pc = p4pyPETSc.PC().create()
+        self.pc.setOptionsPrefix(prefix)
+        self.pc.setType('mg')
+        self.pc.setMGLevels(hierarchy.nLevels)
+        for l in range(1,hierarchy.nLevels):
+            self.pc.setMGInterpolation(l,hierarchy.interpolations[l])
+        for l,A in enumerate(hierarchy.operators):
+            smoother = self.pc.getMGCoarseSolve() if l == 0 else self.pc.getMGSmoother(l)
+            smoother.setOperators(A,A)
+        #With one level PCMG has no coarse solver: level 0 is configured as a
+        #smoother, under mg_levels_0_, and a user's mg_levels_ options (richardson
+        #and jacobi, say) would make the "solve" three damped sweeps. A level
+        #with nothing below it has to be exact -- it is level 0 of a nested
+        #iteration -- so its defaults go under the prefix PETSc actually reads.
+        #
+        #"Not set by the user" has to be an exact-key test. PETSc's lookup
+        #falls back from a numbered prefix to the unnumbered one, so
+        #hasName('mg_levels_0_ksp_type') is true whenever mg_levels_ksp_type is,
+        #and a hasName guard would never fill in the very option that has to
+        #override it.
+        coarse = 'mg_levels_0_' if hierarchy.nLevels == 1 else 'mg_coarse_'
+        options = p4pyPETSc.Options(prefix)
+        given = options.getAll()
+        for name,value in ((coarse+'ksp_type','preonly'),
+                           (coarse+'pc_type','redundant'),
+                           (coarse+'redundant_pc_type','lu')):
+            if name not in given:
+                options[name] = value
+        self.pc.setFromOptions()
 
     def setUp(self,
               global_ksp=None,
@@ -3178,6 +3275,28 @@ class NI(MultilevelLinearSolver):
         """NI sets solverList to [self]*nLevels, so the inherited failed()
         would recurse; ask the finest level solver instead."""
         return self.levelSolverList[-1].failed()
+def petscMGHierarchy(par_linearOperatorList,prolongList,level):
+    """The MGHierarchy for the KSP on ``level``: levels 0..level-1 and the
+    transfers between 0..level.
+
+    The transfers have to be PETSc Mats, which is what the distributed nodal
+    operators carry. A global proteus SparseMatrix is the wrong shape for a
+    rank's vectors, so a hierarchy built over one would be wrong without
+    complaint; refuse it here instead.
+    """
+    interpolations = [None]
+    for k in range(1,level+1):
+        mat = getattr(prolongList[k],'mat',None)
+        if mat is None:
+            raise ValueError(
+                "petsc_MG needs the transfer operators as PETSc matrices, but "
+                "level %i's is a %s. Only the distributed nodal operators "
+                "qualify (see Transport.useParallelNodalTransfers)."
+                % (k,type(prolongList[k]).__name__))
+        interpolations.append(mat)
+    return MGHierarchy(list(par_linearOperatorList[:level]),interpolations)
+
+
 def starILURelaxation():
     """Default relaxation for StarILU: undamped in serial, damped in parallel.
 
@@ -3393,6 +3512,9 @@ def multilevelLinearSolverChooser(linearOperatorList,
         levelLinearSolver = levelLinearSolverList
     elif levelLinearSolverType == KSP_petsc4py:
         for l in range(nLevels):
+            preconditionerOptions = linearSmootherOptions
+            if smootherType == petsc_MG:
+                preconditionerOptions = petscMGHierarchy(par_linearOperatorList,prolongList,l)
             levelLinearSolverList.append(KSP_petsc4py(linearOperatorList[l],par_linearOperatorList[l],
                                                       maxIts = solverMaxIts,
                                                       convergenceTest = solverConvergenceTest,
@@ -3404,7 +3526,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                                       Preconditioner=smootherType,
                                                       connectionList = connectivityListList[l],
                                                       linearSolverLocalBlockSize = linearSolverLocalBlockSize,
-                                                      preconditionerOptions = linearSmootherOptions))
+                                                      preconditionerOptions = preconditionerOptions))
         levelLinearSolver = levelLinearSolverList
     elif levelLinearSolverType == Jacobi:
         if relaxationFactor is None:
