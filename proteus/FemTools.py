@@ -3259,7 +3259,7 @@ class AffineMaps(ParametricMaps):
     def __init__(self,mesh,referenceElement,localFunctionSpace):
         ParametricMaps.__init__(self,mesh,referenceElement,localFunctionSpace)
         self.useC=True
-    def getInverseValues(self,
+    def _getInverseValuesAffine(self,
                          inverseJacobian,
                          xArray,
                          xiArray):
@@ -3300,7 +3300,7 @@ class AffineMaps(ParametricMaps):
                     for m in self.referenceElement.range_dim:
                         for n in self.referenceElement.range_dim:
                             xiArray[eN,k,m] += inverseJacobian[m,n]*dx[n]
-    def getInverseValue(self,
+    def _getInverseValueAffine(self,
                         eN,
                         x):
         xi=numpy.zeros((self.referenceElement.dim,),'d')
@@ -3334,7 +3334,7 @@ class AffineMaps(ParametricMaps):
             for n in self.referenceElement.range_dim:
                 xi[m] += inverseJacobian[m,n]*dx[n]
         return xi
-    def getInverseValuesTrace(self,
+    def _getInverseValuesTraceAffine(self,
                               inverseJacobian,
                               xArray,
                               xiArray):
@@ -3375,7 +3375,7 @@ class AffineMaps(ParametricMaps):
                         for m in self.referenceElement.range_dim:
                             for n in self.referenceElement.range_dim:
                                 xiArray[eN,ebN,k,m] += inverseJacobian[m,n]*dx[n]
-    def getInverseValuesGlobalExteriorTrace(self,
+    def _getInverseValuesGlobalExteriorTraceAffine(self,
                                             inverseJacobian,
                                             xArray,
                                             xiArray):
@@ -3422,6 +3422,95 @@ class AffineMaps(ParametricMaps):
                     for m in self.referenceElement.range_dim:
                         for n in self.referenceElement.range_dim:
                             xiArray[ebNE,k,m] += inverseJacobian[m,n]*dx[n]
+
+    def _referenceOriginOfNodeZero(self):
+        """Reference coordinates of the element's first node.
+
+        The affine inverse maps x to J^{-1}(x - x_0), which is the position
+        *relative to* node 0. That is the reference coordinate only when node 0
+        sits at the reference origin, as it does on the reference simplex. The
+        reference cube is [-1,1]^d and its first node is (-1,...,-1), so every
+        coordinate came out shifted by one: a point at a cell's first corner
+        mapped to the cell centre and a coarse basis function evaluated there
+        gave 0.25 (2D) or 0.125 (3D) where it should give 1. The convention is
+        the basis's, not nodeList's, which lists a 1D cube as [0,1] while its
+        basis is on [-1,1].
+        """
+        dim = self.referenceElement.dim
+        if isinstance(self.referenceElement,ReferenceCube):
+            return -numpy.ones((dim,))
+        return numpy.zeros((dim,))
+
+    def _refineInverseForCubes(self,eN,X,xi,maxIts=12,tol=1.0e-14):
+        """Newton iteration for the inverse of the (multilinear) cell map.
+
+        The affine inverse is exact for parallelograms and parallelepipeds, which
+        includes every regular grid, and wrong for a general quadrilateral or
+        hexahedron, whose map is not affine. Starting from the affine estimate
+        this converges quadratically, and it stops after the first step when the
+        cell is affine because the residual is already rounding error.
+
+        eN : (N,) element of each point; X : (N,dim) physical points;
+        xi : (N,dim) reference coordinates, refined in place.
+        """
+        dim = self.referenceElement.dim
+        N = X.shape[0]
+        nodes = numpy.asarray(self.mesh.nodeArray)[numpy.asarray(self.meshDOFMap.l2g)[eN]][:,:,:dim]
+        for it in range(maxIts):
+            xiT = xi.T
+            Xp = numpy.zeros((N,dim))
+            J = numpy.zeros((N,dim,dim))
+            for j in self.localFunctionSpace.range_dim:
+                psi = numpy.broadcast_to(numpy.asarray(self.localFunctionSpace.basis[j](xiT),dtype=float),(N,))
+                g = numpy.broadcast_to(numpy.asarray(self.localFunctionSpace.basisGradients[j](xiT),dtype=float),(dim,N))
+                Xp += nodes[:,j,:]*psi[:,None]
+                J += nodes[:,j,:,None]*g.T[:,None,:]
+            dxi = numpy.linalg.solve(J,(X-Xp)[:,:,None])[:,:,0]
+            xi += dxi
+            if numpy.abs(dxi).max() <= tol*(1.0+numpy.abs(xi).max()):
+                break
+
+    def getInverseValues(self,
+                         inverseJacobian,
+                         xArray,
+                         xiArray):
+        self._getInverseValuesAffine(inverseJacobian,xArray,xiArray)
+        dim = self.referenceElement.dim
+        xiArray[...,:dim] += self._referenceOriginOfNodeZero()
+        if isinstance(self.referenceElement,ReferenceCube):
+            nE,nP = xArray.shape[0],xArray.shape[1]
+            eN = numpy.repeat(numpy.arange(nE),nP)
+            xi = numpy.ascontiguousarray(xiArray[:,:,:dim].reshape(nE*nP,dim))
+            self._refineInverseForCubes(eN,numpy.ascontiguousarray(xArray[:,:,:dim].reshape(nE*nP,dim)),xi)
+            xiArray[:,:,:dim] = xi.reshape(nE,nP,dim)
+
+    def getInverseValue(self,
+                        eN,
+                        x):
+        xi = self._getInverseValueAffine(eN,x) + self._referenceOriginOfNodeZero()
+        if isinstance(self.referenceElement,ReferenceCube):
+            dim = self.referenceElement.dim
+            xi2 = xi.reshape(1,dim).copy()
+            self._refineInverseForCubes(numpy.array([eN]),numpy.asarray(x,dtype=float)[:dim].reshape(1,dim),xi2)
+            xi = xi2.reshape(dim)
+        return xi
+
+    def getInverseValuesTrace(self,
+                              inverseJacobian,
+                              xArray,
+                              xiArray):
+        self._getInverseValuesTraceAffine(inverseJacobian,xArray,xiArray)
+        dim = self.referenceElement.dim
+        xiArray[...,:dim] += self._referenceOriginOfNodeZero()
+
+    def getInverseValuesGlobalExteriorTrace(self,
+                                            inverseJacobian,
+                                            xArray,
+                                            xiArray):
+        self._getInverseValuesGlobalExteriorTraceAffine(inverseJacobian,xArray,xiArray)
+        dim = self.referenceElement.dim
+        xiArray[...,:dim] += self._referenceOriginOfNodeZero()
+
 #  """
 #  Function Spaces iso-(diffeo-)morphic to reference spaces
 

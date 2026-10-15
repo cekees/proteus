@@ -156,3 +156,67 @@ def test_distributed_vertex_prolongation_on_the_subdomain_meshes(kind, n_ranks):
                             capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.count('VERTEX_PROLONGATION_OK') == n_ranks, result.stdout + result.stderr
+
+
+def _transfer_operators(kind, geometric, monkeypatch):
+    """The prolongations NumericalSolution builds for a 3-level Q1 hierarchy.
+
+    With geometric=True the vertex route is switched off, so they are built by
+    evaluating coarse basis functions at the fine interpolation points -- the
+    construction that has to be used for spaces whose dofs are not vertices.
+    """
+    from proteus.iproteus import opts
+    from proteus import (FemTools, LinearSolvers, NumericalSolution, defaults, default_n,
+                         default_s, default_so)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if geometric:
+        monkeypatch.setattr(FemTools, 'nodalTransfersApply', lambda *a, **k: False)
+    if kind == 'hex':
+        d = os.path.join(root, 'ci')
+        p = defaults.load_physics('poisson_3d_p', d)
+        n = defaults.load_numerics('poisson_3d_c0q1_n', d)
+        n.nnx = n.nny = n.nnz = 3
+        p.x0, p.L = (-3., -3., -3.), (6., 6., 6.)
+    else:
+        d = os.path.join(root, 'poisson_2d')
+        p = defaults.load_physics('poisson_het_2d_p', d)
+        n = defaults.load_numerics('poisson_het_2d_c0pk_n', d)
+        p.x0, p.L, p.meshfile = (1., 2., 0.), (2., 3., 1.), None
+        n.quad, n.nn = True, 3
+        n.femSpaces[0] = default_n.C0_AffineLinearOnCubeWithNodalBasis
+        n.elementQuadrature = default_n.CubeGaussQuadrature(p.nd, 3)
+        n.elementBoundaryQuadrature = default_n.CubeGaussQuadrature(p.nd - 1, 3)
+    n.nLevels = 3
+    n.multilevelLinearSolver = n.levelLinearSolver = LinearSolvers.LU
+    n.linearSmoother = None
+    so = default_so
+    so.name = p.name = 'transfers_%s_%s' % (kind, 'geometric' if geometric else 'vertex')
+    so.sList = [default_s]
+    opts.logLevel, opts.verbose = 1, False
+    mt = NumericalSolution.NS_base(so, [p], [n], so.sList, opts).modelList[0].meshTransfers
+    assert mt.useNodalTransfers == (not geometric)
+    out = []
+    for l in (1, 2):
+        rp, ci, nz = mt.prolong_bcListDict[0][l].getCSRrepresentation()
+        dense = np.zeros((len(rp) - 1, mt.prolong_bcListDict[0][l].shape[1]))
+        for i in range(len(rp) - 1):
+            dense[i, ci[rp[i]:rp[i+1]]] = nz[rp[i]:rp[i+1]]
+        out.append(dense)
+    return out
+
+
+@pytest.mark.parametrize('kind', ['quad', 'hex'])
+def test_geometric_and_vertex_transfers_are_the_same_operator(kind, monkeypatch):
+    """Two independent constructions of the same transfer must agree.
+
+    The geometric one evaluates coarse basis functions at fine interpolation
+    points through the element maps; the vertex one writes the weights down from
+    the grid. Before the cube element-map fix the geometric operators had row
+    sums of 0.25 (quad) and 0.125 (hex); now they agree to the bit.
+    """
+    vertex = _transfer_operators(kind, False, monkeypatch)
+    geometric = _transfer_operators(kind, True, monkeypatch)
+    for l, (V, G) in enumerate(zip(vertex, geometric), start=1):
+        assert V.shape == G.shape
+        assert np.abs(V - G).max() < 1e-12, "level %i: the two constructions differ by %g" % (l, np.abs(V - G).max())
+        assert np.abs(G.sum(axis=1) - 1.0).max() < 1e-12
