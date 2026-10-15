@@ -6939,7 +6939,7 @@ class MultilevelTransport(object):
             logEvent("mesh transfers stay global: this problem does not qualify "
                      "for the nodal operators",level=2)
             return
-        mlMesh.calculateNodeParents()
+        mlMesh.vertexInterpolation()
         nc = len(self.trialSpaceDictList[0])
         #The stacked system's operator is P (x) I only if its vectors interleave
         #the components node by node, so that component c of node i is entry
@@ -6964,16 +6964,21 @@ class MultilevelTransport(object):
         interp_bc = dict((cj,[[]]) for cj in range(nc))
         restrict_bcSum = dict((cj,[[]]) for cj in range(nc))
         for l in range(len(mlMesh.meshList)-1):
-            parents = mlMesh.partitionedNodeParents(l)
+            interpolation = mlMesh.partitionedVertexInterpolation(l)
             coarseOffsets = np.asarray(mlMesh.meshList[l].nodeOffsets_subdomain_owned)
             fineOffsets = np.asarray(mlMesh.meshList[l+1].nodeOffsets_subdomain_owned)
-            prolongMat = nodalProlongationMat(parents,coarseOffsets,fineOffsets)
-            injectionMat = nodalProlongationMat(parents,coarseOffsets,fineOffsets,
-                                                inheritedOnly=True)
+            prolongMat = vertexProlongationMat(*interpolation,
+                                               coarseNodeOffsets=coarseOffsets,
+                                               fineNodeOffsets=fineOffsets)
+            injectionMat = vertexProlongationMat(*interpolation,
+                                                 coarseNodeOffsets=coarseOffsets,
+                                                 fineNodeOffsets=fineOffsets,
+                                                 inheritedOnly=True)
             rowSums = nodalRestrictionScaling(prolongMat)
             if stacked:
-                stackedMat = prolongMat if nc == 1 else nodalProlongationMat(
-                    parents,coarseOffsets,fineOffsets,blockSize=nc)
+                stackedMat = prolongMat if nc == 1 else vertexProlongationMat(
+                    *interpolation,coarseNodeOffsets=coarseOffsets,
+                    fineNodeOffsets=fineOffsets,blockSize=nc)
                 prolongList.append(ParTransferOperator(
                     stackedMat,self.par_uList[l],self.par_uList[l+1]))
                 restrictList.append(ParTransposeTransferOperator(

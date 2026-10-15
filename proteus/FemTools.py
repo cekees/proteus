@@ -7204,10 +7204,11 @@ def nodalTransfersApply(multilevelMesh,femSpaceDictList,
     mesh and the spaces have a say:
 
     * the hierarchy must be nodally nested -- see
-      MeshTools.MultilevelMesh.isNodallyNested, which rules out weakly
-      non-hierarchical refinements whose new vertices miss the parent edges,
-      and hierarchies built by coarsening a fine mesh, where the levels need
-      not share a node numbering at all;
+      MeshTools.MultilevelMesh.hasVertexInterpolation, which accepts uniform
+      refinement of simplices and regular quadrilateral/hexahedral grids, and
+      rules out weakly non-hierarchical refinements whose new vertices miss the
+      parent edges and hierarchies built by coarsening a fine mesh, where the
+      levels need not share a node numbering at all;
     * every space must put its degrees of freedom exactly on the mesh
       vertices, i.e. use a NodalDOFMap, and -- when the boundary conditions are
       supplied -- strong Dirichlet conditions must not have eliminated any of
@@ -7241,7 +7242,7 @@ def nodalTransfersApply(multilevelMesh,femSpaceDictList,
             for (cj,dofBoundaryConditions) in dofBoundaryConditionsDict.items():
                 if dofBoundaryConditions.nFreeDOF_global != femSpaceDict[cj].dim:
                     return False
-    return multilevelMesh.isNodallyNested()
+    return multilevelMesh.hasVertexInterpolation()
 
 
 class MultilevelProjectionOperators(object):
@@ -7365,22 +7366,20 @@ class MultilevelProjectionOperators(object):
                 scaled_rbc = {}
                 interp_bc = {}
                 if self.useNodalTransfers:
-                    #A nodally nested hierarchy names every fine node by a pair
-                    #of coarse nodes, so the entries are known without
-                    #evaluating anything: a node the refinement inherited takes
-                    #its coarse value, one it added averages the two coarse
-                    #nodes whose edge it bisects. Only rbc/pbc/r/p are filled
-                    #here; rbcSum, interp_bc, scaled_rbc and rSum are derived
-                    #from them by the same code the geometric branch uses, so
-                    #the two branches cannot drift apart in how those are
-                    #defined.
-                    nodeParents = multilevelMesh.calculateNodeParents()[l+1]
+                    #For a vertex-based space the entries are the vertex
+                    #interpolation weights, known without evaluating any basis
+                    #function -- see MultilevelMesh.vertexInterpolation. A node
+                    #the refinement inherited takes its coarse value; one added
+                    #at an edge midpoint averages that edge; on quadrilaterals and
+                    #hexahedra a cell or face centre has four or eight parents.
+                    #Only rbc/pbc/r/p are filled here; rbcSum, interp_bc,
+                    #scaled_rbc and rSum are derived from them by the same code
+                    #the geometric branch uses, so the two branches cannot drift
+                    #apart in how those are defined.
+                    (vrowptr,vcolind,vnzval) = multilevelMesh.vertexInterpolation()[l+1]
                     for I in range(fineSpace.dim):
-                        parentA,parentB = nodeParents[I]
-                        if parentA == parentB:
-                            contributions = ((int(parentA),1.0),)
-                        else:
-                            contributions = ((int(parentA),0.5),(int(parentB),0.5))
+                        contributions = [(int(vcolind[k]),float(vnzval[k]))
+                                         for k in range(vrowptr[I],vrowptr[I+1])]
                         for (J,w) in contributions:
                             pbc[(I,J)] = w
                             rbc[(J,I)] = w

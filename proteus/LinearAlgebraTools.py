@@ -1836,6 +1836,80 @@ def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None
     return prolong
 
 
+def vertexProlongationMat(rowptr,colind,nzval,coarseNodeOffsets,fineNodeOffsets,
+                          comm=None,inheritedOnly=False,blockSize=1):
+    """A vertex-to-vertex prolongation, as a distributed PETSc Mat.
+
+    The general form of nodalProlongationMat: the same Mat, but each fine node
+    may have any number of coarse parents with any weights, which is what a
+    quadrilateral's cell centre (four parents) or a hexahedron's body centre
+    (eight) needs. It takes the prolongation as a CSR matrix in the
+    *partitioned* numbering -- see MultilevelMesh.partitionedVertexInterpolation
+    -- and, like nodalProlongationMat, has each rank fill only the rows of the
+    fine nodes it owns, which needs no communication.
+
+    Parameters
+    ----------
+    rowptr, colind, nzval : numpy.ndarray
+        The global prolongation, one row per fine node, in global partitioned
+        numbers.
+    coarseNodeOffsets, fineNodeOffsets : numpy.ndarray
+        nodeOffsets_subdomain_owned for the two levels.
+    inheritedOnly : bool
+        Keep only the rows that copy a single coarse value with weight one --
+        the nodes a refinement inherits. That is the injection whose transpose
+        picks the fine values sitting on coarse nodes.
+    blockSize : int
+        Interleaved components, as in nodalProlongationMat: component c of node
+        i is entry ``blockSize*i + c``.
+    """
+    bs = int(blockSize)
+    if comm is None:
+        comm = Comm.get()
+    rank = comm.rank()
+    fine_lo,fine_hi = int(fineNodeOffsets[rank]),int(fineNodeOffsets[rank+1])
+    coarse_lo,coarse_hi = int(coarseNodeOffsets[rank]),int(coarseNodeOffsets[rank+1])
+    nFine_global = int(fineNodeOffsets[-1])
+    nCoarse_global = int(coarseNodeOffsets[-1])
+    assert rowptr.shape[0] == nFine_global+1, (
+        "the prolongation has %i rows but the fine level has %i nodes"
+        % (rowptr.shape[0]-1,nFine_global))
+    rows = range(fine_lo,fine_hi)
+    keep = numpy.ones((fine_hi-fine_lo,),dtype=bool)
+    if inheritedOnly:
+        for i,r in enumerate(rows):
+            lo,hi = rowptr[r],rowptr[r+1]
+            keep[i] = (hi-lo == 1) and abs(nzval[lo]-1.0) <= 1.0e-12
+    d_nnz = numpy.zeros((fine_hi-fine_lo,),'i')
+    o_nnz = numpy.zeros((fine_hi-fine_lo,),'i')
+    for i,r in enumerate(rows):
+        if keep[i]:
+            cols = colind[rowptr[r]:rowptr[r+1]]
+            inside = int(((cols >= coarse_lo) & (cols < coarse_hi)).sum())
+            d_nnz[i] = inside
+            o_nnz[i] = cols.shape[0]-inside
+
+    prolong = p4pyPETSc.Mat().create(comm.comm.tompi4py())
+    prolong.setType('aij')
+    prolong.setSizes([[bs*(fine_hi-fine_lo),bs*nFine_global],
+                      [bs*(coarse_hi-coarse_lo),bs*nCoarse_global]])
+    if bs > 1:
+        d_nnz = numpy.repeat(d_nnz,bs).astype('i')
+        o_nnz = numpy.repeat(o_nnz,bs).astype('i')
+    prolong.setPreallocationNNZ((d_nnz,o_nnz))
+    prolong.setOption(p4pyPETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR,False)
+    for i,r in enumerate(rows):
+        if not keep[i]:
+            continue
+        cols = colind[rowptr[r]:rowptr[r+1]]
+        vals = nzval[rowptr[r]:rowptr[r+1]]
+        for c in range(bs):
+            prolong.setValues([bs*r+c],(bs*cols+c).tolist(),vals.tolist())
+    prolong.assemblyBegin()
+    prolong.assemblyEnd()
+    return prolong
+
+
 def nodalRestrictionScaling(prolong):
     """Row sums of the restriction, for restricting *solutions* rather than residuals.
 

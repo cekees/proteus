@@ -1732,6 +1732,101 @@ class MultilevelMesh(Mesh):
                     self.elementChildrenArrayList[l-1][index] = ec.N
                     index += 1
             self.elementChildrenOffsetsList[l-1][-1] = index
+    def generateStructuredHierarchy(self,newMesh,generate,counts,origin,dim,
+                                    nLayersOfOverlap=1,
+                                    parallelPartitioningType=None):
+        """Build a hierarchy of regular quadrilateral or hexahedral grids directly.
+
+        Each level is generated at its own resolution from the grid generator --
+        level l+1 has twice as many cells as level l along every axis -- rather
+        than by refining the level below. A regular grid's nesting is known in
+        closed form, so there is nothing to refine, and the levels share one
+        coordinate frame by construction. It is also what lets a parallel run
+        start from just the coarse grid's dimensions: no mesh file and no
+        external generator or partitioner is involved.
+
+        Parameters
+        ----------
+        newMesh : callable
+            Returns an empty mesh of the right type.
+        generate : callable
+            ``generate(mesh, counts_l)`` fills the mesh with the regular grid
+            that has ``counts_l`` nodes along each axis.
+        counts : sequence of tuples
+            Nodes per axis on the coarsest level, as (nx, ny, nz).
+        origin : (x, y, z)
+            Added to every level before anything is derived from its geometry.
+        dim : int
+            Space dimension, 2 or 3.
+
+        Element parents and children are recorded in the same array lists the C
+        refinement fills, so everything that reads them is indifferent to how the
+        hierarchy was made.
+        """
+        from . import Comm
+        nLevels = self._structuredLevels
+        if parallelPartitioningType is None:
+            parallelPartitioningType = MeshParallelPartitioningTypes.node
+        levelCounts = []
+        n = list(counts)
+        for l in range(nLevels):
+            levelCounts.append(tuple(n))
+            n = [2*(k-1)+1 if k > 1 else 1 for k in n]
+        for l in range(nLevels):
+            mesh = newMesh()
+            generate(mesh,levelCounts[l])
+            #Translate before deriving anything from the geometry. Barycenters
+            #are computed in C when the grid is generated, so they move too.
+            for axis in range(3):
+                mesh.nodeArray[:,axis] += origin[axis]
+                if getattr(mesh,'elementBarycentersArray',None) is not None:
+                    mesh.elementBarycentersArray[:,axis] += origin[axis]
+            self.meshList.append(mesh)
+        self.cmultilevelMesh = None
+        self.nLevels = nLevels
+        self.elementParentsArrayList = [[]]
+        self.elementChildrenArrayList = []
+        self.elementChildrenOffsetsList = []
+        self.elementParents = {0: -np.ones((self.meshList[0].nElements_global,),'i')}
+        for l in range(nLevels-1):
+            parents = self._structuredElementParents(self.meshList[l],self.meshList[l+1],
+                                                     levelCounts[l],dim)
+            nCoarse = self.meshList[l].nElements_global
+            order = np.argsort(parents,kind='stable').astype('i')
+            offsets = np.zeros((nCoarse+1,),'i')
+            offsets[1:] = np.cumsum(np.bincount(parents,minlength=nCoarse))
+            self.elementParentsArrayList.append(parents)
+            self.elementChildrenArrayList.append(order)
+            self.elementChildrenOffsetsList.append(offsets)
+            self.elementParents[l+1] = parents
+        for mesh in self.meshList:
+            mesh.partitionMesh(nLayersOfOverlap=nLayersOfOverlap,
+                               parallelPartitioningType=parallelPartitioningType)
+
+    @staticmethod
+    def _structuredElementParents(coarse,fine,coarseCounts,dim):
+        """The coarse element containing each fine element of a regular grid.
+
+        Found from the element barycenters and the grid spacing alone, so it does
+        not depend on how either level numbers its nodes or elements -- the
+        quadrilateral generator numbers nodes y-fastest and the hexahedral one
+        x-fastest, and neither is assumed here.
+        """
+        nodes = np.asarray(coarse.nodeArray)[:,:dim]
+        lo = nodes.min(axis=0)
+        ncell = np.array([k-1 for k in coarseCounts[:dim]],dtype=int)
+        h = (nodes.max(axis=0)-lo)/ncell
+        cc = np.asarray(coarse.nodeArray)[np.asarray(coarse.elementNodesArray)][:,:,:dim].mean(axis=1)
+        cf = np.asarray(fine.nodeArray)[np.asarray(fine.elementNodesArray)][:,:,:dim].mean(axis=1)
+        ic = np.rint((cc-lo)/h-0.5).astype(int)
+        key_c = np.ravel_multi_index(ic.T,tuple(ncell))
+        lookup = -np.ones((int(np.prod(ncell)),),dtype=int)
+        lookup[key_c] = np.arange(cc.shape[0])
+        if_ = np.minimum(np.floor((cf-lo)/h).astype(int),ncell-1)
+        parents = lookup[np.ravel_multi_index(if_.T,tuple(ncell))]
+        assert (parents >= 0).all(), "a fine element lies outside every coarse element"
+        return parents.astype('i')
+
     def calculateElementParents(self,recalculate=False):
         """
         get array elementParents[l,e] = e_c, where element e_c is the parent of element e
@@ -1873,6 +1968,143 @@ class MultilevelMesh(Mesh):
         except ValueError:
             return False
         return True
+
+    def vertexInterpolation(self,recalculate=False):
+        """The vertex-to-vertex prolongations of a hierarchy, as CSR matrices.
+
+        Entry ``l+1`` is ``(rowptr, colind, nzval)`` with one row per node of
+        level ``l+1`` and columns that are nodes of level ``l``, in the numbering
+        the hierarchy was built with: row i holds the weights with which the
+        level-``l`` vertex basis functions interpolate to fine node i. For a
+        vertex-based Lagrange space (P1 on simplices, Q1 on quadrilaterals and
+        hexahedra) that is exactly the coarse-to-fine transfer operator, and it
+        needs no basis evaluation.
+
+        Two constructions, tried in this order:
+
+        * node parents (calculateNodeParents): an inherited node copies its
+          coarse value and a node added at an edge midpoint averages that edge's
+          two ends. Cheap, but it assumes uniform refinement of simplices.
+        * regular grids: every cell is an axis-aligned box, and a fine node's
+          weights on the corners of the coarse cell containing it are the
+          products of one-dimensional hat functions -- bilinear or trilinear
+          interpolation. A quadrilateral's cell-centre node has four parents and
+          a hexahedron's face and body centres have four and eight, which node
+          parents cannot express. No node numbering is assumed.
+
+        Raises ValueError if neither applies, so the caller can fall back to the
+        general geometric operators rather than take a result that is wrong.
+        """
+        if getattr(self,'_vertexInterpolation',None) is not None and not recalculate:
+            return self._vertexInterpolation
+        nLevels = len(self.meshList)
+        try:
+            self.calculateNodeParents(recalculate=recalculate)
+            result = [None]+[self.nodalProlongation(l) for l in range(nLevels-1)]
+        except ValueError as pairsFailure:
+            if self.elementParentsArrayList is None or len(self.elementParentsArrayList) < nLevels:
+                raise
+            try:
+                result = [None]+[self._boxInterpolation(l) for l in range(nLevels-1)]
+            except ValueError as boxFailure:
+                raise ValueError(
+                    "no vertex interpolation for this hierarchy. As uniform "
+                    "refinement of simplices: %s As a regular grid: %s"
+                    % (pairsFailure,boxFailure))
+        self._vertexInterpolation = result
+        return result
+
+    def hasVertexInterpolation(self):
+        """Whether vertexInterpolation can describe this hierarchy.
+
+        A question about the mesh only; whether the operators apply also depends
+        on the finite element space -- see FemTools.nodalTransfersApply.
+        """
+        try:
+            self.vertexInterpolation()
+        except ValueError:
+            return False
+        return True
+
+    def _boxInterpolation(self,l):
+        """Level ``l`` to ``l+1`` for a hierarchy of axis-aligned box cells."""
+        coarse,fine = self.meshList[l],self.meshList[l+1]
+        parents = np.asarray(self.elementParentsArrayList[l+1])
+        cn = np.asarray(coarse.nodeArray)
+        fn = np.asarray(fine.nodeArray)
+        ce = np.asarray(coarse.elementNodesArray)
+        fe = np.asarray(fine.elementNodesArray)
+        nv = ce.shape[1]
+        dim = {4:2,8:3}.get(nv)
+        if dim is None:
+            raise ValueError("cells with %i vertices are not boxes" % nv)
+        X = cn[ce][:,:,:dim]                           # (nE, nv, dim)
+        lo = X.min(axis=1)
+        hi = X.max(axis=1)
+        H = hi-lo
+        if (H <= 0.0).any():
+            raise ValueError("a coarse cell has zero extent")
+        #each cell must be the box spanned by its own extremes: its vertices are
+        #exactly the 2^dim corners, however the generator happens to order them
+        tol = 1.0e-12*max(1.0,float(np.abs(cn).max()))
+        atHi = np.abs(X-hi[:,None,:]) <= tol
+        atLo = np.abs(X-lo[:,None,:]) <= tol
+        if not (atHi | atLo).all():
+            raise ValueError("a coarse cell is not an axis-aligned box")
+        code = (atHi*(1 << np.arange(dim))[None,None,:]).sum(axis=2)
+        if not (np.sort(code,axis=1) == np.arange(nv)[None,:]).all():
+            raise ValueError("a coarse cell does not have one vertex at each corner")
+        #a fine node lies in every fine element that contains it, and each of
+        #those lies in some coarse cell; any such cell gives the same
+        #interpolation because the transfer is continuous across cell faces
+        nFine = fn.shape[0]
+        first = -np.ones((nFine,),dtype=int)
+        flat = fe.ravel()
+        owner = np.repeat(np.arange(fe.shape[0]),fe.shape[1])
+        first[flat[::-1]] = owner[::-1]
+        if (first < 0).any():
+            raise ValueError("a fine node belongs to no element")
+        P = parents[first]
+        if (P < 0).any():
+            raise ValueError("a fine element has no coarse parent")
+        Y = fn[:,:dim]
+        w = np.ones((nFine,nv))
+        for d in range(dim):
+            w *= np.clip(1.0-np.abs(Y[:,None,d]-X[P][:,:,d])/H[P][:,None,d],0.0,1.0)
+        if np.abs(w.sum(axis=1)-1.0).max() > 1.0e-10:
+            raise ValueError("a fine node lies outside its coarse cell")
+        keep = w > 1.0e-14
+        rowptr = np.zeros((nFine+1,),'i')
+        rowptr[1:] = np.cumsum(keep.sum(axis=1))
+        colind = ce[P][keep].astype('i')
+        nzval = w[keep].astype('d')
+        return rowptr,colind,nzval
+
+    def partitionedVertexInterpolation(self,l):
+        """vertexInterpolation()[l+1], in the partitioned global numbering.
+
+        The same translation partitionedNodeParents makes, for a matrix: rows
+        are fine nodes and columns coarse nodes, and partitioning renumbers each
+        level's nodes independently so that every rank's owned ones are
+        contiguous. An unpartitioned hierarchy has no permutation and the CSR is
+        returned unchanged.
+        """
+        rowptr,colind,nzval = self.vertexInterpolation()[l+1]
+        coarseOld2New = getattr(self.meshList[l],'nodeNumbering_global_old2new',None)
+        fineOld2New = getattr(self.meshList[l+1],'nodeNumbering_global_old2new',None)
+        if coarseOld2New is None or fineOld2New is None:
+            return rowptr,colind,nzval
+        coarseOld2New = np.asarray(coarseOld2New)
+        fineOld2New = np.asarray(fineOld2New)
+        nFine = rowptr.shape[0]-1
+        #row r of the result is the old row that maps to r
+        oldOfNew = np.empty((nFine,),dtype=int)
+        oldOfNew[fineOld2New] = np.arange(nFine)
+        lengths = np.diff(rowptr)[oldOfNew]
+        newptr = np.zeros((nFine+1,),'i')
+        newptr[1:] = np.cumsum(lengths)
+        gather = np.repeat(rowptr[oldOfNew]-newptr[:-1],lengths)+np.arange(int(newptr[-1]))
+        return newptr,coarseOld2New[colind[gather]].astype('i'),nzval[gather].copy()
 
     def useHierarchicalGeometry(self):
         """Keep node coordinates only on the finest level.
@@ -4254,10 +4486,21 @@ class MultilevelHexahedralMesh(MultilevelMesh):
             self.useC = True
         else:
             self.useC = False
+        #Hexahedral refinement was never implemented (refine() raises), but a
+        #regular grid does not need it: see generateStructuredHierarchy.
+        structured = refinementLevels > 1
         self.nLayersOfOverlap = nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         logEvent("Generating hexahedral mesh")
         if not skipInit:
-            if self.useC:
+            if structured:
+                self._structuredLevels = refinementLevels
+                self.generateStructuredHierarchy(
+                    HexahedralMesh,
+                    lambda mesh,c: mesh.generateHexahedralMeshFromRectangularGrid(c[0],c[1],c[2],Lx,Ly,Lz),
+                    (nx,ny,nz),(x,y,z),3,
+                    nLayersOfOverlap=nLayersOfOverlap,
+                    parallelPartitioningType=parallelPartitioningType)
+            elif self.useC:
                 self.meshList.append(HexahedralMesh())
                 self.meshList[0].generateHexahedralMeshFromRectangularGrid(nx,ny,nz,Lx,Ly,Lz)
                 self.meshList[0].nodeArray[:,0] += x
@@ -5463,12 +5706,24 @@ class MultilevelQuadrilateralMesh(MultilevelMesh):
         from .import cmeshTools
         MultilevelMesh.__init__(self)
         self.useC = useC  # Implementing with C will take a bit more work. Disabling for now.
-        if refinementLevels > 1:
+        #A regular grid needs no refinement at all: every level can be generated
+        #at its own resolution (see generateStructuredHierarchy). That is the
+        #default; asking for useC=False keeps the old Python refinement.
+        structured = (refinementLevels > 1 and useC)
+        if refinementLevels > 1 and not structured:
             logEvent("Quad refinement is not supported in C routines, switching off c-mesh");
             self.useC = False  # Currently quad refinement is not supported in C routines.
         self.nLayersOfOverlap=nLayersOfOverlap ; self.parallelPartitioningType = parallelPartitioningType
         if not skipInit:
-            if self.useC:
+            if structured:
+                self._structuredLevels = refinementLevels
+                self.generateStructuredHierarchy(
+                    QuadrilateralMesh,
+                    lambda mesh,c: mesh.generateQuadrilateralMeshFromRectangularGrid(c[0],c[1],Lx,Ly),
+                    (nx,ny,1),(x,y,z),2,
+                    nLayersOfOverlap=nLayersOfOverlap,
+                    parallelPartitioningType=parallelPartitioningType)
+            elif self.useC:
                 self.meshList.append(QuadrilateralMesh())
                 self.meshList[0].generateQuadrilateralMeshFromRectangularGrid(nx,ny,Lx,Ly)
                 self.meshList[0].nodeArray[:,0] += x
