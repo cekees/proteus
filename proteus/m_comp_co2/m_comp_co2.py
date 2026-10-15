@@ -1,6 +1,5 @@
 from __future__ import division
 from builtins import range
-#from past.utils import old_div
 import os
 import proteus
 from .cm_comp_co2 import *
@@ -3828,7 +3827,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["nElements_global"] = self.mesh.nElements_global
         argsDict["ebqe_penalty_ext"] = self.ebqe['penalty']
-        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes,
+        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
         argsDict["isSeepageFace"] = self.coefficients.isSeepageFace
         argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
@@ -4675,7 +4674,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["nElements_global"] = self.mesh.nElements_global
         argsDict["ebqe_penalty_ext"] = self.ebqe['penalty']
-        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes,
+        argsDict["elementMaterialTypes"] = self.mesh.elementMaterialTypes
         argsDict["isSeepageFace"] = self.coefficients.isSeepageFace
         argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]

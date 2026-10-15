@@ -6652,8 +6652,8 @@ class kEpsilon(TC_base):
     .. math::
 
        \pd{\bar{\vec v}}{t} + \deld \left(\bar{\vec v} \outer \bar{\vec v}\right)
-               -\nu \deld \ten \bar{D} + \frac{1}{\rho}\grad \bar p
-               - \frac{1}{rho}\deld \ten{R} = 0
+               -\nu \deld \ten{\bar{D}} + \frac{1}{\rho}\grad \bar p
+               - \frac{1}{\rho}\deld \ten{R} = 0
 
     Reynolds stress term
 
@@ -6661,7 +6661,7 @@ class kEpsilon(TC_base):
 
        \ten R = -\rho <\vec v^{'}\outer \vec v^{'}>
        \frac{1}{\rho}\ten{R} = 2 \nu_t \bar{D} - \frac{2}{3}k\ten{I}
-       D_{ij}(\vec v) = \frac{1}{2} \left( \pd{v_i}{x_j} + \pd{v_j}{x_i})
+       D_{ij}(\vec v) = \frac{1}{2} \left( \pd{v_i}{x_j} + \pd{v_j}{x_i}\right)
        \ten D \bar{\ten D} = D(<\vec v>), \ten D^{'} = \ten D(\vec v^{'})
 
     k-epsilon tranport equations
@@ -6986,8 +6986,8 @@ class kEpsilon_k(TC_base):
     
        \deld \bar{\vec v} = 0
        \pd{\bar{\vec v}}{t} + \deld \left(\bar{\vec v} \outer \bar{\vec v}\right)
-               -\nu \deld \ten \bar{D} + \frac{1}{\rho}\grad \bar p
-               - \frac{1}{rho}\deld \ten{R} = 0
+               -\nu \deld \ten{\bar{D}} + \frac{1}{\rho}\grad \bar p
+               - \frac{1}{\rho}\deld \ten{R} = 0
 
     Reynolds stress term
 
@@ -6995,7 +6995,7 @@ class kEpsilon_k(TC_base):
 
        \ten R = -\rho <\vec v^{'}\outer \vec v^{'}>
        \frac{1}{\rho}\ten{R} = 2 \nu_t \bar{D} - \frac{2}{3}k\ten{I}
-       D_{ij}(\vec v) = \frac{1}{2} \left( \pd{v_i}{x_j} + \pd{v_j}{x_i})
+       D_{ij}(\vec v) = \frac{1}{2} \left( \pd{v_i}{x_j} + \pd{v_j}{x_i}\right)
        \ten D \bar{\ten D} = D(<\vec v>), \ten D^{'} = \ten D(\vec v^{'})
 
     k-epsilon tranport equations
@@ -7257,8 +7257,8 @@ class kEpsilon_epsilon(TC_base):
 
        \deld \bar{\vec v} = 0
        \pd{\bar{\vec v}}{t} + \deld \left(\bar{\vec v} \outer \bar{\vec v}\right)
-               -\nu \deld \ten \bar{D} + \frac{1}{\rho}\grad \bar p
-               - \frac{1}{rho}\deld \ten{R} = 0
+               -\nu \deld \ten{\bar{D}} + \frac{1}{\rho}\grad \bar p
+               - \frac{1}{\rho}\deld \ten{R} = 0
     
     Reynolds stress term
 
@@ -7266,7 +7266,7 @@ class kEpsilon_epsilon(TC_base):
 
        \ten R = -\rho <\vec v^{'}\outer \vec v^{'}>
        \frac{1}{\rho}\ten{R} = 2 \nu_t \bar{D} - \frac{2}{3}k\ten{I}
-       D_{ij}(\vec v) = \frac{1}{2} \left( \pd{v_i}{x_j} + \pd{v_j}{x_i})
+       D_{ij}(\vec v) = \frac{1}{2} \left( \pd{v_i}{x_j} + \pd{v_j}{x_i}\right)
        \ten D \bar{\ten D} = D(<\vec v>), \ten D^{'} = \ten D(\vec v^{'})
 
     k-epsilon tranport equations
@@ -8040,16 +8040,16 @@ class ViscousBurgersEqn(TC_base):
     #ci
 from proteus.ctransportCoefficients import evaluateBuckleyLeverettLiuExample
 class BuckleyLeverettLiuExample(TC_base):
-    """
+    r"""
     5 spot example from Liu 93 Siam paper.
 
-    S_t + \\deld (\vec a f(S)) = 0
+    S_t + \deld (\vec a f(S)) = 0
 
     f(S) = S^2 / (0.2 - 0.4 S + 1.2 S^2)
 
-    \vec a = (\\pd{\\phi}{x},\\pd{phi}{y})
+    \vec a = (\pd{\phi}{x},\pd{phi}{y})
 
-    \\phi = 0.01 \\log(\\sqrt{x^2 + y^2})
+    \phi = 0.01 \log(\sqrt{x^2 + y^2})
 
     However, note that his example is for
     S=0 injecting into S=1 background saturation using his definition of f

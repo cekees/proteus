@@ -4628,7 +4628,7 @@ class RusanovNumericalFlux(RusanovNumericalFlux_Diagonal):
 
     .. math::
 
-       \bar{\lamda}= max |\vec f^{\prime} \cdot n\|
+       \bar{\lambda}= max |\vec f^{\prime} \cdot n\|
 
     Then we just apply apply numerical flux
 

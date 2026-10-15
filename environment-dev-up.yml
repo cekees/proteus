@@ -69,6 +69,8 @@ dependencies:
   - pyyaml >=6.0.2
   - sympy >=1.13.2
   - strictyaml >=1.7.3
+  # provides `dot` for the docs inheritance diagrams
+  - graphviz
   # ymf itself has no conda-forge feedstock yet, so it is installed from git
   # until one exists. Replace this pip entry with a plain "- ymf" dependency
   # once the feedstock lands.

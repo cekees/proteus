@@ -68,7 +68,7 @@ for time in timesteps:
             phi = pdata.GetArray("phid").GetTuple1(i)
 
             if (phi > 0.0) and (phi_old < 0.0):
-                height = old_div((float(i-1) + (old_div(phi_old,(phi_old-phi)))),float(opts.resolution))
+                height = (float(i-1) + phi_old / (phi_old - phi)) / float(opts.resolution)
             phi_old=phi
 
         if (height > 0.0):

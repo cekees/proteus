@@ -794,9 +794,14 @@ int MeshAdaptPUMIDrvr::adaptPUMIMesh(const char* inputString)
   }
 
   ma::validateInput(in);
-  in->shouldRunPreZoltan = true;
-  in->shouldRunMidZoltan = true;
-  in->shouldRunPostZoltan = true;
+  // Balance with ParMA, which is part of PUMI itself and works in 2D and 3D
+  // whatever third-party partitioners PUMI was built with. The alternatives
+  // depend on the build: Zoltan needs ParMETIS (conda-forge's Zoltan has none,
+  // so its graph balancing fails), and PUMI's METIS balancer asserts on 2D
+  // meshes. MeshAdapt's own default would pick one of those when available.
+  in->shouldRunPreParma = true;
+  in->shouldRunMidParma = true;
+  in->shouldRunPostParma = true;
   in->maximumImbalance = 1.05;
   in->maximumIterations = numIter;
   if(size_field_config == "meshQuality")

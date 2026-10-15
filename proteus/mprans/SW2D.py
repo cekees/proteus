@@ -822,7 +822,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["vel_grad_test_trace_ref"] = self.u[1].femSpace.grad_psi_trace
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
-        argsDict["elementDiameter"] = self.elementDiameter,  # mesh.elementDiametersArray
+        argsDict["elementDiameter"] = self.elementDiameter  # mesh.elementDiametersArray
         argsDict["nElements_global"] = self.mesh.nElements_global
         argsDict["useRBLES"] = self.coefficients.useRBLES
         argsDict["useMetrics"] = self.coefficients.useMetrics

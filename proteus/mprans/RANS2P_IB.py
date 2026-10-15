@@ -1340,7 +1340,7 @@ class LevelModel(proteus.mprans.RANS2P.LevelModel):
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["eb_adjoint_sigma"] = self.eb_adjoint_sigma
-        argsDict["elementDiameter"] = self.elementDiameter,  # mesh.elementDiametersArray
+        argsDict["elementDiameter"] = self.elementDiameter  # mesh.elementDiametersArray
         argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["hFactor"] = self.stabilization.hFactor
         argsDict["nElements_global"] = self.mesh.nElements_global
@@ -1571,7 +1571,7 @@ class LevelModel(proteus.mprans.RANS2P.LevelModel):
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["eb_adjoint_sigma"] = self.eb_adjoint_sigma
-        argsDict["elementDiameter"] = self.elementDiameter,  # mesh.elementDiametersArray
+        argsDict["elementDiameter"] = self.elementDiameter  # mesh.elementDiametersArray
         argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["hFactor"] = self.stabilization.hFactor
         argsDict["nElements_global"] = self.mesh.nElements_global
