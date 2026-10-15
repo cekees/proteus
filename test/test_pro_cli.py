@@ -154,3 +154,82 @@ def test_run_matches_parun_bitwise(tmp_path):
         assert np.array_equal(actual[name], expected[name]), name
     assert ((tmp_path / "pro" / "ladr_2d.ymf").read_bytes()
             == (tmp_path / "parun" / "ladr_2d.ymf").read_bytes())
+
+
+TETGEN_MODEL = ["poisson_3d_tetgen_p.py", "poisson_3d_tetgen_c0p1_n.py"]
+
+
+def _copy_ci_models(directory):
+    directory.mkdir()
+    for name in os.listdir(os.path.join(HERE, "ci")):
+        if name.endswith(".py"):
+            shutil.copy(os.path.join(HERE, "ci", name), directory)
+
+
+def test_mesh_files_plan():
+    from proteus import Domain, MeshTools
+    box = Domain.RectangularDomain(L=[1.0, 1.0])
+    assert MeshTools.meshFiles(box, MeshTools.getMeshOptions(box)) is None
+    plc = Domain.PiecewiseLinearComplexDomain(name="plc")
+    plc.polyfile = "plc"
+    options = MeshTools.getMeshOptions(plc)
+    options.triangleOptions = "VApq1.35q12feena0.01"
+    plan = MeshTools.meshFiles(plc, options)
+    assert plan["generator"] == "tetgen"
+    assert plan["command"] == "tetgen -VApq1.35q12feena0.01 plc.poly"
+    assert plan["inputs"] == ["plc.poly"]
+    assert plan["outputs"] == ["plc.ele", "plc.node", "plc.face"]
+
+
+@pytest.mark.skipif(shutil.which("tetgen") is None, reason="tetgen not on PATH")
+def test_msh_then_run_without_meshing(tmp_path):
+    work = tmp_path / "pro"
+    _copy_ci_models(work)
+    made = pro("msh", *TETGEN_MODEL, "-l", "0", cwd=work)
+    assert made.returncode == 0, made.stderr[-2000:]
+    assert "running tetgen" in made.stdout
+    assert (work / "meshNoVessel.mesh.ymf").exists()
+
+    again = pro("msh", *TETGEN_MODEL, "-l", "0", cwd=work)
+    assert again.returncode == 0 and "up to date" in again.stdout
+
+    # the run reads the mesh pro msh made, and refuses to remesh it
+    ran = pro("run", *TETGEN_MODEL, "--no-mesh", cwd=work)
+    assert ran.returncode == 0, ran.stderr[-2000:]
+
+    # a context option that changes tetgen's options makes the mesh stale
+    stale = pro("run", *TETGEN_MODEL, "--no-mesh", "-C", "Refinement=1", cwd=work)
+    assert stale.returncode == 2
+    assert "pro msh poisson_3d_tetgen_p.py poisson_3d_tetgen_c0p1_n.py " \
+           "-C Refinement=1" in stale.stderr
+
+    if shutil.which("parun") is None:
+        return
+    reference = tmp_path / "parun"
+    _copy_ci_models(reference)
+    ran = subprocess.run(["parun"] + TETGEN_MODEL, cwd=reference,
+                         capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr[-2000:]
+    import numpy as np
+    expected = _datasets(reference / "poisson_tetgen_0.h5")
+    actual = _datasets(work / "poisson_tetgen_0.h5")
+    assert sorted(actual) == sorted(expected)
+    for name in expected:
+        assert np.array_equal(actual[name], expected[name]), name
+
+
+@pytest.mark.skipif(shutil.which("tetgen") is None, reason="tetgen not on PATH")
+def test_edited_mesh_file_is_stale(tmp_path):
+    from proteus.cli import mesh
+    work = tmp_path / "pro"
+    _copy_ci_models(work)
+    assert pro("msh", *TETGEN_MODEL, "-l", "0", cwd=work).returncode == 0
+    plan = {"generator": "tetgen", "prefix": str(work / "meshNoVessel")}
+    import ymf.archive
+    record = ymf.archive.read_document(str(work / "meshNoVessel.mesh.ymf"))["mesh"]
+    plan["command"] = record["command"]
+    plan["inputs"] = [str(work / "meshNoVessel.poly")]
+    assert mesh.state(plan) == ("current", "")
+    with open(work / "meshNoVessel.node", "a") as f:
+        f.write("# edited\n")
+    assert mesh.state(plan) == ("stale", "meshNoVessel.node changed since it was generated")

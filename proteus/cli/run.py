@@ -87,7 +87,11 @@ def add_parser(subparsers):
     g.add_argument("-t", "--hot-start-time", type=float, default=float("inf"),
                    metavar="T", help="time to restart from")
     g.add_argument("-F", "--partitioned-mesh", action="store_true",
-                   help="read a mesh partitioned ahead of time")
+                   help="read the mesh files in parallel, each rank its share")
+    g.add_argument("--no-mesh", action="store_true",
+                   help="stop with an error, instead of meshing on rank 0, "
+                        "when the mesh is missing or out of date "
+                        "(make it with pro msh)")
     g.add_argument("--setup-only", action="store_true",
                    help="set the model up, then stop without solving")
 
@@ -224,16 +228,68 @@ def _load(args, log):
     return so, pList, nList, sList, True
 
 
-def run(args):
+def _check_inputs(args):
+    """An error message about ``args.inputs``, or None."""
     if len(args.inputs) > 2:
-        return _fail("give one model module, or a p module and an n module")
+        return "give one model module, or a p module and an n module"
     for path in args.inputs:
         if not path.endswith(".py"):
-            return _fail(path + ": not a .py file")
+            return path + ": not a .py file"
         if not os.path.isfile(path):
-            return _fail(path + ": no such file")
+            return path + ": no such file"
     if len(args.inputs) == 2 and args.pumi:
-        return _fail("--pumi applies to a TwoPhaseFlow case module")
+        return "--pumi applies to a TwoPhaseFlow case module"
+    return None
+
+
+def _msh_command(args):
+    """The ``pro msh`` command line that makes this run's mesh."""
+    import shlex
+    words = ["pro", "msh"] + list(args.inputs)
+    if args.context_file:
+        words += ["-o", args.context_file]
+    if args.context:
+        words += ["-C", args.context]
+    return shlex.join(words)
+
+
+def _bring_mesh_up_to_date(args, comm, pList, nList, log):
+    """Make for the mesh, before NS_base reads it.
+
+    A model that sets genMesh=False gives its mesh, and is left alone. With
+    genMesh=True, rank 0 regenerates the mesh files only if they are
+    missing or out of date (or fails, with --no-mesh); then genMesh is
+    turned off so NS_base reads the files instead of regenerating them.
+    Returns an error message, or None.
+    """
+    from .msh import plan_for
+    from . import mesh
+    domain, meshOptions, plan = plan_for(pList, nList)
+    if plan is None or not meshOptions.genMesh:
+        return None
+    error = None
+    if comm.isMaster():
+        state, reason = mesh.state(plan)
+        if state == "current":
+            log("Mesh is up to date: " + mesh.manifest_path(plan), level=0)
+        elif args.no_mesh:
+            error = ("the mesh is {0} ({1}) and --no-mesh was given; "
+                     "make it with: {2}".format(state, reason, _msh_command(args)))
+        else:
+            log("Meshing on rank 0 ({0}): {1}".format(reason, plan["command"]),
+                level=0)
+            mesh.make(plan, domain, meshOptions)
+    error = comm.comm.tompi4py().bcast(error, root=0)
+    if error is None:
+        meshOptions.genMesh = False
+        pList[0].genMesh = False
+    return error
+
+
+def run(args):
+    error = _check_inputs(args)
+    if error:
+        return _fail(error)
 
     from proteus import runtime
     comm = runtime.init(args.petsc, args.petsc_file)
@@ -259,6 +315,13 @@ def run(args):
     Context.contextOptionsString = _context_string(args)
 
     so, pList, nList, sList, two_phase = _load(args, log)
+
+    if not args.hot_start:
+        error = _bring_mesh_up_to_date(args, comm, pList, nList, log)
+        if error:
+            if comm.isMaster():
+                print("pro run: " + error, file=sys.stderr)
+            return 2
 
     import proteus
     from proteus import NumericalSolution

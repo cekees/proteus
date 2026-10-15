@@ -23,6 +23,7 @@ __all__ = ["main", "build_parser", "missing"]
 #: ``add_parser(subparsers)`` and ``run(args) -> int``
 COMMANDS = {
     "run": "run",
+    "msh": "msh",
 }
 
 #: front-end subcommands -> (help, modules they import); not implemented
