@@ -2298,7 +2298,11 @@ class DiscontinuousGalerkinDOFMap(DOFMap):
                                 localFunctionSpace.dim),
                                'i')
         self.local_dim = localFunctionSpace.dim
-        self.updateAfterParallelPartitioning(mesh.globalMesh)
+        #a global (unpartitioned) mesh has no globalMesh: its space is built
+        #only to evaluate transfer operators against, and the caller supplies
+        #the numbering -- see globalL2gFromSubdomain
+        if mesh.globalMesh is not None:
+            self.updateAfterParallelPartitioning(mesh.globalMesh)
         #for eN in range(mesh.nElements_global):
         #    for i in localFunctionSpace.range_dim:
         #        self.l2g[eN,i] = eN*localFunctionSpace.dim + i
@@ -2335,7 +2339,8 @@ class ElementBoundaryDOFMap(DOFMap):
         DOFMap.__init__(self,mesh.nElementBoundaries_global)
         self.l2g = mesh.elementBoundariesArray
         #save for parallel now
-        self.updateAfterParallelPartitioning(mesh.globalMesh)
+        if mesh.globalMesh is not None:
+            self.updateAfterParallelPartitioning(mesh.globalMesh)
     def updateAfterParallelPartitioning(self,mesh):
         #array of 'offsets' where owned dof numbers start on each subdomain
         self.dof_offsets_subdomain_owned = mesh.elementBoundaryOffsets_subdomain_owned
@@ -2512,10 +2517,10 @@ class QuadraticLagrangeDOFMap(DOFMap):
         #In 1d, extra unknown can be associated with global element number
         #In 2d, extra unknowns can be associated with element boundaries array (edges)
         #In 3d, extra unknowns have to be associated with edge
-        self.updateAfterParallelPartitioning(mesh.globalMesh)
-
-        maxSeen = max(self.l2g.flat)
-        assert maxSeen < self.nDOF,('QuadDOF max(l2g)= %d ndof= %d' % (maxSeen,self.nDOF))
+        if mesh.globalMesh is not None:
+            self.updateAfterParallelPartitioning(mesh.globalMesh)
+            maxSeen = max(self.l2g.flat)
+            assert maxSeen < self.nDOF,('QuadDOF max(l2g)= %d ndof= %d' % (maxSeen,self.nDOF))
         #save for parallel mappings
         self.nd = nd
     #end init
@@ -7285,6 +7290,73 @@ class StressBoundaryConditions(object):
                         self.stressTraceBoundaryConditionsDict[(ebNE,k)] = g
             #k
         #ebNE
+def globalL2gFromSubdomain(globalMesh,subdomainSpace):
+    """The local-to-global dof table of a space on the *global* mesh, written in
+    the partitioned dof numbering that the subdomain spaces use.
+
+    The multilevel mesh's element-children arrays are numbered over the global
+    mesh, so the geometric transfer operators have to be built on a space over
+    that mesh. For spaces whose dofs are not mesh vertices (quadratic Lagrange,
+    non-conforming P1, discontinuous Galerkin) the dof numbering is a product
+    of partitioning, which only the subdomain space knows. Every rank
+    contributes the dofs of the elements it owns, keyed by the (global, old)
+    node tuple of the element, and each rank then matches them against the
+    global mesh's elements. The result is a table whose rows are in global
+    element order and whose entries are partitioned global dof numbers, so
+    that an operator built from it has rows and columns numbered the way the
+    distributed vectors are -- and can be cut into owned rows by dof_offsets.
+
+    Gathering every owned element onto every rank does not scale; it is the
+    price of building global operators, and goes away with level-consistent
+    partitioning. Only node partitioning is supported, because elements are
+    matched through the node renumbering.
+    """
+    from . import Comm
+    comm = Comm.get().comm.tompi4py()
+    if getattr(globalMesh,'nodeNumbering_global_old2new',None) is None:
+        raise ValueError("globalL2gFromSubdomain needs the node renumbering of a "
+                         "node-partitioned mesh")
+    sdMesh = globalMesh.subdomainMesh
+    dofMap = subdomainSpace.dofMap
+    nOwned = int(globalMesh.elementOffsets_subdomain_owned[comm.rank+1]
+                 - globalMesh.elementOffsets_subdomain_owned[comm.rank])
+    ownedNodes = numpy.asarray(
+        globalMesh.nodeNumbering_subdomain2global)[sdMesh.elementNodesArray[:nOwned]]
+    ownedDofs = numpy.asarray(dofMap.subdomain2global)[dofMap.l2g[:nOwned]]
+    allNodes = numpy.concatenate(comm.allgather(ownedNodes))
+    allDofs = numpy.concatenate(comm.allgather(ownedDofs))
+    old2new = numpy.asarray(globalMesh.nodeNumbering_global_old2new)
+    new2old = numpy.empty_like(old2new)
+    new2old[old2new] = numpy.arange(old2new.size,dtype=old2new.dtype)
+    gatheredOld = new2old[allNodes]
+    def keyOf(nodes):
+        sortedNodes = numpy.ascontiguousarray(numpy.sort(nodes,axis=1),dtype=numpy.int64)
+        return sortedNodes.view(numpy.dtype((numpy.void,sortedNodes.dtype.itemsize*
+                                             sortedNodes.shape[1]))).ravel()
+    gatheredKeys = keyOf(gatheredOld)
+    globalNodes = numpy.asarray(globalMesh.elementNodesArray)
+    globalKeys = keyOf(globalNodes)
+    if gatheredKeys.size != globalKeys.size:
+        raise ValueError("globalL2gFromSubdomain: %d owned elements gathered for "
+                         "a mesh of %d" % (gatheredKeys.size,globalKeys.size))
+    order = numpy.argsort(gatheredKeys)
+    pos = numpy.searchsorted(gatheredKeys[order],globalKeys)
+    pos[pos == order.size] = 0
+    gathered = order[pos]
+    if not numpy.all(gatheredKeys[gathered] == globalKeys):
+        raise ValueError("globalL2gFromSubdomain: elements of the global mesh "
+                         "are missing from the partitioned mesh")
+    if numpy.unique(gathered).size != gathered.size:
+        raise ValueError("globalL2gFromSubdomain: element node tuples are not "
+                         "unique, so elements cannot be matched")
+    #the dofs of an element are listed in the order of its local basis
+    #functions, so the two meshes must agree on each element's local node order
+    if not numpy.array_equal(gatheredOld[gathered],globalNodes):
+        raise ValueError("globalL2gFromSubdomain: partitioned and global meshes "
+                         "order the nodes of an element differently")
+    return numpy.ascontiguousarray(allDofs[gathered],dtype=dofMap.l2g.dtype)
+
+
 def nodalTransfersApply(multilevelMesh,femSpaceDictList,
                         dofBoundaryConditionsDictList=None):
     """Whether the combinatorial nodal transfer operators apply to this problem.

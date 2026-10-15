@@ -81,18 +81,16 @@ def test_one_level_needs_no_transfers_for_any_space():
     assert abs(parallel - serial) < 1.0e-5 * abs(serial), (parallel, serial)
 
 
-def test_several_levels_of_a_non_nodal_space_are_refused_clearly():
-    """The nodal operators cannot describe quadratic dofs, so say so.
-
-    This is the path the general (non-nodal, non-hierarchical) transfers will
-    take once partitioning is level-consistent; until then the alternative to a
-    clear refusal is an AttributeError from deep inside a dof map.
+def test_several_levels_of_a_non_nodal_space_now_run():
+    """Quadratic dofs are not vertices, so the nodal operators cannot describe
+    them; the general route (replicated global operators, cut to owned rows)
+    must build distributed ones instead of refusing. Its numerics are pinned in
+    test_parallel_space_multigrid.py.
     """
     result = _launch(2, 2, 'p2')
-    refused = [l for l in result.stdout.splitlines() if l.startswith('REFUSED')]
-    assert refused, result.stdout + result.stderr
-    assert 'level-consistent partitioning' in refused[0], refused[0]
-    assert 'QuadraticLagrangeDOFMap' in refused[0], refused[0]
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not [l for l in result.stdout.splitlines() if l.startswith('REFUSED')], result.stdout
+    assert [l for l in result.stdout.splitlines() if l.startswith('RESULT')], result.stdout + result.stderr
 
 
 def test_components_are_transferred_independently():

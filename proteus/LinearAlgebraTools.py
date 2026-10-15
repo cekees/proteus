@@ -1965,7 +1965,7 @@ class ParTransferOperator(object):
         The solvers reuse a handful of fixed buffers, so keep one per array
         rather than rebuilding it on every matvec.
         """
-        if not getattr(template,'nghosts',None):
+        if getattr(template,'nghosts',None) is None:
             return None
         cached = self._ghostRefresh.get(id(array))
         if cached is None or cached.proteus_array is not array:

@@ -109,7 +109,7 @@ class LinearSolver(object):
         #Transport builds par vectors several ways, and not all of them are
         #ghosted -- a vector with no ghost entries has nothing to refresh, and
         #asking PETSc to scatter it raises "Vector is not ghosted".
-        if par_u is not None and getattr(par_u,'nghosts',None):
+        if par_u is not None and getattr(par_u,'nghosts',None) is not None:
             par_u.scatter_forward_insert()
     def refreshResidualGhosts(self,par_u,r):
         """Give the residual's ghost entries their owners' values.
@@ -125,7 +125,7 @@ class LinearSolver(object):
         come from their owners before the local solve, or the iteration is
         driven by noise.
         """
-        if par_u is None or not getattr(par_u,'nghosts',None):
+        if par_u is None or getattr(par_u,'nghosts',None) is None:
             return
         par_r = getattr(self,'par_r_work',None)
         if par_r is None or par_r.proteus_array is not r:
@@ -155,7 +155,7 @@ class LinearSolver(object):
         run computes.
         """
         par_u = self.par_u_current
-        if par_u is None or not getattr(par_u,'nghosts',None):
+        if par_u is None or getattr(par_u,'nghosts',None) is None:
             return self.norm(r)
         owned = par_u.dim_proc
         return sqrt(globalSum(float(numpy.dot(r[:owned],r[:owned]))))

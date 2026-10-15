@@ -6343,22 +6343,20 @@ class MultilevelTransport(object):
             logEvent("Setting Boundary Conditions-3")
             self.bcDictList.append(dirichletConditionsDict)
             if self.buildGlobalTransferSpaces:
-                notNodal = sorted(set(type(ts.dofMap).__name__
-                                      for ts in trialSpaceDict.values()
-                                      if not isinstance(ts.dofMap,FemTools.NodalDOFMap)))
-                if notNodal:
-                    raise NotImplementedError(
-                        "multilevel runs on more than one rank need every space's "
-                        "dofs to sit on the mesh vertices, and this problem uses "
-                        "%s. The transfer operators for such spaces are built "
-                        "from a global space, which their dof maps cannot "
-                        "construct, and a global operator cannot act on a rank's "
-                        "subdomain vectors anyway. Use nLevels=1, or run in "
-                        "serial; level-consistent partitioning is what removes "
-                        "this restriction." % ", ".join(notNodal))
                 global_trialSpaceDict = dict(
                     [(cj,TrialSpaceType(mesh,nd))
                      for (cj,TrialSpaceType) in TrialSpaceTypeDict.items()])
+                if not FemTools.nodalTransfersApply(mlMesh,[trialSpaceDict],
+                                                    [dirichletConditionsDict]):
+                    #Vertex-numbered global spaces would carry the *old* node
+                    #numbers. The general operators need dofs numbered as the
+                    #distributed vectors are, so take the table from the
+                    #partitioned subdomain spaces -- before the boundary
+                    #conditions read it. This is also what lets spaces whose
+                    #dofs are not vertices exist on the global mesh at all.
+                    for (cj,gs) in global_trialSpaceDict.items():
+                        gs.dofMap.l2g = FemTools.globalL2gFromSubdomain(
+                            mesh,trialSpaceDict[cj])
                 if (options is None or options.periodicDirichletConditions is None
                         or options.parallelPeriodic==True):
                     global_dirichletConditionsDict = dict(
@@ -6936,20 +6934,112 @@ class MultilevelTransport(object):
         if not FemTools.nodalTransfersApply(mlMesh,
                                             self.trialSpaceDictList,
                                             self.bcDictList):
-            logEvent("mesh transfers stay global: this problem does not qualify "
-                     "for the nodal operators",level=2)
+            self.useGeneralParallelTransfers(mlMesh)
             return
         mlMesh.vertexInterpolation()
+        nc = len(self.trialSpaceDictList[0])
+        cache = {}
+        def levelMats(l):
+            if l not in cache:
+                interpolation = mlMesh.partitionedVertexInterpolation(l)
+                coarseOffsets = np.asarray(mlMesh.meshList[l].nodeOffsets_subdomain_owned)
+                fineOffsets = np.asarray(mlMesh.meshList[l+1].nodeOffsets_subdomain_owned)
+                prolongMat = vertexProlongationMat(*interpolation,
+                                                   coarseNodeOffsets=coarseOffsets,
+                                                   fineNodeOffsets=fineOffsets)
+                injectionMat = vertexProlongationMat(*interpolation,
+                                                     coarseNodeOffsets=coarseOffsets,
+                                                     fineNodeOffsets=fineOffsets,
+                                                     inheritedOnly=True)
+                rowSums = nodalRestrictionScaling(prolongMat)
+                stackedMat = prolongMat if nc == 1 else vertexProlongationMat(
+                    *interpolation,coarseNodeOffsets=coarseOffsets,
+                    fineNodeOffsets=fineOffsets,blockSize=nc)
+                cache[l] = (prolongMat,injectionMat,rowSums,stackedMat)
+            return cache[l]
+        self.installParallelTransfers(mlMesh,
+                                      lambda l,cj: levelMats(l)[:3],
+                                      lambda l: levelMats(l)[3])
+
+    def useGeneralParallelTransfers(self,mlMesh):
+        """Distributed transfers for any space, from replicated global operators.
+
+        The nodal route needs spaces whose dofs are mesh vertices. For quadratic
+        Lagrange, non-conforming P1 and discontinuous spaces -- and for
+        hierarchies that are not nodally nested -- MultilevelProjectionOperators
+        built the operators on global spaces whose dof table was taken from the
+        partitioned subdomain spaces (FemTools.globalL2gFromSubdomain), so
+        their rows and columns are numbered like the distributed vectors. Each
+        rank then keeps the rows it owns, as for the nodal operators.
+
+        Every rank assembles the full global operator first, so this costs
+        memory and time proportional to the global mesh. It is a bridge that
+        makes these problems run, not the scalable design; level-consistent
+        partitioning is. Only node partitioning is supported.
+        """
+        nc = len(self.trialSpaceDictList[0])
+        mt = self.meshTransfers
+        def csr(sparseMat):
+            rowptr,colind,nzval = sparseMat.getCSRrepresentation()
+            return (np.asarray(rowptr),np.asarray(colind),np.asarray(nzval))
+        def keep(rowptr,colind,nzval,select,transform=None):
+            #the same matrix restricted to the entries select() accepts
+            mask = select(nzval)
+            rows = np.repeat(np.arange(rowptr.size-1),np.diff(rowptr))
+            counts = np.bincount(rows[mask],minlength=rowptr.size-1)
+            newptr = np.concatenate([[0],np.cumsum(counts)]).astype(rowptr.dtype)
+            vals = nzval[mask]
+            return (newptr,colind[mask],vals if transform is None else transform(vals))
+        cache = {}
+        def mats(l,cj):
+            if (l,cj) not in cache:
+                coarseOffsets = np.asarray(
+                    self.trialSpaceDictList[l][cj].dofMap.dof_offsets_subdomain_owned)
+                fineOffsets = np.asarray(
+                    self.trialSpaceDictList[l+1][cj].dofMap.dof_offsets_subdomain_owned)
+                P = csr(mt.prolong_bcListDict[cj][l+1])
+                build = lambda c,**kw: vertexProlongationMat(
+                    *c,coarseNodeOffsets=coarseOffsets,fineNodeOffsets=fineOffsets,**kw)
+                prolongMat = build(P)
+                #entries equal to one are what the injection keeps, as in the
+                #global operators' interp_bc
+                injectionMat = build(keep(*P,lambda w: np.abs(w-1.0) < 1.0e-8))
+                #restricted solutions are divided by the row sums of |P|
+                absMat = build(keep(*P,lambda w: np.ones(w.shape,dtype=bool),np.abs))
+                rowSums = nodalRestrictionScaling(absMat)
+                cache[(l,cj)] = (prolongMat,injectionMat,rowSums)
+            return cache[(l,cj)]
+        def stackedMat(l):
+            if nc == 1:
+                return mats(l,0)[0]
+            coarseOffsets = np.asarray(
+                self.trialSpaceDictList[l][0].dofMap.dof_offsets_subdomain_owned)
+            fineOffsets = np.asarray(
+                self.trialSpaceDictList[l+1][0].dofMap.dof_offsets_subdomain_owned)
+            return vertexProlongationMat(
+                *csr(mt.prolong_bcListDict[0][l+1]),coarseNodeOffsets=coarseOffsets,
+                fineNodeOffsets=fineOffsets,blockSize=nc)
+        self.installParallelTransfers(mlMesh,mats,stackedMat,sameSpaces=len(
+            set((type(ts.dofMap).__name__) for ts in self.trialSpaceDictList[0].values())) == 1)
+
+    def installParallelTransfers(self,mlMesh,mats,stackedMat,sameSpaces=True):
+        """Put distributed operators into the mesh transfers.
+
+        mats(l,cj) gives (prolongation, injection, restriction row sums) from
+        level l to l+1 for component cj, as distributed Mats; stackedMat(l)
+        gives the prolongation of the whole interleaved system.
+        """
         nc = len(self.trialSpaceDictList[0])
         #The stacked system's operator is P (x) I only if its vectors interleave
         #the components node by node, so that component c of node i is entry
         #nc*i + c on every level. Nodal spaces give that whenever weak Dirichlet
         #conditions apply, which parallel runs require, but it is a property of
         #how Transport laid the system out, so read it back rather than assume.
-        stacked = all(list(self.offsetListList[l]) == list(range(nc)) and
-                      list(self.strideListList[l]) == [nc]*nc and
-                      getattr(self.par_uList[l],'bs',1) == nc
-                      for l in range(len(mlMesh.meshList)))
+        stacked = sameSpaces and all(
+            list(self.offsetListList[l]) == list(range(nc)) and
+            list(self.strideListList[l]) == [nc]*nc and
+            getattr(self.par_uList[l],'bs',1) == nc
+            for l in range(len(mlMesh.meshList)))
         if not stacked:
             logEvent("free-unknown transfers stay global: the system's "
                      "components are not interleaved node by node, which the "
@@ -6964,26 +7054,14 @@ class MultilevelTransport(object):
         interp_bc = dict((cj,[[]]) for cj in range(nc))
         restrict_bcSum = dict((cj,[[]]) for cj in range(nc))
         for l in range(len(mlMesh.meshList)-1):
-            interpolation = mlMesh.partitionedVertexInterpolation(l)
-            coarseOffsets = np.asarray(mlMesh.meshList[l].nodeOffsets_subdomain_owned)
-            fineOffsets = np.asarray(mlMesh.meshList[l+1].nodeOffsets_subdomain_owned)
-            prolongMat = vertexProlongationMat(*interpolation,
-                                               coarseNodeOffsets=coarseOffsets,
-                                               fineNodeOffsets=fineOffsets)
-            injectionMat = vertexProlongationMat(*interpolation,
-                                                 coarseNodeOffsets=coarseOffsets,
-                                                 fineNodeOffsets=fineOffsets,
-                                                 inheritedOnly=True)
-            rowSums = nodalRestrictionScaling(prolongMat)
             if stacked:
-                stackedMat = prolongMat if nc == 1 else vertexProlongationMat(
-                    *interpolation,coarseNodeOffsets=coarseOffsets,
-                    fineNodeOffsets=fineOffsets,blockSize=nc)
+                stackedP = stackedMat(l)
                 prolongList.append(ParTransferOperator(
-                    stackedMat,self.par_uList[l],self.par_uList[l+1]))
+                    stackedP,self.par_uList[l],self.par_uList[l+1]))
                 restrictList.append(ParTransposeTransferOperator(
-                    stackedMat,self.par_uList[l],self.par_uList[l+1]))
+                    stackedP,self.par_uList[l],self.par_uList[l+1]))
             for cj in range(nc):
+                prolongMat,injectionMat,rowSums = mats(l,cj)
                 coarse = self.uDictList[l][cj].par_dof
                 fine = self.uDictList[l+1][cj].par_dof
                 prolong_bc[cj].append(ParTransferOperator(prolongMat,coarse,fine))

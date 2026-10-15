@@ -112,7 +112,7 @@ def owned_dot(par, a, b):
     return mpi.allreduce(float(np.dot(a[:k], b[:k])), op=MPI.SUM)
 
 
-if size > 1 and space != 'p2':
+if size > 1:
     for l in range(1, nLevels):
         for name in ('prolong_bcListDict', 'restrict_bcListDict',
                      'scaled_restrict_bcListDict', 'interp_bcListDict'):
