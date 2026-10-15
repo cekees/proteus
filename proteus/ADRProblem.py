@@ -189,7 +189,7 @@ def _dirichlet(entries, dim, tol):
     for the interior; it must return None there, and for boundary nodes
     no entry claims.
     """
-    tests = [(None if e["where"] is None else _compile(e["where"]), _Field(e["value"], dim))
+    tests = [(None if e["where"] is None else _compile(e["where"]), _value_of(e, dim))
              for e in entries]
 
     def getDBC(x, flag):
@@ -200,9 +200,9 @@ def _dirichlet(entries, dim, tol):
             ns["y"] = x[1]
         if dim > 2:
             ns["z"] = x[2]
-        for where, field in tests:
+        for where, value in tests:
             if where is None or eval(where, _GLOBALS, ns):
-                return lambda x, t, field=field: field.uOfXT(x, t)
+                return value
         return None
     return getDBC
 
@@ -270,14 +270,17 @@ def _neumann_targets(problem, adr, names):
     return targets
 
 
-def _flux(entry, dim):
-    """The ``(x, t)`` value of one flux condition: a formula or a hydrograph.
+def _value_of(entry, dim):
+    """The ``(x, t)`` value one condition supplies: a formula or a table.
 
-    A hydrograph is tabulated rather than written, because a measured or
-    design discharge cannot be a formula. ``numpy.interp`` is linear between
-    samples and holds the end values outside the range, which is what a
-    hydrograph means by its first and last samples -- extrapolating a
-    discharge past the record is not something to do quietly.
+    How a value is supplied is orthogonal to what kind of condition it is, so
+    this serves Dirichlet and flux conditions alike: a table under a flux is
+    a discharge hydrograph, under a Dirichlet condition a stage hydrograph or
+    a measured inlet value.
+
+    ``numpy.interp`` is linear between samples and holds the end values
+    outside the range, because extrapolating a record past its end is not
+    something to do quietly.
     """
     if entry.get("series") is not None:
         times = numpy.array([t for t, _ in entry["series"]], dtype=float)
@@ -300,7 +303,7 @@ def _neumann(entries, dim, tol):
     None leaves the face to the natural condition, which for a diffusion
     term is zero flux.
     """
-    tests = [(None if e["where"] is None else _compile(e["where"]), _flux(e, dim))
+    tests = [(None if e["where"] is None else _compile(e["where"]), _value_of(e, dim))
              for e in entries]
 
     def getDFBC(x, flag):
@@ -715,6 +718,17 @@ def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
 # --- writing a problem out as p, n and so files ---------------------------------
 
 
+def _supplied_value(entry, dim):
+    """The ``return`` lines for one condition, written out: formula or table."""
+    if entry.get("series") is not None:
+        # linear between samples, end values held outside the range
+        return ["        T = %r" % ([t for t, _ in entry["series"]],),
+                "        Q = %r" % ([v for _, v in entry["series"]],),
+                "        return lambda X, t: float(numpy.interp(t, T, Q))"]
+    return ["        return lambda X, t: Field(%s).uOfXT(X, t)"
+            % _function(dim, entry["value"])]
+
+
 def _spelled(module, obj):
     """``Module.Name`` for a class, preferring an alias to a ``*_base`` name
     (StepControl.FixedStep, not StepControl.SC_base)."""
@@ -856,8 +870,8 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
             P.append("    %s = %s" % (", ".join(xyz), ", ".join("X[%d]" % k for k in range(dim))))
         for e in entries:
             test = "True" if e["where"] is None else e["where"]
-            P += ["    if %s:   # region %s" % (test, e["region"]),
-                  "        return lambda X, t: Field(%s).uOfXT(X, t)" % _function(dim, e["value"])]
+            P.append("    if %s:   # region %s" % (test, e["region"]))
+            P += _supplied_value(e, dim)
         P.append("    return None")
     P += ["", "", "dirichletConditions = {%s}" % ", ".join(
         "%d: getDBC_%s" % (i, nm) for i, nm in enumerate(names))]
@@ -918,14 +932,7 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
         for e in entries:
             test = "True" if e["where"] is None else e["where"]
             P.append("    if %s:   # region %s" % (test, e["region"]))
-            if e.get("series") is not None:
-                # linear between samples, end values held outside the range
-                P += ["        T = %r" % ([t for t, _ in e["series"]],),
-                      "        Q = %r" % ([v for _, v in e["series"]],),
-                      "        return lambda X, t: float(numpy.interp(t, T, Q))"]
-            else:
-                P.append("        return lambda X, t: Field(%s).uOfXT(X, t)"
-                         % _function(dim, e["value"]))
+            P += _supplied_value(e, dim)
         P += ["    # elsewhere the natural condition: zero diffusive flux",
               "    return None"]
     if targets:

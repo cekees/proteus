@@ -214,6 +214,72 @@ def hydrograph_heat():
     }
 
 
+def stage_hydrograph():
+    """du/dt - Laplace(u) = x on the unit square, u = (1 + t)x.
+
+    On x = 1 the value is 1 + t -- uniform along the face, varying in time --
+    which is what a stage record is: a gauge reading, not a formula. Given as
+    the two samples [[0, 1], [1, 2]], for which linear interpolation is
+    exact. The other three sides carry the formula.
+
+    This is the case a `type: hydrograph` could not express, because it was
+    wired to the flux path. Supplying a value by table is orthogonal to which
+    kind of condition it is.
+    """
+    return {
+        "adr": {
+            "dim": 2, "components": ["u"],
+            "equations": [{
+                "component": "u",
+                "mass": {"m": "u", "dm": {"u": "1"}, "depends_on": {"u": "linear"}},
+                "diffusion": {"u": {"rowptr": [0, 1, 2], "colind": [0, 1],
+                                    "a": ["1.0", "1.0"], "da": {}, "depends_on": {}}},
+                "reaction": {"r": "-x", "dr": {}, "depends_on": {}},
+            }],
+        },
+        "domain": {"lower": [0.0, 0.0], "upper": [1.0, 1.0]},
+        "time": [0.0, 1.0],
+        "has_mass": True,
+        "dirichlet": [
+            {"component": "u", "region": "gauge", "where": "x >= 1.0 - tol",
+             "series": [[0.0, 1.0], [1.0, 2.0]]},
+            {"component": "u", "region": "other_sides",
+             "where": "x <= tol or y <= tol or y >= 1.0 - tol",
+             "value": "(1.0 + t)*x"},
+        ],
+        "initial": {"u": "x"},
+        "exact": {"u": "(1.0 + t)*x"},
+    }
+
+
+def test_a_dirichlet_value_may_be_tabulated():
+    """A stage hydrograph: the gauge face is given by table, not formula.
+
+    u = (1 + t)x is linear in x, so P1 represents it exactly and the table is
+    exact for 1 + t; what is left is the solver's tolerance, ~1e-8. A frozen
+    table gives >1e-2 (next test), six orders away, so this threshold is not
+    a near thing.
+    """
+    errors, _ = _rate(stage_hydrograph(), time={"dt": 0.05})
+    assert errors[0] < 1.0e-7, errors
+
+
+def test_a_frozen_stage_table_does_not_track_the_solution():
+    """The sharp check: hold the gauge at its first reading and it is wrong."""
+    problem = stage_hydrograph()
+    problem["dirichlet"][0]["series"] = [[0.0, 1.0], [1.0, 1.0]]
+    errors, _ = _rate(problem, time={"dt": 0.05})
+    assert errors[0] > 1.0e-2, errors
+
+
+def test_the_emitted_p_file_carries_a_tabulated_dirichlet(tmp_path):
+    ADRProblem.emit_pn(stage_hydrograph(), {"u": ("CG", 1)}, 8, time={"dt": 0.5},
+                       name="stage", directory=str(tmp_path))
+    text = (tmp_path / "stage_p.py").read_text()
+    assert "def getDBC_u(X, flag):" in text
+    assert "numpy.interp(t, T, Q)" in text
+
+
 def test_a_hydrograph_is_interpolated_in_time():
     """A two-sample table that is exact for the true flux still converges."""
     problem = hydrograph_heat()
@@ -225,9 +291,9 @@ def test_a_hydrograph_is_interpolated_in_time():
     assert rate > 1.5, (errors, rate)
 
 
-def test_a_hydrograph_holds_its_end_values():
+def test_a_table_holds_its_end_values():
     """Outside the record the first and last samples hold; nothing extrapolates."""
-    flux = ADRProblem._flux({"series": [[0.0, -2.0], [1.0, -4.0]]}, 2)
+    flux = ADRProblem._value_of({"series": [[0.0, -2.0], [1.0, -4.0]]}, 2)
     assert flux(None, -5.0) == -2.0
     assert flux(None, 0.5) == -3.0
     assert flux(None, 99.0) == -4.0
