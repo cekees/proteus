@@ -44,7 +44,7 @@ def _mpiexec():
     return shutil.which('mpiexec') or shutil.which('mpirun')
 
 
-def _run(n_levels, mode, n_ranks, dim=2):
+def _run(n_levels, mode, n_ranks, dim=2, components=1, all_components=False):
     mpiexec = _mpiexec()
     if mpiexec is None:
         pytest.skip('no MPI launcher available')
@@ -54,11 +54,13 @@ def _run(n_levels, mode, n_ranks, dim=2):
     env['PYTHONPATH'] = os.pathsep.join(
         [p for p in sys.path if p] + [env.get('PYTHONPATH', '')]).strip(os.pathsep)
     result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable, helper,
-                             str(n_levels), mode, str(dim)],
+                             str(n_levels), mode, str(dim), str(components)],
                             capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     for line in result.stdout.splitlines():
         if line.startswith('RESULT'):
+            if all_components:
+                return [float(v) for v in line.split('checksums=')[1].split(',')]
             return float(line.split('checksum=')[1].split()[0])
     raise AssertionError(result.stdout + result.stderr)
 
@@ -79,3 +81,15 @@ def test_pcmg_preconditioned_gmres_reaches_the_direct_solution(dim):
     direct = _run(3, 'direct', 1, dim)
     converged = _run(3, 'pcmg_its', 3, dim)
     assert abs(converged - direct) < 1.0e-9 * abs(direct), (converged, direct)
+
+
+@pytest.mark.parametrize('components', [2, 3])
+def test_pcmg_over_a_stacked_system_matches_the_single_problem(components):
+    """PCMG's interpolation for a multi-component system is P (x) I, in the
+    interleaved layout the system's matrix and vectors use. Each component of an
+    uncoupled system must come out as the single-component V-cycle."""
+    single = _run(3, 'mgm', 1)
+    values = _run(3, 'pcmg', 3, components=components, all_components=True)
+    assert len(values) == components, values
+    for c, value in enumerate(values):
+        assert abs(value - single) < 1.0e-11 * abs(single), (c, value, single)

@@ -44,7 +44,7 @@ def _mpiexec():
     return shutil.which('mpiexec') or shutil.which('mpirun')
 
 
-def _run(n_levels, smoother, n_ranks, cycles=3):
+def _run(n_levels, smoother, n_ranks, cycles=3, components=1, all_components=False):
     mpiexec = _mpiexec()
     if mpiexec is None:
         pytest.skip('no MPI launcher available')
@@ -54,11 +54,13 @@ def _run(n_levels, smoother, n_ranks, cycles=3):
     env['PYTHONPATH'] = os.pathsep.join(
         [p for p in sys.path if p] + [env.get('PYTHONPATH', '')]).strip(os.pathsep)
     result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable, helper,
-                             str(n_levels), smoother, str(cycles)],
+                             str(n_levels), smoother, str(cycles), '3', str(components)],
                             capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     for line in result.stdout.splitlines():
         if line.startswith('RESULT'):
+            if all_components:
+                return [float(v) for v in line.split('checksums=')[1].split(',')]
             return float(line.split('checksum=')[1].split()[0])
     raise AssertionError(result.stdout + result.stderr)
 
@@ -82,3 +84,25 @@ def test_block_smoothers_converge_to_the_serial_solution(smoother, n_ranks):
     assert abs(parallel - serial) < 1.0e-9 * abs(serial), (
         "%s MGM on %i ranks gave %.12e against %.12e in serial"
         % (smoother, n_ranks, parallel, serial))
+
+
+@pytest.mark.parametrize('components', [2, 3])
+@pytest.mark.parametrize('n_ranks', [2, 3])
+def test_every_component_is_transferred_like_a_single_one(components, n_ranks):
+    """Uncoupled copies of one problem must each come out as the single problem.
+
+    The stacked system interleaves its components node by node, so the transfer
+    operator it needs is P (x) I in that layout; the free-unknown operators used
+    to be built for a single component only, and a multi-component system in
+    parallel was left with global matrices that cannot act on a rank's vectors.
+    Jacobi's cycle is exactly the serial one, so any slip in how components are
+    interleaved -- a swapped pair, a component taking another's parents -- shows
+    up as a component that disagrees with the single-component answer.
+    """
+    single = _run(3, 'Jacobi', 1)
+    values = _run(3, 'Jacobi', n_ranks, components=components, all_components=True)
+    assert len(values) == components, values
+    for c, value in enumerate(values):
+        assert abs(value - single) < 1.0e-11 * abs(single), (
+            "component %i of %i on %i ranks gave %.14e against %.14e for the "
+            "same problem alone" % (c, components, n_ranks, value, single))

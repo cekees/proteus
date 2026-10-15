@@ -6941,11 +6941,20 @@ class MultilevelTransport(object):
             return
         mlMesh.calculateNodeParents()
         nc = len(self.trialSpaceDictList[0])
-        stacked = nc == 1
+        #The stacked system's operator is P (x) I only if its vectors interleave
+        #the components node by node, so that component c of node i is entry
+        #nc*i + c on every level. Nodal spaces give that whenever weak Dirichlet
+        #conditions apply, which parallel runs require, but it is a property of
+        #how Transport laid the system out, so read it back rather than assume.
+        stacked = all(list(self.offsetListList[l]) == list(range(nc)) and
+                      list(self.strideListList[l]) == [nc]*nc and
+                      getattr(self.par_uList[l],'bs',1) == nc
+                      for l in range(len(mlMesh.meshList)))
         if not stacked:
-            logEvent("free-unknown transfers stay global: the distributed nodal "
-                     "operators for the stacked system do not handle multiple "
-                     "components yet (the per-component ones are built)",level=2)
+            logEvent("free-unknown transfers stay global: the system's "
+                     "components are not interleaved node by node, which the "
+                     "distributed stacked operator assumes (the per-component "
+                     "ones are built)",level=2)
         mt = self.meshTransfers
         prolongList = [[]]
         restrictList = [[]]
@@ -6963,10 +6972,12 @@ class MultilevelTransport(object):
                                                 inheritedOnly=True)
             rowSums = nodalRestrictionScaling(prolongMat)
             if stacked:
+                stackedMat = prolongMat if nc == 1 else nodalProlongationMat(
+                    parents,coarseOffsets,fineOffsets,blockSize=nc)
                 prolongList.append(ParTransferOperator(
-                    prolongMat,self.par_uList[l],self.par_uList[l+1]))
+                    stackedMat,self.par_uList[l],self.par_uList[l+1]))
                 restrictList.append(ParTransposeTransferOperator(
-                    prolongMat,self.par_uList[l],self.par_uList[l+1]))
+                    stackedMat,self.par_uList[l],self.par_uList[l+1]))
             for cj in range(nc):
                 coarse = self.uDictList[l][cj].par_dof
                 fine = self.uDictList[l+1][cj].par_dof

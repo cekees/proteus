@@ -28,6 +28,7 @@ from proteus import Comm
 comm = Comm.init()
 from mpi4py import MPI
 from proteus.iproteus import opts as runopts
+from multilevel_problems import make_uncoupled_components
 from proteus import (MeshTools, defaults, default_n, default_s, default_so,
                      NumericalSolution, LinearSolvers)
 
@@ -38,6 +39,8 @@ mode = sys.argv[2] if len(sys.argv) > 2 else 'pcmg'
 assert mode in ('mgm', 'pcmg', 'pcmg_its', 'direct'), mode
 dim = int(sys.argv[3]) if len(sys.argv) > 3 else 2
 assert dim in (2, 3), dim
+NC = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+assert NC == 1 or dim == 2, 'components are only wired up for the 2D problem'
 testroot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 if dim == 2:
@@ -49,6 +52,8 @@ if dim == 2:
     p.L = (1., 1., 1.)
     n.femSpaces[0] = default_n.C0_AffineLinearOnSimplexWithNodalBasis
     n.numericalFluxType = default_n.Advection_DiagonalUpwind_Diffusion_SIPG_exterior
+    if NC > 1:
+        make_uncoupled_components(p, n, NC, default_n.C0_AffineLinearOnSimplexWithNodalBasis)
 else:
     # a regular tetrahedral mesh on a domain that does not start at the
     # origin, which is what first exposed finer levels being left unshifted
@@ -93,25 +98,28 @@ else:
         options['ksp_atol'] = '1e-14'
     n.petscOptions = options
 so = default_so
-so.name = p.name = "pcmg_%s_%d_%dd_%d" % (mode, nLevels, dim, size)
+so.name = p.name = "pcmg_%s_%d_%dd_%dc_%d" % (mode, nLevels, dim, NC, size)
 so.sList = [default_s]
 runopts.logLevel = 1
 runopts.verbose = False
 ns = NumericalSolution.NS_base(so, [p], [n], so.sList, runopts)
 ns.calculateSolution("pcmg")
 lm = ns.modelList[0].levelModelList[-1]
-dm = lm.u[0].femSpace.dofMap
-N = dm.nDOF_all_processes
-g = np.zeros(N)
-s2g = np.asarray(dm.subdomain2global)
-off = np.asarray(dm.dof_offsets_subdomain_owned)
-nown = int(off[rank + 1] - off[rank])
-dof = np.asarray(lm.u[0].dof)
-for i in range(nown):
-    g[int(s2g[i])] = dof[i]
-G = np.zeros(N)
-mpi.Allreduce(g, G, op=MPI.SUM)
+sums = []
+for cj in range(NC):
+    dm = lm.u[cj].femSpace.dofMap
+    N = dm.nDOF_all_processes
+    g = np.zeros(N)
+    s2g = np.asarray(dm.subdomain2global)
+    off = np.asarray(dm.dof_offsets_subdomain_owned)
+    nown = int(off[rank + 1] - off[rank])
+    dof = np.asarray(lm.u[cj].dof)
+    for i in range(nown):
+        g[int(s2g[i])] = dof[i]
+    G = np.zeros(N)
+    mpi.Allreduce(g, G, op=MPI.SUM)
+    sums.append(G.sum())
 if rank == 0:
     print(f"RESULT mode={mode} dim={dim} levels={nLevels} ranks={size} N={N} "
-          f"checksum={G.sum():.12e} norm={np.linalg.norm(G):.12e}")
+          f"checksum={sums[0]:.12e} checksums={','.join('%.12e' % c for c in sums)}")
     sys.stdout.flush()

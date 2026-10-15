@@ -29,6 +29,7 @@ from proteus.iproteus import opts as runopts
 from proteus import (MeshTools, defaults, default_n, default_s, default_so,
                      NumericalSolution, LinearSolvers)
 from proteus.superluWrappers import SparseMatrix
+from multilevel_problems import make_uncoupled_components
 
 rank, size = comm.rank(), comm.size()
 mpi = comm.comm.tompi4py()
@@ -43,6 +44,15 @@ n = defaults.load_numerics('poisson_het_2d_c0pk_n', TESTDIR)
 p.meshfile = os.path.join(TESTDIR, 'square4x4')
 p.x0 = (0., 0., 0.)
 p.L = (1., 1., 1.)
+n.nLevels = nLevels
+n.femSpaces = dict((i, {'p1': default_n.C0_AffineLinearOnSimplexWithNodalBasis,
+                        'p1x2': default_n.C0_AffineLinearOnSimplexWithNodalBasis,
+                        'p2': default_n.C0_AffineQuadraticOnSimplexWithNodalBasis}[space])
+                   for i in range(NC))
+if NC == 2:
+    # two uncoupled copies of the same Poisson problem: exercises the
+    # per-component operators, and the components must agree with each other
+    make_uncoupled_components(p, n, NC, default_n.C0_AffineLinearOnSimplexWithNodalBasis)
 n.nLevels = nLevels
 n.femSpaces = dict((i, {'p1': default_n.C0_AffineLinearOnSimplexWithNodalBasis,
                         'p1x2': default_n.C0_AffineLinearOnSimplexWithNodalBasis,

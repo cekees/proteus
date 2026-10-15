@@ -1739,7 +1739,7 @@ if __name__ == '__main__':
 
 
 def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None,
-                         inheritedOnly=False):
+                         inheritedOnly=False,blockSize=1):
     """The coarse-to-fine prolongation for a C0 nodal space, as a PETSc Mat.
 
     Uniform refinement keeps each coarse node's number and adds the rest at
@@ -1773,10 +1773,22 @@ def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None
         sitting on coarse nodes -- the interpolation the multilevel
         solvers use to restrict a *solution* (proteus's interp_bcList).
 
+    blockSize : int
+        Number of components interleaved in the vectors the Mat acts on, so
+        that component c of node i is row ``blockSize*i + c``. The result is
+        then P (x) I -- every component transferred by the same nodal
+        operator -- laid out the way the stacked system's vectors and matrices
+        are, which is what PETSc's multigrid needs for a multi-component
+        problem. Nodal spaces are always interleaved: the components share a
+        dof count, and the system is interleaved whenever weak Dirichlet
+        conditions apply, which parallel runs require.
+
     Returns
     -------
     petsc4py Mat with fine rows and coarse columns.
     """
+    bs = int(blockSize)
+    assert bs >= 1, bs
     if comm is None:
         comm = Comm.get()
     rank = comm.rank()
@@ -1793,8 +1805,8 @@ def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None
 
     prolong = p4pyPETSc.Mat().create(comm.comm.tompi4py())
     prolong.setType('aij')
-    prolong.setSizes([[fine_hi-fine_lo,nFine_global],
-                      [coarse_hi-coarse_lo,nCoarse_global]])
+    prolong.setSizes([[bs*(fine_hi-fine_lo),bs*nFine_global],
+                      [bs*(coarse_hi-coarse_lo),bs*nCoarse_global]])
     #at most two coarse nodes per fine node; splitting the count into the part
     #this rank owns and the rest keeps PETSc from over-allocating
     local = numpy.where((owned >= coarse_lo) & (owned < coarse_hi),1,0)
@@ -1803,6 +1815,10 @@ def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None
     if inheritedOnly:
         d_nnz = numpy.where(inherited,d_nnz,0).astype('i')
         o_nnz = numpy.where(inherited,o_nnz,0).astype('i')
+    if bs > 1:
+        #each node's row is repeated once per component, with the same pattern
+        d_nnz = numpy.repeat(d_nnz,bs).astype('i')
+        o_nnz = numpy.repeat(o_nnz,bs).astype('i')
     prolong.setPreallocationNNZ((d_nnz,o_nnz))
     prolong.setOption(p4pyPETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR,False)
 
@@ -1810,9 +1826,11 @@ def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None
         row = fine_lo + i
         a,b = int(owned[i,0]),int(owned[i,1])
         if a == b:
-            prolong.setValues([row],[a],[1.0])
+            for c in range(bs):
+                prolong.setValues([bs*row+c],[bs*a+c],[1.0])
         elif not inheritedOnly:
-            prolong.setValues([row],[a,b],[0.5,0.5])
+            for c in range(bs):
+                prolong.setValues([bs*row+c],[bs*a+c,bs*b+c],[0.5,0.5])
     prolong.assemblyBegin()
     prolong.assemblyEnd()
     return prolong
