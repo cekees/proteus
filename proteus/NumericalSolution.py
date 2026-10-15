@@ -208,42 +208,7 @@ class NS_base(object):  # (HasTraits):
             else:
                 logEvent("Generating mesh for "+p.name)
             #support for old-style domain input
-            if p.domain is None:
-                if p.nd == 1:
-                    p.domain = Domain.RectangularDomain(L=p.L[:1],
-                                                        x=p.x0[:1],
-                                                        name=p.name)
-                elif p.nd == 2:
-                    if p.polyfile is not None:
-                        p.domain = Domain.PlanarStraightLineGraphDomain(fileprefix=p.polyfile,name=p.polyfile)
-                    elif p.meshfile != None:
-                        p.domain = Domain.Mesh2DMDomain(p.meshfile)
-                    else:
-                        p.domain = Domain.RectangularDomain(L=p.L[:2],
-                                                            x=p.x0[:2],
-                                                            name=p.name)
-                elif p.nd == 3:
-                    if p.polyfile is not None:
-                        p.domain = Domain.PiecewiseLinearComplexDomain(fileprefix=p.polyfile,name=p.polyfile)
-                    elif p.meshfile is not None:
-                        p.domain = Domain.Mesh3DMDomain(p.meshfile)
-                    else:
-                        p.domain = Domain.RectangularDomain(L=p.L[:3],
-                                                            x=p.x0[:3],
-                                                            name=p.name)
-                else:
-                    raise RuntimeError("No support for domains in more than three dimensions")
-
-                #Ensuring backwards compatibility with isolated mesh generation routines
-                meshOptions = MeshTools.getMeshOptions(p.domain)
-                meshOptions.nnx, meshOptions.nny, meshOptions.nnz = n.nnx,n.nny,n.nnz
-                meshOptions.nn = n.nn
-                meshOptions.nLevels = n.nLevels
-                meshOptions.hex = n.hex
-                meshOptions.quad = n.quad
-                meshOptions.triangleFlag=n.triangleFlag
-                meshOptions.triangleOptions=n.triangleOptions
-                meshOptions.genMesh=p.genMesh
+            MeshTools.setDomainFromPhysics(p, n)
         try:
             mlMesh = self.pList[0].domain.mesh
         except:
