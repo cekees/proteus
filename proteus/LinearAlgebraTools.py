@@ -1738,7 +1738,8 @@ if __name__ == '__main__':
 #         rnorm = l2Norm(resList[0])
 
 
-def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None):
+def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None,
+                         inheritedOnly=False):
     """The coarse-to-fine prolongation for a C0 nodal space, as a PETSc Mat.
 
     Uniform refinement keeps each coarse node's number and adds the rest at
@@ -1764,6 +1765,13 @@ def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None
         nodes [offsets[r], offsets[r+1]). Node-based partitioning numbers the
         owned nodes contiguously in rank order, which is also how PETSc
         distributes rows, so no index translation is needed.
+
+    inheritedOnly : bool
+        Keep only the rows of the nodes the refinement inherited, leaving the
+        rows of added nodes empty. That is the injection of the coarse
+        nodes into the fine ones, whose transpose picks the fine values
+        sitting on coarse nodes -- the interpolation the multilevel
+        solvers use to restrict a *solution* (proteus's interp_bcList).
 
     Returns
     -------
@@ -1792,6 +1800,9 @@ def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None
     local = numpy.where((owned >= coarse_lo) & (owned < coarse_hi),1,0)
     d_nnz = numpy.where(inherited,local[:,0],local.sum(axis=1)).astype('i')
     o_nnz = numpy.where(inherited,1-local[:,0],2-local.sum(axis=1)).astype('i')
+    if inheritedOnly:
+        d_nnz = numpy.where(inherited,d_nnz,0).astype('i')
+        o_nnz = numpy.where(inherited,o_nnz,0).astype('i')
     prolong.setPreallocationNNZ((d_nnz,o_nnz))
     prolong.setOption(p4pyPETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR,False)
 
@@ -1800,7 +1811,7 @@ def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None
         a,b = int(owned[i,0]),int(owned[i,1])
         if a == b:
             prolong.setValues([row],[a],[1.0])
-        else:
+        elif not inheritedOnly:
             prolong.setValues([row],[a,b],[0.5,0.5])
     prolong.assemblyBegin()
     prolong.assemblyEnd()
@@ -1902,6 +1913,34 @@ class ParTransposeTransferOperator(ParTransferOperator):
         self._rowVec.getArray()[:] = x[:self.nOwnedColumns]
         self.mat.multTranspose(self._rowVec,self._columnVec)
         y[:self.nOwnedRows] = self._columnVec.getArray()
+        refresh = self._parVecFor(y,self.rowTemplate)
+        if refresh is not None:
+            refresh.scatter_forward_insert()
+        return y
+
+
+class ParScaledTransposeTransferOperator(ParTransposeTransferOperator):
+    """The row-sum-normalized restriction, for restricting *solutions*.
+
+    P^T adds up the contributions of every fine node that sees a coarse node,
+    which is right for residuals and wrong for a solution, so the multilevel
+    literature (Kees et al. 2006, section 2.3) scales each row by its sum. The
+    scaling is the vector nodalRestrictionScaling returns, one entry per owned
+    coarse node; applying it after the transpose product keeps the whole thing
+    a single distributed operation, so ghosts are refreshed once, last.
+    """
+    def __init__(self,mat,columnTemplate,rowTemplate,rowSums):
+        ParTransposeTransferOperator.__init__(self,mat,columnTemplate,rowTemplate)
+        self.rowSums = numpy.array(rowSums.getArray(),copy=True)
+        assert self.rowSums.size == self.nOwnedRows, (self.rowSums.size,self.nOwnedRows)
+        assert (self.rowSums > 0.0).all(), "a coarse node has no fine node under it"
+
+    def matvec(self,x,y):
+        assert x.size == self.shape[1], (x.size,self.shape)
+        assert y.size == self.shape[0], (y.size,self.shape)
+        self._rowVec.getArray()[:] = x[:self.nOwnedColumns]
+        self.mat.multTranspose(self._rowVec,self._columnVec)
+        y[:self.nOwnedRows] = self._columnVec.getArray()/self.rowSums
         refresh = self._parVecFor(y,self.rowTemplate)
         if refresh is not None:
             refresh.scatter_forward_insert()

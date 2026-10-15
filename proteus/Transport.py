@@ -6286,7 +6286,10 @@ class MultilevelTransport(object):
         # partitioning, which is tracked separately.
         from . import Comm
         _comm = Comm.get()
-        self.buildGlobalTransferSpaces = _comm.size() > 1
+        #A single level has no transfers, so it needs none of this -- and for a
+        #space whose dof map is built from the partitioned mesh (quadratic
+        #Lagrange, say) a global space cannot even be constructed.
+        self.buildGlobalTransferSpaces = _comm.size() > 1 and len(mlMesh.meshList) > 1
         global_trialSpaceDictList = []
         global_bcDictList = []
         for mesh in mlMesh.meshList:
@@ -6340,6 +6343,19 @@ class MultilevelTransport(object):
             logEvent("Setting Boundary Conditions-3")
             self.bcDictList.append(dirichletConditionsDict)
             if self.buildGlobalTransferSpaces:
+                notNodal = sorted(set(type(ts.dofMap).__name__
+                                      for ts in trialSpaceDict.values()
+                                      if not isinstance(ts.dofMap,FemTools.NodalDOFMap)))
+                if notNodal:
+                    raise NotImplementedError(
+                        "multilevel runs on more than one rank need every space's "
+                        "dofs to sit on the mesh vertices, and this problem uses "
+                        "%s. The transfer operators for such spaces are built "
+                        "from a global space, which their dof maps cannot "
+                        "construct, and a global operator cannot act on a rank's "
+                        "subdomain vectors anyway. Use nLevels=1, or run in "
+                        "serial; level-consistent partitioning is what removes "
+                        "this restriction." % ", ".join(notNodal))
                 global_trialSpaceDict = dict(
                     [(cj,TrialSpaceType(mesh,nd))
                      for (cj,TrialSpaceType) in TrialSpaceTypeDict.items()])
@@ -6898,9 +6914,24 @@ class MultilevelTransport(object):
         be read in the partitioned node numbering, which is what
         partitionedNodeParents does.
 
+        There are two families of operators and they act on different vectors.
+        prolongList/restrictList act on the *free* unknowns of the stacked
+        system, which is what the linear multigrid solvers see. The
+        *_bcListDict operators act on each component's full dof array,
+        Dirichlet dofs included, which is what the nonlinear nested iteration
+        and the post-processing see. Parallel runs require weak Dirichlet
+        conditions (OneLevelTransport asserts it), so no dof is ever eliminated
+        and the two families are the same matrix up to how the vectors are laid
+        out -- which is why one prolongation Mat serves both. Strong
+        elimination of Dirichlet dofs is a serial-only variant: the free
+        numbering stops coinciding with the vertex numbering, and
+        nodalTransfersApply declines it.
+
         Anything that does not qualify keeps the global operators. They do not
         scale, but they are what makes a multilevel mesh constructible at all
-        in parallel for those cases, which beats refusing to run.
+        in parallel for those cases, which beats refusing to run. Applying one
+        to a subdomain vector is refused by SparseMatrix.matvec rather than
+        left to corrupt the heap.
         """
         if not FemTools.nodalTransfersApply(mlMesh,
                                             self.trialSpaceDictList,
@@ -6908,24 +6939,57 @@ class MultilevelTransport(object):
             logEvent("mesh transfers stay global: this problem does not qualify "
                      "for the nodal operators",level=2)
             return
-        if len(self.trialSpaceDictList[0]) != 1:
-            logEvent("mesh transfers stay global: the distributed nodal "
-                     "operators do not handle multiple components yet",level=2)
-            return
         mlMesh.calculateNodeParents()
+        nc = len(self.trialSpaceDictList[0])
+        stacked = nc == 1
+        if not stacked:
+            logEvent("free-unknown transfers stay global: the distributed nodal "
+                     "operators for the stacked system do not handle multiple "
+                     "components yet (the per-component ones are built)",level=2)
+        mt = self.meshTransfers
         prolongList = [[]]
         restrictList = [[]]
+        prolong_bc = dict((cj,[[]]) for cj in range(nc))
+        restrict_bc = dict((cj,[[]]) for cj in range(nc))
+        scaled_restrict_bc = dict((cj,[[]]) for cj in range(nc))
+        interp_bc = dict((cj,[[]]) for cj in range(nc))
+        restrict_bcSum = dict((cj,[[]]) for cj in range(nc))
         for l in range(len(mlMesh.meshList)-1):
-            prolongMat = nodalProlongationMat(
-                mlMesh.partitionedNodeParents(l),
-                np.asarray(mlMesh.meshList[l].nodeOffsets_subdomain_owned),
-                np.asarray(mlMesh.meshList[l+1].nodeOffsets_subdomain_owned))
-            prolongList.append(ParTransferOperator(
-                prolongMat,self.par_uList[l],self.par_uList[l+1]))
-            restrictList.append(ParTransposeTransferOperator(
-                prolongMat,self.par_uList[l],self.par_uList[l+1]))
-        self.meshTransfers.prolongList = prolongList
-        self.meshTransfers.restrictList = restrictList
+            parents = mlMesh.partitionedNodeParents(l)
+            coarseOffsets = np.asarray(mlMesh.meshList[l].nodeOffsets_subdomain_owned)
+            fineOffsets = np.asarray(mlMesh.meshList[l+1].nodeOffsets_subdomain_owned)
+            prolongMat = nodalProlongationMat(parents,coarseOffsets,fineOffsets)
+            injectionMat = nodalProlongationMat(parents,coarseOffsets,fineOffsets,
+                                                inheritedOnly=True)
+            rowSums = nodalRestrictionScaling(prolongMat)
+            if stacked:
+                prolongList.append(ParTransferOperator(
+                    prolongMat,self.par_uList[l],self.par_uList[l+1]))
+                restrictList.append(ParTransposeTransferOperator(
+                    prolongMat,self.par_uList[l],self.par_uList[l+1]))
+            for cj in range(nc):
+                coarse = self.uDictList[l][cj].par_dof
+                fine = self.uDictList[l+1][cj].par_dof
+                prolong_bc[cj].append(ParTransferOperator(prolongMat,coarse,fine))
+                restrict_bc[cj].append(ParTransposeTransferOperator(prolongMat,coarse,fine))
+                scaled_restrict_bc[cj].append(
+                    ParScaledTransposeTransferOperator(prolongMat,coarse,fine,rowSums))
+                #the injection's transpose, so it lands coarse <- fine like the
+                #restrictions; entries are 1 on the nodes the refinement inherited
+                interp_bc[cj].append(ParTransposeTransferOperator(injectionMat,coarse,fine))
+                #NLNI divides a restricted solution by these, ghosts included
+                sums = np.zeros(coarse.proteus_array.size)
+                sums[:coarse.dim_proc] = rowSums.getArray()
+                coarse.duplicate_with_array(sums).scatter_forward_insert()
+                restrict_bcSum[cj].append(sums)
+        if stacked:
+            mt.prolongList = prolongList
+            mt.restrictList = restrictList
+        mt.prolong_bcListDict = prolong_bc
+        mt.restrict_bcListDict = restrict_bc
+        mt.scaled_restrict_bcListDict = scaled_restrict_bc
+        mt.interp_bcListDict = interp_bc
+        mt.restrict_bcSumListDict = restrict_bcSum
         logEvent("mesh transfers assembled as distributed matrices over %i levels"
                  % (len(mlMesh.meshList),),level=2)
 
