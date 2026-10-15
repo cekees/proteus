@@ -1098,12 +1098,18 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
                 const int nN1_global_old = mesh.elementNodesArray[eN_star_old*mesh.nNodes_element+nN1];
                 const int nN0_global     = nodeNumbering_global_old2new[nN0_global_old];
                 const int nN1_global     = nodeNumbering_global_old2new[nN1_global_old];
-                bool foundEdge = false;
                 int nodes[2];
                 nodes[0] = nN0_global;
                 nodes[1] = nN1_global;
                 NodeTuple<2> et(nodes);
-                const int edge_global = nodesEdgeMap_global_new[et];
+                //Only some pairs of an element's nodes are edges: every pair in a
+                //simplex, but not the face and body diagonals of a quadrilateral
+                //or hexahedron. operator[] would insert a default entry for a
+                //diagonal and report it as edge 0.
+                map<NodeTuple<2>, int>::const_iterator edge_it = nodesEdgeMap_global_new.find(et);
+                if (edge_it == nodesEdgeMap_global_new.end())
+                  continue;
+                const int edge_global = edge_it->second;
                 if (edge_global < edgeOffsets_new[rank] || edge_global >= edgeOffsets_new[rank+1])
                   edges_overlap.insert(edge_global);
               }//edges
@@ -1172,12 +1178,15 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
                     const int nN1_global_old = mesh.elementNodesArray[eN_star_old*mesh.nNodes_element+nN1];
                     const int nN0_global     = nodeNumbering_global_old2new[nN0_global_old];
                     const int nN1_global     = nodeNumbering_global_old2new[nN1_global_old];
-                    bool foundEdge = false;
                     int nodes[2];
                     nodes[0] = nN0_global;
                     nodes[1] = nN1_global;
                     NodeTuple<2> et(nodes);
-                    const int edge_global = nodesEdgeMap_global_new[et];
+                    //see the identical lookup in step 6
+                    map<NodeTuple<2>, int>::const_iterator edge_it = nodesEdgeMap_global_new.find(et);
+                    if (edge_it == nodesEdgeMap_global_new.end())
+                      continue;
+                    const int edge_global = edge_it->second;
                     if (edge_global < edgeOffsets_new[rank] || edge_global >= edgeOffsets_new[rank+1])
                       new_edges_overlap.insert(edge_global);
                   }//edges
@@ -1218,6 +1227,43 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
 
       overlap_remaining--;
     }//ovelap loop
+
+  //
+  //7b. Every node of every element in the subdomain has to be in the subdomain.
+  //    The overlap nodes above come from the node star, which is built from
+  //    edges, but the elements come from node-to-element membership. For a
+  //    simplex every node of an element is an edge neighbor of any other, so the
+  //    two agree. For a quadrilateral or hexahedron they do not: the face and
+  //    body diagonal nodes of an element are not edge neighbors, so an element
+  //    in the star of an owned node could reference nodes the subdomain never
+  //    received. nodeNumbering_global2subdomain is a std::map read with
+  //    operator[], so a missing node did not fail -- it silently became
+  //    subdomain node 0, giving distorted elements and, on more ranks, crashes.
+  //    This adds nothing for simplices.
+  //
+  {
+    const int nOwnedNodesBegin = nodeOffsets_new[rank];
+    const int nOwnedNodesEnd = nodeOffsets_new[rank+1];
+    for (set<int>::iterator eN_oldp = elements_subdomain_owned.begin();
+         eN_oldp != elements_subdomain_owned.end(); eN_oldp++)
+      for (int nN = 0; nN < mesh.nNodes_element; nN++)
+        {
+          const int nN_new = nodeNumbering_global_old2new[mesh.elementNodesArray[(*eN_oldp)*mesh.nNodes_element+nN]];
+          if (nN_new < nOwnedNodesBegin || nN_new >= nOwnedNodesEnd)
+            nodes_overlap.insert(nN_new);
+        }
+    for (set<int>::iterator eN_newp = elements_overlap.begin();
+         eN_newp != elements_overlap.end(); eN_newp++)
+      {
+        const int eN_old = elementNumbering_global_new2old[*eN_newp];
+        for (int nN = 0; nN < mesh.nNodes_element; nN++)
+          {
+            const int nN_new = nodeNumbering_global_old2new[mesh.elementNodesArray[eN_old*mesh.nNodes_element+nN]];
+            if (nN_new < nOwnedNodesBegin || nN_new >= nOwnedNodesEnd)
+              nodes_overlap.insert(nN_new);
+          }
+      }
+  }
 
   //
   //8. Build subdomain meshes in new numbering, assumes memory not allocated in subdomain mesh
