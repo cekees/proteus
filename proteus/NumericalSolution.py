@@ -243,6 +243,8 @@ class NS_base(object):  # (HasTraits):
                 p.domain.MeshOptions.triangleFlag=n.triangleFlag
                 p.domain.MeshOptions.triangleOptions=n.triangleOptions
                 p.domain.MeshOptions.genMesh=p.genMesh
+                p.domain.MeshOptions.parallelPartitioningType=n.parallelPartitioningType
+                p.domain.MeshOptions.nLayersOfOverlapForParallel=n.nLayersOfOverlapForParallel
         try:
             mlMesh = self.pList[0].domain.mesh
         except:

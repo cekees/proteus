@@ -21,9 +21,10 @@ translated to global dof numbers and kept, and nothing is gathered
   waited for it forever. A discontinuous problem on two ranks has exactly that
   rank.
 
-Not covered: solver-level cross-checks for the discontinuous space. Its
-parallel discretization depends on the rank count already with a single level
-and a direct solve, so a multigrid comparison would measure that instead.
+* A discontinuous space gets the same discretization at any rank count, which
+  needs element partitioning (every face neighbour of an owned element on the
+  rank). Legacy p/n problems used to lose the numerics file's partitioning
+  options on the way to the mesh and always got node partitioning.
 """
 import os
 import shutil
@@ -74,7 +75,7 @@ def test_transfers_reproduce_a_coarse_space_function(space, degree, n_ranks):
     assert err < 1.0e-12 * scale, line
 
 
-@pytest.mark.parametrize('space', ['p2', 'ncp1'])
+@pytest.mark.parametrize('space', ['p2', 'ncp1', 'dgp1'])
 @pytest.mark.parametrize('n_ranks', [2, 3])
 def test_parallel_cycle_is_the_serial_cycle(space, n_ranks):
     serial = _checksum(space, 'mgm', 1)
@@ -82,7 +83,7 @@ def test_parallel_cycle_is_the_serial_cycle(space, n_ranks):
     assert abs(parallel - serial) < 1.0e-11 * abs(serial), (space, n_ranks, parallel, serial)
 
 
-@pytest.mark.parametrize('space', ['p2', 'ncp1'])
+@pytest.mark.parametrize('space', ['p2', 'ncp1', 'dgp1'])
 @pytest.mark.parametrize('n_ranks', [2, 3])
 def test_pcmg_cycle_is_the_mgm_cycle(space, n_ranks):
     mgm = _checksum(space, 'mgm', 1)
@@ -90,7 +91,7 @@ def test_pcmg_cycle_is_the_mgm_cycle(space, n_ranks):
     assert abs(pcmg - mgm) < 1.0e-11 * abs(mgm), (space, n_ranks, pcmg, mgm)
 
 
-@pytest.mark.parametrize('space', ['p2', 'ncp1'])
+@pytest.mark.parametrize('space', ['p2', 'ncp1', 'dgp1'])
 def test_pcmg_preconditioned_gmres_reaches_the_direct_solution(space):
     direct = _checksum(space, 'direct', 1)
     converged = _checksum(space, 'pcmg_its', 3)
@@ -109,3 +110,17 @@ def test_a_rank_that_owns_no_coarse_dofs_still_solves():
     serial = _checksum('ncp1', 'mgm', 1)
     parallel = _checksum('ncp1', 'mgm', 6)
     assert abs(parallel - serial) < 1.0e-11 * abs(serial), (parallel, serial)
+
+
+@pytest.mark.parametrize('n_ranks', [2, 3, 4])
+def test_discontinuous_direct_solve_does_not_depend_on_rank_count(n_ranks):
+    # A discontinuous space needs every face neighbour of an owned element on the
+    # rank, which only element partitioning provides. The numerics file asks for
+    # it, but legacy p/n problems used to drop n.parallelPartitioningType and
+    # n.nLayersOfOverlapForParallel on the way to the mesh, so they always got
+    # node partitioning: the missing neighbours' faces were assembled as domain
+    # boundary and the answer changed with the rank count (16.76 / 17.77 / 12.91
+    # / 14.86 at 1-4 ranks).
+    serial = _checksum('dgp1', 'ksplu', 1, n_levels=1)
+    parallel = _checksum('dgp1', 'ksplu', n_ranks, n_levels=1)
+    assert abs(parallel - serial) < 1.0e-11 * abs(serial), (n_ranks, parallel, serial)
