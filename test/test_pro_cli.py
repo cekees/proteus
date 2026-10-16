@@ -261,3 +261,69 @@ def test_status_of_a_mesh_built_in_memory(tmp_path):
     assert out.returncode == 0, out.stderr[-2000:]
     assert "domain:    RectangularDomain" in out.stdout
     assert "nothing to generate" in out.stdout
+
+
+POISSON_SPEC = """\
+model:
+  name: "Poisson"
+  physical_model: {provenance: human_specified}
+  strong_form:
+    provenance: human_specified
+    unknowns: [u]
+    equation_formulation: "Poisson"
+    equations: ["-Δu = 2π² sin(πx) sin(πy)  in Ω"]
+    domain: "Ω = [0, 1] × [0, 1]"
+    boundary_regions: [{name: wall, where: "∂Ω"}]
+    boundary_conditions: [{region: wall, variable: u, type: dirichlet, value: 0.0}]
+  weak_forms:
+    - label: galerkin
+      provenance: human_specified
+      derivation: "integrate by parts"
+      solution_spaces: {trial: H1, test: H1_0}
+      bilinear: "∫ ∇u·∇v"
+      linear: "∫ f v"
+      stabilization_method: none
+solution_paths:
+  analytical:
+    - name: exact
+      provenance: human_specified
+      method: closed_form
+      solution: {formula: "u = sin(πx) sin(πy)"}
+  discretizations:
+    - name: P1
+      provenance: human_specified
+      from_weak_form: galerkin
+      finite_element: {fields: {family: CG, order: 1}}
+      solver: {type: linear}
+"""
+
+
+def test_spec_goes_to_the_ymf_runner(tmp_path):
+    pytest.importorskip("ymf.symbolic")
+    pytest.importorskip("strictyaml")
+    (tmp_path / "poisson.ymf").write_text(POISSON_SPEC, encoding="utf-8")
+    out = pro("run", "poisson.ymf", "--cells", "4", "--emit-pn",
+              "--outdir", "out", cwd=tmp_path)
+    assert out.returncode == 0, out.stderr[-2000:]
+    archive = (tmp_path / "out" / "poisson.archive.ymf").read_text()
+    assert "set_by: pro run --cells 4" in archive
+    emitted = sorted(p.name for p in (tmp_path / "out").glob("*_so.py"))
+    assert len(emitted) == 1
+
+    # the lean-tier route: the emitted files run with pro run, no spec needed
+    work = tmp_path / "compute"
+    work.mkdir()
+    stem = emitted[0][:-len("_so.py")]
+    for suffix in ("_p.py", "_n.py", "_so.py"):
+        shutil.copy(tmp_path / "out" / (stem + suffix), work)
+    ran = pro("run", stem + "_so.py", cwd=work)
+    assert ran.returncode == 0, ran.stderr[-2000:]
+
+
+def test_spec_without_the_front_end_explains_the_route(monkeypatch, capsys):
+    import proteus.cli as cli
+    monkeypatch.setattr(cli, "missing", lambda *names: ["sympy"])
+    assert cli.main(["run", "spec.ymf", "--cells", "4"]) == 2
+    err = capsys.readouterr().err
+    assert "lacks sympy" in err
+    assert "pro run SPEC.ymf --emit-pn" in err

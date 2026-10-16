@@ -103,8 +103,42 @@ def _frontend_stub(name, absent):
     return handler
 
 
+#: what turning a spec into a Proteus problem imports (ymf[symbolic])
+SPEC_NEEDS = ("ymf.symbolic", "sympy", "strictyaml")
+
+
+def _is_spec_run(argv):
+    """``pro run`` given a YMF spec or archive rather than Python modules."""
+    return argv[:1] == ["run"] and any(
+        a.endswith(".ymf") for a in argv[1:] if not a.startswith("-"))
+
+
+def run_spec(argv):
+    """``pro run SPEC.ymf ...``: the YMF runner (:mod:`proteus.cli.ymfrun`),
+    which has options of its own (``--cells``, ``--check``, ``--emit-pn``...).
+    """
+    absent = missing(*SPEC_NEEDS)
+    if absent:
+        print("pro run: a .ymf spec needs ymf[symbolic] to become a Proteus\n"
+              "problem, and this environment lacks {0}.\n"
+              "Where the front end is installed, write the problem as Proteus\n"
+              "files with\n"
+              "    pro run SPEC.ymf --emit-pn\n"
+              "and run the <stem>_<digest>_so.py it writes here with pro run,\n"
+              "which needs no sympy. Or: pip install 'ymf[symbolic]'"
+              .format(", ".join(absent)), file=sys.stderr)
+        return 2
+    # importing ymfrun pins the BLAS/OpenMP threads; nothing numeric is
+    # loaded yet at this point
+    from . import ymfrun
+    return ymfrun.main(argv, prog="pro run")
+
+
 def main(argv=None):
     """Entry point for the ``pro`` console script; returns the exit status."""
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if _is_spec_run(argv):
+        return run_spec(argv[1:])
     args = build_parser().parse_args(argv)
     return args.handler(args)
 
