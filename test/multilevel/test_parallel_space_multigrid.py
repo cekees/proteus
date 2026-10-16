@@ -101,3 +101,11 @@ def test_a_rank_without_ghosts_still_joins_the_collective_refreshes():
     # completing is the assertion: the failure was a hang
     _checksum('dgp1', 'mgm', 2, timeout=240)
 
+
+def test_a_rank_that_owns_no_coarse_dofs_still_solves():
+    # the coarse NC-P1 level has 16 dofs; on 6 ranks one rank owns none of them,
+    # which the owned-rows CSR extraction used to reject. Coarse levels with idle
+    # ranks are normal for multigrid at scale.
+    serial = _checksum('ncp1', 'mgm', 1)
+    parallel = _checksum('ncp1', 'mgm', 6)
+    assert abs(parallel - serial) < 1.0e-11 * abs(serial), (parallel, serial)

@@ -95,7 +95,9 @@ class SparseMatrix(object):
             (rowptr, colind, nzvals)
         """
         assert range_start >= 0 ; assert range_end <= self.nr
-        assert range_end > range_start
+        #an empty range is legitimate: a rank can own no rows of a small
+        #(coarse) level, and still has to take part in assembling it
+        assert range_end >= range_start
         _rows = range_end - range_start
         assert _rows <= self.nr
 
