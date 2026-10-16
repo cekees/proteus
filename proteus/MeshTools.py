@@ -573,7 +573,7 @@ class Mesh(object):
         self.arGrid=None
         self.nLayersOfOverlap = None
         self.parallelPartitioningType = MeshParallelPartitioningTypes.element
-    def partitionMesh(self,nLayersOfOverlap=1,parallelPartitioningType=MeshParallelPartitioningTypes.node):
+    def partitionMesh(self,nLayersOfOverlap=1,parallelPartitioningType=MeshParallelPartitioningTypes.node,nodeOwners=None,elementOwners=None):
         from . import cmeshTools
         from . import Comm
         from . import cpartitioning
@@ -598,8 +598,10 @@ class Mesh(object):
              self.edgeNumbering_subdomain2global) = cpartitioning.partitionNodes(comm.comm.tompi4py(),
                                                                                  nLayersOfOverlap,
                                                                                  self.cmesh,
-                                                                                 self.subdomainMesh.cmesh)
+                                                                                 self.subdomainMesh.cmesh,
+                                                                                 nodeOwners)
         else:
+            assert nodeOwners is None, "a prescribed node partition needs node partitioning"
             (self.elementOffsets_subdomain_owned,
              self.elementNumbering_subdomain2global,
              self.nodeOffsets_subdomain_owned,
@@ -610,7 +612,8 @@ class Mesh(object):
              self.edgeNumbering_subdomain2global) = cpartitioning.partitionElements(comm.comm.tompi4py(),
                                                                                     nLayersOfOverlap,
                                                                                     self.cmesh,
-                                                                                    self.subdomainMesh.cmesh)
+                                                                                    self.subdomainMesh.cmesh,
+                                                                                    elementOwners)
         #
         logEvent(memory("partitionMesh 3","MeshTools"),level=4)
         #Partitioning renumbered the global nodes; keep the permutation so that
@@ -618,6 +621,7 @@ class Mesh(object):
         #hierarchy's node parents, for one -- can be read in the numbering
         #nodeNumbering_subdomain2global refers to.
         self.nodeNumbering_global_old2new = cpartitioning.getNodeNumbering_global_old2new(self.cmesh)
+        self.elementNumbering_global_old2new = cpartitioning.getElementNumbering_global_old2new(self.cmesh)
         self.subdomainMesh.buildFromC(self.subdomainMesh.cmesh)
         self.subdomainMesh.nElements_owned = self.elementOffsets_subdomain_owned[comm.rank()+1] - self.elementOffsets_subdomain_owned[comm.rank()]
         self.subdomainMesh.nNodes_owned = self.nodeOffsets_subdomain_owned[comm.rank()+1] - self.nodeOffsets_subdomain_owned[comm.rank()]
@@ -1694,6 +1698,14 @@ class Mesh(object):
           self.buildFromC(self.cmesh)
         logEvent("meshInfo says : \n"+self.meshInfo())
 
+class _SubdomainHierarchy(object):
+    """Parent/child relations over subdomain meshes; see MultilevelMesh.subdomainHierarchy."""
+    def hasVertexInterpolation(self):
+        #the vertex route reads global node parents, which this does not have;
+        #the geometric construction needs only the element relations
+        return False
+
+
 class MultilevelMesh(Mesh):
     """A hierchical multilevel mesh"""
     def __init__(self,levels=1):
@@ -1708,6 +1720,159 @@ class MultilevelMesh(Mesh):
          self.elementParentsArrayList,
          self.elementChildrenArrayList,
          self.elementChildrenOffsetsList) = cmeshTools.buildPythonMultilevelMeshInterface(cmultilevelMesh)
+    #Whether a finer level inherits the partition of the coarser one. Turn it
+    #off to partition every level independently, as proteus always used to.
+    levelConsistentPartitioning = True
+
+    def partitionLevels(self,nLayersOfOverlap=1,
+                        parallelPartitioningType=MeshParallelPartitioningTypes.node):
+        """Partition every level, each finer one inheriting the coarser one's.
+
+        Partitioning the levels independently gives each its own graph cut, so
+        the rank that owns a fine node is unrelated to the ranks that own its
+        coarse parents and a transfer between levels is an all-to-all. Here the
+        coarsest level is cut by the graph partitioner and every finer level is
+        *assigned* from it.
+
+        Node partitioning: a node the refinement inherited stays where it was,
+        and a node it added goes to the owner of one of its parents. Every
+        parent of a fine node then lies in the node star of an owned coarse
+        node, so it is in this rank's subdomain -- owned or ghost -- and a
+        prolongation row needs only data the rank already has. Which parent a
+        new node takes is balanced rather than "the first": the k-th row picks
+        parent k mod (number of parents), so edge midpoints split between their
+        two endpoints' owners instead of piling onto one.
+
+        Element partitioning: a fine element goes to the owner of its parent.
+
+        mesh.levelConsistent records that a level inherited. Falls back to
+        independent partitioning, and says so, when the hierarchy does not
+        support it: a single rank, or -- for node partitioning -- levels that
+        are not nodally nested (weakly non-hierarchical refinement, coarsened
+        fine meshes), which have no vertex interpolation to read the parents
+        from.
+        """
+        from . import Comm
+        byNodes = parallelPartitioningType == MeshParallelPartitioningTypes.node
+        consistent = (self.levelConsistentPartitioning and
+                      Comm.get().size() > 1 and len(self.meshList) > 1)
+        if consistent and byNodes and not self.hasVertexInterpolation():
+            logEvent("levels are partitioned independently: the hierarchy is not "
+                     "nodally nested, so a finer level has no parents to inherit from",level=2)
+            consistent = False
+        for l,mesh in enumerate(self.meshList):
+            owners = None
+            if consistent and l > 0:
+                owners = (self.inheritedNodeOwners(l-1) if byNodes
+                          else self.inheritedElementOwners(l-1))
+            mesh.partitionMesh(nLayersOfOverlap=nLayersOfOverlap,
+                               parallelPartitioningType=parallelPartitioningType,
+                               nodeOwners=owners if byNodes else None,
+                               elementOwners=None if byNodes else owners)
+            mesh.levelConsistent = owners is not None
+
+    def inheritedElementOwners(self,l):
+        """The rank that owns each element of level l+1, in level l+1's own numbering:
+        the owner of its parent on the partitioned level l."""
+        coarse = self.meshList[l]
+        old2new = np.asarray(coarse.elementNumbering_global_old2new)
+        offsets = np.asarray(coarse.elementOffsets_subdomain_owned)
+        coarseOwner = np.searchsorted(offsets[1:],old2new,side='right')
+        return coarseOwner[np.asarray(self.elementParentsArrayList[l+1])].astype('i')
+
+    def globalElementsOfSubdomain(self,l):
+        """For every element of level l's subdomain mesh, its index on level l's global mesh.
+
+        Partitioning keeps the permutation it applied to a level's elements, so
+        this is a table lookup. Where it was not kept (a partitioner that does
+        not record it) an element is matched through its nodes instead: each
+        subdomain element's nodes are taken back to the global (original) node
+        numbers and compared with the global mesh's elements by sorted node
+        tuple. Either way exact, or it raises: a silent mismatch here would hand
+        a transfer operator the wrong parent.
+        """
+        mesh = self.meshList[l]
+        sd = mesh.subdomainMesh
+        elementOld2New = getattr(mesh,'elementNumbering_global_old2new',None)
+        if elementOld2New is not None:
+            elementOld2New = np.asarray(elementOld2New)
+            elementNew2Old = np.empty_like(elementOld2New)
+            elementNew2Old[elementOld2New] = np.arange(elementOld2New.size,dtype=elementOld2New.dtype)
+            return elementNew2Old[np.asarray(mesh.elementNumbering_subdomain2global)].astype('i')
+        old2new = np.asarray(mesh.nodeNumbering_global_old2new)
+        new2old = np.empty_like(old2new)
+        new2old[old2new] = np.arange(old2new.size,dtype=old2new.dtype)
+        def keyOf(nodes):
+            tuples = np.ascontiguousarray(np.sort(nodes,axis=1),dtype=np.int64)
+            return tuples.view(np.dtype((np.void,tuples.dtype.itemsize*tuples.shape[1]))).ravel()
+        sdOld = new2old[np.asarray(mesh.nodeNumbering_subdomain2global)[np.asarray(sd.elementNodesArray)]]
+        sdKeys = keyOf(sdOld)
+        globalKeys = keyOf(np.asarray(mesh.elementNodesArray))
+        order = np.argsort(globalKeys)
+        pos = np.searchsorted(globalKeys[order],sdKeys)
+        pos[pos == order.size] = 0
+        found = order[pos]
+        if not np.array_equal(globalKeys[found],sdKeys):
+            raise ValueError("level %i: a subdomain element has no counterpart on the global mesh" % l)
+        if np.unique(found).size != found.size:
+            raise ValueError("level %i: subdomain elements are not distinct on the global mesh" % l)
+        return found.astype('i')
+
+    def subdomainHierarchy(self):
+        """The parent/child relations of the levels *as each rank sees them*.
+
+        The global relations (elementParentsArrayList, elementChildren...) are
+        numbered over the global meshes. This is the same structure over the
+        subdomain meshes: for each coarse subdomain element, the fine subdomain
+        elements that are its children. A fine element whose parent is not on
+        this rank's coarse subdomain has parent -1 and is nobody's child.
+        Because a finer level inherits the coarser one's partition
+        (partitionLevels), every fine element touching an owned fine node has
+        its parent here, and so operators built from this structure are
+        complete on the rows a rank owns -- which is all that is kept.
+
+        Returns an object with the attributes MultilevelProjectionOperators
+        reads: meshList (the subdomain meshes), elementParentsArrayList,
+        elementChildrenArrayList and elementChildrenOffsetsList.
+        """
+        hierarchy = _SubdomainHierarchy()
+        hierarchy.meshList = [mesh.subdomainMesh for mesh in self.meshList]
+        hierarchy.elementParentsArrayList = [[]]
+        hierarchy.elementChildrenArrayList = []
+        hierarchy.elementChildrenOffsetsList = []
+        globalOf = [self.globalElementsOfSubdomain(l) for l in range(len(self.meshList))]
+        for l in range(len(self.meshList)-1):
+            nCoarseSd = hierarchy.meshList[l].nElements_global
+            nFineSd = hierarchy.meshList[l+1].nElements_global
+            subdomainOfGlobal = -np.ones((self.meshList[l].nElements_global,),'i')
+            subdomainOfGlobal[globalOf[l]] = np.arange(nCoarseSd,dtype='i')
+            parents = subdomainOfGlobal[np.asarray(self.elementParentsArrayList[l+1])[globalOf[l+1]]]
+            hierarchy.elementParentsArrayList.append(parents.astype('i'))
+            kids = np.nonzero(parents >= 0)[0]
+            order = kids[np.argsort(parents[kids],kind='stable')].astype('i')
+            offsets = np.zeros((nCoarseSd+1,),'i')
+            offsets[1:] = np.cumsum(np.bincount(parents[kids],minlength=nCoarseSd))
+            hierarchy.elementChildrenArrayList.append(order)
+            hierarchy.elementChildrenOffsetsList.append(offsets)
+        return hierarchy
+
+    def inheritedNodeOwners(self,l):
+        """The rank that owns each node of level l+1, in level l+1's own numbering.
+
+        Reads the owner of every coarse node from the partitioned level l (its
+        node renumbering and offsets), and gives each fine node the owner of
+        one parent. Needs level l already partitioned.
+        """
+        coarse = self.meshList[l]
+        old2new = np.asarray(coarse.nodeNumbering_global_old2new)
+        offsets = np.asarray(coarse.nodeOffsets_subdomain_owned)
+        coarseOwner = np.searchsorted(offsets[1:],old2new,side='right')
+        rowptr,colind,nzval = self.vertexInterpolation()[l+1]
+        nFine = rowptr.shape[0]-1
+        counts = np.diff(rowptr)
+        pick = rowptr[:-1]+(np.arange(nFine) % np.maximum(counts,1))
+        return coarseOwner[colind[pick]].astype('i')
+
     def refine(self):
         pass
     def locallyRefine(self,elementTagArray):
@@ -1799,9 +1964,7 @@ class MultilevelMesh(Mesh):
             self.elementChildrenArrayList.append(order)
             self.elementChildrenOffsetsList.append(offsets)
             self.elementParents[l+1] = parents
-        for mesh in self.meshList:
-            mesh.partitionMesh(nLayersOfOverlap=nLayersOfOverlap,
-                               parallelPartitioningType=parallelPartitioningType)
+        self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
 
     @staticmethod
     def _structuredElementParents(coarse,fine,coarseCounts,dim):
@@ -4375,12 +4538,11 @@ class MultilevelTetrahedralMesh(MultilevelMesh):
                 self.meshList[0].nodeArray[:,2] += z
                 self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
                 self.buildFromC(self.cmultilevelMesh)
-                self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
                 for l in range(1,refinementLevels):
                     self.meshList.append(TetrahedralMesh())
                     self.meshList[l].cmesh = self.cmeshList[l]
                     self.meshList[l].buildFromC(self.cmeshList[l])
-                    self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+                self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
             else:
                 grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
                 self.meshList.append(TetrahedralMesh())
@@ -4410,12 +4572,11 @@ class MultilevelTetrahedralMesh(MultilevelMesh):
             logEvent("buildFromC")
             self.buildFromC(self.cmultilevelMesh)
             logEvent("partitionMesh")
-            self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
             for l in range(1,refinementLevels):
                 self.meshList.append(TetrahedralMesh())
                 self.meshList[l].cmesh = self.cmeshList[l]
                 self.meshList[l].buildFromC(self.meshList[l].cmesh)
-                self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+            self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
         else:
             grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
             self.meshList.append(TetrahedralMesh())
@@ -4508,12 +4669,11 @@ class MultilevelHexahedralMesh(MultilevelMesh):
                 self.meshList[0].nodeArray[:,2] += z
                 self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
                 self.buildFromC(self.cmultilevelMesh)
-                self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
                 for l in range(1,refinementLevels):
                     self.meshList.append(HexahedralMesh())
                     self.meshList[l].cmesh = self.cmeshList[l]
                     self.meshList[l].buildFromC(self.cmeshList[l])
-                    self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+                self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
             else:
                 grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
                 self.meshList.append(HexahedralMesh())
@@ -4537,12 +4697,11 @@ class MultilevelHexahedralMesh(MultilevelMesh):
         self.meshList.append(mesh0)
         self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
         self.buildFromC(self.cmultilevelMesh)
-        self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
         for l in range(1,refinementLevels):
             self.meshList.append(HexahedralMesh())
             self.meshList[l].cmesh = self.cmeshList[l]
             self.meshList[l].buildFromC(self.meshList[l].cmesh)
-            self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+        self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
 
 
     def refine(self):
@@ -5575,12 +5734,11 @@ class MultilevelTriangularMesh(MultilevelMesh):
                 self.meshList[0].nodeArray[:,2] += z
                 self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
                 self.buildFromC(self.cmultilevelMesh)
-                self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
                 for l in range(1,refinementLevels):
                     self.meshList.append(TriangularMesh())
                     self.meshList[l].cmesh = self.cmeshList[l]
                     self.meshList[l].buildFromC(self.meshList[l].cmesh)
-                    self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+                self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
             else:
                 grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
                 self.meshList.append(TriangularMesh())
@@ -5611,12 +5769,11 @@ class MultilevelTriangularMesh(MultilevelMesh):
             self.meshList.append(mesh0)
             self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
             self.buildFromC(self.cmultilevelMesh)
-            self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
             for l in range(1,refinementLevels):
                 self.meshList.append(TriangularMesh())
                 self.meshList[l].cmesh = self.cmeshList[l]
                 self.meshList[l].buildFromC(self.meshList[l].cmesh)
-                self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+            self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
         else:
             grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
             self.meshList.append(TriangularMesh())
@@ -5730,12 +5887,11 @@ class MultilevelQuadrilateralMesh(MultilevelMesh):
                 self.meshList[0].nodeArray[:,1] += y
                 self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
                 self.buildFromC(self.cmultilevelMesh)
-                self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
                 for l in range(1,refinementLevels):
                     self.meshList.append(QuadrilateralMesh())
                     self.meshList[l].cmesh = self.cmeshList[l]
                     self.meshList[l].buildFromC(self.cmeshList[l])
-                    self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+                self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
             else:
                 grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
                 self.meshList.append(QuadrilateralMesh())
@@ -6476,12 +6632,11 @@ class MultilevelEdgeMesh(MultilevelMesh):
             self.meshList[0].nodeArray[:,2] += z
             self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
             self.buildFromC(self.cmultilevelMesh)
-            self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
             for l in range(1,refinementLevels):
                 self.meshList.append(EdgeMesh())
                 self.meshList[l].cmesh = self.cmeshList[l]
                 self.meshList[l].buildFromC(self.meshList[l].cmesh)
-                self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+            self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
         else:
             grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
             self.meshList.append(EdgeMesh())
@@ -6831,12 +6986,11 @@ class MultilevelNURBSMesh(MultilevelMesh):
             self.meshList[0].nodeArray[:,0] += x
             self.meshList[0].nodeArray[:,1] += y
             self.meshList[0].nodeArray[:,2] += z
-            self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
             for l in range(1,refinementLevels):
                 self.meshList.append(NURBSMesh())
                 self.meshList[l].cmesh = self.cmeshList[l]
                 self.meshList[l].buildFromC(self.cmeshList[l])
-                self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+            self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
 
     def generateFromExistingCoarseMesh(self,mesh0,refinementLevels,nLayersOfOverlap=1,
                                        parallelPartitioningType=MeshParallelPartitioningTypes.node):
@@ -6850,12 +7004,11 @@ class MultilevelNURBSMesh(MultilevelMesh):
         self.meshList.append(mesh0)
         self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
         self.buildFromC(self.cmultilevelMesh)
-        self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
         for l in range(1,refinementLevels):
             self.meshList.append(NURBSMesh())
             self.meshList[l].cmesh = self.cmeshList[l]
             self.meshList[l].buildFromC(self.meshList[l].cmesh)
-            self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+        self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
 
 
     def refine(self):

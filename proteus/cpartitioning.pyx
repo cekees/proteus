@@ -33,11 +33,22 @@ from proteus.partitioning cimport (c_partitionElements,
                                    buildQuadraticCubeSubdomain2GlobalMappings_3d,
                                    buildDiscontinuousGalerkinSubdomain2GlobalMappings)
 
-def partitionElements(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
+def partitionElements(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh,
+                      object elementOwners=None):
+    """Partition by elements. elementOwners, if given, is an int array with the
+    rank that owns each element (in the mesh's current numbering) and replaces
+    the graph partitioner -- see MultilevelMesh.partitionLevels."""
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
+    cdef int[::1] owners
+    cdef const int* ownersp = NULL
+    if elementOwners is not None:
+        owners = np.ascontiguousarray(elementOwners, dtype=np.intc)
+        assert owners.shape[0] == cmesh.mesh.nElements_global, (owners.shape[0], cmesh.mesh.nElements_global)
+        ownersp = &owners[0]
     c_partitionElements(comm.ob_mpi,
                         cmesh.mesh,
-                        nLayersOfOverlap)
+                        nLayersOfOverlap,
+                        ownersp)
     return (
         np.asarray(<int[:(comm.size+1)]> cmesh.mesh.elementOffsets_subdomain_owned),
         np.asarray(<int[:cmesh.mesh.subdomainp.nElements_global]> cmesh.mesh.elementNumbering_subdomain2global),
@@ -49,11 +60,22 @@ def partitionElements(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, c
         np.asarray(<int[:cmesh.mesh.subdomainp.nEdges_global]> cmesh.mesh.edgeNumbering_subdomain2global)
     )
 
-def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
+def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh,
+                   object nodeOwners=None):
+    """Partition by nodes. nodeOwners, if given, is an int array with the rank
+    that owns each node (in the mesh's current numbering) and replaces the
+    graph partitioner -- see MultilevelMesh.partitionLevels."""
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
+    cdef int[::1] owners
+    cdef const int* ownersp = NULL
+    if nodeOwners is not None:
+        owners = np.ascontiguousarray(nodeOwners, dtype=np.intc)
+        assert owners.shape[0] == cmesh.mesh.nNodes_global, (owners.shape[0], cmesh.mesh.nNodes_global)
+        ownersp = &owners[0]
     c_partitionNodes(comm.ob_mpi,
                      cmesh.mesh,
-                     nLayersOfOverlap)
+                     nLayersOfOverlap,
+                     ownersp)
     return (
         np.asarray(<int[:comm.size+1]> cmesh.mesh.elementOffsets_subdomain_owned),
         np.asarray(<int[:cmesh.mesh.subdomainp.nElements_global]> cmesh.mesh.elementNumbering_subdomain2global),
@@ -80,6 +102,14 @@ def getNodeNumbering_global_old2new(cmeshTools.CMesh cmesh):
     if cmesh.mesh.nodeNumbering_global_old2new == NULL:
         return None
     return np.asarray(<int[:cmesh.mesh.nNodes_global]> cmesh.mesh.nodeNumbering_global_old2new)
+
+def getElementNumbering_global_old2new(cmeshTools.CMesh cmesh):
+    """The permutation partitioning applied to the global element numbering
+    (see getNodeNumbering_global_old2new). None if the mesh has not been
+    partitioned by this code."""
+    if cmesh.mesh.elementNumbering_global_old2new == NULL:
+        return None
+    return np.asarray(<int[:cmesh.mesh.nElements_global]> cmesh.mesh.elementNumbering_global_old2new)
 
 def convertPUMIPartitionToPython(Comm comm, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
 #need to have Python handles for the cmesh arrays created from apf/PUMI mesh 

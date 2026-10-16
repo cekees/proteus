@@ -567,7 +567,8 @@ int partitionElementsOriginal(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, in
   return 0;
 }
 
-int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_overlap)
+int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_overlap,
+                   const int* nodeOwners)
 {
   using namespace std;
   int ierr,size,rank;
@@ -641,6 +642,28 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
   //
   //3. Generate new nodal partition using PETSc interface
   //
+  IS nodePartitioningIS_new;
+  if (nodeOwners != NULL)
+    {
+      /* The caller dictates the partition: nodeOwners[n] is the rank that owns
+         node n, in the numbering the mesh has now. This is how a finer level of
+         a multilevel hierarchy inherits its coarser level's partition, so that
+         the transfer between them is local instead of an all-to-all. The index
+         set is laid out as MatPartitioningApply would return it -- this rank's
+         slice of the default contiguous chunks, one target rank per node. */
+      for (int nN = 0; nN < mesh.nNodes_global; nN++)
+        if (nodeOwners[nN] < 0 || nodeOwners[nN] >= size)
+          {
+            std::cerr<<"partitionNodes: node "<<nN<<" is assigned to rank "<<nodeOwners[nN]
+                     <<" but there are "<<size<<" ranks"<<std::endl;
+            MPI_Abort(PROTEUS_COMM_WORLD,1);
+          }
+      ierr = ISCreateGeneral(PROTEUS_COMM_WORLD,nNodes_subdomain,
+                             nodeOwners+nodeOffsets_old[rank],
+                             PETSC_COPY_VALUES,&nodePartitioningIS_new);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+    }
+  else
+    {
   Mat petscAdjacency;
   //   MatCreateMPIAdj(PROTEUS_COMM_WORLD,
   //              nNodes_subdomain, mesh.nNodes_global,
@@ -661,9 +684,9 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
   warnIfNotRepartitioning(PROTEUS_COMM_WORLD, petscPartition);
 
   //get petsc index set that has the new subdomain number for each node
-  IS nodePartitioningIS_new;
   MatPartitioningApply(petscPartition,&nodePartitioningIS_new);
   MatPartitioningDestroy(&petscPartition); //gets petscAdjacency too I believe
+    }
 
   //determine the number of nodes per subdomain in new partitioning
   valarray<int> nNodes_subdomain_new(size);
@@ -829,6 +852,11 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
     {
       elementNumbering_global_old2new[elementNumbering_global_new2old[eN]] = eN;
     }
+  if (mesh.elementNumbering_global_old2new != NULL)
+    delete [] mesh.elementNumbering_global_old2new;
+  mesh.elementNumbering_global_old2new = new int[mesh.nElements_global];
+  for (int eN = 0; eN < mesh.nElements_global; eN++)
+    mesh.elementNumbering_global_old2new[eN] = elementNumbering_global_old2new[eN];
 
 
 
@@ -5330,7 +5358,8 @@ int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const ch
   return 0;
 }
 //todo add overlap for element based partitions
-int partitionElements(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nElements_overlap)
+int partitionElements(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nElements_overlap,
+                      const int* elementOwners)
 {
   using namespace std;
   int ierr,size,rank;
@@ -5417,6 +5446,26 @@ int partitionElements(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nEleme
                          PETSC_NULL,//weights_subdomain,
                          &petscAdjacency);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
   PetscFree(weights_subdomain);
+  IS elementPartitioningIS_new;
+  if (elementOwners != NULL)
+    {
+      /* The caller dictates the partition -- see partitionNodes. elementOwners[e]
+         is the rank that owns element e in the current numbering; a finer level
+         of a multilevel hierarchy gives each element its parent's owner. */
+      for (int eN = 0; eN < mesh.nElements_global; eN++)
+        if (elementOwners[eN] < 0 || elementOwners[eN] >= size)
+          {
+            std::cerr<<"partitionElements: element "<<eN<<" is assigned to rank "<<elementOwners[eN]
+                     <<" but there are "<<size<<" ranks"<<std::endl;
+            MPI_Abort(PROTEUS_COMM_WORLD,1);
+          }
+      ierr = ISCreateGeneral(PROTEUS_COMM_WORLD,nElements_subdomain,
+                             elementOwners+elementOffsets_old[rank],
+                             PETSC_COPY_VALUES,&elementPartitioningIS_new);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+      MatDestroy(&petscAdjacency);
+    }
+  else
+    {
   MatPartitioning petscPartition;
   MatPartitioningCreate(PROTEUS_COMM_WORLD,&petscPartition);
   MatPartitioningSetAdjacency(petscPartition,petscAdjacency);
@@ -5424,10 +5473,10 @@ int partitionElements(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nEleme
   warnIfNotRepartitioning(PROTEUS_COMM_WORLD, petscPartition);
 
   //get a petsc index set that has the new submdomain number for each element
-  IS elementPartitioningIS_new;
   MatPartitioningApply(petscPartition,&elementPartitioningIS_new);
   MatPartitioningDestroy(&petscPartition);
   MatDestroy(&petscAdjacency);
+    }
   //ISView(elementPartitioningIS_new,PETSC_VIEWER_STDOUT_WORLD);
 
   //experiment with metis
@@ -5484,6 +5533,14 @@ int partitionElements(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nEleme
   valarray<int> elementNumbering_global_new2old(mesh.nElements_global);
   for(int eN=0;eN<mesh.nElements_global;eN++)
     elementNumbering_global_new2old[elementNumbering_global_old2new[eN]] = eN;
+  /* keep the permutation, as for nodes: a multilevel hierarchy's parent/child
+     relations are numbered before partitioning and need it to be read in the
+     numbering elementNumbering_subdomain2global refers to */
+  if (mesh.elementNumbering_global_old2new != NULL)
+    delete [] mesh.elementNumbering_global_old2new;
+  mesh.elementNumbering_global_old2new = new int[mesh.nElements_global];
+  for (int eN=0;eN<mesh.nElements_global;eN++)
+    mesh.elementNumbering_global_old2new[eN] = elementNumbering_global_old2new[eN];
 
   //Sort element based arrays, maybe I don't need to do this, maybe
   //I just need to start writing into the subdomain mesh here and

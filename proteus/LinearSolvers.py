@@ -3291,7 +3291,7 @@ def petscMGHierarchy(par_linearOperatorList,prolongList,level):
             raise ValueError(
                 "petsc_MG needs the transfer operators as PETSc matrices, but "
                 "level %i's is a %s. Only the distributed nodal operators "
-                "qualify (see Transport.useParallelNodalTransfers)."
+                "qualify (see Transport.useParallelTransfers)."
                 % (k,type(prolongList[k]).__name__))
         interpolations.append(mat)
     return MGHierarchy(list(par_linearOperatorList[:level]),interpolations)

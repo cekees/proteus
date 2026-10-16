@@ -83,6 +83,7 @@ extern "C"
       //ones partitioning assigned, so arrays built before partitioning can be
       //read in the numbering subdomain2global refers to
       *nodeNumbering_global_old2new,
+      *elementNumbering_global_old2new,
       *elementBoundaryOffsets_subdomain_owned,
       *elementBoundaryNumbering_subdomain2global,
       *edgeOffsets_subdomain_owned,
@@ -137,6 +138,7 @@ extern "C"
     mesh.nodeOffsets_subdomain_owned=NULL;
     mesh.nodeNumbering_subdomain2global=NULL;
     mesh.nodeNumbering_global_old2new=NULL;
+    mesh.elementNumbering_global_old2new=NULL;
     mesh.elementBoundaryOffsets_subdomain_owned=NULL;
     mesh.elementBoundaryNumbering_subdomain2global=NULL;
     mesh.edgeOffsets_subdomain_owned=NULL;
@@ -165,6 +167,7 @@ extern "C"
     mesh.nodeOffsets_subdomain_owned=NULL;
     mesh.nodeNumbering_subdomain2global=NULL;
     mesh.nodeNumbering_global_old2new=NULL;
+    mesh.elementNumbering_global_old2new=NULL;
     mesh.elementBoundaryOffsets_subdomain_owned=NULL;
     mesh.elementBoundaryNumbering_subdomain2global=NULL;
     mesh.edgeOffsets_subdomain_owned=NULL;
@@ -229,6 +232,7 @@ extern "C"
     if(mesh.nodeOffsets_subdomain_owned!=NULL) delete [] mesh.nodeOffsets_subdomain_owned;
     if(mesh.nodeNumbering_subdomain2global!=NULL) delete [] mesh.nodeNumbering_subdomain2global;
     if(mesh.nodeNumbering_global_old2new!=NULL) delete [] mesh.nodeNumbering_global_old2new;
+    if(mesh.elementNumbering_global_old2new!=NULL) delete [] mesh.elementNumbering_global_old2new;
     if(mesh.elementBoundaryOffsets_subdomain_owned!=NULL) delete [] mesh.elementBoundaryOffsets_subdomain_owned;
     if(mesh.elementBoundaryNumbering_subdomain2global!=NULL) delete [] mesh.elementBoundaryNumbering_subdomain2global;
     if(mesh.edgeOffsets_subdomain_owned!=NULL) delete [] mesh.edgeOffsets_subdomain_owned;
@@ -260,6 +264,7 @@ extern "C"
     mesh.nodeOffsets_subdomain_owned=NULL;
     mesh.nodeNumbering_subdomain2global=NULL;
     mesh.nodeNumbering_global_old2new=NULL;
+    mesh.elementNumbering_global_old2new=NULL;
     mesh.elementBoundaryOffsets_subdomain_owned=NULL;
     mesh.elementBoundaryNumbering_subdomain2global=NULL;
     mesh.edgeOffsets_subdomain_owned=NULL;

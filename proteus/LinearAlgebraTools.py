@@ -1910,6 +1910,90 @@ def vertexProlongationMat(rowptr,colind,nzval,coarseNodeOffsets,fineNodeOffsets,
     return prolong
 
 
+def filterCSR(rowptr,colind,nzval,select,transform=None):
+    """The same CSR matrix keeping only the entries ``select(nzval)`` accepts."""
+    rowptr = numpy.asarray(rowptr); colind = numpy.asarray(colind); nzval = numpy.asarray(nzval)
+    mask = select(nzval)
+    rows = numpy.repeat(numpy.arange(rowptr.size-1),numpy.diff(rowptr))
+    counts = numpy.bincount(rows[mask],minlength=rowptr.size-1)
+    newptr = numpy.concatenate([[0],numpy.cumsum(counts)]).astype(rowptr.dtype)
+    vals = nzval[mask]
+    return (newptr,colind[mask],vals if transform is None else transform(vals))
+
+
+def subdomainProlongationMat(rowptr,colind,nzval,fineSubdomain2global,coarseSubdomain2global,
+                             fineDofOffsets,coarseDofOffsets,comm=None,blockSize=1,allowEmptyRows=False):
+    """A prolongation given as each rank's own rows, as a distributed PETSc Mat.
+
+    The matrix a rank holds is between its *subdomain* dofs: fine rows and
+    coarse columns numbered locally, owned dofs first. Only the owned rows are
+    complete -- a ghost row is assembled from elements the rank holds
+    partially -- so those are what is kept, translated to global dof numbers
+    through the two subdomain2global maps. Nothing is gathered or replicated:
+    every column a row needs was already in the coarse subdomain, which is what
+    inheriting the coarse partition guarantees.
+
+    fineDofOffsets/coarseDofOffsets are the dof maps' dof_offsets_subdomain_owned.
+    blockSize interleaves components as in nodalProlongationMat. An empty owned
+    row is an error for a prolongation, where it means a coarse parent is
+    missing, but expected for an injection, which only has rows for the dofs a
+    refinement inherited: pass allowEmptyRows=True for those.
+    """
+    bs = int(blockSize)
+    if comm is None:
+        comm = Comm.get()
+    rank = comm.rank()
+    fine_lo,fine_hi = int(fineDofOffsets[rank]),int(fineDofOffsets[rank+1])
+    coarse_lo,coarse_hi = int(coarseDofOffsets[rank]),int(coarseDofOffsets[rank+1])
+    nOwned = fine_hi-fine_lo
+    fineGlobal = numpy.asarray(fineSubdomain2global)[:nOwned]
+    assert nOwned == 0 or (fineGlobal.min() == fine_lo and fineGlobal.max() == fine_hi-1
+                           and numpy.unique(fineGlobal).size == nOwned), (
+        "the owned dofs are not the first ones of the subdomain, or not contiguous")
+    coarseGlobal = numpy.asarray(coarseSubdomain2global)
+    d_nnz = numpy.zeros((nOwned,),'i')
+    o_nnz = numpy.zeros((nOwned,),'i')
+    rows = []
+    empty = []
+    for i in range(nOwned):
+        lo,hi = int(rowptr[i]),int(rowptr[i+1])
+        cols = coarseGlobal[colind[lo:hi]]
+        vals = numpy.asarray(nzval[lo:hi])
+        if hi == lo:
+            empty.append(int(fineGlobal[i]))
+        inside = int(((cols >= coarse_lo) & (cols < coarse_hi)).sum())
+        d_nnz[i] = inside
+        o_nnz[i] = cols.shape[0]-inside
+        rows.append((int(fineGlobal[i]),cols,vals))
+    #Assembling the Mat is collective, so a rank that finds its rows incomplete
+    #cannot just raise: the others would wait for it forever. Agree first.
+    if not allowEmptyRows:
+        mpi = comm.comm.tompi4py()
+        problems = mpi.allgather(empty)
+        if any(problems):
+            raise ValueError(
+                "ranks %s own dofs with an empty prolongation row (for example %s): the "
+                "coarse parent is not on the rank, so the partitions are not "
+                "level-consistent -- see MultilevelMesh.partitionLevels"
+                % ([r for r,p in enumerate(problems) if p],
+                   [p[0] for p in problems if p][:3]))
+    prolong = p4pyPETSc.Mat().create(comm.comm.tompi4py())
+    prolong.setType('aij')
+    prolong.setSizes([[bs*nOwned,bs*int(fineDofOffsets[-1])],
+                      [bs*(coarse_hi-coarse_lo),bs*int(coarseDofOffsets[-1])]])
+    if bs > 1:
+        d_nnz = numpy.repeat(d_nnz,bs).astype('i')
+        o_nnz = numpy.repeat(o_nnz,bs).astype('i')
+    prolong.setPreallocationNNZ((d_nnz,o_nnz))
+    prolong.setOption(p4pyPETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR,False)
+    for (r,cols,vals) in rows:
+        for c in range(bs):
+            prolong.setValues([bs*r+c],(bs*cols+c).tolist(),vals.tolist())
+    prolong.assemblyBegin()
+    prolong.assemblyEnd()
+    return prolong
+
+
 def nodalRestrictionScaling(prolong):
     """Row sums of the restriction, for restricting *solutions* rather than residuals.
 

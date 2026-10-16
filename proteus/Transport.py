@@ -6274,24 +6274,12 @@ class MultilevelTransport(object):
         for  cj in list(TrialSpaceTypeDict.keys()):
             self.trialSpaceListDict[cj]=[]
             self.bcListDict[cj]=[]
-        # In parallel the mesh transfers need a second, global set of spaces and
-        # Dirichlet conditions. The models themselves are built on subdomain
-        # meshes, but MultilevelProjectionOperators walks the multilevel mesh's
-        # elementChildrenArray, which is numbered globally -- feeding it the
-        # subdomain spaces indexes a subdomain-sized l2g with a global element
-        # number. The transfer operators are built against these global spaces
-        # and then restricted to each rank's owned rows; see
-        # MultilevelProjectionOperators. Every rank holding a global space per
-        # level does not scale, and goes away with level-consistent
-        # partitioning, which is tracked separately.
+        # In parallel the transfer operators are built per rank from the
+        # subdomain spaces (see useParallelTransfers); a single level has no
+        # transfers at all.
         from . import Comm
         _comm = Comm.get()
-        #A single level has no transfers, so it needs none of this -- and for a
-        #space whose dof map is built from the partitioned mesh (quadratic
-        #Lagrange, say) a global space cannot even be constructed.
-        self.buildGlobalTransferSpaces = _comm.size() > 1 and len(mlMesh.meshList) > 1
-        global_trialSpaceDictList = []
-        global_bcDictList = []
+        self.parallelTransfers = _comm.size() > 1 and len(mlMesh.meshList) > 1
         for mesh in mlMesh.meshList:
             
             sdmesh = mesh.subdomainMesh # Linoj: mesh.subdomainMesh.nodeArray[:,2]=all zeros
@@ -6342,37 +6330,6 @@ class MultilevelTransport(object):
                                               for (cj,trialSpace) in trialSpaceDict.items()])
             logEvent("Setting Boundary Conditions-3")
             self.bcDictList.append(dirichletConditionsDict)
-            if self.buildGlobalTransferSpaces:
-                global_trialSpaceDict = dict(
-                    [(cj,TrialSpaceType(mesh,nd))
-                     for (cj,TrialSpaceType) in TrialSpaceTypeDict.items()])
-                if not FemTools.nodalTransfersApply(mlMesh,[trialSpaceDict],
-                                                    [dirichletConditionsDict]):
-                    #Vertex-numbered global spaces would carry the *old* node
-                    #numbers. The general operators need dofs numbered as the
-                    #distributed vectors are, so take the table from the
-                    #partitioned subdomain spaces -- before the boundary
-                    #conditions read it. This is also what lets spaces whose
-                    #dofs are not vertices exist on the global mesh at all.
-                    for (cj,gs) in global_trialSpaceDict.items():
-                        gs.dofMap.l2g = FemTools.globalL2gFromSubdomain(
-                            mesh,trialSpaceDict[cj])
-                if (options is None or options.periodicDirichletConditions is None
-                        or options.parallelPeriodic==True):
-                    global_dirichletConditionsDict = dict(
-                        [(cj,DOFBoundaryConditions(trialSpace,
-                                                   dirichletConditionsSetterDict[cj],
-                                                   useWeakDirichletConditions))
-                         for (cj,trialSpace) in global_trialSpaceDict.items()])
-                else:
-                    global_dirichletConditionsDict = dict(
-                        [(cj,DOFBoundaryConditions(trialSpace,
-                                                   dirichletConditionsSetterDict[cj],
-                                                   useWeakDirichletConditions,
-                                                   options.periodicDirichletConditions[cj]))
-                         for (cj,trialSpace) in global_trialSpaceDict.items()])
-                global_trialSpaceDictList.append(global_trialSpaceDict)
-                global_bcDictList.append(global_dirichletConditionsDict)
             logEvent("Setting Boundary Conditions-4")
             for cj in list(TrialSpaceTypeDict.keys()):
                 self.trialSpaceListDict[cj].append(trialSpaceDict[cj])
@@ -6880,14 +6837,16 @@ class MultilevelTransport(object):
         logEvent("Building Mesh Transfers",level=2)
         
         MultilevelProjectionOperatorType = MultilevelProjectionOperators
-        if self.buildGlobalTransferSpaces:
+        if self.parallelTransfers:
+            #only the container: the distributed operators are installed into it
             self.meshTransfers = MultilevelProjectionOperatorType(
                 mlMesh,
-                global_trialSpaceDictList,
+                self.trialSpaceDictList,
                 self.offsetListList,
                 self.strideListList,
-                global_bcDictList,
-                subdomainFemSpaceDictList=self.trialSpaceDictList)
+                self.bcDictList,
+                build=False)
+            self.useParallelTransfers(mlMesh)
         else:
             self.meshTransfers = MultilevelProjectionOperatorType(
                 mlMesh,
@@ -6896,12 +6855,10 @@ class MultilevelTransport(object):
                 self.strideListList,
                 self.bcDictList)
         logEvent(memory("mesh transfers","MultilevelTransport"),level=4)
-        if self.buildGlobalTransferSpaces:
-            self.useParallelNodalTransfers(mlMesh)
         #mwf hack keep reference to mlMesh in Transport ctor for now
         self.mlMeshSave = mlMesh
         
-    def useParallelNodalTransfers(self,mlMesh):
+    def useParallelTransfers(self,mlMesh):
         """Replace the transfer operators with distributed ones where possible.
 
         MultilevelProjectionOperators builds global matrices, which cannot act
@@ -6925,15 +6882,17 @@ class MultilevelTransport(object):
         numbering stops coinciding with the vertex numbering, and
         nodalTransfersApply declines it.
 
-        Anything that does not qualify keeps the global operators. They do not
-        scale, but they are what makes a multilevel mesh constructible at all
-        in parallel for those cases, which beats refusing to run. Applying one
-        to a subdomain vector is refused by SparseMatrix.matvec rather than
-        left to corrupt the heap.
+        Anything that does not qualify -- higher-order, modal, discontinuous
+        and non-conforming spaces, hierarchies that are not nodally nested --
+        takes useGeneralParallelTransfers.
         """
-        if not FemTools.nodalTransfersApply(mlMesh,
-                                            self.trialSpaceDictList,
-                                            self.bcDictList):
+        #the nodal route reads node parents through the partitioner's node
+        #renumbering, which only node partitioning records
+        permuted = all(getattr(mesh,'nodeNumbering_global_old2new',None) is not None
+                       for mesh in mlMesh.meshList)
+        if not permuted or not FemTools.nodalTransfersApply(mlMesh,
+                                                            self.trialSpaceDictList,
+                                                            self.bcDictList):
             self.useGeneralParallelTransfers(mlMesh)
             return
         mlMesh.vertexInterpolation()
@@ -6962,63 +6921,57 @@ class MultilevelTransport(object):
                                       lambda l: levelMats(l)[3])
 
     def useGeneralParallelTransfers(self,mlMesh):
-        """Distributed transfers for any space, from replicated global operators.
+        """Distributed transfers for any space, built from each rank's own subdomain.
 
-        The nodal route needs spaces whose dofs are mesh vertices. For quadratic
-        Lagrange, non-conforming P1 and discontinuous spaces -- and for
-        hierarchies that are not nodally nested -- MultilevelProjectionOperators
-        built the operators on global spaces whose dof table was taken from the
-        partitioned subdomain spaces (FemTools.globalL2gFromSubdomain), so
-        their rows and columns are numbered like the distributed vectors. Each
-        rank then keeps the rows it owns, as for the nodal operators.
+        The nodal route needs a dof to be a vertex. Otherwise the operators come
+        from the geometric construction in MultilevelProjectionOperators --
+        coarse basis functions evaluated at the fine interpolation points --
+        run on the *subdomain* spaces over the subdomain parent/child relations
+        (MultilevelMesh.subdomainHierarchy). That gives each rank a prolongation
+        between its subdomain dofs, complete on the rows it owns, because a finer
+        level inherits the coarser one's partition (MultilevelMesh.partitionLevels)
+        and so every fine element touching an owned dof has its parent here.
+        The owned rows are translated to global dof numbers and assembled into a
+        distributed Mat (LinearAlgebraTools.subdomainProlongationMat); nothing is
+        gathered, and no space or operator is built on the global mesh.
 
-        Every rank assembles the full global operator first, so this costs
-        memory and time proportional to the global mesh. It is a bridge that
-        makes these problems run, not the scalable design; level-consistent
-        partitioning is. Only node partitioning is supported.
+        An owned row with no entries means the partitions were not
+        level-consistent, and raises rather than building a wrong operator.
         """
         nc = len(self.trialSpaceDictList[0])
-        mt = self.meshTransfers
+        hierarchy = mlMesh.subdomainHierarchy()
+        ops = FemTools.MultilevelProjectionOperators(
+            hierarchy,self.trialSpaceDictList,self.offsetListList,self.strideListList,
+            self.bcDictList)
         def csr(sparseMat):
             rowptr,colind,nzval = sparseMat.getCSRrepresentation()
             return (np.asarray(rowptr),np.asarray(colind),np.asarray(nzval))
-        def keep(rowptr,colind,nzval,select,transform=None):
-            #the same matrix restricted to the entries select() accepts
-            mask = select(nzval)
-            rows = np.repeat(np.arange(rowptr.size-1),np.diff(rowptr))
-            counts = np.bincount(rows[mask],minlength=rowptr.size-1)
-            newptr = np.concatenate([[0],np.cumsum(counts)]).astype(rowptr.dtype)
-            vals = nzval[mask]
-            return (newptr,colind[mask],vals if transform is None else transform(vals))
+        def maps(l,cj):
+            fine = self.trialSpaceDictList[l+1][cj].dofMap
+            coarse = self.trialSpaceDictList[l][cj].dofMap
+            return (fine.subdomain2global,coarse.subdomain2global,
+                    np.asarray(fine.dof_offsets_subdomain_owned),
+                    np.asarray(coarse.dof_offsets_subdomain_owned))
         cache = {}
         def mats(l,cj):
             if (l,cj) not in cache:
-                coarseOffsets = np.asarray(
-                    self.trialSpaceDictList[l][cj].dofMap.dof_offsets_subdomain_owned)
-                fineOffsets = np.asarray(
-                    self.trialSpaceDictList[l+1][cj].dofMap.dof_offsets_subdomain_owned)
-                P = csr(mt.prolong_bcListDict[cj][l+1])
-                build = lambda c,**kw: vertexProlongationMat(
-                    *c,coarseNodeOffsets=coarseOffsets,fineNodeOffsets=fineOffsets,**kw)
+                P = csr(ops.prolong_bcListDict[cj][l+1])
+                build = lambda c,**kw: subdomainProlongationMat(*c,*maps(l,cj),**kw)
                 prolongMat = build(P)
                 #entries equal to one are what the injection keeps, as in the
                 #global operators' interp_bc
-                injectionMat = build(keep(*P,lambda w: np.abs(w-1.0) < 1.0e-8))
+                injectionMat = build(filterCSR(*P,lambda w: np.abs(w-1.0) < 1.0e-8),
+                                     allowEmptyRows=True)
                 #restricted solutions are divided by the row sums of |P|
-                absMat = build(keep(*P,lambda w: np.ones(w.shape,dtype=bool),np.abs))
-                rowSums = nodalRestrictionScaling(absMat)
-                cache[(l,cj)] = (prolongMat,injectionMat,rowSums)
+                absMat = build(filterCSR(*P,lambda w: np.ones(w.shape,dtype=bool),np.abs))
+                cache[(l,cj)] = (prolongMat,injectionMat,nodalRestrictionScaling(absMat))
             return cache[(l,cj)]
         def stackedMat(l):
             if nc == 1:
                 return mats(l,0)[0]
-            coarseOffsets = np.asarray(
-                self.trialSpaceDictList[l][0].dofMap.dof_offsets_subdomain_owned)
-            fineOffsets = np.asarray(
-                self.trialSpaceDictList[l+1][0].dofMap.dof_offsets_subdomain_owned)
-            return vertexProlongationMat(
-                *csr(mt.prolong_bcListDict[0][l+1]),coarseNodeOffsets=coarseOffsets,
-                fineNodeOffsets=fineOffsets,blockSize=nc)
+            fineS2G,coarseS2G,fineOff,coarseOff = maps(l,0)
+            return subdomainProlongationMat(*csr(ops.prolong_bcListDict[0][l+1]),
+                                            fineS2G,coarseS2G,fineOff,coarseOff,blockSize=nc)
         self.installParallelTransfers(mlMesh,mats,stackedMat,sameSpaces=len(
             set((type(ts.dofMap).__name__) for ts in self.trialSpaceDictList[0].values())) == 1)
 

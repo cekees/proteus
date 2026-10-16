@@ -55,6 +55,7 @@ cdef extern from "mesh.h":
       int *nodeOffsets_subdomain_owned
       int *nodeNumbering_subdomain2global
       int *nodeNumbering_global_old2new
+      int *elementNumbering_global_old2new
       int *elementBoundaryOffsets_subdomain_owned
       int *elementBoundaryNumbering_subdomain2global
       int *edgeOffsets_subdomain_owned

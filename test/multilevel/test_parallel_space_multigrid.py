@@ -4,12 +4,11 @@
 Quadratic Lagrange, non-conforming P1 and discontinuous P1 cannot use the nodal
 transfer operators, which name a fine dof by a pair of coarse vertices. Their
 operators come from evaluating coarse basis functions at the fine interpolation
-points -- on *global* spaces, because the multilevel mesh's element-children
-arrays are numbered globally -- and the result has to be cut into the rows each
-rank owns. The catch is the numbering: a global space's dof table has to use the
-partitioned dof numbers the distributed vectors use, which only the subdomain
-spaces know. FemTools.globalL2gFromSubdomain recovers it by matching elements,
-and the tests here pin the consequences.
+points, run on each rank's *subdomain* spaces over the subdomain parent/child
+relations (MultilevelMesh.subdomainHierarchy). A finer level inherits the coarser
+one's partition, so the result is complete on the rows a rank owns -- those are
+translated to global dof numbers and kept, and nothing is gathered
+(test_level_consistent_partitioning.py pins the partitioning side).
 
 * The operators reproduce a function of the coarse space exactly, on any number
   of ranks, for every space. This is independent of how the discretization is
@@ -101,3 +100,4 @@ def test_pcmg_preconditioned_gmres_reaches_the_direct_solution(space):
 def test_a_rank_without_ghosts_still_joins_the_collective_refreshes():
     # completing is the assertion: the failure was a hang
     _checksum('dgp1', 'mgm', 2, timeout=240)
+

@@ -23,6 +23,9 @@ from proteus import (MeshTools, defaults, default_n, default_s, default_so,
 rank, size = comm.rank(), comm.size()
 mpi = comm.comm.tompi4py()
 testroot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# a control: partition every level independently, as proteus used to
+if os.environ.get('PROTEUS_TEST_INDEPENDENT_PARTITIONS'):
+    MeshTools.MultilevelMesh.levelConsistentPartitioning = False
 spaceName = sys.argv[1]
 nLevels = int(sys.argv[2])
 degree = int(sys.argv[3])
