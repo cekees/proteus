@@ -341,13 +341,16 @@ def main(argv=None, prog="ymf_run"):
     archive = os.path.join(outdir, stem + ".archive.ymf")
 
     # Outputs come from the input (an archive, or what it extends) and from
-    # the archive of an earlier run of this input.
-    doc, outputs, dropped = closure.load(args.input)
+    # the archive of an earlier run of this input. A runner brings an
+    # archive up to date, so it loads one whose declared ymf_state its
+    # content no longer reaches (an edited input, stale outputs), and the
+    # archive it writes records the state it does reach.
+    doc, outputs, dropped = closure.load(args.input, check_state=False)
     doc = closure.plain(doc)
     for key, why in dropped.items():
         print("not inherited: %s (%s)" % (key, why))
     if os.path.abspath(args.input) != archive and os.path.exists(archive):
-        _, existing, _ = closure.load(archive)
+        _, existing, _ = closure.load(archive, check_state=False)
         for key, output in existing.items():
             outputs.setdefault(key, output)
 

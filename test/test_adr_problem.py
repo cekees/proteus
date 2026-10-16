@@ -647,3 +647,4 @@ def test_an_l_shaped_region_converges_at_second_order(lshape_spec, tmp_path):
     archive = (tmp_path / "lshape.archive.ymf").read_text(encoding="utf-8")
     assert "P1/h=0.25/" in archive and "P1/h=0.125/" in archive
     assert "generator_options: VApq30Dena" in archive
+    assert "\nymf_state: closed\n" in archive    # every planned output is there
