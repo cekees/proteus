@@ -24,6 +24,7 @@ __all__ = ["main", "build_parser", "missing"]
 COMMANDS = {
     "run": "run",
     "msh": "msh",
+    "status": "status",
 }
 
 #: front-end subcommands -> (help, modules they import); not implemented

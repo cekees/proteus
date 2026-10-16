@@ -233,3 +233,31 @@ def test_edited_mesh_file_is_stale(tmp_path):
     with open(work / "meshNoVessel.node", "a") as f:
         f.write("# edited\n")
     assert mesh.state(plan) == ("stale", "meshNoVessel.node changed since it was generated")
+
+
+@pytest.mark.skipif(shutil.which("tetgen") is None, reason="tetgen not on PATH")
+def test_status(tmp_path):
+    work = tmp_path / "pro"
+    _copy_ci_models(work)
+    absent = pro("status", *TETGEN_MODEL, cwd=work)
+    assert absent.returncode == 0, absent.stderr[-2000:]
+    assert "mesh:      absent (no meshNoVessel.mesh.ymf)" in absent.stdout
+    assert "pro run meshes on rank 0 first" in absent.stdout
+    assert not (work / "meshNoVessel.mesh.ymf").exists()
+    assert not (work / "meshNoVessel.ele").exists()
+
+    assert pro("msh", *TETGEN_MODEL, "-l", "0", cwd=work).returncode == 0
+    current = pro("status", *TETGEN_MODEL, cwd=work)
+    assert "mesh:      current" in current.stdout
+    assert "next:      pro run reads the mesh files; no meshing" in current.stdout
+
+    stale = pro("status", *TETGEN_MODEL, "-C", "Refinement=1", cwd=work)
+    assert "mesh:      stale (the generator's inputs or command changed)" in stale.stdout
+
+
+def test_status_of_a_mesh_built_in_memory(tmp_path):
+    shutil.copytree(os.path.join(HERE, "elliptic_redist", "RDLS"), tmp_path / "rdls")
+    out = pro("status", "vortex2D_so.py", cwd=tmp_path / "rdls")
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "domain:    RectangularDomain" in out.stdout
+    assert "nothing to generate" in out.stdout
