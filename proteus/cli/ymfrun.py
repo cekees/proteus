@@ -162,19 +162,23 @@ def solve(doc, problem, name, realization, outdir, files, inline, env):
     it writes beside it are dropped, since the archive holds the record and
     the .xmf is derived from it.
     """
-    from proteus import ADRProblem, Profiling
+    from proteus import ADRProblem, Comm, Profiling, runtime
     from ymf.archive import inline_domain, read_ymf
     from ymf import closure
+    if Comm.comm is None:
+        Profiling.procID = runtime.init().rank()
+    if Profiling.logFile is None:
+        # one log for the whole run, proteus.log in the working directory
+        Profiling.openLog("proteus.log", 1)
     Profiling.logLevel = 1
     Profiling.verbose = False
     kwargs = run_arguments(doc, problem, name, realization)
     stabilization = kwargs["stabilization"]
-    from proteus.iproteus import opts
-    opts.dataDir = outdir
+    opts = runtime.RunOptions(dataDir=outdir)
     cwd = os.getcwd()
     os.chdir(outdir)
     try:
-        ns, _, errors = ADRProblem.run(problem, name=files, **kwargs)
+        ns, _, errors = ADRProblem.run(problem, name=files, opts=opts, **kwargs)
     finally:
         os.chdir(cwd)
     solved = problem

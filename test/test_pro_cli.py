@@ -104,22 +104,53 @@ def test_petsc_argv_program_is_never_an_option(monkeypatch):
     assert runtime.petsc_argv() == ["proteus"]
 
 
+def _parun_defaults():
+    """dest -> default of each option parun's parser declares, read from
+    scripts/parun without running it (optparse's default is None)."""
+    import ast
+    path = os.path.join(os.path.dirname(__file__), os.pardir, "scripts", "parun")
+    if not os.path.exists(path):
+        pytest.skip("needs the source tree's scripts/parun")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    defaults = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_option"):
+            kw = {k.arg: k.value for k in node.keywords}
+            if "dest" in kw:
+                value = kw.get("default")
+                defaults[ast.literal_eval(kw["dest"])] = (
+                    None if value is None else eval(compile(ast.Expression(value), path, "eval")))
+    return defaults
+
+
 def test_run_options_match_parun_defaults():
-    # iproteus.opts copies parun's parser, except that it never declared
-    # -t/--hotStartTime (parun's default: infinity), which NS_base reads on
-    # a hot start; test_HotStart_rans3p sets it by hand for that reason.
-    from proteus.iproteus import opts
+    parun = _parun_defaults()
     defaults = runtime.RunOptions()
-    assert math.isinf(defaults.hotStartTime)
-    assert not hasattr(opts, "hotStartTime")
     for name in vars(defaults):
-        if name == "hotStartTime":
-            continue
-        expected = getattr(opts, name)
+        expected = parun[name]
         if name == "hotStart":      # parun's default is None, i.e. off
             expected = bool(expected)
         assert getattr(defaults, name) == expected, name
     assert runtime.RunOptions() is not runtime.RunOptions()
+
+
+def test_iproteus_is_a_shim_over_runtime(tmp_path):
+    code = ("import warnings; warnings.simplefilter('error', DeprecationWarning)\n"
+            "try:\n    import proteus.iproteus\nexcept DeprecationWarning as w:\n"
+            "    print('warned:', w)\n"
+            "warnings.simplefilter('ignore', DeprecationWarning)\n"
+            "import sys; sys.modules.pop('proteus.iproteus', None)\n"
+            "from proteus.iproteus import *\n"
+            "from proteus import runtime\n"
+            "print(type(opts) is runtime.RunOptions, comm.size(), "
+            "NumericalSolution.__name__, callable(reload))\n")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         cwd=tmp_path)
+    assert out.returncode == 0, out.stderr
+    assert "warned: proteus.iproteus is deprecated" in out.stdout
+    assert out.stdout.splitlines()[-1] == "True 1 proteus.NumericalSolution True"
 
 
 def _datasets(path):
