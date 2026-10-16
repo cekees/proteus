@@ -326,8 +326,23 @@ def run(args):
                 print("pro run: " + error, file=sys.stderr)
             return 2
 
+    opts = _options(args)
+    ns, status = solve(comm, so, pList, nList, sList, opts, two_phase,
+                       profile=args.profile, setup_only=args.setup_only)
+    return status
+
+
+def solve(comm, so, pList, nList, sList, opts, two_phase=False,
+          profile=False, setup_only=False, run_number=0):
+    """Build the NumericalSolution and run it, as parun does.
+
+    Returns ``(ns, status)``; status is 1 when a system step failed on any
+    rank (the same on every rank), else 0. Shared by ``pro run`` and the
+    ``run()`` of ``pro shell``.
+    """
     import proteus
-    from proteus import NumericalSolution
+    from proteus import NumericalSolution, Profiling
+    log = Profiling.logEvent
     Profiling.flushBuffer = sList[0].flushBuffer
     log("Running Proteus version " + proteus.__version__, level=0)
     simFlagsList = []
@@ -338,15 +353,13 @@ def run(args):
             "dataFile": p.name + repr(comm.rank()) + ".dat",
             "components": list(range(p.coefficients.nc)),
         })
-
-    opts = _options(args)
-    runName = so.name + "0"
-    dispatch = Profiling.Dispatcher(comm, args.profile)
+    runName = so.name + str(run_number)
+    dispatch = Profiling.Dispatcher(comm, profile)
     ns = dispatch(NumericalSolution.NS_base,
                   (so, pList, nList, sList, opts, simFlagsList, two_phase),
                   {}, runName + "_init_prof")
     status = 0
-    if not args.setup_only:
+    if not setup_only:
         failed = dispatch(ns.calculateSolution, (runName,), {},
                           runName + "_run_prof")
         # reduce, so that every rank exits with the same status
@@ -354,4 +367,4 @@ def run(args):
             log("%s failed: system step failed" % so.name)
             status = 1
     log("Completed " + so.name)
-    return status
+    return ns, status

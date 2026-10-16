@@ -25,6 +25,7 @@ COMMANDS = {
     "run": "run",
     "msh": "msh",
     "status": "status",
+    "shell": "shell",
 }
 
 #: front-end subcommands -> (help, modules they import); not implemented

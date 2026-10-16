@@ -327,3 +327,51 @@ def test_spec_without_the_front_end_explains_the_route(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "lacks sympy" in err
     assert "pro run SPEC.ymf --emit-pn" in err
+
+
+LADR = ["ladr_2d_p.py", "ladr_2d_n.py"]
+
+
+def _copy_ladr(directory):
+    directory.mkdir()
+    for f in ("adr.py",) + tuple(LADR):
+        shutil.copy(os.path.join(HERE, "ci", f), directory)
+
+
+@pytest.mark.skipif(shutil.which("parun") is None, reason="parun not on PATH")
+def test_shell_batch_run_matches_parun(tmp_path):
+    import numpy as np
+    _copy_ladr(tmp_path / "shell")
+    (tmp_path / "shell" / "batch.py").write_text(
+        "solution = run()\n"
+        "print('ran', type(solution).__name__, status, [p.name for p in pList])\n")
+    out = pro("shell", *LADR, "--batch", "batch.py", cwd=tmp_path / "shell")
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "ran NS_base 0 ['ladr_2d']" in out.stdout
+
+    _copy_ladr(tmp_path / "parun")
+    ran = subprocess.run(["parun"] + LADR, cwd=tmp_path / "parun",
+                         capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr[-2000:]
+    expected = _datasets(tmp_path / "parun" / "ladr_2d.h5")
+    actual = _datasets(tmp_path / "shell" / "ladr_2d.h5")
+    assert sorted(actual) == sorted(expected)
+    for name in expected:
+        assert np.array_equal(actual[name], expected[name]), name
+
+
+def test_shell_prompt_reads_python(tmp_path):
+    _copy_ladr(tmp_path / "shell")
+    out = subprocess.run(
+        [sys.executable, "-m", "proteus.cli", "shell", *LADR, "-l", "0"],
+        cwd=tmp_path / "shell", input="print('model is', so.name, opts.hotStart)\n",
+        capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "model is ladr_2d False" in out.stdout
+
+
+def test_shell_without_a_model(tmp_path):
+    out = subprocess.run(
+        [sys.executable, "-m", "proteus.cli", "shell", "-l", "0"], cwd=tmp_path,
+        input="run()\n", capture_output=True, text=True)
+    assert "no model loaded: load('model_so.py') first" in out.stderr
