@@ -236,6 +236,11 @@ def _check_inputs(args):
     if len(args.inputs) > 2:
         return "give one model module, or a p module and an n module"
     for path in args.inputs:
+        if path.endswith(".ymf"):
+            # pro run sends a spec to the YMF runner before it gets here
+            return (path + ": a spec holds a study, one mesh per output; write "
+                    "each output as Proteus files with pro run " + path +
+                    " --emit-pn, then give this command an emitted _so.py")
         if not path.endswith(".py"):
             return path + ": not a .py file"
         if not os.path.isfile(path):

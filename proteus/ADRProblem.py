@@ -26,8 +26,9 @@ and this module only compiles and evaluates the code strings it was given.
 
 import numpy
 
-from proteus import (FemTools, LinearAlgebraTools, LinearSolvers, NonlinearSolvers,
-                     NumericalFlux, Quadrature, StepControl, TimeIntegration, defaults)
+from proteus import (FemTools, LinearAlgebraTools, LinearSolvers, MeshTools,
+                     NonlinearSolvers, NumericalFlux, Quadrature, StepControl,
+                     TimeIntegration, defaults)
 from proteus.TransportCoefficients import TC_base
 
 __all__ = ["ADRCoefficients", "physics", "numerics", "run", "emit_pn", "describe",
@@ -361,8 +362,16 @@ def physics(problem, name):
     lower, upper = problem["domain"]["lower"], problem["domain"]["upper"]
     p = defaults.Physics_base(nd=dim, name=name)
     # The old-style box route (domain None, L and x0) is the one that hands
-    # the numerics' nnx/nny/nnz to the mesh generator.
-    p.domain = None
+    # the numerics' nnx/nny/nnz to the mesh generator. A piecewise_linear
+    # region is a PSLG or PLC domain, meshed with triangle or tetgen; its
+    # bounding box still sets L, the scale of the boundary tolerance.
+    region = problem["domain"].get("region")
+    if region is None:
+        p.domain = None
+    else:
+        from proteus import DomainYMF
+        p.domain = DomainYMF.from_ymf(region)
+        p.domain.name = name
     p.L = tuple(u - l for u, l in zip(upper, lower)) + (1.0,) * (3 - dim)
     p.x0 = tuple(lower) + (0.0,) * (3 - dim)
     p.coefficients = ADRCoefficients(adr)
@@ -482,13 +491,28 @@ NULL_SPACE_SOLVER = {"ksp_type": "gmres", "pc_type": "lu",
                      "ksp_rtol": "1e-14", "ksp_atol": "1e-14", "ksp_max_it": "50"}
 
 
+def mesh_constraint(h, dim):
+    """triangle's (2-D) or tetgen's (3-D) options for element size ``h``.
+
+    Proteus's own convention, as in its models: a maximum triangle area of
+    h**2/2 or tetrahedron volume of h**3/6 (the right simplex with legs h).
+    """
+    if dim == 2:
+        return "VApq30Dena%8.8f" % (h ** 2 / 2.0,)
+    if dim == 3:
+        return "VApq1.35q12feena%e" % (h ** 3 / 6.0,)
+    raise ValueError("an unstructured mesh needs dimension 2 or 3, not %d" % dim)
+
+
 def numerics(problem, spaces, cells, time=None, quadrature_order=None,
              stabilization="none", coefficients=None, levels=1,
-             tolerance=None, max_iterations=None):
+             tolerance=None, max_iterations=None, h=None):
     """The discrete problem.
 
     ``spaces`` maps each scalar component to a (family, order) pair;
-    ``cells`` is the number of mesh cells along each axis; ``time`` is None
+    ``cells`` is the number of mesh cells along each axis of a box; a
+    piecewise_linear region gives ``h``, its element size, instead (see
+    :func:`mesh_constraint`); ``time`` is None
     for a steady problem or a dict with ``dt``. ``stabilization`` is one of
     :data:`STABILIZATIONS`; ``supg/pspg`` installs Proteus's residual-based
     velocity-pressure stabilization (ASGS), which needs the problem in
@@ -511,9 +535,17 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None,
     q = quadrature_order or min(2 * max(orders) + 2, 5 if dim == 3 else 8)
     n.elementQuadrature = Quadrature.SimplexGaussQuadrature(dim, q)
     n.elementBoundaryQuadrature = Quadrature.SimplexGaussQuadrature(dim - 1, q)
-    n.nnx = n.nny = cells + 1
-    if dim == 3:
-        n.nnz = cells + 1
+    if problem["domain"].get("region") is None:
+        if cells is None or h is not None:
+            raise ValueError("a box is meshed by cells per side, not h")
+        n.nnx = n.nny = cells + 1
+        if dim == 3:
+            n.nnz = cells + 1
+    else:
+        if h is None or cells is not None:
+            raise ValueError("a piecewise_linear region is meshed by h, its "
+                             "element size, not by cells")
+        n.triangleOptions = mesh_constraint(float(h), dim)
     # nLevels > 1: the box mesh above is the coarsest, refined uniformly
     # levels-1 times; the solution of record is on the finest.
     n.nLevels = int(levels)
@@ -596,7 +628,9 @@ def describe(problem, n):
         "spaces": {names[i]: _name(space) for i, space in sorted(n.femSpaces.items())},
         "quadrature": {"element": int(n.elementQuadrature.order),
                        "boundary": int(n.elementBoundaryQuadrature.order)},
-        "mesh": {"nodes_per_side": int(n.nnx), "levels": int(n.nLevels)},
+        "mesh": ({"nodes_per_side": int(n.nnx), "levels": int(n.nLevels)}
+                 if problem["domain"].get("region") is None else
+                 {"generator_options": n.triangleOptions, "levels": int(n.nLevels)}),
         "time_integration": ("none" if n.timeIntegration is TimeIntegration.NoIntegration
                              else _name(n.timeIntegration)),
         "nonlinear_solver": {"type": _name(n.levelNonlinearSolver),
@@ -641,7 +675,7 @@ def l2_errors(model, problem, t):
 
 
 def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
-          levels=1, tolerance=None, max_iterations=None):
+          levels=1, tolerance=None, max_iterations=None, h=None):
     """The problem as solved, its physics and numerics, and the system settings.
 
     Returns ``(problem, p, n, system)``: the problem (reordered pressure
@@ -656,7 +690,15 @@ def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
     p = physics(problem, name)
     n = numerics(problem, spaces, cells, time, stabilization=stabilization,
                  coefficients=p.coefficients, levels=levels,
-                 tolerance=tolerance, max_iterations=max_iterations)
+                 tolerance=tolerance, max_iterations=max_iterations, h=h)
+    if p.domain is not None:
+        # the region's own mesh options: generated by triangle or tetgen
+        # from <name>.poly (see write_poly), then refined levels-1 times
+        options = MeshTools.getMeshOptions(p.domain)
+        options.triangleOptions = n.triangleOptions
+        options.nLevels = n.nLevels
+        options.genMesh = True
+        p.domain.polyfile = name
     if problem.get("periodic"):
         n.periodicDirichletConditions = p.periodicDirichletConditions
     if problem.get("up_to_constant"):
@@ -690,7 +732,7 @@ def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
 
 
 def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
-        opts=None, levels=1, tolerance=None, max_iterations=None):
+        opts=None, levels=1, tolerance=None, max_iterations=None, h=None):
     """Solve; return (NS_base, the finest level model, L2 errors at the end).
 
     ``time`` is None for a steady solve, or ``{"dt": ...}`` to step through
@@ -703,7 +745,8 @@ def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
     if opts is None:
         from proteus.iproteus import opts
     problem, p, n, system = setup(problem, spaces, cells, time, name, stabilization,
-                                  levels, tolerance, max_iterations)
+                                  levels, tolerance, max_iterations, h)
+    write_poly(p)
     so = defaults.System_base(name=name, pnList=[(p, n)], sList=[default_s])
     so.tnList = system["tnList"]
     if "dt_system_fixed" in system:
@@ -713,6 +756,18 @@ def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
     ns.calculateSolution(name)
     model = ns.modelList[0].levelModelList[-1]
     return ns, model, l2_errors(model, problem, so.tnList[-1])
+
+
+def write_poly(p):
+    """Write a region domain's <polyfile>.poly, the mesh generator's input,
+    on rank 0 (a box needs none)."""
+    if p.domain is None:
+        return
+    from proteus import Comm
+    comm = Comm.get()
+    if comm.isMaster():
+        p.domain.writePoly(p.domain.polyfile)
+    comm.barrier()
 
 
 # --- writing a problem out as p, n and so files ---------------------------------
@@ -747,7 +802,8 @@ def _function(dim, code):
 
 
 def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
-            levels=1, tolerance=None, max_iterations=None, directory=".", header=None):
+            levels=1, tolerance=None, max_iterations=None, directory=".", header=None,
+            h=None):
     """Write the problem as a classic Proteus ``<name>_p.py``, ``_n.py`` and ``_so.py``.
 
     The files say in Python exactly what :func:`run` builds in memory: the
@@ -765,7 +821,7 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
     import pprint
     from proteus import SubgridError
     problem, p, n, system = setup(problem, spaces, cells, time, name, stabilization,
-                                  levels, tolerance, max_iterations)
+                                  levels, tolerance, max_iterations, h)
     c = p.coefficients
     adr = problem["adr"]
     dim = adr["dim"]
@@ -791,11 +847,30 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
         "",
         "nd = %d" % dim,
         "name = %r" % name,
-        "# the old-style box: domain None, with L and x0, hands nnx/nny/nnz to the mesher",
-        "domain = None",
-        "L = %r" % (tuple(p.L),),
-        "x0 = %r" % (tuple(p.x0),),
     ]
+    region = problem["domain"].get("region")
+    if region is None:
+        P += ["# the old-style box: domain None, with L and x0, hands nnx/nny/nnz to the mesher",
+              "domain = None"]
+    else:
+        options = MeshTools.getMeshOptions(p.domain)
+        P += ["# a piecewise_linear region: %s meshes it from %s.poly, written here"
+              % ("triangle" if dim == 2 else "tetgen", p.domain.polyfile),
+              "from proteus import Comm, DomainYMF, MeshTools",
+              "domain = DomainYMF.from_ymf(%s)" % pprint.pformat(region, width=72).replace(
+                  "\n", "\n" + " " * len("domain = DomainYMF.from_ymf(")),
+              "domain.name = name",
+              "domain.polyfile = %r" % p.domain.polyfile,
+              "meshOptions = MeshTools.getMeshOptions(domain)",
+              "meshOptions.triangleOptions = %r" % options.triangleOptions,
+              "meshOptions.nLevels = %d" % options.nLevels,
+              "meshOptions.genMesh = True",
+              "if Comm.get().isMaster():",
+              "    domain.writePoly(domain.polyfile)",
+              "Comm.get().barrier()",
+              "# the bounding box: the scale of the boundary tolerance"]
+    P += ["L = %r" % (tuple(p.L),),
+          "x0 = %r" % (tuple(p.x0),)]
     if time is not None:
         P.append("T = %r" % p.T)
     P += ["", "",
@@ -962,7 +1037,11 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
           "elementQuadrature = Quadrature.SimplexGaussQuadrature(nd, %d)" % n.elementQuadrature.order,
           "elementBoundaryQuadrature = Quadrature.SimplexGaussQuadrature(nd - 1, %d)"
           % n.elementBoundaryQuadrature.order]
-    N.append("%s = %d   # %d cells per side" % (" = ".join(["nnx", "nny", "nnz"][:dim]), n.nnx, cells))
+    if region is None:
+        N.append("%s = %d   # %d cells per side" % (" = ".join(["nnx", "nny", "nnz"][:dim]), n.nnx, cells))
+    else:
+        N.append("triangleOptions = %r   # h = %r; the p file's meshOptions carry it"
+                 % (n.triangleOptions, h))
     N.append("nLevels = %d   # uniform refinements of that mesh, plus one" % n.nLevels)
     if problem.get("up_to_constant"):
         N += ["# strong Dirichlet conditions with the DOFs kept in the system (rows",

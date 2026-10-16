@@ -598,3 +598,52 @@ def test_a_pressure_up_to_a_constant_is_solved_in_the_null_space(kovasznay_spec,
     mine = domain_arrays(read_ymf(work / (stem + "_pn.ymf"))[0], work)
     recorded = domain_arrays(output["approximation"], tmp_path)
     assert all(numpy.array_equal(mine[k], recorded[k]) for k in recorded)
+
+
+# --- regions that are not boxes: unstructured meshes of size h ----------------------
+
+L_SHAPE = '''    domain:
+      kind: piecewise_linear
+      dimension: 2
+      vertices: [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], [0.0, 2.0]]
+      segments: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 0]]
+'''
+
+
+@pytest.fixture
+def lshape_spec(poisson_spec):
+    """The Poisson spec on an L-shaped region, on which sin(pi x) sin(pi y)
+    still vanishes, meshed by h."""
+    text = poisson_spec.read_text(encoding="utf-8")
+    box = '    domain: "Ω = [0, 1] × [0, 1]"\n'
+    assert box in text
+    text = text.replace(box, L_SHAPE).replace(
+        "      solver: {type: linear}\n",
+        "      solver: {type: linear}\n      mesh: {h: [0.25, 0.125]}\n")
+    path = poisson_spec.parent / "lshape.ymf"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_a_region_is_meshed_by_h_and_a_box_by_cells():
+    problem = {"adr": poisson_adr(), "domain": {"lower": [0, 0], "upper": [2, 2],
+                                               "region": {"kind": "piecewise_linear"}}}
+    with pytest.raises(ValueError, match="meshed by h"):
+        ADRProblem.numerics(problem, {"u": ("CG", 1)}, 4)
+    n = ADRProblem.numerics(problem, {"u": ("CG", 1)}, None, h=0.5)
+    assert n.triangleOptions == "VApq30Dena0.12500000"
+    box = {"adr": poisson_adr(), "domain": {"lower": [0, 0], "upper": [1, 1]}}
+    with pytest.raises(ValueError, match="cells per side, not h"):
+        ADRProblem.numerics(box, {"u": ("CG", 1)}, None, h=0.5)
+    assert ADRProblem.mesh_constraint(0.5, 3) == "VApq1.35q12feena%e" % (0.5 ** 3 / 6.0)
+
+
+def test_an_l_shaped_region_converges_at_second_order(lshape_spec, tmp_path):
+    out = ymf_run(lshape_spec, "--outdir", tmp_path)
+    assert out.returncode == 0, out.stderr[-2000:]
+    table = rows(out.stdout)
+    assert [r[0] for r in table] == ["0.25", "0.125"]
+    assert 1.8 < float(table[1][2]) < 2.4               # P1, L2: rate 2
+    archive = (tmp_path / "lshape.archive.ymf").read_text(encoding="utf-8")
+    assert "P1/h=0.25/" in archive and "P1/h=0.125/" in archive
+    assert "generator_options: VApq30Dena" in archive

@@ -136,7 +136,9 @@ def run_arguments(doc, problem, name, realization):
     spaces = element_spaces(problem, entry.get("finite_element") or {})
     solver = entry.get("solver") or {}
     return {"spaces": {c: tuple(s) for c, s in spaces.items()},
-            "cells": int(realization["cells"]),
+            # a box by cells per side, any other region by h (element size)
+            "cells": int(realization["cells"]) if "cells" in realization else None,
+            "h": float(realization["h"]) if "h" in realization else None,
             "time": time_stepping(entry, problem),
             "stabilization": stabilization_of(doc, entry),
             "levels": int(realization.get("levels", 1)),
@@ -248,7 +250,7 @@ def override(doc, names, field, values, flag):
         if d["name"] not in names:
             continue
         mesh = d.setdefault("mesh", {})
-        if field == "levels" and "cells" not in mesh:
+        if field == "levels" and not ("cells" in mesh or "h" in mesh):
             del d["mesh"]
             continue                       # no mesh to refine; reported later
         if mesh.get(field) == value:
@@ -262,21 +264,31 @@ def override(doc, names, field, values, flag):
 def report(problem, rows):
     """The convergence table of one discretization."""
     names = list(problem["exact"])
-    print("  cells  " + "".join("  L2(%s)%s  rate  " % (
+    unstructured = any("h" in realization for _, realization, _, _ in rows)
+    print(("      h  " if unstructured else "  cells  ") + "".join("  L2(%s)%s  rate  " % (
         n, "*" if n in (problem.get("up_to_constant") or []) else " ") for n in names)
           + "  output" + ("   (* modulo constants)" if problem.get("up_to_constant") else ""))
     previous = None
     for key, realization, output, status in rows:
-        finest = int(realization["cells"]) * 2 ** (int(realization.get("levels", 1)) - 1)
+        refinements = 2 ** (int(realization.get("levels", 1)) - 1)
+        # the finest mesh's size, relative: 1/cells for a box, h otherwise
+        if "h" in realization:
+            size = float(realization["h"]) / refinements
+            row = "  %5.3g  " % size
+        else:
+            finest = int(realization["cells"]) * refinements
+            size = 1.0 / finest
+            row = "  %5d  " % finest
         errors = output["verification"]["l2_errors"]
-        row = "  %5d  " % finest
         for n in names:
             rate = ""
-            if previous and previous.get(n, 0) > 0 and errors[n] > 0:
-                rate = "%5.2f" % math.log2(previous[n] / errors[n])
+            if (previous and previous[1].get(n, 0) > 0 and errors[n] > 0
+                    and previous[0] != size):
+                rate = "%5.2f" % (math.log(previous[1][n] / errors[n])
+                                  / math.log(previous[0] / size))
             row += "  %.3e %5s  " % (errors[n], rate)
         print(row + "  " + key.split("/")[-1] + "  " + status, flush=True)
-        previous = errors
+        previous = (size, errors)
 
 
 def main(argv=None, prog="ymf_run"):
@@ -288,6 +300,9 @@ def main(argv=None, prog="ymf_run"):
                         help="run only this one (by name; repeatable)")
     parser.add_argument("--cells", type=int, nargs="+",
                         help="override mesh.cells: cells per side of each coarsest mesh")
+    parser.add_argument("--h", type=float, nargs="+",
+                        help="override mesh.h: element size of each coarsest unstructured "
+                             "mesh (a region that is not a box)")
     parser.add_argument("--levels", type=int, nargs="+",
                         help="override mesh.levels: refine uniformly levels-1 times and "
                              "solve on the finest (Proteus nLevels)")
@@ -343,7 +358,7 @@ def main(argv=None, prog="ymf_run"):
         raise SystemExit("no discretization named %s (have %s)"
                          % (", ".join(unknown), ", ".join(names)))
     flags = "".join(" --discretization " + n for n in args.discretization or [])
-    for field in ("cells", "levels"):
+    for field in ("cells", "h", "levels"):
         values = getattr(args, field)
         if values:
             override(doc, selected, field, values, "%s%s --%s %s"

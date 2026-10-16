@@ -375,3 +375,44 @@ def test_shell_without_a_model(tmp_path):
         [sys.executable, "-m", "proteus.cli", "shell", "-l", "0"], cwd=tmp_path,
         input="run()\n", capture_output=True, text=True)
     assert "no model loaded: load('model_so.py') first" in out.stderr
+
+
+@pytest.mark.skipif(shutil.which("triangle") is None, reason="triangle not on PATH")
+def test_emitted_region_files_mesh_with_pro_msh(tmp_path):
+    pytest.importorskip("ymf.symbolic")
+    pytest.importorskip("strictyaml")
+    box = '    domain: "Ω = [0, 1] × [0, 1]"\n'
+    assert box in POISSON_SPEC
+    spec = POISSON_SPEC.replace(box, '''    domain:
+      kind: piecewise_linear
+      dimension: 2
+      vertices: [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], [0.0, 2.0]]
+      segments: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 0]]
+''').replace("      solver: {type: linear}\n",
+             "      solver: {type: linear}\n      mesh: {h: 0.25}\n")
+    (tmp_path / "lshape.ymf").write_text(spec, encoding="utf-8")
+    out = pro("run", "lshape.ymf", "--emit-pn", "--outdir", "out", cwd=tmp_path)
+    assert out.returncode == 0, out.stderr[-2000:]
+    (so,) = (tmp_path / "out").glob("*_so.py")
+    stem = so.name[:-len("_so.py")]
+
+    # on the compute side: only the emitted files
+    work = tmp_path / "compute"
+    work.mkdir()
+    for suffix in ("_p.py", "_n.py", "_so.py"):
+        shutil.copy(tmp_path / "out" / (stem + suffix), work)
+    status = pro("status", so.name, cwd=work)
+    assert "generator: triangle" in status.stdout
+    assert "mesh:      absent" in status.stdout
+    made = pro("msh", so.name, "-l", "0", cwd=work)
+    assert made.returncode == 0 and "running triangle -VApq30Dena" in made.stdout
+    ran = pro("run", so.name, "--no-mesh", cwd=work)
+    assert ran.returncode == 0, ran.stderr[-2000:]
+
+
+@pytest.mark.parametrize("command", ["msh", "status"])
+def test_msh_and_status_point_a_spec_at_its_emitted_files(tmp_path, command):
+    (tmp_path / "spec.ymf").write_text("model: {}\n")
+    out = pro(command, "spec.ymf", cwd=tmp_path)
+    assert out.returncode == 2
+    assert "pro run spec.ymf --emit-pn" in out.stderr
