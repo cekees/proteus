@@ -6,7 +6,7 @@ A class hierarchy for methods of controlling the step size
 """
 from .Profiling import logEvent
 from . import Comm
-from petsc4py import PETSc
+from .petsc_optional import PETSc
 from .Comm import globalMax
 
 class SC_base(object):

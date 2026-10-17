@@ -12,7 +12,7 @@ from . import superluWrappers
 from . import TransportCoefficients
 from . import cfemIntegrals
 from . import Quadrature
-from petsc4py import PETSc as p4pyPETSc
+from .petsc_optional import PETSc as p4pyPETSc, HAVE_PETSC4PY
 from math import *
 import math
 from .Profiling import logEvent
@@ -395,6 +395,94 @@ class LU(LinearSolver):
             logEvent("Maximum real part of eigenvalue "+repr(self.eigenvalues_r.max()))
             logEvent("Minimum complex part of eigenvalue "+repr(self.eigenvalues_i.min()))
             logEvent("Maximum complex part of eigenvalue "+repr(self.eigenvalues_i.max()))
+
+class RedundantLU(LinearSolver):
+    """An exact solve of the global system, factored on every rank, with no PETSc.
+
+    The coarse level of a parallel multigrid cycle needs the global coarse
+    system solved exactly; factoring each rank's subdomain matrix (LU) is
+    block-Jacobi instead. This does what PETSc's redundant preconditioner does
+    for the PETSc path (see mgmCoarseSolver): every rank contributes its owned
+    rows, in global numbers, every rank assembles and factors the whole matrix
+    with SuperLU, and every rank solves the whole system with the gathered
+    right-hand side. The solution is then known everywhere, so the ghost
+    entries come out right with no exchange. That is cheap only because the
+    coarse level is small, which is what it is for.
+
+    par_L carries the layout (LinearAlgebraTools.ParMat_mpi4py): owned row
+    count, block size, global size and the subdomain-to-global map. Only the
+    plain layout (owned entries first, components interleaved) is supported.
+    """
+    def __init__(self,L,par_L):
+        LinearSolver.__init__(self,L)
+        from . import Comm
+        if getattr(par_L,'nzval_proteus2petsc',None) is not None:
+            raise NotImplementedError(
+                "RedundantLU needs the plain parallel layout (owned entries first, components "
+                "interleaved); mixed spaces are numbered by a permutation it does not apply. "
+                "Use petsc4py for this problem.")
+        self.mpi = Comm.get().comm.tompi4py()
+        bs = max(1,par_L.blockSize)
+        self.nOwned = bs*par_L.par_n
+        self.N = bs*par_L.par_N
+        s2g = numpy.asarray(par_L.subdomain2global)
+        if bs > 1:
+            s2g = (bs*numpy.repeat(s2g,bs) + numpy.tile(numpy.arange(bs),s2g.size))
+        assert s2g.size == self.n, (
+            "the subdomain matrix has %i rows but the layout describes %i" % (self.n,s2g.size))
+        self.localToGlobal = s2g.astype(numpy.int64)
+        self.sparseFactor = superluWrappers.SparseFactor(self.N)
+        self.solverName = "RedundantLU"
+
+    def prepare(self,b=None,newton_its=None):
+        import scipy.sparse
+        rowptr,colind,nzval = self.L.getCSRrepresentation()
+        nnzOwned = int(rowptr[self.nOwned])
+        rows = numpy.repeat(self.localToGlobal[:self.nOwned],numpy.diff(rowptr[:self.nOwned+1]))
+        cols = self.localToGlobal[colind[:nnzOwned]]
+        pieces = self.mpi.allgather((rows,cols,numpy.array(nzval[:nnzOwned])))
+        A = scipy.sparse.csr_matrix((numpy.concatenate([p[2] for p in pieces]),
+                                     (numpy.concatenate([p[0] for p in pieces]),
+                                      numpy.concatenate([p[1] for p in pieces]))),
+                                    shape=(self.N,self.N))
+        A.sum_duplicates()
+        A.sort_indices()
+        assert numpy.all(numpy.diff(A.indptr) > 0), "a global row of the coarse matrix is empty"
+        #The factor keeps state tied to the matrix it was first prepared with
+        #(SuperLU reuses the column permutation and the storage it points to),
+        #so the global matrix is built once and refactored with new values in
+        #place, as LU does with its own matrix. Handing it a fresh matrix on
+        #every prepare gave a wrong factorization once the first matrix's
+        #arrays had been freed and reused. A changed pattern starts over.
+        samePattern = (getattr(self,'globalL',None) is not None and
+                       numpy.array_equal(self.globalRowptr,A.indptr) and
+                       numpy.array_equal(self.globalColind,A.indices))
+        if samePattern:
+            self.globalNzval[:] = A.data
+        else:
+            self.globalNzval = numpy.ascontiguousarray(A.data,'d')
+            self.globalColind = numpy.ascontiguousarray(A.indices,'i')
+            self.globalRowptr = numpy.ascontiguousarray(A.indptr,'i')
+            self.globalL = superluWrappers.SparseMatrix(self.N,self.N,self.globalNzval.size,
+                                                        self.globalNzval,self.globalColind,
+                                                        self.globalRowptr)
+            self.sparseFactor = superluWrappers.SparseFactor(self.N)
+        superluWrappers.sparseFactorPrepare(self.globalL,self.sparseFactor)
+
+    def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
+        self.du[:]=u
+        self.converged(r)
+        self.failed()
+        pieces = self.mpi.allgather((self.localToGlobal[:self.nOwned],numpy.array(b[:self.nOwned])))
+        x = numpy.zeros((self.N,),'d')
+        for (indices,values) in pieces:
+            x[indices] = values
+        superluWrappers.sparseFactorSolve(self.sparseFactor,x)
+        u[:] = x[self.localToGlobal]
+        self.computeResidual(u,r,b)
+        self.du -= u
+        self.converged(r)
 
 class KSP_petsc4py(LinearSolver):
     """ A class that interfaces Proteus with PETSc KSP. """
@@ -3342,6 +3430,8 @@ def mgmCoarseSolver(L,par_L,prefix='mgm_coarse_'):
     from . import Comm
     if par_L is None or Comm.get().size() == 1:
         return LU(L=L)
+    if not HAVE_PETSC4PY:
+        return RedundantLU(L,par_L)
     options = p4pyPETSc.Options(prefix)
     for name,value in (('ksp_type','preonly'),
                        ('pc_type','redundant'),

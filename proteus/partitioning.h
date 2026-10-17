@@ -149,6 +149,19 @@ namespace proteus
     return 0;
   }
 
+  /* The partitioners use the PETSc C library (MatPartitioning, IS). petsc4py
+     initializes it when proteus runs with petsc4py; without petsc4py nothing
+     else does, so the partitioning entry points call this first. MPI is
+     already initialized by then (mpi4py), so PETSc runs on MPI_COMM_WORLD. */
+  inline int ensurePetscInitialized()
+  {
+    PetscBool initialized = PETSC_FALSE;
+    PetscInitialized(&initialized);
+    if (initialized)
+      return 0;
+    return PetscInitializeNoArguments();
+  }
+
   extern int partitionElementsOriginal(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nElements_overlap);
 
   extern int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nNodes_overlap,

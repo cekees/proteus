@@ -10,7 +10,7 @@ from collections import defaultdict, OrderedDict
 from itertools import product
 
 from mpi4py import MPI
-from petsc4py import PETSc
+from .petsc_optional import PETSc
 import numpy as np
 from numpy.linalg import norm
 

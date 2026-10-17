@@ -23,7 +23,8 @@ from mpi4py.MPI cimport (Comm,
 from mpi4py.libmpi cimport MPI_Comm
 cimport mesh
 from proteus cimport cmeshTools
-from proteus.partitioning cimport (c_partitionElements,
+from proteus.partitioning cimport (c_ensurePetscInitialized,
+                                   c_partitionElements,
                                    c_partitionNodes,
                                    c_partitionNodesFromTetgenFiles,
                                    c_partitionNodesFromTriangleFiles,
@@ -38,6 +39,8 @@ def partitionElements(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, c
     """Partition by elements. elementOwners, if given, is an int array with the
     rank that owns each element (in the mesh's current numbering) and replaces
     the graph partitioner -- see MultilevelMesh.partitionLevels."""
+    #the partitioners need the PETSc C library, which petsc4py would have initialized
+    c_ensurePetscInitialized()
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     cdef int[::1] owners
     cdef const int* ownersp = NULL
@@ -65,6 +68,8 @@ def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmes
     """Partition by nodes. nodeOwners, if given, is an int array with the rank
     that owns each node (in the mesh's current numbering) and replaces the
     graph partitioner -- see MultilevelMesh.partitionLevels."""
+    #the partitioners need the PETSc C library, which petsc4py would have initialized
+    c_ensurePetscInitialized()
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     cdef int[::1] owners
     cdef const int* ownersp = NULL
@@ -126,6 +131,8 @@ def convertPUMIPartitionToPython(Comm comm, cmeshTools.CMesh cmesh, cmeshTools.C
     )
 
 def partitionNodesFromTetgenFiles(Comm comm, object filebase, int indexBase, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh, double memHardLimit):
+    #the partitioners need the PETSc C library, which petsc4py would have initialized
+    c_ensurePetscInitialized()
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     if not isinstance(filebase, bytes):
         filebase = filebase.encode()
@@ -147,6 +154,8 @@ def partitionNodesFromTetgenFiles(Comm comm, object filebase, int indexBase, int
     )
 
 def partitionNodesFromTriangleFiles(Comm comm, object filebase, int indexBase, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
+    #the partitioners need the PETSc C library, which petsc4py would have initialized
+    c_ensurePetscInitialized()
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     if not isinstance(filebase, bytes):
         filebase = filebase.encode()

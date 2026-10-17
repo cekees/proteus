@@ -16,7 +16,7 @@ from . import Comm
 from .Comm import globalSum, globalMax
 from .superluWrappers import *
 from .Profiling import logEvent
-from petsc4py import PETSc as p4pyPETSc
+from .petsc_optional import PETSc as p4pyPETSc, HAVE_PETSC4PY
 
 # PETSc Matrix Functions
 
@@ -539,6 +539,294 @@ class ParVec_petsc4py(p4pyPETSc.Vec):
     def save(self, filename):
         """Saves to disk using a PETSc binary viewer."""
         _petsc_view(self, filename)
+
+# Parallel vectors and transfer matrices over mpi4py alone
+#
+# Proteus's own solvers need from PETSc only a ghosted vector (to refresh the
+# ghost entries a subdomain matrix reads) and, for multigrid, the transfer
+# operators applied to owned rows. Both are a halo exchange plus local sparse
+# products, which is what follows. They are used when petsc4py cannot be
+# imported; see petsc_optional.
+
+class GhostExchange(object):
+    """The communication pattern of a ghosted layout: who sends which owned entry to whom.
+
+    Entries are numbered globally, each rank owning the contiguous range
+    [offsets[rank], offsets[rank+1]) -- PETSc's layout, and the one partitioning
+    produces. ``ghostGlobal`` lists the global indices whose values this rank
+    needs but does not own. Building the plan is collective (each rank tells
+    the owners what it needs, once); after that, forward() gives the ghosts
+    their owners' values and reverse_add() adds ghost contributions into the
+    owners -- PETSc's ghostUpdate INSERT/FORWARD and ADD/REVERSE.
+    """
+    def __init__(self,mpi,offsets,ghostGlobal):
+        from mpi4py import MPI
+        self.mpi = mpi
+        rank,size = mpi.Get_rank(),mpi.Get_size()
+        offsets = numpy.asarray(offsets,dtype=numpy.int64)
+        ghostGlobal = numpy.asarray(ghostGlobal,dtype=numpy.int64).ravel()
+        self.nGhosts = ghostGlobal.size
+        owners = numpy.searchsorted(offsets,ghostGlobal,side='right')-1
+        if self.nGhosts and (owners.min() < 0 or owners.max() >= size or (owners == rank).any()):
+            raise ValueError("ghost entries must be owned by another rank and lie in [0,%i)"
+                             % offsets[-1])
+        #ghost values arrive grouped by owning rank; recvOrder puts them back
+        self.recvOrder = numpy.argsort(owners,kind='stable')
+        self.recvCounts = numpy.bincount(owners,minlength=size).astype(numpy.int64)
+        self.sendCounts = numpy.asarray(mpi.alltoall(self.recvCounts.tolist()),dtype=numpy.int64)
+        self.recvDispl = numpy.concatenate([[0],numpy.cumsum(self.recvCounts)[:-1]])
+        self.sendDispl = numpy.concatenate([[0],numpy.cumsum(self.sendCounts)[:-1]])
+        requested = numpy.ascontiguousarray(ghostGlobal[self.recvOrder])
+        incoming = numpy.empty((int(self.sendCounts.sum()),),dtype=numpy.int64)
+        mpi.Alltoallv([requested,(self.recvCounts,self.recvDispl),MPI.INT64_T],
+                      [incoming,(self.sendCounts,self.sendDispl),MPI.INT64_T])
+        self.sendLocal = incoming - offsets[rank]
+        nOwned = int(offsets[rank+1]-offsets[rank])
+        if self.sendLocal.size and (self.sendLocal.min() < 0 or self.sendLocal.max() >= nOwned):
+            raise ValueError("a rank asked for an entry this rank does not own")
+
+    def forward(self,owned):
+        """The ghost values, in ghostGlobal's order, taken from their owners."""
+        from mpi4py import MPI
+        sendbuf = numpy.ascontiguousarray(owned[self.sendLocal],dtype=numpy.float64)
+        recvbuf = numpy.empty((self.nGhosts,),dtype=numpy.float64)
+        self.mpi.Alltoallv([sendbuf,(self.sendCounts,self.sendDispl),MPI.DOUBLE],
+                           [recvbuf,(self.recvCounts,self.recvDispl),MPI.DOUBLE])
+        ghosts = numpy.empty_like(recvbuf)
+        ghosts[self.recvOrder] = recvbuf
+        return ghosts
+
+    def reverse_add(self,ghosts,owned):
+        """Add each ghost value into its owner's entry of ``owned`` (in place)."""
+        from mpi4py import MPI
+        sendbuf = numpy.ascontiguousarray(numpy.asarray(ghosts,dtype=numpy.float64)[self.recvOrder])
+        recvbuf = numpy.empty((self.sendLocal.size,),dtype=numpy.float64)
+        self.mpi.Alltoallv([sendbuf,(self.recvCounts,self.recvDispl),MPI.DOUBLE],
+                           [recvbuf,(self.sendCounts,self.sendDispl),MPI.DOUBLE])
+        numpy.add.at(owned,self.sendLocal,recvbuf)
+
+
+def _ownershipOffsets(mpi,nOwned):
+    """Global offsets of a contiguous layout from each rank's owned count."""
+    counts = mpi.allgather(int(nOwned))
+    return numpy.concatenate([[0],numpy.cumsum(counts)]).astype(numpy.int64)
+
+
+class ParVec_mpi4py(object):
+    """A ghosted parallel vector over a numpy array, using mpi4py for the halo exchange.
+
+    Takes the arguments ParVec_petsc4py takes and lays the array out the same
+    way: the first n*bs entries are owned, globally numbered from this rank's
+    offset, and the rest are ghosts whose global numbers come from
+    subdomain2global (or ``ghosts``). It provides what proteus's own solvers
+    use: scatter_forward_insert, scatter_reverse_add, duplicate_with_array and
+    the layout attributes. It is not a PETSc Vec, so a PETSc solver cannot use
+    it -- which is the point: it is what a run without petsc4py gets.
+    """
+    def __init__(self,array=None,bs=None,n=None,N=None,nghosts=None,subdomain2global=None,
+                 blockVecType="simple",ghosts=None,
+                 proteus2petsc_subdomain=None,petsc2proteus_subdomain=None,
+                 _exchange=None):
+        from . import Comm
+        self.proteus2petsc_subdomain = proteus2petsc_subdomain
+        self.petsc2proteus_subdomain = petsc2proteus_subdomain
+        blockSize = max(1,bs)
+        self.dim_proc = n*blockSize
+        self.nghosts = nghosts
+        self.blockVecType = blockVecType
+        self.proteus_array = array
+        self.bs = bs
+        self.n = n
+        self.N = N
+        self.nodal_subdomain2global = subdomain2global
+        self.ghosts_array = ghosts
+        if blockSize > 1 and subdomain2global is not None:
+            total = numpy.zeros((blockSize*subdomain2global.shape[0],),'i')
+            for j in range(blockSize):
+                total[j::blockSize] = subdomain2global*blockSize+j
+            self.subdomain2global = total
+        else:
+            self.subdomain2global = subdomain2global
+        if nghosts is None:
+            self.exchange = None
+            return
+        assert nghosts >= 0, "The number of ghostnodes must be non-negative"
+        assert subdomain2global.shape[0] == (n+nghosts), (
+            "The subdomain2global map is the wrong length n=%i,nghosts=%i,shape=%i"
+            % (n,n+nghosts,subdomain2global.shape[0]))
+        assert len(array.flat) == (n+nghosts)*blockSize, "%i  != (%i+%i)*%i" % (
+            len(array.flat),n,nghosts,blockSize)
+        if _exchange is None:
+            if ghosts is None:
+                ghosts = numpy.zeros((blockSize*nghosts),'i')
+                for j in range(blockSize):
+                    ghosts[j::blockSize] = subdomain2global[n:]*blockSize+j
+            mpi = Comm.get().comm.tompi4py()
+            _exchange = GhostExchange(mpi,_ownershipOffsets(mpi,self.dim_proc),ghosts)
+        self.exchange = _exchange
+
+    def duplicate_with_array(self,array):
+        """A new ParVec_mpi4py over ``array`` with this one's layout; no communication."""
+        assert array.size == self.proteus_array.size, (
+            "array has %i entries but this vector's layout expects %i"
+            % (array.size,self.proteus_array.size))
+        return ParVec_mpi4py(array,self.bs,self.n,self.N,self.nghosts,
+                             self.nodal_subdomain2global,self.blockVecType,self.ghosts_array,
+                             self.proteus2petsc_subdomain,self.petsc2proteus_subdomain,
+                             _exchange=self.exchange)
+
+    def getArray(self):
+        """The owned entries, as a ghosted PETSc Vec's getArray() returns them."""
+        return self.proteus_array.reshape(-1)[:self.dim_proc]
+
+    def _flat(self):
+        flat = self.proteus_array.reshape(-1)
+        assert numpy.shares_memory(flat,self.proteus_array), "the vector's array must be contiguous"
+        return flat
+
+    def scatter_forward_insert(self):
+        if self.exchange is None:
+            return
+        flat = self._flat()
+        if self.proteus2petsc_subdomain is not None:
+            flat[:] = flat[self.petsc2proteus_subdomain]
+        flat[self.dim_proc:] = self.exchange.forward(flat[:self.dim_proc])
+        if self.proteus2petsc_subdomain is not None:
+            flat[:] = flat[self.proteus2petsc_subdomain]
+
+    def scatter_reverse_add(self):
+        if self.exchange is None:
+            return
+        flat = self._flat()
+        if self.proteus2petsc_subdomain is not None:
+            flat[:] = flat[self.petsc2proteus_subdomain]
+        self.exchange.reverse_add(flat[self.dim_proc:],flat[:self.dim_proc])
+        if self.proteus2petsc_subdomain is not None:
+            flat[:] = flat[self.proteus2petsc_subdomain]
+
+
+class ParMat_mpi4py(object):
+    """The parallel layout of a subdomain matrix, for solvers that do not need PETSc.
+
+    Takes ParMat_petsc4py's arguments but assembles nothing: proteus's own
+    solvers apply the subdomain matrix itself and need from the parallel
+    matrix only which rows are owned and how they are numbered globally --
+    the redundant coarse solve (RedundantLU) gathers those rows.
+    """
+    def __init__(self,ghosted_csr_mat=None,par_bs=None,par_n=None,par_N=None,par_nghost=None,
+                 subdomain2global=None,blockVecType="simple",pde=None,par_nc=None,par_Nc=None,
+                 proteus_jacobian=None,nzval_proteus2petsc=None):
+        self.ghosted_csr_mat = ghosted_csr_mat
+        self.blockSize = max(1,par_bs)
+        self.par_n = par_n
+        self.par_N = par_N
+        self.par_nghost = par_nghost
+        self.subdomain2global = subdomain2global
+        self.pde = pde
+        #set for mixed spaces, whose parallel numbering is a permutation of
+        #proteus's; RedundantLU supports only the plain layout
+        self.nzval_proteus2petsc = nzval_proteus2petsc
+
+
+class DistVec(object):
+    """A rank's owned entries of a distributed vector: the Vec a DistMat creates."""
+    def __init__(self,n):
+        self.array = numpy.zeros((n,),'d')
+
+    def getArray(self):
+        return self.array
+
+    def set(self,value):
+        self.array[:] = value
+
+
+class DistMat(object):
+    """A row-distributed sparse matrix over mpi4py, for the multilevel transfer operators.
+
+    It provides the part of a petsc4py Mat the transfer operators are built and
+    applied with -- setSizes-style construction, setValues on owned rows in
+    global numbers, assemblyBegin/End, createVecLeft/Right, mult and
+    multTranspose -- so the same constructors produce either. After assembly
+    the owned rows are a local CSR matrix whose columns are this rank's owned
+    columns followed by the off-rank ones it reads; mult fetches those with a
+    GhostExchange and multTranspose sends its contributions to them back to
+    their owners and adds them there, as PETSc's MPIAIJ does.
+    """
+    def __init__(self,mpi,sizes):
+        (self.n,self.N),(self.m,self.M) = sizes
+        self.mpi = mpi
+        self.rank = mpi.Get_rank()
+        self.rowOffsets = _ownershipOffsets(mpi,self.n)
+        self.colOffsets = _ownershipOffsets(mpi,self.m)
+        assert self.rowOffsets[-1] == self.N and self.colOffsets[-1] == self.M, (
+            "local sizes do not add up to the global ones")
+        self._rows = {}
+        self.csr = None
+
+    def getSizes(self):
+        return ((self.n,self.N),(self.m,self.M))
+
+    def setValues(self,rows,cols,values):
+        cols = [int(c) for c in cols]
+        values = numpy.asarray(values,'d').reshape(len(rows),len(cols))
+        lo = int(self.rowOffsets[self.rank])
+        for i,r in enumerate(rows):
+            r = int(r)
+            assert lo <= r < lo+self.n, "row %i is not owned by this rank" % r
+            entries = self._rows.setdefault(r-lo,{})
+            for c,v in zip(cols,values[i]):
+                entries[c] = v
+
+    def assemblyBegin(self):
+        pass
+
+    def assemblyEnd(self):
+        import scipy.sparse
+        lo = int(self.colOffsets[self.rank])
+        rowsOf,colsOf,vals = [],[],[]
+        for r,entries in self._rows.items():
+            for c,v in entries.items():
+                rowsOf.append(r); colsOf.append(c); vals.append(v)
+        colsOf = numpy.asarray(colsOf,dtype=numpy.int64)
+        local = (colsOf >= lo) & (colsOf < lo+self.m)
+        offRank = numpy.unique(colsOf[~local])
+        self.exchange = GhostExchange(self.mpi,self.colOffsets,offRank)
+        mapped = numpy.where(local,colsOf-lo,self.m+numpy.searchsorted(offRank,colsOf))
+        self.csr = scipy.sparse.csr_matrix((numpy.asarray(vals,'d'),
+                                            (numpy.asarray(rowsOf,dtype=numpy.int64),mapped)),
+                                           shape=(self.n,self.m+offRank.size))
+        self.csrT = self.csr.T.tocsr()
+        self._rows = None
+
+    def createVecLeft(self):
+        return DistVec(self.n)
+
+    def createVecRight(self):
+        return DistVec(self.m)
+
+    def mult(self,x,y):
+        owned = x.getArray()
+        extended = numpy.concatenate([owned,self.exchange.forward(owned)])
+        y.getArray()[:] = self.csr.dot(extended)
+
+    def multTranspose(self,y,x):
+        extended = self.csrT.dot(y.getArray())
+        result = x.getArray()
+        result[:] = extended[:self.m]
+        self.exchange.reverse_add(extended[self.m:],result)
+
+
+def newTransferMat(comm,sizes,d_nnz,o_nnz):
+    """An empty distributed matrix for a transfer operator: PETSc's, or a DistMat without petsc4py."""
+    if not HAVE_PETSC4PY:
+        return DistMat(comm.comm.tompi4py(),sizes)
+    mat = p4pyPETSc.Mat().create(comm.comm.tompi4py())
+    mat.setType('aij')
+    mat.setSizes(sizes)
+    mat.setPreallocationNNZ((d_nnz,o_nnz))
+    mat.setOption(p4pyPETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR,False)
+    return mat
+
 
 class ParInfo_petsc4py(object):
     """
@@ -1803,10 +2091,6 @@ def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None
     owned = nodeParents[fine_lo:fine_hi]
     inherited = owned[:,0] == owned[:,1]
 
-    prolong = p4pyPETSc.Mat().create(comm.comm.tompi4py())
-    prolong.setType('aij')
-    prolong.setSizes([[bs*(fine_hi-fine_lo),bs*nFine_global],
-                      [bs*(coarse_hi-coarse_lo),bs*nCoarse_global]])
     #at most two coarse nodes per fine node; splitting the count into the part
     #this rank owns and the rest keeps PETSc from over-allocating
     local = numpy.where((owned >= coarse_lo) & (owned < coarse_hi),1,0)
@@ -1819,8 +2103,9 @@ def nodalProlongationMat(nodeParents,coarseNodeOffsets,fineNodeOffsets,comm=None
         #each node's row is repeated once per component, with the same pattern
         d_nnz = numpy.repeat(d_nnz,bs).astype('i')
         o_nnz = numpy.repeat(o_nnz,bs).astype('i')
-    prolong.setPreallocationNNZ((d_nnz,o_nnz))
-    prolong.setOption(p4pyPETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR,False)
+    prolong = newTransferMat(comm,[[bs*(fine_hi-fine_lo),bs*nFine_global],
+                                   [bs*(coarse_hi-coarse_lo),bs*nCoarse_global]],
+                             d_nnz,o_nnz)
 
     for i in range(fine_hi-fine_lo):
         row = fine_lo + i
@@ -1889,15 +2174,12 @@ def vertexProlongationMat(rowptr,colind,nzval,coarseNodeOffsets,fineNodeOffsets,
             d_nnz[i] = inside
             o_nnz[i] = cols.shape[0]-inside
 
-    prolong = p4pyPETSc.Mat().create(comm.comm.tompi4py())
-    prolong.setType('aij')
-    prolong.setSizes([[bs*(fine_hi-fine_lo),bs*nFine_global],
-                      [bs*(coarse_hi-coarse_lo),bs*nCoarse_global]])
     if bs > 1:
         d_nnz = numpy.repeat(d_nnz,bs).astype('i')
         o_nnz = numpy.repeat(o_nnz,bs).astype('i')
-    prolong.setPreallocationNNZ((d_nnz,o_nnz))
-    prolong.setOption(p4pyPETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR,False)
+    prolong = newTransferMat(comm,[[bs*(fine_hi-fine_lo),bs*nFine_global],
+                                   [bs*(coarse_hi-coarse_lo),bs*nCoarse_global]],
+                             d_nnz,o_nnz)
     for i,r in enumerate(rows):
         if not keep[i]:
             continue
@@ -1977,15 +2259,12 @@ def subdomainProlongationMat(rowptr,colind,nzval,fineSubdomain2global,coarseSubd
                 "level-consistent -- see MultilevelMesh.partitionLevels"
                 % ([r for r,p in enumerate(problems) if p],
                    [p[0] for p in problems if p][:3]))
-    prolong = p4pyPETSc.Mat().create(comm.comm.tompi4py())
-    prolong.setType('aij')
-    prolong.setSizes([[bs*nOwned,bs*int(fineDofOffsets[-1])],
-                      [bs*(coarse_hi-coarse_lo),bs*int(coarseDofOffsets[-1])]])
     if bs > 1:
         d_nnz = numpy.repeat(d_nnz,bs).astype('i')
         o_nnz = numpy.repeat(o_nnz,bs).astype('i')
-    prolong.setPreallocationNNZ((d_nnz,o_nnz))
-    prolong.setOption(p4pyPETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR,False)
+    prolong = newTransferMat(comm,[[bs*nOwned,bs*int(fineDofOffsets[-1])],
+                                   [bs*(coarse_hi-coarse_lo),bs*int(coarseDofOffsets[-1])]],
+                             d_nnz,o_nnz)
     for (r,cols,vals) in rows:
         for c in range(bs):
             prolong.setValues([bs*r+c],(bs*cols+c).tolist(),vals.tolist())
@@ -2121,3 +2400,9 @@ class ParScaledTransposeTransferOperator(ParTransposeTransferOperator):
         if refresh is not None:
             refresh.scatter_forward_insert()
         return y
+
+
+if not HAVE_PETSC4PY:
+    #the classes the rest of proteus constructs by these names
+    ParVec_petsc4py = ParVec_mpi4py
+    ParMat_petsc4py = ParMat_mpi4py

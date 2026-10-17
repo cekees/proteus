@@ -3,6 +3,7 @@ from mpi4py.libmpi cimport MPI_Comm
 cimport mesh
 
 cdef extern from "partitioning.h" namespace "proteus":
+    extern int c_ensurePetscInitialized "proteus::ensurePetscInitialized" ()
     extern int c_partitionNodes "proteus::partitionNodes" (const MPI_Comm& PROTEUS_COMM_WORLD,
                                                            mesh.Mesh& mesh,
                                                            int nNodes_overlap,

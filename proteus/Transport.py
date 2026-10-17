@@ -25,7 +25,7 @@ from . import cnumericalFlux
 from . import Comm
 from . import csparsity
 from .Profiling import logEvent
-from petsc4py import PETSc as p4pyPETSc
+from .petsc_optional import PETSc as p4pyPETSc, HAVE_PETSC4PY
 from . import superluWrappers
 import numpy as np
 
