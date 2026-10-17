@@ -73,6 +73,14 @@ jobs:
             os: macos-15
             python: "3.12.5"
             env_file: environment-mpich-dev.yml
+          # TEMPORARY, remove before merging: the same leg with each test in a
+          # fork of its worker, to tell whether the 3x per-test slowdown this
+          # leg shows under xdist comes from long-lived worker processes.
+          - name: macos-15 (Apple Silicon) / py3.12 / xdist --forked (temporary)
+            os: macos-15
+            python: "3.12.5"
+            env_file: environment-mpich-dev.yml
+            pytest_extra: --forked
     name: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
@@ -276,5 +284,33 @@ jobs:
           # one worker in order. No --forked: the tests no longer share
           # process state (each takes a fresh opts), and every test file
           # passes alone in a fresh process.
-          python -m pytest -v -n auto --dist loadgroup --import-mode=importlib \
+          #
+          # --no-loadscope-reorder keeps the collection order, which
+          # test/conftest.py starts with the slowest tests; without it xdist
+          # hands out every multi-test xdist_group ahead of them.
+          #
+          # The sampler records what the runner is doing while the tests run
+          # (busiest processes, memory, swap); the next step prints it.
+          ( while sleep 60; do
+              echo "=== $(date -u +%H:%M:%S) $(uptime)"
+              if [ "$RUNNER_OS" = macOS ]; then
+                sysctl -n vm.swapusage
+                top -l 1 -n 0 | grep -E '^(PhysMem|VM|Swap)'
+                ps -Ao pid,ppid,pcpu,rss,etime,command -r | head -8 | cut -c1-160
+              else
+                free -m | sed -n 1,3p
+                ps -eo pid,ppid,pcpu,rss,etime,args --sort=-pcpu | head -8 | cut -c1-160
+              fi
+            done ) > "$RUNNER_TEMP/runner_load.txt" 2>&1 &
+          SAMPLER=$!
+          python -m pytest -v -n auto --dist loadgroup --no-loadscope-reorder \
+            --import-mode=importlib --durations=30 ${{ matrix.pytest_extra }} \
             "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" ../test
+          status=$?
+          kill $SAMPLER
+          exit $status
+
+      - name: Show runner load during the tests
+        if: always()
+        shell: bash
+        run: cat "$RUNNER_TEMP/runner_load.txt" || true
