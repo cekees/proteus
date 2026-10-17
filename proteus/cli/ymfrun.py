@@ -143,7 +143,9 @@ def run_arguments(doc, problem, name, realization):
             "stabilization": stabilization_of(doc, entry),
             "levels": int(realization.get("levels", 1)),
             "tolerance": solver.get("tolerance"),
-            "max_iterations": solver.get("max_iterations")}
+            "max_iterations": solver.get("max_iterations"),
+            "linear_solver": solver.get("linear_solver"),
+            "petsc_options": solver.get("petsc_options")}
 
 
 def emit(doc, problem, name, realization, outdir, files, key, archive):
@@ -374,7 +376,7 @@ def main(argv=None, prog="ymf_run"):
             raise SystemExit("refusing to drop them: rerun with --prune, or use another --outdir")
 
     problem = adr_problem(doc)
-    from proteus.ADRProblem import STABILIZATIONS
+    from proteus.ADRProblem import STABILIZATIONS, linear_solver_choice
     print("%s: %s" % (args.input, doc["model"]["name"]))
     print("unknowns: %s" % ", ".join("%s (%s)" % (n, ", ".join(c))
                                     for n, c in problem["unknowns"].items()))
@@ -395,6 +397,14 @@ def main(argv=None, prog="ymf_run"):
                   "not wired up yet" % (name, method))
             continue
         spaces = element_spaces(problem, entry.get("finite_element") or {})
+        solver = entry.get("solver") or {}
+        try:
+            linear_solver_choice(problem, spaces, solver.get("linear_solver"),
+                                 solver.get("petsc_options"))
+        except ValueError as e:
+            # running it with another solver would not be what it asks for
+            print("\n%s -- skipped: %s" % (name, e))
+            continue
         print("\n%s -- %s%s" % (name, ", ".join("%s %s%d" % (c, f, o)
                                                 for c, (f, o) in spaces.items()),
                                 "" if method == "none" else ", " + method))
