@@ -6,7 +6,8 @@ Test module for generating unit_simplex elements
 """
 import pytest
 
-from proteus.iproteus import *
+import os
+from proteus import Domain, MeshTools, Profiling
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=7

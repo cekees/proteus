@@ -6,7 +6,7 @@ The equation is
 
 .. math: \frac{\partial u}{\partial t} + \nabla \cdot (\frac{1}{2} u^2 - \epsilon \nabla u) = 0
 """
-from proteus.iproteus import *
+from proteus import FemTools, LinearAlgebraTools, LinearSolvers, NonlinearSolvers, NumericalFlux, Profiling, Quadrature, ShockCapturing, StepControl, SubgridError, TimeIntegration, TransportCoefficients, default_s
 from proteus import defaults
 
 class Burgers(TransportCoefficients.TC_base):
@@ -159,7 +159,6 @@ so.sList=[default_s]
 so.tnList = [i*DT for i in range(nDTout+1)]
 
 Profiling.verbose = 1
-opts.logLevel = 2
 
 #whether or not to use deim approximation
 use_deim = True

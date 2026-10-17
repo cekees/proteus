@@ -4,7 +4,6 @@ Test module for periodic boundary conditions and null space class.
 """
 import proteus.test_utils.TestTools as TestTools
 from proteus import defaults, default_s, Profiling, Context, Comm, NumericalSolution
-from proteus.iproteus import opts
 
 Profiling.logLevel = 7
 Profiling.verbose = True
@@ -77,7 +76,7 @@ def load_periodic_opts_3D_T2(request):
     Comm.argv = TestTools.fixture_set_petsc_options_from_file(petscOptionsFile)
     comm = Comm.init()
 
-def test_periodic_2D(load_periodic_opts_2D,
+def test_periodic_2D(opts,load_periodic_opts_2D,
                      load_periodic_duct):
     ns = NumericalSolution.NS_base(load_periodic_duct[0],
                                    load_periodic_duct[1],
@@ -96,7 +95,7 @@ def test_periodic_2D(load_periodic_opts_2D,
 
 
 
-def test_periodic_3D(load_periodic_opts_3D,
+def test_periodic_3D(opts,load_periodic_opts_3D,
                      load_periodic_duct):
     ns = NumericalSolution.NS_base(load_periodic_duct[0],
                                    load_periodic_duct[1],
@@ -114,7 +113,7 @@ def test_periodic_3D(load_periodic_opts_3D,
     np.testing.assert_almost_equal(np.fromfile(os.path.join(script_dir, expected_path),sep=","),np.array(actual['velocity_t25']).flatten(),decimal=10)
     actual.close()
 
-def test_periodic_3D_amg(load_periodic_opts_3D_T2,
+def test_periodic_3D_amg(opts,load_periodic_opts_3D_T2,
                          load_periodic_duct):
     ns = NumericalSolution.NS_base(load_periodic_duct[0],
                                    load_periodic_duct[1],

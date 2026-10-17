@@ -4,6 +4,11 @@ import subprocess
 import os
 import pytest
 
+# One xdist worker runs this file, in order: the baseline and adapted runs read the mesh
+# test_MeshAdaptRestart_generateMesh writes, and the last test compares their
+# pressure.csv.
+pytestmark = pytest.mark.xdist_group("gauge_compare_dambreak_2D_rd")
+
 @pytest.mark.slowTest
 
 def test_MeshAdaptRestart_generateMesh(verbose=0):

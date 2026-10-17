@@ -9,7 +9,7 @@ This module solves equations of the form
   \nabla \cdot \left( a(x) \nabla u \right) = f(x)
 
 """
-from proteus.iproteus import *
+from proteus import Comm, Domain, NumericalSolution, default_n, default_s
 from proteus.defaults import load_physics, load_numerics, System_base
 from petsc4py import PETSc
 import os
@@ -62,17 +62,14 @@ class TestPoisson(object):
             if os.path.isfile(file):
                 os.remove(file)
 
-    def test_c0p1(self):
+    def test_c0p1(self, opts):
         pList = [load_physics('poisson_3d_p',
                               modulepath)]
         nList = [load_numerics('poisson_3d_c0p1_n',
                                modulepath)]
         so = System_base()
-        so.name = pList[0].name = "poisson_3d_c0p1"+"pe"+repr(comm.size())
+        so.name = pList[0].name = "poisson_3d_c0p1"+"pe"+repr(Comm.get().size())
         so.sList=[default_s]
-        opts.logLevel=7
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         nList[0].linearSolver=default_n.KSP_petsc4py
         nList[0].multilevelLinearSolver=default_n.KSP_petsc4py
@@ -83,16 +80,14 @@ class TestPoisson(object):
         del ns
         assert(True)
 
-    def test_c0p2(self):
+    def test_c0p2(self, opts):
         pList = [load_physics('poisson_3d_p',
                               modulepath)]
         nList = [load_numerics('poisson_3d_c0p2_n',
                                modulepath)]
         so = System_base()
-        so.name = pList[0].name = "poisson_3d_c0p2"+"pe"+repr(comm.size())
+        so.name = pList[0].name = "poisson_3d_c0p2"+"pe"+repr(Comm.get().size())
         so.sList=[default_s]
-        opts.logLevel=7
-        opts.verbose=True
         opts.gatherArchive=True
         nList[0].linearSolver=default_n.KSP_petsc4py
         nList[0].multilevelLinearSolver=default_n.KSP_petsc4py
@@ -101,7 +96,7 @@ class TestPoisson(object):
         del ns
         assert(True)
 
-    def check_c0q1(self,test_hexMesh_3x3=False,use_petsc=True,name="_hexMesh_"):
+    def check_c0q1(self, opts,test_hexMesh_3x3=False,use_petsc=True,name="_hexMesh_"):
         poisson_3d_p = load_physics('poisson_3d_p',
                                     modulepath)
         poisson_3d_c0q1_n = load_numerics('poisson_3d_c0q1_n',
@@ -115,10 +110,8 @@ class TestPoisson(object):
         pList = [poisson_3d_p]
         nList = [poisson_3d_c0q1_n]
         so = System_base()
-        so.name = pList[0].name = "poisson_3d_c0q1"+name+"pe"+repr(comm.size())
+        so.name = pList[0].name = "poisson_3d_c0q1"+name+"pe"+repr(Comm.get().size())
         so.sList=[default_s]
-        opts.logLevel=7
-        opts.verbose=True
 
         if use_petsc == True:
             nList[0].linearSolver=default_n.KSP_petsc4py
@@ -128,13 +121,13 @@ class TestPoisson(object):
         del ns
         assert(True)
 
-    def test_c0q1(self):
+    def test_c0q1(self, opts):
         """
         Test Hexes with direct solver, regular domain
         """
-        self.check_c0q1(test_hexMesh_3x3=False,use_petsc=True, name="_proteusMesh_")
+        self.check_c0q1(opts, test_hexMesh_3x3=False,use_petsc=True, name="_proteusMesh_")
 
-    def test_c0q1_hex_mesh(self):
+    def test_c0q1_hex_mesh(self, opts):
         from proteus import MeshTools
         xmf_archive_base=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               '..','hex_cube_3x3')
@@ -142,18 +135,16 @@ class TestPoisson(object):
         mesh_info = MeshTools.readMeshXdmf(xmf_archive_base,heavy_file_base)
         hex_meshfile_base = 'hexmesh_3x3'
         MeshTools.writeHexMesh(mesh_info,hex_meshfile_base,index_base=1)
-        self.check_c0q1(test_hexMesh_3x3=False,use_petsc=True, name="_hexMesh_")
+        self.check_c0q1(opts, test_hexMesh_3x3=False,use_petsc=True, name="_hexMesh_")
 
-    def test_c0q2(self):
+    def test_c0q2(self, opts):
         pList = [load_physics('poisson_3d_p',
                               modulepath)]
         nList = [load_numerics('poisson_3d_c0q2_n',
                                modulepath)]
         so = System_base()
-        so.name = pList[0].name = "poisson_3d_c0q2"+"pe"+repr(comm.size())
+        so.name = pList[0].name = "poisson_3d_c0q2"+"pe"+repr(Comm.get().size())
         so.sList=[default_s]
-        opts.logLevel=7
-        opts.verbose=True
         nList[0].linearSolver=default_n.KSP_petsc4py
         nList[0].multilevelLinearSolver=default_n.KSP_petsc4py
         ns = NumericalSolution.NS_base(so,pList,nList,so.sList,opts)

@@ -2,7 +2,9 @@
 """ Test modules for Driven Cavity Stokes preconditioners. """
 
 import proteus.test_utils.TestTools as TestTools
-from proteus.iproteus import *
+import proteus
+from proteus import NumericalSolution, Profiling, default_s, default_so
+from proteus import runtime
 
 Profiling.logLevel = 7
 Profiling.verbose = False
@@ -35,13 +37,16 @@ class Test_NSE_Driven_Cavity(proteus.test_utils.TestTools.SimulationTest):
         self.so.sList = self.pList[0].name
         self.so.sList = [default_s]
         self._scriptdir = os.path.dirname(__file__)
+        # setup_method runs before the opts fixture: start Proteus here, for
+        # the procID openLog needs
+        runtime.start(log=None)
         Profiling.openLog("proteus.log",10)
         Profiling.logAllProcesses = True
 
     def teardown_method(self):
         Profiling.closeLog()
 
-    def _runTest(self):
+    def _runTest(self, opts):
         self.ns = NumericalSolution.NS_base(self.so,
                                             self.pList,
                                             self.nList,
@@ -63,7 +68,7 @@ class Test_NSE_Driven_Cavity(proteus.test_utils.TestTools.SimulationTest):
         actual.close()
 
     @pytest.mark.slowTest
-    def test_01_FullRun(self):
+    def test_01_FullRun(self, opts):
         """Runs with nsedriven cavity with the following settings.
         - RE enforced through viscosity
         - THQuads
@@ -91,7 +96,7 @@ class Test_NSE_Driven_Cavity(proteus.test_utils.TestTools.SimulationTest):
         self.nList[0].linearSmoother = self.nList[0].Schur_LSC
         self.so.tnList = self.nList[0].tnList
         self._setPETSc(petsc_file = os.path.join(self._scriptdir,'import_modules/petsc.options.schur_lsc'))
-        self._runTest()
+        self._runTest(opts)
 
 if __name__ == '__main__':
     pass

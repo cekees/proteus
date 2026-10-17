@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import os
-from proteus.iproteus import *
+from proteus import NumericalSolution, Profiling, default_s
+from proteus import runtime
 import unittest
 import numpy as np
 import numpy.testing as npt
@@ -36,6 +37,9 @@ class TestAddedMass2D(unittest.TestCase):
                 pass
 
     def test_AddedMass_2D(self):
+        # a unittest.TestCase method: pytest hands it no fixtures
+        runtime.start()
+        opts = runtime.RunOptions()
         from proteus import defaults
         defaults.reset_default_p()
         defaults.reset_default_n()

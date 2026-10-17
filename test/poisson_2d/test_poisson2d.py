@@ -9,7 +9,8 @@ This module solves equations of the form
   \nabla \cdot \left( a(x) \nabla u \right) = f(x)
 
 """
-from proteus.iproteus import *
+from importlib import reload
+from proteus import Comm, NumericalSolution, default_n, default_s, default_so
 import os
 import numpy as np
 import pytest
@@ -57,7 +58,7 @@ class TestPoisson2D(object):
                 pass
             
     @pytest.mark.parametrize("femSpace,bcType,solverType", cases)
-    def test_poisson(self,femSpace,bcType,solverType):
+    def test_poisson(self,opts,femSpace,bcType,solverType):
         reload(poisson_het_2d_p)
         pList = [poisson_het_2d_p]
         if femSpace in ['c0p1','c0p2']:
@@ -81,12 +82,9 @@ class TestPoisson2D(object):
         nList[0].nnx=nList[0].nny=nList[0].nn=51
         reload(default_so)
         so = default_so
-        so.name = pList[0].name = "poisson_2d_{0}_{1}_{2}_pe{3}".format(femSpace, bcType,solverType,repr(comm.size()))
+        so.name = pList[0].name = "poisson_2d_{0}_{1}_{2}_pe{3}".format(femSpace, bcType,solverType,repr(Comm.get().size()))
         reload(default_s)
         so.sList=[default_s]
-        opts.logLevel=7
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         soln_name = so.name
         if solverType == 'direct':
@@ -111,7 +109,7 @@ class TestPoisson2D(object):
         self.aux_names.append(pList[0].name)
         del ns
 
-    def test_2dm(self,use_strong_constraints=False,nLevels=3):
+    def test_2dm(self,opts,use_strong_constraints=False,nLevels=3):
         reload(poisson_het_2d_p)
         reload(poisson_het_2d_c0pk_n)
         poisson_het_2d_p.meshfile=os.path.join(self.meshdir,'square4x4')
@@ -123,12 +121,9 @@ class TestPoisson2D(object):
         nList = [poisson_het_2d_c0pk_n]
         reload(default_so)
         so = default_so
-        so.name = pList[0].name = "poisson_2d_c0p1_2dm"+"pe"+repr(comm.size())
+        so.name = pList[0].name = "poisson_2d_c0p1_2dm"+"pe"+repr(Comm.get().size())
         reload(default_s)
         so.sList=[default_s]
-        opts.logLevel=7
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         nList[0].femSpaces[0]  = default_n.C0_AffineLinearOnSimplexWithNodalBasis
         nList[0].linearSolver=default_n.KSP_petsc4py
@@ -146,20 +141,20 @@ class TestPoisson2D(object):
         del ns
 
 @pytest.mark.parametrize("use_weak_dirichlet", [False,True])
-def test_load_vector_use_weak(use_weak_dirichlet):
+def test_load_vector_use_weak(opts, use_weak_dirichlet):
     from . import poisson_het_2d_p
     reload(poisson_het_2d_p)
     from . import poisson_het_2d_c0pk_n
+    # test_poisson's strong cases set numericalFluxType on this module, and
+    # on a worker that ran one last, it would still hold Exterior_StrongFlux
+    reload(poisson_het_2d_c0pk_n)
     pList = [poisson_het_2d_p]
     nList = [poisson_het_2d_c0pk_n]
     reload(default_so)
     so = default_so
-    so.name = pList[0].name = "poisson_2d_c0p1"+"pe"+repr(comm.size())
+    so.name = pList[0].name = "poisson_2d_c0p1"+"pe"+repr(Comm.get().size())
     reload(default_s)
     so.sList=[default_s]
-    opts.logLevel=7
-    opts.verbose=True
-    opts.profile=True
     opts.gatherArchive=True
     nList[0].femSpaces[0]  = default_n.C0_AffineLinearOnSimplexWithNodalBasis
     nList[0].linearSolver=default_n.LU

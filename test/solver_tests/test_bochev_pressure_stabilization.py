@@ -2,7 +2,6 @@
 """ Test modules for Driven Cavity Stokes preconditioners. """
 
 import proteus.test_utils.TestTools as TestTools
-from proteus.iproteus import opts
 from proteus import Profiling, NumericalSolution
 from importlib import reload
 Profiling.logLevel = 7
@@ -75,7 +74,7 @@ def load_cavity_problem(request):
     
 @pytest.mark.Stabilization
 @pytest.mark.LinearSolvers
-def test_bochev_pressure_cavity(load_cavity_problem,
+def test_bochev_pressure_cavity(opts,load_cavity_problem,
                                 initialize_tp_pcd_options):
     initialize_tp_pcd_options
     ns =NumericalSolution.NS_base(load_cavity_problem[2],

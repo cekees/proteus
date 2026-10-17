@@ -11,7 +11,8 @@ import inspect
 
 proteus.test_utils.TestTools.addSubFolders( inspect.currentframe() )
 
-from proteus.iproteus import *
+from importlib import reload
+from proteus import Profiling
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=7

@@ -8,9 +8,13 @@ import numpy as np
 import proteus.defaults
 from proteus import Context
 from proteus import default_so
-from proteus.iproteus import *
+from proteus import Profiling
 import os
 import sys
+
+# One xdist worker runs this file, in order: test_damBreak_runPUMI reads the
+# mesh the --genPUMI run writes.
+pytestmark = pytest.mark.xdist_group("TwoPhaseFlow_PUMI")
 Profiling.logLevel=1
 Profiling.verbose=True
 

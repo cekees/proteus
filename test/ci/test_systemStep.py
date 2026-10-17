@@ -10,7 +10,7 @@ This module solves equations of the form
 
 """
 import pytest
-from proteus.iproteus import *
+from proteus import NumericalSolution, Profiling, SplitOperator, default_n, default_s
 from proteus import Comm
 from proteus.defaults import (load_physics as load_p,
                               load_numerics as load_n,
@@ -31,7 +31,7 @@ import os
 modulepath = os.path.dirname(os.path.abspath(__file__))
 
 
-def test_minModelStep_stepExactTrue():
+def test_minModelStep_stepExactTrue(opts):
     pList = [load_p('ladr_2d_p', modulepath)]
     nList = [load_n('ladr_2d_n', modulepath)]
     so = So()
@@ -40,9 +40,6 @@ def test_minModelStep_stepExactTrue():
     so.systemStepControllerType = SplitOperator.Sequential_MinModelStep
     so.systemStepExact=True
     so.sList=[default_s]
-    opts.logLevel=7
-    opts.verbose=True
-    opts.profile=True
     opts.gatherArchive=True
     nList[0].runCFL=0.33
     nList[0].linearSolver=default_n.LU
@@ -59,7 +56,7 @@ def test_minModelStep_stepExactTrue():
     npt.assert_almost_equal(np.array(archiveTimes,'d'), np.array(archiveTimesCorrect,'d'))
     del ns
 
-def test_minModelStep_stepExactFalse():
+def test_minModelStep_stepExactFalse(opts):
     pList = [load_p('ladr_2d_p', modulepath)]
     nList = [load_n('ladr_2d_n', modulepath)]
     so = So()
@@ -68,9 +65,6 @@ def test_minModelStep_stepExactFalse():
     so.systemStepControllerType = SplitOperator.Sequential_MinModelStep
     so.systemStepExact=False
     so.sList=[default_s]
-    opts.logLevel=7
-    opts.verbose=True
-    opts.profile=True
     opts.gatherArchive=True
     nList[0].runCFL=0.33
     nList[0].linearSolver=default_n.LU
@@ -87,7 +81,7 @@ def test_minModelStep_stepExactFalse():
     npt.assert_almost_equal(np.array(archiveTimes,'d'), np.array(archiveTimesCorrect,'d'))
     del ns
 
-def test_fixedStep_stepExactFalse():
+def test_fixedStep_stepExactFalse(opts):
     pList = [load_p('ladr_2d_p', modulepath)]
     nList = [load_n('ladr_2d_n', modulepath)]
     so = So()
@@ -97,9 +91,6 @@ def test_fixedStep_stepExactFalse():
     so.systemStepExact=False
     so.dt_system_fixed = 0.01
     so.sList=[default_s]
-    opts.logLevel=7
-    opts.verbose=True
-    opts.profile=True
     opts.gatherArchive=True
     nList[0].runCFL=0.33
     nList[0].linearSolver=default_n.LU
@@ -125,7 +116,7 @@ def test_fixedStep_stepExactFalse():
     npt.assert_almost_equal(np.array(archiveTimes,'d'), np.array(archiveTimesCorrect,'d'))
     del ns
 
-def test_fixedStep_stepExactTrue():
+def test_fixedStep_stepExactTrue(opts):
     pList = [load_p('ladr_2d_p', modulepath)]
     nList = [load_n('ladr_2d_n', modulepath)]
     so = So()
@@ -135,9 +126,6 @@ def test_fixedStep_stepExactTrue():
     so.systemStepExact=True
     so.dt_system_fixed = 0.01
     so.sList=[default_s]
-    opts.logLevel=7
-    opts.verbose=True
-    opts.profile=True
     opts.gatherArchive=True
     nList[0].runCFL=0.33
     nList[0].linearSolver=default_n.LU
@@ -154,7 +142,7 @@ def test_fixedStep_stepExactTrue():
     npt.assert_almost_equal(np.array(archiveTimes,'d'), np.array(archiveTimesCorrect,'d'))
     del ns
 
-def test_fixedStep_stepSimple():
+def test_fixedStep_stepSimple(opts):
     pList = [load_p('ladr_2d_p', modulepath)]
     nList = [load_n('ladr_2d_n', modulepath)]
     so = So()
@@ -164,9 +152,6 @@ def test_fixedStep_stepSimple():
     so.systemStepExact=True#should be ignored
     so.dt_system_fixed = 0.01#should be ignored
     so.sList=[default_s]
-    opts.logLevel=7
-    opts.verbose=True
-    opts.profile=True
     opts.gatherArchive=True
     nList[0].runCFL=0.33
     nList[0].linearSolver=default_n.LU

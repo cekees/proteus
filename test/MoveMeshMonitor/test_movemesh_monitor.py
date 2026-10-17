@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 import os
-from proteus.iproteus import *
+import sys
+from importlib import reload
+from proteus import NumericalSolution, Profiling, default_s
+from proteus import runtime
 import unittest
 import numpy as np
 import numpy.testing as npt
@@ -33,6 +36,9 @@ class TestMoveMeshMonitor(unittest.TestCase):
                 pass
 
     def test_MoveMeshMonitor(self):
+        # a unittest.TestCase method: pytest hands it no fixtures
+        runtime.start()
+        opts = runtime.RunOptions()
         from proteus import default_so
         reload(default_so)
         from . import movemesh_monitor_so

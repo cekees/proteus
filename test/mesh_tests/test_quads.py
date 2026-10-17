@@ -4,7 +4,9 @@
 Test module for 2D Quadrilateral Meshes
 
 """
-from proteus.iproteus import *
+import inspect
+import os
+from proteus import MeshTools, NumericalSolution, default_s, default_so
 from proteus.test_utils import TestTools
 TestTools.addSubFolders( inspect.currentframe() )
 
@@ -114,6 +116,9 @@ class Test2DStokesOnQuads(object):
 
     def setup_method(self,method):
         from importlib import reload
+        from proteus import runtime
+        runtime.start()
+        opts = runtime.RunOptions()
         reload(stokes_2d_p)
         reload(stokes_2d_n)
         pList = [stokes_2d_p]
@@ -122,8 +127,6 @@ class Test2DStokesOnQuads(object):
         so.tnList = [0.,1.]
         so.name = pList[0].name
         so.sList=[default_s]
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         self._scriptdir = os.path.dirname(__file__)
         self.ns = NumericalSolution.NS_base(so,pList,nList,so.sList,opts)

@@ -1,5 +1,4 @@
 from proteus import *
-from proteus import iproteus as ip
 from proteus.default_p import *
 reload(default_p)
 from proteus import Domain
