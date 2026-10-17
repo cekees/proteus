@@ -19,6 +19,7 @@ Differences from parun, all deliberate:
   (``-V``, ``-E``, ``-L``, ``--viewMesh``), no ``-d`` debugger flag
   (``python -m pdb -m proteus.cli run ...`` does that), and no ``--SWEs``.
 """
+import argparse
 import ast
 import os
 import sys
@@ -72,9 +73,9 @@ def add_parser(subparsers):
     g.add_argument("-T", "--text-archive", action="store_true",
                    help="archive in ASCII text instead of HDF5")
     g.add_argument("-G", "--gather-archive", action="store_true",
-                   help="gather the per-rank archives at the end")
+                   help=argparse.SUPPRESS)   # parun's; no per-rank .xmf to gather
     g.add_argument("-s", "--subdomain-archives", action="store_true",
-                   help="one archive per subdomain instead of a global one")
+                   help=argparse.SUPPRESS)   # parun's; -n gives per-subdomain data
     g.add_argument("-c", "--cache-archive", action="store_true",
                    help="cache archive writes")
     g.add_argument("-n", "--no-global-sync", action="store_true",

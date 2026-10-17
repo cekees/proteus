@@ -158,9 +158,8 @@ def emit(doc, problem, name, realization, outdir, files, key, archive):
 def solve(doc, problem, name, realization, outdir, files, inline, env):
     """Run one discretization on one realization; return its output record.
 
-    ``files`` names what Proteus writes (``<files>.h5``); the .ymf and .xmf
-    it writes beside it are dropped, since the archive holds the record and
-    the .xmf is derived from it.
+    ``files`` names what Proteus writes (``<files>.h5``); the .ymf it writes
+    beside it is dropped, since the archive holds the record.
     """
     from proteus import ADRProblem, Profiling, runtime
     from ymf.archive import inline_domain, read_ymf
@@ -184,8 +183,7 @@ def solve(doc, problem, name, realization, outdir, files, inline, env):
     discrete = dict(ADRProblem.describe(solved, ns.nList[0]), stabilization=stabilization)
 
     domain, _ = read_ymf(os.path.join(outdir, files + ".ymf"))
-    for suffix in (".ymf", ".xmf"):
-        os.remove(os.path.join(outdir, files + suffix))
+    os.remove(os.path.join(outdir, files + ".ymf"))
     if inline:
         domain = inline_domain(domain, outdir)
         os.remove(os.path.join(outdir, files + ".h5"))

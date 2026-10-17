@@ -231,6 +231,46 @@ def test_hot_start_times_come_back_from_a_v1_archive(tmp_path):
         np.testing.assert_allclose(archive.archived_times, [0.0, 0.1, 0.2, 0.3])
 
 
+def _v1_archive_object(path):
+    from proteus.Archiver import AR_base
+
+    archive = AR_base.__new__(AR_base)
+    archive.hdfFilename = os.path.basename(path)
+    archive.dataDir = os.path.dirname(path)
+    archive.filename = os.path.basename(path)[:-len(".h5")]
+    return archive
+
+
+def test_a_v1_hot_start_takes_its_collection_order_from_the_xmf(tmp_path):
+    """1.9.x recorded no collection order, and a hot start needs it.
+
+    The names can be discovered from the datasets, but not their order,
+    and MeshTools.writeMeshXdmf takes the first collection as the mesh's
+    own (EBMesh would sort ahead of Mesh). Those archives always came with
+    an .xmf, so a v1 hot start reads the order there.
+    """
+    path = write_v1_archive(str(tmp_path / "run.h5"),
+                            collections=("Mesh Spatial_Domain", "EBMesh x"))
+    with open(str(tmp_path / "run.xmf"), "w") as f:
+        f.write('<Xdmf><Domain>'
+                '<Grid Name="Mesh Spatial_Domain"/><Grid Name="EBMesh x"/>'
+                '</Domain></Xdmf>')
+    archive = _v1_archive_object(path)
+    with h5py.File(path, "r") as f:
+        archive.hdfFile = f
+        assert archive._collection_names() == ["Mesh Spatial_Domain",
+                                               "EBMesh x"]
+
+
+def test_a_v1_hot_start_without_its_xmf_says_what_is_missing(tmp_path):
+    path = write_v1_archive(str(tmp_path / "run.h5"))
+    archive = _v1_archive_object(path)
+    with h5py.File(path, "r") as f:
+        archive.hdfFile = f
+        with pytest.raises(IOError, match="run.xmf"):
+            archive._collection_names()
+
+
 def test_gather_times_regenerates_a_document_from_a_v1_archive(tmp_path,
                                                                monkeypatch):
     """The script must keep working on 1.9.x output.
