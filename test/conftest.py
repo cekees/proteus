@@ -28,6 +28,41 @@ def pytest_configure(config):
         os.makedirs(path, exist_ok=True)
         os.chdir(path)
 
+
+# Tests that each take longer than everything else in the suite put together
+# divided by the worker count, slowest first: the two FSI IBM runs are full
+# 1 s simulations, 200 steps in serial, about 270 s and 180 s on a fast Mac
+# and 535 s and 395 s on a GitHub macOS arm64 runner. Started where their
+# file is collected, they started late and the run waited for them alone. On
+# the 3-core arm64 runner xdist also queued one behind the other on the same
+# worker (each worker is kept two or three tests ahead), and the job took
+# 51 minutes instead of 18.
+_START_FIRST = (
+    "FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_sdf",
+    "FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_ball",
+)
+
+
+def pytest_collection_modifyitems(config, items):
+    """Collect the tests in _START_FIRST first, in that order.
+
+    --dist loadgroup then hands them out first, one per worker, ahead of
+    everything else, provided xdist keeps the collection order: run with
+    --no-loadscope-reorder, or xdist moves every multi-test xdist_group
+    ahead of them. The tests queued behind them on the same workers are
+    then the next ones in the collection, which are quick (AddedMass,
+    BernsteinPolynomials).
+    """
+    def key(item):
+        name = os.path.relpath(str(item.path), _TEST_ROOT).replace(os.sep, "/")
+        name += "::" + item.nodeid.split("::", 1)[1] if "::" in item.nodeid else ""
+        return name
+    rank = dict((name, i) for i, name in enumerate(_START_FIRST))
+    first = sorted((item for item in items if key(item) in rank),
+                   key=lambda item: rank[key(item)])
+    if first:
+        items[:] = first + [item for item in items if key(item) not in rank]
+
 # Model modules a test imports at collection can call Comm.get(), which starts
 # PETSc with Comm.argv, by default all of sys.argv: pytest's own options would
 # reach PETSc. Start it with none instead, as importing proteus.iproteus did.
