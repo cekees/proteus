@@ -38,6 +38,10 @@ def _run(n_ranks, tmp_path):
     env = dict(os.environ)
     env['PYTHONPATH'] = os.pathsep.join(
         [p for p in sys.path if p] + [env.get('PYTHONPATH', '')]).strip(os.pathsep)
+    # CI runners have two cores; let Open MPI (4.x and 5.x/PRRTE) start more
+    # ranks than that. MPICH oversubscribes by default and ignores these.
+    env.setdefault('OMPI_MCA_rmaps_base_oversubscribe', '1')
+    env.setdefault('PRTE_MCA_rmaps_default_mapping_policy', ':oversubscribe')
     result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable, helper, 'dg_partition'],
                             capture_output=True, text=True, env=env, timeout=300,
                             cwd=str(tmp_path))
