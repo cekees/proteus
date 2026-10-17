@@ -742,12 +742,10 @@ def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
     produced it is the caller's to record (see :func:`describe`).
     """
     from proteus import NumericalSolution, SplitOperator, default_s
-    from proteus import Comm, Profiling, runtime
+    from proteus import runtime
     if opts is None:
         opts = runtime.RunOptions()
-    if Comm.comm is None:
-        # with no PETSc options: Comm.get() would hand PETSc all of sys.argv
-        Profiling.procID = runtime.init().rank()
+    runtime.start(log=None)
     problem, p, n, system = setup(problem, spaces, cells, time, name, stabilization,
                                   levels, tolerance, max_iterations, h)
     write_poly(p)

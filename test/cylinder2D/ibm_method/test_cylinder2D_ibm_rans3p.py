@@ -1,6 +1,9 @@
 """Tests for 2d flow around an immersed boundary cylinder with rans3p"""
 import pytest
-from proteus.iproteus import *
+import os
+import proteus
+import sys
+from proteus import Profiling, default_s
 from proteus import Comm
 from proteus import Context
 import h5py
@@ -42,18 +45,16 @@ class Test_ibm(object):
 #         self.compare_name = "T8P2"
 #         self.example_setting("T=8.0 vspaceOrder=2 onlySaveFinalSolution=True")
 
-    def test_ex2(self):
+    def test_ex2(self, opts):
         self.compare_name = "T1_rans3p"
-        self.example_setting("T=0.01 onlySaveFinalSolution=True")
+        self.example_setting(opts, "T=0.01 onlySaveFinalSolution=True")
 
 
-    def example_setting(self, pre_setting):
+    def example_setting(self, opts, pre_setting):
         from importlib import reload
         Context.contextOptionsString = pre_setting
         from . import cylinder_so as my_so
         reload(my_so)
-        # defined in iproteus
-        opts.profile = False
         opts.gatherArchive = True        
         pList=[]
         nList=[]

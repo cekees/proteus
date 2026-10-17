@@ -6,6 +6,14 @@ import pytest
 
 _TEST_ROOT = os.path.dirname(os.path.abspath(__file__)) + os.sep
 
+# Model modules a test imports at collection can call Comm.get(), which starts
+# PETSc with Comm.argv, by default all of sys.argv: pytest's own options would
+# reach PETSc. Start it with none instead, as importing proteus.iproteus did.
+# (This sets a list; it does not start PETSc. A test that wants options of
+# its own still sets Comm.argv before anything starts it.)
+from proteus import Comm, runtime  # noqa: E402
+Comm.argv = runtime.petsc_argv()
+
 
 @pytest.fixture(autouse=True)
 def _restore_petsc_options():
@@ -34,6 +42,20 @@ def _restore_petsc_options():
     for name, value in before.items():
         if after.get(name) != value:
             database.setValue(name, value)
+
+
+@pytest.fixture
+def opts():
+    """A fresh proteus.runtime.RunOptions, the options NS_base reads, with
+    Proteus started (proteus.runtime.start: PETSc with no options, and
+    proteus.log open in the working directory).
+
+    It replaces ``from proteus.iproteus import opts``, which was one object
+    shared by every test that imported it.
+    """
+    from proteus import runtime
+    runtime.start()
+    return runtime.RunOptions()
 
 
 @pytest.fixture(autouse=True)

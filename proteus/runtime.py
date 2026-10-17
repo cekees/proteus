@@ -7,7 +7,8 @@ import time. This module holds the same things without a parser, so that
 * :class:`RunOptions`, the options :class:`~proteus.NumericalSolution.NS_base`
   reads from its ``opts`` argument;
 * :func:`petsc_argv`, PETSc's command line from options and options files;
-* :func:`init`, which starts MPI and PETSc with that command line.
+* :func:`init`, which starts MPI and PETSc with that command line;
+* :func:`start`, :func:`init` once, with the log open, for a library caller.
 
 Nothing here imports PETSc at module level, so importing it never starts
 PETSc: options that PETSc reads only at start-up (``-log_view``,
@@ -18,7 +19,7 @@ import math
 import sys
 from dataclasses import dataclass
 
-__all__ = ["RunOptions", "petsc_argv", "init"]
+__all__ = ["RunOptions", "petsc_argv", "init", "start"]
 
 
 @dataclass
@@ -100,3 +101,24 @@ def init(options=None, options_file=None):
     from proteus import Comm
     Comm.argv = petsc_argv(options, options_file)
     return Comm.init()
+
+
+def start(log="proteus.log", log_level=1):
+    """Start Proteus once for a caller that has no command line; return the Comm.
+
+    If nothing has started Proteus, :func:`init` it with no PETSc options
+    (``Comm.get()`` would hand PETSc all of ``sys.argv``); set
+    ``Profiling.procID`` if it is unset. Then open ``log`` in the working directory at
+    ``log_level`` unless a log is already open, or ``log`` is None. This is
+    what importing :mod:`proteus.iproteus` did, without its shared ``opts``.
+    """
+    from proteus import Comm, Profiling
+    comm = Comm.comm
+    if comm is None:
+        comm = init()
+    if Profiling.procID is None:
+        # Comm.get() starts PETSc without setting it
+        Profiling.procID = comm.rank()
+    if log is not None and Profiling.logFile is None:
+        Profiling.openLog(log, log_level)
+    return comm

@@ -1,5 +1,7 @@
 """Tests for 2d flow around an immersed boundary cylinder with rans2p"""
-from proteus.iproteus import *
+import os
+import sys
+from proteus import Profiling
 from proteus import Comm
 from proteus import Context
 from proteus import MeshTools

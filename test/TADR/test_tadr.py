@@ -2,7 +2,10 @@
 """
 Test module for TADR with EV
 """
-from proteus.iproteus import *
+import os
+import proteus
+from importlib import reload
+from proteus import Profiling, default_n, default_s, default_so
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=2
@@ -39,7 +42,7 @@ class TestTADR(object):
     def teardown_method(self,method):
         pass
 
-    def test_supg(self):
+    def test_supg(self, opts):
         ########
         # SUPG #
         ########
@@ -66,7 +69,7 @@ class TestTADR(object):
             #(actual['u_t2'][:]).tofile(expected_path,sep=",")
             np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=10)
 
-    def test_TaylorGalerkin(self):
+    def test_TaylorGalerkin(self, opts):
         ##################
         # TaylorGalerkin #
         ##################
@@ -92,7 +95,7 @@ class TestTADR(object):
             #(actual['u_t2'][:]).tofile(expected_path,sep=",")
             np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=10)
 
-    def test_EV1(self):
+    def test_EV1(self, opts):
         #######################
         # ENTROPY VISCOSITY 1 # Polynomial entropy
         #######################
@@ -120,7 +123,7 @@ class TestTADR(object):
             #(actual['u_t2'][:]).tofile(expected_path,sep=",")
             np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=1)
 
-    def test_EV2(self):
+    def test_EV2(self, opts):
         thelper_tadr.ct.STABILIZATION_TYPE = 2 # EV
         thelper_tadr.ct.ENTROPY_TYPE = 1 #logarithmic
         thelper_tadr.ct.cE = 0.1
@@ -145,7 +148,7 @@ class TestTADR(object):
             #(actual['u_t2'][:]).tofile(expected_path,sep=",")
             np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=2)
 
-    def test_SmoothnessBased(self):
+    def test_SmoothnessBased(self, opts):
         thelper_tadr.ct.STABILIZATION_TYPE = 3 # Smoothness based
         thelper_tadr.ct.FCT = True
         reload(default_n)
@@ -168,7 +171,7 @@ class TestTADR(object):
             #(actual['u_t2'][:]).tofile(expected_path,sep=",")
             np.testing.assert_almost_equal(np.fromfile(expected_path,sep=","),actual['u_t2'][:],decimal=3)
 
-    def test_stab4(self):
+    def test_stab4(self, opts):
         thelper_tadr.ct.STABILIZATION_TYPE = 4 # Proposed by D.Kuzmin
         thelper_tadr.ct.FCT = True
         reload(default_n)

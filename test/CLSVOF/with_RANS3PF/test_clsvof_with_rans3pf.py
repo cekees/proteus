@@ -2,7 +2,10 @@
 """
 Test module for CLSVOF with RANS3PF
 """
-from proteus.iproteus import *
+import os
+import proteus
+from importlib import reload
+from proteus import Profiling, default_n, default_p, default_s
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=7
@@ -66,7 +69,7 @@ class TestCLSVOF_with_RANS3PF(object):
             else:
                 pass
 
-    def test_2D_falling_bubble(self):
+    def test_2D_falling_bubble(self, opts):
         # Set parameters for this test
         parameters.ct.test_case=1
         # RELOAD MODULES
@@ -111,7 +114,7 @@ class TestCLSVOF_with_RANS3PF(object):
         np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['phi_t2']),decimal=10)
         actual.close()
 
-    def test_3D_falling_bubble(self):
+    def test_3D_falling_bubble(self, opts):
         # Set parameters for this test
         parameters.ct.test_case=2
         # RELOAD MODULES

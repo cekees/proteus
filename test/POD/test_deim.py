@@ -5,9 +5,9 @@ some tests for initial DEIM implementation in proteus
 import numpy as np
 import numpy.testing as npt
 import sys, os
-from proteus import deim_utils
+from proteus import NumericalSolution, deim_utils
 
-def get_burgers_ns(name,T=0.1,nDTout=10,archive_pod_res=False):
+def get_burgers_ns(opts, name,T=0.1,nDTout=10,archive_pod_res=False):
     sys.path.append(os.path.dirname(__file__))
     import burgers_init as bu
     sys.path.remove(os.path.dirname(__file__))
@@ -23,24 +23,24 @@ def get_burgers_ns(name,T=0.1,nDTout=10,archive_pod_res=False):
     if archive_pod_res:
         simFlagsList=[{}]
         simFlagsList[0]['storeQuantities']=['pod_residuals']
-    ns = bu.NumericalSolution.NS_base(bu.so,[bu.physics],[bu.numerics],bu.so.sList,bu.opts,simFlagsList=simFlagsList)
+    ns = NumericalSolution.NS_base(bu.so,[bu.physics],[bu.numerics],bu.so.sList,opts,simFlagsList=simFlagsList)
     return ns
 
-def test_burger_run():
+def test_burger_run(opts):
     """
     Aron's favority smoke test to see if burgers runs
     """
-    ns = get_burgers_ns("test_run",T=0.1,nDTout=10)
+    ns = get_burgers_ns(opts, "test_run",T=0.1,nDTout=10)
     failed = ns.calculateSolution("run_smoke_test")
     assert not failed
 
-def test_residual_split():
+def test_residual_split(opts):
     """
     just tests that R=R_s+R_t for random dof vector in [0,1]
 
     Here R_s and R_t are the spatial and mass residuals
     """
-    ns = get_burgers_ns("test_res_split",T=0.05,nDTout=5)
+    ns = get_burgers_ns(opts, "test_res_split",T=0.05,nDTout=5)
     failed = ns.calculateSolution("run_res_test")
     assert not failed
     #storage for residuals
@@ -55,22 +55,22 @@ def test_residual_split():
     res_t += res_s
     npt.assert_almost_equal(res,res_t)
 
-def test_res_archive():
+def test_res_archive(opts):
     """
     smoke test if numerical solution can archive 'spatial residuals' to xdmf  
     """
-    ns = get_burgers_ns("test_space_res_archive",T=0.1,nDTout=10,archive_pod_res=True)
+    ns = get_burgers_ns(opts, "test_space_res_archive",T=0.1,nDTout=10,archive_pod_res=True)
     
     failed = ns.calculateSolution("run_space_res_smoke_test")
     assert not failed
 
-def test_svd_space_res(file_prefix='F_s'):
+def test_svd_space_res(opts, file_prefix='F_s'):
     """
     test SVD decomposition of spatial residuals by generating SVD, saving to file and reloading
     """
     from proteus.deim_utils import read_snapshots,generate_svd_decomposition
 
-    ns = get_burgers_ns("test_svd_space_res",T=0.1,nDTout=10,archive_pod_res=True)
+    ns = get_burgers_ns(opts, "test_svd_space_res",T=0.1,nDTout=10,archive_pod_res=True)
     
     failed = ns.calculateSolution("run_svd_space_res")
     assert not failed
@@ -85,13 +85,13 @@ def test_svd_space_res(file_prefix='F_s'):
 
     npt.assert_almost_equal(S,S_svd)
 
-def test_svd_mass_res(file_prefix='F_m'):
+def test_svd_mass_res(opts, file_prefix='F_m'):
     """
     test SVD decomposition of mass residuals by generating SVD, saving to file and reloading
     """
     from proteus.deim_utils import read_snapshots,generate_svd_decomposition
 
-    ns = get_burgers_ns("test_svd_mass_res",T=0.1,nDTout=10,archive_pod_res=True)
+    ns = get_burgers_ns(opts, "test_svd_mass_res",T=0.1,nDTout=10,archive_pod_res=True)
     
     failed = ns.calculateSolution("run_svd_mass_res")
     assert not failed
@@ -106,13 +106,13 @@ def test_svd_mass_res(file_prefix='F_m'):
 
     npt.assert_almost_equal(S,S_svd)
 
-def test_svd_soln():
+def test_svd_soln(opts):
     """
     test SVD decomposition of solution by generating SVD, saving to file and reloading
     """
     from proteus.deim_utils import read_snapshots,generate_svd_decomposition
 
-    ns = get_burgers_ns("test_svd_soln",T=0.1,nDTout=10,archive_pod_res=True)
+    ns = get_burgers_ns(opts, "test_svd_soln",T=0.1,nDTout=10,archive_pod_res=True)
     
     failed = ns.calculateSolution("run_svd_soln")
     assert not failed
@@ -147,7 +147,7 @@ def test_deim_indices():
     rho_uni = np.unique(rho)
     assert rho_uni.shape[0] == rho.shape[0]
 
-def deim_approx(T=0.1,nDTout=10,m=5,m_mass=5):
+def deim_approx(opts, T=0.1,nDTout=10,m=5,m_mass=5):
     """
     Follow basic setup for DEIM approximation
     - generate a burgers solution, saving spatial and 'mass' residuals
@@ -168,7 +168,7 @@ def deim_approx(T=0.1,nDTout=10,m=5,m_mass=5):
 
     from proteus.deim_utils import read_snapshots,generate_svd_decomposition
     ##run fine grid problem
-    ns = get_burgers_ns("test_deim_approx",T=T,nDTout=nDTout,archive_pod_res=True)
+    ns = get_burgers_ns(opts, "test_deim_approx",T=T,nDTout=nDTout,archive_pod_res=True)
     
     failed = ns.calculateSolution("run_deim_approx")
     assert not failed
@@ -214,12 +214,12 @@ def deim_approx(T=0.1,nDTout=10,m=5,m_mass=5):
         
     return errors,errors_mass,F_deim,Fm_deim
 
-def test_deim_approx_full(tol=1.0e-12):
+def test_deim_approx_full(opts, tol=1.0e-12):
     """
     check that get very small error if use full basis 
     """
     T = 0.1; nDTout=10; m=nDTout+1
-    errors,errors_mass,F_deim,Fm_deim = deim_approx(T=T,nDTout=nDTout,m=m,m_mass=m)
+    errors,errors_mass,F_deim,Fm_deim = deim_approx(opts, T=T,nDTout=nDTout,m=m,m_mass=m)
     assert errors.min() < tol
     assert errors_mass.min() < tol
 

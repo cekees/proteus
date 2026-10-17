@@ -1,6 +1,9 @@
 """Tests for 2d flow around a cylinder with a conforming mesh and rans3p"""
 from importlib import reload
-from proteus.iproteus import *
+import os
+import proteus
+import sys
+from proteus import Profiling, default_s
 from proteus import Comm
 from proteus import Context
 import h5py
@@ -31,38 +34,27 @@ class Test_HotStart_rans3p(object):
         pass
 
 
-    def test_hotstart_p1(self):
+    def test_hotstart_p1(self, opts):
         self.compare_name = "T01P1_hotstart"
-        self.example_setting("T=0.1 vspaceOrder=1 onlySaveFinalSolution=True",h5_filename="solution_p1")
-        self.example_setting("T=0.1 vspaceOrder=1 onlySaveFinalSolution=True isHotStart=True", h5_filename="solution_p1", check_result=True, isHotstart=True,hotstart_t=0.1)
+        self.example_setting(opts, "T=0.1 vspaceOrder=1 onlySaveFinalSolution=True",h5_filename="solution_p1")
+        self.example_setting(opts, "T=0.1 vspaceOrder=1 onlySaveFinalSolution=True isHotStart=True", h5_filename="solution_p1", check_result=True, isHotstart=True,hotstart_t=0.1)
 
-    def test_hotstart_p2(self):
+    def test_hotstart_p2(self, opts):
         self.compare_name = "T01P2_hotstart"
-        self.example_setting("T=0.1 vspaceOrder=2 onlySaveFinalSolution=True",h5_filename="solution_p2")
-        self.example_setting("T=0.1 vspaceOrder=2 onlySaveFinalSolution=True isHotStart=True", h5_filename="solution_p2", check_result=True, isHotstart=True,hotstart_t=0.1)
+        self.example_setting(opts, "T=0.1 vspaceOrder=2 onlySaveFinalSolution=True",h5_filename="solution_p2")
+        self.example_setting(opts, "T=0.1 vspaceOrder=2 onlySaveFinalSolution=True isHotStart=True", h5_filename="solution_p2", check_result=True, isHotstart=True,hotstart_t=0.1)
 
 
-    def example_setting(self, *args, **kwargs):
-        # This sets process-wide state -- the hot start options on
-        # iproteus.opts and Context.contextOptionsString -- that every later
-        # NS_base in the process would otherwise inherit (each later test
-        # then tries to restart from an archive that does not exist).
-        missing = object()           # opts has no hotStartTime until set
-        saved = dict((k, getattr(opts, k, missing)) for k in
-                     ("profile", "gatherArchive", "hotStart", "hotStartTime"))
+    def example_setting(self, opts, *args, **kwargs):
+        # Context.contextOptionsString is process-wide: every later model
+        # module in the process would otherwise read this one's options.
         saved_context = Context.contextOptionsString
         try:
-            return self._example_setting(*args, **kwargs)
+            return self._example_setting(opts, *args, **kwargs)
         finally:
-            for k, v in saved.items():
-                if v is missing:
-                    if hasattr(opts, k):
-                        delattr(opts, k)
-                else:
-                    setattr(opts, k, v)
             Context.contextOptionsString = saved_context
 
-    def _example_setting(self, pre_setting, h5_filename, check_result=False, isHotstart=False, hotstart_t=0.0):
+    def _example_setting(self, opts, pre_setting, h5_filename, check_result=False, isHotstart=False, hotstart_t=0.0):
         Context.contextOptionsString = pre_setting
         from . import NS_hotstart_so as my_so
         reload(my_so)
@@ -75,8 +67,6 @@ class Test_HotStart_rans3p(object):
         # different context options unless it's reloaded here too.
         if "NS_hotstart" in sys.modules:
             reload(sys.modules["NS_hotstart"])
-        # defined in iproteus
-        opts.profile = False
         opts.gatherArchive = True
         opts.hotStart = isHotstart
         opts.hotStartTime = hotstart_t

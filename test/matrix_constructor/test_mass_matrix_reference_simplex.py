@@ -3,7 +3,8 @@
 Test module for 2D Quadrilateral Meshes
 """
 import proteus.test_utils.TestTools
-from proteus.iproteus import *
+from importlib import reload
+from proteus import LinearAlgebraTools, LinearSolvers
 from proteus import Comm
 
 import os

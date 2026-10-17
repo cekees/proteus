@@ -1,5 +1,5 @@
 import numpy as np
-from proteus.iproteus import *
+from proteus import Domain
 import proteus.default_p as physics
 import proteus.default_n as numerics
 from proteus.TransportCoefficients import PoissonEquationCoefficients

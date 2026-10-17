@@ -6,8 +6,7 @@ from proteus import LinearAlgebraTools as LAT
 from proteus import LinearSolvers as LS
 from proteus import Profiling
 from proteus import NumericalSolution
-from proteus import iproteus
-#from proteus.iproteus import *
+from proteus import runtime
 
 import os
 import sys
@@ -20,10 +19,8 @@ from petsc4py import PETSc
 import pytest
 
 proteus.test_utils.TestTools.addSubFolders( inspect.currentframe() )
-from proteus import iproteus
 from proteus import (defaults, default_p, default_n)
 from importlib import reload
-opts=iproteus.opts
 import_modules = os.path.join(os.path.dirname(__file__),'import_modules')
 def load_simulation(context_options_str=None):
     """
@@ -40,7 +37,7 @@ def load_simulation(context_options_str=None):
     from proteus import Context
     from proteus import default_s
     reload(PETSc)
-    reload(iproteus)
+    runtime.init()      # sets options_left again, after a test cleared it
     reload(default_p)
     reload(default_n)
     reload(default_s)
@@ -65,7 +62,7 @@ def load_simulation(context_options_str=None):
                                    pList,
                                    nList,
                                    so.sList,
-                                   opts)
+                                   runtime.RunOptions())
     return ns
 
 def initialize_petsc_options():

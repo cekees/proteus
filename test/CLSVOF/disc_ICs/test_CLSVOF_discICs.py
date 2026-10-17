@@ -2,7 +2,9 @@
 """
 Test module for testing disc ICs for CLSVOF
 """
-from proteus.iproteus import *
+import proteus
+from importlib import reload
+from proteus import Profiling, default_n, default_s
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=1
@@ -40,7 +42,7 @@ class TestCLSVOF(object):
     def teardown_method(self,method):
         pass
 
-    def run_test(self,clsvof_p,clsvof_n,name):
+    def run_test(self, opts,clsvof_p,clsvof_n,name):
         pnList = [(clsvof_p, clsvof_n)]
         self.so = default_so
         self.so.tnList = clsvof_n.tnList
@@ -73,19 +75,19 @@ class TestCLSVOF(object):
         np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['u_t1']).flatten(),decimal=2)
         actual.close()
 
-    def test_case_1(self):
+    def test_case_1(self, opts):
         from . import (clsvof_p,clsvof_n)
         name = "test_case_1"
         # run problem
-        self.run_test(clsvof_p,clsvof_n,name)
+        self.run_test(opts, clsvof_p,clsvof_n,name)
         # compare output files
         self.compare_files('comparison_files',name)
 
-    def test_case_2(self):
+    def test_case_2(self, opts):
         parameters.ct.test_case=2
         self.reload_modules()
         name = "test_case_2"
         # run problem
-        self.run_test(clsvof_p,clsvof_n,name)
+        self.run_test(opts, clsvof_p,clsvof_n,name)
         # compare output files
         self.compare_files('comparison_files',name)

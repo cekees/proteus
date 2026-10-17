@@ -3,7 +3,8 @@
 import proteus.test_utils.TestTools as TestTools
 import proteus.LinearAlgebraTools as LAT
 import proteus.LinearSolvers as LS
-from proteus.iproteus import *
+import proteus
+from proteus import NumericalSolution, Profiling, default_s, default_so
 from proteus import defaults
 
 import os
@@ -85,7 +86,7 @@ class TestStokes(proteus.test_utils.TestTools.SimulationTest):
         self.nList[0].OptDB.setValue("pc_type","lu")
         self.nList[0].OptDB.setValue("pc_factor_mat_solver_package","superlu_dist")
 
-    def _runTest(self):
+    def _runTest(self, opts):
         Profiling.openLog('proteus.log',11)
         Profiling.verbose = True
         self._scriptdir = os.path.dirname(__file__)
@@ -105,7 +106,7 @@ class TestStokes(proteus.test_utils.TestTools.SimulationTest):
         actual.close()
 
     @pytest.mark.slowTest
-    def test_01_FullRun(self):
+    def test_01_FullRun(self, opts):
         stokesDrivenCavity_2d_p = defaults.load_physics('stokesDrivenCavity_2d_p',import_modules)
         stokesDrivenCavity_2d_n = defaults.load_numerics('stokesDrivenCavity_2d_n',import_modules)
         self.pList = [stokesDrivenCavity_2d_p]
@@ -120,7 +121,7 @@ class TestStokes(proteus.test_utils.TestTools.SimulationTest):
         self.so.sList = self.pList[0].name
         self.so.sList = [default_s]
         self._setPETSc()
-        self._runTest()
+        self._runTest(opts)
         relpath = 'comparison_files/Qp_expected.log'
         actual_log = TestTools.NumericResults.build_from_proteus_log('proteus.log')
         expected_log = TestTools.NumericResults.build_from_proteus_log(os.path.join(self._scriptdir,
@@ -131,7 +132,7 @@ class TestStokes(proteus.test_utils.TestTools.SimulationTest):
         assert L1 == L2
 
     @pytest.mark.slowTest
-    def test_02_FullRun(self):
+    def test_02_FullRun(self, opts):
         stokesDrivenCavity_2d_p = defaults.load_physics('stokesDrivenCavity_2d_p',import_modules)
         stokesDrivenCavity_2d_n = defaults.load_numerics('stokesDrivenCavity_2d_n',import_modules)
         self.pList = [stokesDrivenCavity_2d_p]
@@ -145,7 +146,7 @@ class TestStokes(proteus.test_utils.TestTools.SimulationTest):
         self.so.sList = self.pList[0].name
         self.so.sList = [default_s]
         self._setPETSc_LU()
-        self._runTest()
+        self._runTest(opts)
 
 
 def initialize_schur_ksp_obj(matrix_A, schur_approx):
