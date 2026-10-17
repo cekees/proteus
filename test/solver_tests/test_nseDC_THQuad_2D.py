@@ -4,6 +4,7 @@
 import proteus.test_utils.TestTools as TestTools
 import proteus
 from proteus import NumericalSolution, Profiling, default_s, default_so
+from proteus import runtime
 
 Profiling.logLevel = 7
 Profiling.verbose = False
@@ -36,6 +37,9 @@ class Test_NSE_Driven_Cavity(proteus.test_utils.TestTools.SimulationTest):
         self.so.sList = self.pList[0].name
         self.so.sList = [default_s]
         self._scriptdir = os.path.dirname(__file__)
+        # setup_method runs before the opts fixture: start Proteus here, for
+        # the procID openLog needs
+        runtime.start(log=None)
         Profiling.openLog("proteus.log",10)
         Profiling.logAllProcesses = True
 

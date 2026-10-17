@@ -127,7 +127,7 @@ def test_svd_soln(opts):
 
     npt.assert_almost_equal(S,S_svd)
 
-def test_deim_indices():
+def test_deim_indices(opts):
     """
     Taking a basis generated from snapshots
     and tests that get the deim algorithm returns all of the indices 
@@ -135,7 +135,7 @@ def test_deim_indices():
     import os
     basis_file='F_s_SVD_basis'
     if not os.path.isfile(basis_file):
-        test_svd_space_res(file_prefix='F_s')
+        test_svd_space_res(opts, file_prefix='F_s')
     U = np.loadtxt(basis_file)
     from proteus.deim_utils import calculate_deim_indices
     rho_half = calculate_deim_indices(U[:,:U.shape[1]//2])

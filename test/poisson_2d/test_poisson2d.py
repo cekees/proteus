@@ -145,6 +145,9 @@ def test_load_vector_use_weak(opts, use_weak_dirichlet):
     from . import poisson_het_2d_p
     reload(poisson_het_2d_p)
     from . import poisson_het_2d_c0pk_n
+    # test_poisson's strong cases set numericalFluxType on this module, and
+    # on a worker that ran one last, it would still hold Exterior_StrongFlux
+    reload(poisson_het_2d_c0pk_n)
     pList = [poisson_het_2d_p]
     nList = [poisson_het_2d_c0pk_n]
     reload(default_so)

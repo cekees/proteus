@@ -37,7 +37,9 @@ def load_simulation(context_options_str=None):
     from proteus import Context
     from proteus import default_s
     reload(PETSc)
-    runtime.init()      # sets options_left again, after a test cleared it
+    # what reload(iproteus) did: start PETSc again (which sets options_left,
+    # after a test cleared it) and set the procID openLog needs
+    Profiling.procID = runtime.init().rank()
     reload(default_p)
     reload(default_n)
     reload(default_s)
