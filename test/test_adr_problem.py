@@ -349,6 +349,68 @@ def test_the_emitted_p_file_carries_the_neumann_flux(tmp_path):
     assert "-2.0*x" in text or "-2.0 * x" in text
 
 
+# --- the spec's linear_solver ------------------------------------------------------
+
+
+CG1 = {"u": ("CG", 1)}
+
+
+def test_the_linear_solver_choice_follows_the_spec():
+    choice = ADRProblem.linear_solver_choice
+    plain, singular = {}, {"up_to_constant": ["u"]}
+    # omitted: what Proteus picked before it read the field
+    assert choice(plain, CG1) == ("superlu", None)
+    assert choice(singular, CG1) == ("mumps", ADRProblem.NULL_SPACE_SOLVER)
+    assert choice(plain, CG1, "superlu") == ("superlu", None)
+    assert choice(plain, CG1, "mumps") == ("mumps", ADRProblem.MUMPS_SOLVER)
+    assert choice(plain, CG1, "petsc") == ("petsc", {})
+    # petsc_options are applied as petsc's, laid over mumps's
+    assert choice(plain, CG1, "PETSc", {"ksp_type": "cg", "ksp_rtol": 1e-10}) == \
+        ("petsc", {"ksp_type": "cg", "ksp_rtol": "1e-10"})
+    assert choice(plain, CG1, "mumps", {"mat_mumps_icntl_14": "50"})[1] == \
+        dict(ADRProblem.MUMPS_SOLVER, mat_mumps_icntl_14="50")
+
+
+@pytest.mark.parametrize("args, message", [
+    (("umfpack",), "has no Proteus solver"),
+    (("superlu", {"ksp_type": "cg"}), "apply to linear_solver petsc or mumps"),
+    ((None, {"ksp_type": "cg"}), "not the default"),
+])
+def test_a_linear_solver_proteus_cannot_honour_is_refused(args, message):
+    with pytest.raises(ValueError, match=message):
+        ADRProblem.linear_solver_choice({}, CG1, *args)
+
+
+def test_a_singular_operator_is_not_handed_to_superlu():
+    with pytest.raises(ValueError, match="needs linear_solver mumps or petsc"):
+        ADRProblem.linear_solver_choice({"up_to_constant": ["p"]}, CG1, "superlu")
+
+
+@pytest.mark.parametrize("linear_solver, petsc_options", [
+    ("mumps", None),
+    ("petsc", {"ksp_type": "cg", "pc_type": "jacobi"}),
+    ("petsc", None),                      # PETSc's own defaults
+])
+def test_each_linear_solver_gives_the_superlu_answer(linear_solver, petsc_options):
+    """Robin faces too: their flux keeps the Dirichlet DOFs under KSP."""
+    expected, rate = _rate(robin_poisson())
+    errors, got = _rate(robin_poisson(), linear_solver=linear_solver,
+                        petsc_options=petsc_options)
+    numpy.testing.assert_allclose(errors, expected, rtol=1e-6)
+    assert abs(got - rate) < 1e-3
+
+
+def test_the_numerics_record_the_solver_proteus_used():
+    problem = robin_poisson()
+    _, _, n, _ = ADRProblem.setup(problem, CG1, 4, linear_solver="petsc",
+                                  petsc_options={"ksp_type": "cg"})
+    record = ADRProblem.describe(problem, n)
+    assert record["linear_solver"] == "KSP_petsc4py"
+    assert record["petsc_options"] == {"adr_ksp_type": "cg"}
+    _, _, n, _ = ADRProblem.setup(problem, CG1, 4)
+    assert ADRProblem.describe(problem, n)["linear_solver"] == "LU"
+
+
 # --- end to end, through ymf_run ---------------------------------------------------
 
 
@@ -512,6 +574,58 @@ def test_emitted_pn_files_reproduce_the_output_bitwise_under_parun(poisson_spec,
     assert all(numpy.array_equal(mine[k], recorded[k]) for k in recorded)
 
 
+def _with_solver(spec_path, solver):
+    text = spec_path.read_text(encoding="utf-8")
+    assert text.count("      solver: {type: linear}\n") == 1
+    spec_path.write_text(text.replace("      solver: {type: linear}\n",
+                                      "      solver: %s\n" % solver), encoding="utf-8")
+
+
+def test_a_spec_s_linear_solver_is_honoured(poisson_spec, tmp_path):
+    _with_solver(poisson_spec, "{type: linear, linear_solver: petsc, "
+                               "petsc_options: {ksp_type: cg, pc_type: jacobi}}")
+    out = ymf_run(poisson_spec, "--cells", "4", "8", "--outdir", tmp_path)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert 1.8 < float(rows(out.stdout)[1][2]) < 2.2
+    from ymf import closure
+    _, outputs, _ = closure.load(tmp_path / "poisson.archive.ymf")
+    for output in outputs.values():
+        discrete = output["transformations"]["adr_to_discrete"]
+        assert discrete["linear_solver"] == "KSP_petsc4py"
+        assert discrete["petsc_options"] == {"adr_ksp_type": "cg", "adr_pc_type": "jacobi"}
+
+
+def test_a_linear_solver_proteus_lacks_skips_the_branch(poisson_spec, tmp_path):
+    _with_solver(poisson_spec, "{type: linear, linear_solver: umfpack}")
+    out = ymf_run(poisson_spec, "--cells", "4", "--outdir", tmp_path)
+    assert "P1 -- skipped: linear_solver 'umfpack' has no Proteus solver" in out.stdout
+    assert not rows(out.stdout)
+
+
+def test_emitted_pn_files_reproduce_a_krylov_solve_under_parun(poisson_spec, tmp_path):
+    """The n file carries the KSP settings even when no options are given."""
+    _with_solver(poisson_spec, "{type: linear, linear_solver: petsc}")
+    out = ymf_run(poisson_spec, "--cells", "4", "--outdir", tmp_path, "--emit-pn")
+    assert out.returncode == 0, out.stderr[-2000:]
+    from ymf import closure
+    from ymf.archive import domain_arrays, read_ymf
+    _, outputs, _ = closure.load(tmp_path / "poisson.archive.ymf")
+    ((key, output),) = outputs.items()
+    stem = closure.file_stem("poisson", key)
+    n_file = (tmp_path / (stem + "_n.py")).read_text()
+    assert "LinearSolvers.KSP_petsc4py" in n_file and "keepDOFs=True" in n_file
+    work = tmp_path / "pn"
+    work.mkdir()
+    for suffix in ("_p", "_n", "_so"):
+        (work / (stem + suffix + ".py")).write_text((tmp_path / (stem + suffix + ".py")).read_text())
+    parun = os.path.join(os.path.dirname(sys.executable), "parun")
+    run = subprocess.run([parun, stem + "_so.py"], cwd=work, capture_output=True, text=True)
+    assert run.returncode == 0, run.stdout[-2000:] + run.stderr[-2000:]
+    mine = domain_arrays(read_ymf(work / (stem + "_pn.ymf"))[0], work)
+    recorded = domain_arrays(output["approximation"], tmp_path)
+    assert all(numpy.array_equal(mine[k], recorded[k]) for k in recorded)
+
+
 @pytest.fixture
 def kovasznay_spec(tmp_path):
     """Kovasznay flow, Taylor-Hood, velocity given all round: p up to a constant."""
@@ -598,6 +712,49 @@ def test_a_pressure_up_to_a_constant_is_solved_in_the_null_space(kovasznay_spec,
     mine = domain_arrays(read_ymf(work / (stem + "_pn.ymf"))[0], work)
     recorded = domain_arrays(output["approximation"], tmp_path)
     assert all(numpy.array_equal(mine[k], recorded[k]) for k in recorded)
+
+
+def test_a_pinned_taylor_hood_pressure_solves_through_mumps(kovasznay_spec, tmp_path):
+    """A kept pressure datum needs a diagonal the continuity equation lacks.
+
+    Under KSP the Dirichlet rows stay in the system and become u = g, which
+    needs the row's diagonal entry; Taylor-Hood's continuity equation has
+    no pressure-pressure term, so without a structural zero it raised
+    "Jacobian has a zero row". With it, MUMPS gives SuperLU's answer.
+    """
+    text = kovasznay_spec.read_text(encoding="utf-8")
+    text = text.replace(
+        'boundary_regions: [{name: outer, where: "∂Ω"}]',
+        'boundary_regions: [{name: outer, where: "∂Ω"},\n'
+        '                       {name: datum, where: "x = -0.5 and y = -0.5"}]')
+    text = text.replace(
+        "    coefficients:\n      ρ: {value: 1.0}",
+        "      - {region: datum, variable: p, type: dirichlet, formula: \"(1 - exp(2λx))/2\"}\n"
+        "    coefficients:\n      ρ: {value: 1.0}")
+    entry = text[text.index("    - name: taylor_hood"):]
+    text = text.replace(entry, "\n".join([
+        entry.replace("taylor_hood", "th_superlu").replace(
+            "solver: {type: nonlinear}", "solver: {type: nonlinear, linear_solver: superlu}").rstrip("\n"),
+        entry.replace("taylor_hood", "th_mumps").replace(
+            "solver: {type: nonlinear}", "solver: {type: nonlinear, linear_solver: mumps}")]))
+    kovasznay_spec.write_text(text, encoding="utf-8")
+    out = ymf_run(kovasznay_spec, "--cells", "4", "--outdir", tmp_path)
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    assert "L2(p)*" not in out.stdout             # pinned: no null space
+    superlu, mumps = rows(out.stdout)
+    # one mesh, so no rate columns: cells, L2(v_0), L2(v_1), L2(p), key, status
+    numpy.testing.assert_allclose([float(v) for v in mumps[1:4]],
+                                  [float(v) for v in superlu[1:4]], rtol=1e-8)
+
+
+def test_a_periodic_problem_is_not_handed_to_petsc():
+    with pytest.raises(ValueError, match="serial periodic path; use linear_solver superlu$"):
+        ADRProblem.linear_solver_choice({"periodic": [{"component": "u"}]}, CG1, "mumps")
+    with pytest.raises(ValueError, match="pin a datum"):
+        ADRProblem.linear_solver_choice(
+            {"periodic": [{"component": "p"}], "up_to_constant": ["p"]}, CG1)
+    assert ADRProblem.linear_solver_choice({"periodic": [{"component": "u"}]}, CG1) \
+        == ("superlu", None)
 
 
 # --- regions that are not boxes: unstructured meshes of size h ----------------------
