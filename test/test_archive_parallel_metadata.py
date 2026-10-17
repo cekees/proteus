@@ -64,25 +64,36 @@ RANK_SCRIPT = textwrap.dedent(
 
     global_sync = os.environ["GLOBAL_SYNC"] == "1"
     datadir = os.environ["DATADIR"]
-    if rank == 0:
+    if rank == 0 and os.environ.get("HOT_START") != "1":
         shutil.rmtree(datadir, ignore_errors=True)
         os.makedirs(datadir, exist_ok=True)
     comm.barrier()
 
     from proteus import Archiver
 
-    ar = Archiver.XdmfArchive(datadir, "mpitest", useGlobalXMF=True,
-                              global_sync=global_sync)
-    ar.domain = SubElement(ar.tree.getroot(), "Domain")
+    hot = os.environ.get("HOT_START") == "1"
+    ar = Archiver.XdmfArchive(datadir, "mpitest", global_sync=global_sync,
+                              hotStart=hot)
+    if hot:
+        # what NumericalSolution does: continue after the archive's last step
+        ar.n_datasets = len(ar.archived_times)
+        ar.domain = ar.tree.getroot().find("Domain")
+    else:
+        ar.domain = SubElement(ar.tree.getroot(), "Domain")
 
     # Sizes differ per rank on purpose: the metadata dataset is fixed-width
     # and created collectively, so if the width agreement is wrong the
     # longest rank's YAML is silently truncated.
     n_elements, n_nodes = 4 + rank, 6 + rank
-    collection = SubElement(ar.domain, "Grid",
-                            {"Name": "Mesh Spatial_Domain",
-                             "GridType": "Collection",
-                             "CollectionType": "Temporal"})
+    if hot:
+        # found by name, as XdmfWriter.setGridCollectionAndGridElements does
+        (collection,) = [c for c in ar.domain
+                         if c.attrib["Name"] == "Mesh Spatial_Domain"]
+    else:
+        collection = SubElement(ar.domain, "Grid",
+                                {"Name": "Mesh Spatial_Domain",
+                                 "GridType": "Collection",
+                                 "CollectionType": "Temporal"})
 
     # global_sync describes one assembled global array, so the metadata
     # carries global counts and each rank contributes only the slice it owns.
@@ -92,7 +103,8 @@ RANK_SCRIPT = textwrap.dedent(
     n_nodes_global = int(node_offsets[-1])
     n_elements_global = int(sum(comm_world.allgather(n_elements)))
 
-    for tCount, t in enumerate([0.0, 0.5]):
+    times = [1.0] if hot else [0.0, 0.5]
+    for tCount, t in enumerate(times, start=ar.n_datasets):
         grid, _ = ar.write_grid(collection, "Grid_p%d" % rank, t, tCount)
         if global_sync:
             ar.write_topology(grid, "Triangle", n_elements_global,
@@ -123,11 +135,15 @@ RANK_SCRIPT = textwrap.dedent(
 )
 
 
-def run_ranks(tmp_path, n_ranks, global_sync):
-    """Run the rank script under mpiexec (or directly for one rank)."""
+def run_ranks(tmp_path, n_ranks, global_sync, hot_start=False):
+    """Run the rank script under mpiexec (or directly for one rank).
+
+    ``hot_start`` continues the archive an earlier call wrote, for one
+    more step, the way a hot-started run does.
+    """
     datadir = str(tmp_path / "archive")
     env = dict(os.environ, GLOBAL_SYNC="1" if global_sync else "0",
-               DATADIR=datadir)
+               DATADIR=datadir, HOT_START="1" if hot_start else "0")
     # More ranks than cores (3 on a 2-core CI runner): Open MPI refuses
     # unless told it may oversubscribe -- OMPI_MCA_* for Open MPI 4,
     # PRTE_MCA_* for Open MPI 5's PRRTE launcher. MPICH oversubscribes by
@@ -290,19 +306,21 @@ def test_parallel_archive_validates_as_a_ymf_document(tmp_path):
 
 
 @pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
-def test_the_derived_xmf_holds_every_ranks_grid(tmp_path):
-    """The .xmf must be derived from the same domain, not from a stale tree.
+def test_ymf2xmf_holds_every_ranks_grid(tmp_path):
+    """The .xmf for viewers is derived from the .ymf, and holds every rank.
 
-    Regression test: the legacy code wrote ``self.treeGlobal`` to this same
-    file handle at the end of gatherAndWriteTimes. Once the grids stopped
+    The archive itself writes no .xmf (Phase 4). Before that, the legacy
+    code wrote ``self.treeGlobal`` at close; once the grids stopped
     accumulating in that tree, that write truncated the file back to an
-    empty temporal collection -- the .ymf was complete and the .xmf was a
-    stub.
+    empty temporal collection -- the .ymf was complete and the .xmf a stub.
     """
     from xml.etree.ElementTree import parse
+    from ymf.cli import ymf2xmf
 
     datadir = run_ranks(tmp_path, 2, global_sync=False)
-    root = parse(os.path.join(datadir, "mpitest.xmf")).getroot()
+    xmf = ymf2xmf(os.path.join(datadir, "mpitest.ymf"),
+                  str(tmp_path / "derived.xmf"))
+    root = parse(xmf).getroot()
     temporal = root.find("Domain").find("Grid")
     assert temporal.attrib["CollectionType"] == "Temporal"
     steps = temporal.findall("Grid")
@@ -585,3 +603,37 @@ def test_h5toxmf_script_is_gone():
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
     assert not os.path.exists(os.path.join(scripts, "H5toXMF.py"))
     assert os.path.exists(os.path.join(scripts, "gatherTimes"))
+
+
+# --------------------------------------------------------------------------
+# no .xmf on the write path (Phase 4), and hot start without one
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("global_sync", [True, False])
+def test_an_archive_writes_no_xmf(tmp_path, global_sync):
+    datadir = run_ranks(tmp_path, 1, global_sync=global_sync)
+    assert sorted(os.listdir(datadir)) == ["mpitest.h5", "mpitest.ymf"]
+
+
+@pytest.mark.parametrize("global_sync", [True, False])
+def test_a_hot_start_continues_the_archive_from_the_h5_alone(tmp_path,
+                                                             global_sync):
+    """The Domain the writers append to comes from the .h5's own record.
+
+    It used to come from parsing the .xmf, so an archive without one --
+    every archive, now -- could not be hot started.
+    """
+    datadir = run_ranks(tmp_path, 1, global_sync=global_sync)
+    run_ranks(tmp_path, 1, global_sync=global_sync, hot_start=True)
+    (collection,) = read_domain(datadir)["time_collections"]
+    assert [step["time"] for step in collection["data"]] == [0.0, 0.5, 1.0]
+    assert sorted(os.listdir(datadir)) == ["mpitest.h5", "mpitest.ymf"]
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+def test_a_parallel_hot_start_continues_the_archive(tmp_path):
+    datadir = run_ranks(tmp_path, 2, global_sync=False)
+    run_ranks(tmp_path, 2, global_sync=False, hot_start=True)
+    (collection,) = read_domain(datadir)["time_collections"]
+    assert [step["time"] for step in collection["data"]] == [0.0, 0.5, 1.0]

@@ -149,12 +149,12 @@ parser.add_option("-G","--gatherArchive",
                   default=False,
                   dest="gatherArchive",
                   action="store_true",
-                  help="""collect data files into single file at end of simulation (convenient but slow on big run)""")
+                  help="""ignored: archives no longer write per-rank .xmf files to gather""")
 parser.add_option("-s","--subdomainArchives",
                   default=False,
                   dest="subdomainArchives",
                   action="store_true",
-                  help="""write xmf files for every processor's subdomain""")
+                  help="""ignored: no .xmf is written; use -n for one dataset per subdomain""")
 parser.add_option("-n","--no_global_sync",
                   default=True,
                   dest="global_sync",

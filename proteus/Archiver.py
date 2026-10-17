@@ -36,6 +36,24 @@ class ArchiveFlags(object):
     UNDEFINED            =-1
 #
 class AR_base(object):
+    """An archive: field data in ``<filename>.h5``, a ymf document beside it.
+
+    Proteus writes no ``.xmf``. Each step's grid metadata is stored in the
+    HDF5 file (:meth:`allGatherIncremental`), and :meth:`close` assembles
+    ``<filename>.ymf`` from it. For ParaView or VisIt, ``ymf2xmf
+    <filename>.ymf`` derives an ``.xmf`` that references the same HDF5
+    datasets; ``gatherTimes`` rebuilds both from the ``.h5`` alone.
+
+    ``self.tree`` is in memory only. The writers still build XDMF elements
+    under ``self.domain`` (Phase 1 of the YMF campaign converts them to
+    dicts), and :meth:`allGatherIncremental` turns each step's elements into
+    ymf grids; nothing serializes the tree.
+
+    ``useGlobalXMF`` and ``gatherAtClose`` are accepted and ignored. They
+    chose between one ``.xmf`` and one per rank, gathered at close; the
+    HDF5 metadata makes that choice for a reader, and ``global_sync`` is
+    what decides the layout of the data.
+    """
     def __init__(self,dataDir,filename,
                  useTextArchive=False,
                  gatherAtClose=True,
@@ -43,9 +61,6 @@ class AR_base(object):
                  hotStart=False,
                  readOnly=False,
                  global_sync=True):
-        import os.path
-        import copy
-        self.useGlobalXMF=useGlobalXMF
         comm=Comm.get()
         self.comm=comm
         self.rank = comm.rank()
@@ -55,109 +70,81 @@ class AR_base(object):
         self.readOnly = readOnly
         self.n_datasets = 0
         self.archived_domain = None
-        import datetime
-        #filename += datetime.datetime.now().isoformat()
         self.global_sync = global_sync
         comm_world = self.comm.comm.tompi4py()
-        self.xmlHeader = "<?xml version=\"1.0\" ?>\n<!DOCTYPE Xdmf SYSTEM \"Xdmf.dtd\" []>\n"
-        if hotStart:
-            if useGlobalXMF:
-                xmlFile_old=open(os.path.join(self.dataDir,
-                                              filename+".xmf"),
-                                 "rb")
+        self.tree=ElementTree(
+            Element("Xdmf",
+                    {"Version":"2.0",
+                     "xmlns:xi":"http://www.w3.org/2001/XInclude"})
+        )
+        if not useTextArchive:
+            if hotStart:
+                mode = "a"
+            elif readOnly:
+                mode = "r"
             else:
-                xmlFile_old=open(os.path.join(self.dataDir,
-                                              filename+str(self.rank)+".xmf"),
-                                 "rb")
-            self.tree=ElementTree(file=xmlFile_old)
-            if self.comm.isMaster():
-                self.xmlFileGlobal = open(os.path.join(self.dataDir,
-                                                       filename+".xmf"),
-                                          "ab")
-                self.treeGlobal=copy.deepcopy(self.tree)
-            if not useGlobalXMF:
-                self.xmlFile=open(os.path.join(self.dataDir,
-                                               filename+str(self.rank)+".xmf"),
-                                  "ab")
-            if not useTextArchive:
-                self.hdfFilename=filename+".h5"
-                self.hdfFile=h5py.File(os.path.join(self.dataDir,self.hdfFilename),
-                                       "a",
-                                       driver="mpio",
-                                       comm = comm_world)
-                self.dataItemFormat="HDF"
-            else:
-                self.textDataDir=filename+"_Data"
-                if not os.path.exists(self.textDataDir):
-                    try:
-                        os.mkdir(self.textDataDir)
-                    except:
-                        self.textDataDir=""
-                self.hdfFile=None
-                self.dataItemFormat="XML"
-        elif readOnly:
-            if useGlobalXMF:
-                self.xmlFile=open(os.path.join(self.dataDir,
-                                               filename+".xmf"),
-                                  "rb")
-            else:
-                self.xmlFile=open(os.path.join(self.dataDir,
-                                               filename+str(self.rank)+".xmf"),
-                                  "rb")
-            self.tree=ElementTree(file=self.xmlFile)
-            if not useTextArchive:
-                self.hdfFilename=filename+".h5"
-                self.hdfFile=h5py.File(os.path.join(self.dataDir,
-                                                    self.hdfFilename),
-                                       "r",
-                                       driver = 'mpio',
-                                       comm = comm_world)
-                self.dataItemFormat="HDF"
-            else:
-                self.textDataDir=filename+"_Data"
-                assert(os.path.exists(self.textDataDir))
-                self.hdfFile=None
-                self.dataItemFormat="XML"
-        else:
-            if not self.useGlobalXMF:
-                self.xmlFile=open(os.path.join(self.dataDir,
-                                               filename+str(self.rank)+".xmf"),
-                                  "wb")
-            self.tree=ElementTree(
-                Element("Xdmf",
-                        {"Version":"2.0",
-                         "xmlns:xi":"http://www.w3.org/2001/XInclude"})
-            )
-            if self.comm.isMaster():
-                self.xmlFileGlobal=open(
-                    os.path.join(self.dataDir,
-                                 filename+".xmf"),
-                    "wb")
-                self.treeGlobal=ElementTree(
-                    Element("Xdmf",
-                            {"Version":"2.0",
-                             "xmlns:xi":"http://www.w3.org/2001/XInclude"})
-                )
-            if not useTextArchive:
-                self.hdfFilename=filename+".h5"
-                self.hdfFile=h5py.File(os.path.join(self.dataDir,
-                                                    self.hdfFilename),
-                                       "w",
-                                       driver = 'mpio',
-                                       comm = comm_world)
-                self.dataItemFormat="HDF"
+                mode = "w"
+            self.hdfFilename=filename+".h5"
+            self.hdfFile=h5py.File(os.path.join(self.dataDir,self.hdfFilename),
+                                   mode,
+                                   driver="mpio",
+                                   comm = comm_world)
+            self.dataItemFormat="HDF"
+            if mode == "w":
                 self.comm.barrier()
-            else:
-                self.textDataDir=filename+"_Data"
-                if not os.path.exists(self.textDataDir):
-                    try:
-                        os.mkdir(self.textDataDir)
-                    except:
-                        self.textDataDir=""
-                self.hdfFile=None
-                self.dataItemFormat="XML"
-        #
-        self.gatherAtClose = gatherAtClose
+        else:
+            self.textDataDir=filename+"_Data"
+            if readOnly:
+                assert(os.path.exists(self.textDataDir))
+            elif not os.path.exists(self.textDataDir):
+                try:
+                    os.mkdir(self.textDataDir)
+                except:
+                    self.textDataDir=""
+            self.hdfFile=None
+            self.dataItemFormat="XML"
+        if hotStart and self.hdfFile is not None:
+            self._seed_domain()
+    def _seed_domain(self):
+        """Give a hot-started run the ``<Domain>`` its writers append to.
+
+        The writers find their temporal collection by name, or as the
+        first ``<Grid>`` under the domain (``MeshTools.writeMeshXdmf``), so
+        a continuing run needs the collections the archive already has, in
+        the order they were written, and nothing else: the grids of earlier
+        steps were never kept in the tree, since :meth:`sync` deletes them
+        after storing each step. This used to come from parsing the
+        ``.xmf``; the HDF5 file records the names and their order itself.
+        """
+        domain = SubElement(self.tree.getroot(), "Domain")
+        for name in self._collection_names():
+            SubElement(domain, "Grid", {"Name":name,
+                                        "GridType":"Collection",
+                                        "CollectionType":"Temporal"})
+    def _collection_names(self):
+        """The archive's temporal-collection names, in the order written.
+
+        A version 2 archive records them in :data:`COLLECTIONS_ATTR`.
+        Proteus <= 1.9.x recorded neither the names nor their order, and
+        discovering them from the dataset names gives the names but not
+        the order, which a hot start needs (``EBMesh`` would sort ahead of
+        ``Mesh``). Those archives always came with an ``.xmf``, so the
+        order is read from it, and only there.
+        """
+        raw = self.hdfFile.attrs.get(self.COLLECTIONS_ATTR)
+        if raw is not None:
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            return [name for name in raw.split("\n") if name]
+        xmf = os.path.join(self.dataDir, self.filename + ".xmf")
+        if not os.path.exists(xmf):
+            raise IOError(
+                "%s was written by proteus <= 1.9.x, which did not record "
+                "the order of its time collections; hot starting from it "
+                "needs the %s written beside it" % (self.hdfFilename, xmf))
+        Domain = ElementTree(file=xmf).getroot().find("Domain")
+        return [collection.attrib["Name"]
+                for collection in Domain.findall("Grid")]
     #: Bumped when the in-archive metadata layout changes incompatibly.
     #: Written as an attribute on the HDF5 root by
     #: :meth:`allGatherIncremental` and checked by
@@ -240,7 +227,7 @@ class AR_base(object):
         Before Phase 2 of the YMF campaign, ``gatherAndWriteTimes`` filled
         ``self.treeGlobal`` from the HDF5 metadata and callers counted
         ``<Time>`` elements in it; the domain dict is the representation
-        now, and that tree is on its way out.
+        now, and that tree is gone.
 
         Empty until :meth:`gatherAndWriteTimes` has run, i.e. until the
         archive is closed.
@@ -445,99 +432,33 @@ class AR_base(object):
 
         Reads back the per-step, per-rank grid metadata that
         :meth:`allGatherIncremental` stashed in the HDF5 file as YAML,
-        builds a single ymf domain from it, and writes that domain as both
-        the ``.ymf`` archive of record and an ``.xmf`` for viewers.
-
-        This is where the campaign's "one dict, three serializations" shape
-        actually lands: the domain dict is assembled once here and both
-        output files are derived from it, rather than the XML tree being
-        the thing that gets written and the data model being an
-        afterthought.
+        builds a single ymf domain from it, and writes that domain as the
+        ``.ymf`` archive of record. An ``.xmf`` for viewers is derived from
+        it on demand by ``ymf2xmf``, rather than written by every run.
         """
         from ymf.archive import write_ymf
-        from ymf.xdmf import build_xdmf_tree, XDMF_HEADER
 
         domain = self.assemble_domain()
-        #keep the assembled domain: it is the archive's representation now,
-        #and callers that used to inspect self.treeGlobal want this instead
+        #keep the assembled domain: it is the archive's representation, and
+        #callers that used to inspect the XML tree want this instead
         self.archived_domain = domain
-
-        self.clear_xml()
-        if domain is not None:
-            ymf_path = os.path.join(self.dataDir, self.filename + ".ymf")
-            write_ymf(domain, ymf_path)
-            logEvent("Wrote YMF archive " + ymf_path)
-            #The .xmf is derived from the same domain, for viewers, and is
-            #written through the handle opened in __init__ -- the legacy
-            #path wrote self.treeGlobal here, and since the grids no longer
-            #accumulate in that tree it would truncate this file back to an
-            #empty collection. Phase 4 replaces this with an on-demand
-            #converter and drops the .xmf from the write path entirely.
-            tree = build_xdmf_tree(domain)
-            indentXML(tree.getroot())
-            self.xmlFileGlobal.write(XDMF_HEADER)
-            tree.write(self.xmlFileGlobal, encoding="utf-8")
-        else:
-            #no HDF5 metadata to assemble from (text-archive mode): fall
-            #back to whatever the in-memory tree holds
-            self.xmlFileGlobal.write(bytes(self.xmlHeader,"utf-8"))
-            indentXML(self.treeGlobal.getroot())
-            self.treeGlobal.write(self.xmlFileGlobal,encoding="utf-8")
-    def clear_xml(self):
-        if not self.useGlobalXMF:
-            self.xmlFile.seek(0)
-            self.xmlFile.truncate()
-        if self.comm.isMaster():
-            self.xmlFileGlobal.seek(0)
-            self.xmlFileGlobal.truncate()
+        if domain is None:
+            #a text archive keeps its arrays in files and its grid metadata
+            #nowhere: there is no HDF5 file to have stored it in
+            logEvent("Text archive %s: no grid metadata to write"
+                     % (self.filename,))
+            return
+        ymf_path = os.path.join(self.dataDir, self.filename + ".ymf")
+        write_ymf(domain, ymf_path)
+        logEvent("Wrote YMF archive %s (ymf2xmf %s writes an .xmf for viewers)"
+                 % (ymf_path, os.path.basename(ymf_path)))
     def close(self):
         logEvent("Closing Archive")
-        if not self.useGlobalXMF:
-            self.xmlFile.close()
-        if self.comm.isMaster() and self.useGlobalXMF:
+        if self.comm.isMaster() and not self.readOnly:
             self.gatherAndWriteTimes()
-            self.xmlFileGlobal.close()
         if self.hdfFile is not None:
             self.hdfFile.close()
         logEvent("Done Closing Archive")
-        try:
-            if not self.useGlobalXMF:
-                if self.gatherAtClose:
-                    self.allGather()
-        except:
-            pass
-    def allGather(self):
-        logEvent("Gathering Archive")
-        self.comm.barrier()
-        if self.rank==0:
-            #replace the bottom level grid with a spatial collection
-            XDMF_all=self.tree.getroot()
-            Domain_all=XDMF_all[-1]
-            for TemporalGridCollection in Domain_all:
-                Grids = TemporalGridCollection[:]
-                del TemporalGridCollection[:]
-                for Grid in Grids:
-                    SpatialCollection=SubElement(TemporalGridCollection,"Grid",{"GridType":"Collection",
-                                                                                "CollectionType":"Spatial"})
-                    SpatialCollection.append(Grid[0])#append Time in Spatial Collection
-                    del Grid[0]#delete Time in grid
-                    SpatialCollection.append(Grid) #append Grid without Time
-            for i in range(1,self.size):
-                xmlFile=open(os.path.join(self.dataDir,self.filename+str(i)+".xmf"),"rb")
-                tree = ElementTree(file=xmlFile)
-                XDMF=tree.getroot()
-                Domain=XDMF[-1]
-                for TemporalGridCollection,TemporalGridCollection_all in zip(Domain,Domain_all):
-                    SpatialGridCollections = TemporalGridCollection_all.findall('Grid')
-                    for Grid,Grid_all in zip(TemporalGridCollection,SpatialGridCollections):
-                        del Grid[0]#Time
-                        Grid_all.append(Grid)
-                xmlFile.close()
-            f = open(os.path.join(self.dataDir,self.filename+".xmf"),"wb")
-            indentXML(self.tree.getroot())
-            self.tree.write(f)
-            f.close()
-        logEvent("Done Gathering Archive")
     def allGatherIncremental(self):
         """Stash this timestep's grid metadata in the HDF5 file.
 
@@ -565,26 +486,13 @@ class AR_base(object):
           writing VL or region reference datatypes yet"), so
           ``h5py.string_dtype()`` is not an option here.
         """
-        import copy
         from mpi4py import MPI
         from ymf.archive import dump_grid
         from ymf.xdmf import parse_grid_element
 
         logEvent("Gathering Archive Time step")
         self.comm.barrier()
-        XDMF =self.tree.getroot()
-        Domain =XDMF[-1]
-        #initialize Domain and grid collections on master if necessary
-        if self.comm.isMaster():
-            XDMFGlobal =self.treeGlobal.getroot()
-            if len(XDMFGlobal) == 0:
-                XDMFGlobal.append(copy.deepcopy(Domain))
-                DomainGlobal = XDMFGlobal[-1]
-                #delete any actual grids in the temporal  collections
-                for TemporalGridCollectionGlobal in DomainGlobal:
-                    del TemporalGridCollectionGlobal[:]
-            else:
-                DomainGlobal = XDMFGlobal[-1]
+        Domain = self.tree.getroot().find("Domain")
 
         comm_world = self.comm.comm.tompi4py()
         if self.hdfFile is not None:
@@ -609,21 +517,10 @@ class AR_base(object):
 
             if not self.global_sync:
                 grid_dicts = comm_world.gather(local_grid)
-                #the master's own XML tree still gets the spatial collection,
-                #so the per-rank .xmf files keep their current shape
-                if self.comm.isMaster():
-                    TemporalGridCollectionGlobal = DomainGlobal[i]
-                    SpatialCollection=SubElement(TemporalGridCollectionGlobal,"Grid",
-                                                 {"GridType":"Collection",
-                                                  "CollectionType":"Spatial"})
-                    SpatialCollection.append(GridLocal[0])#append Time in Spatial Collection
                 payloads = [dump_grid(g).encode("utf-8")
                             for g in grid_dicts] if self.comm.isMaster() else []
                 n_rows = self.size
             else:
-                if self.comm.isMaster():
-                    TemporalGridCollectionGlobal = DomainGlobal[i]
-                    TemporalGridCollectionGlobal.append(GridLocal)
                 payloads = [dump_grid(local_grid).encode("utf-8")] \
                     if self.comm.isMaster() else []
                 n_rows = 1
@@ -654,27 +551,9 @@ class AR_base(object):
         logEvent("Syncing Archive",level=3)
         memory()
         self.allGatherIncremental()
-        self.clear_xml()
-        if not self.useGlobalXMF:
-            self.xmlFile.write(bytes(self.xmlHeader,"utf-8"))
-            indentXML(self.tree.getroot())
-            self.tree.write(self.xmlFile, encoding="utf-8")
-            self.xmlFile.flush()
-        #delete grids for step from tree
-        XDMF =self.tree.getroot()
-        Domain = XDMF[-1]
-        for TemporalGridCollection in Domain:
+        #the step is stored; drop its grids so the tree stays one step deep
+        for TemporalGridCollection in self.tree.getroot().find("Domain"):
             del TemporalGridCollection[:]
-        if self.comm.isMaster():
-            self.xmlFileGlobal.write(bytes(self.xmlHeader,"utf-8"))
-            indentXML(self.treeGlobal.getroot())
-            self.treeGlobal.write(self.xmlFileGlobal, encoding="utf-8")
-            self.xmlFileGlobal.flush()
-            #delete grids for step from tree
-            XDMF = self.treeGlobal.getroot()
-            Domain = XDMF[-1]
-            for TemporalGridCollection in Domain:
-                del TemporalGridCollection[:]
         if self.hdfFile is not None:
             self.comm.barrier()
             self.hdfFile.flush()

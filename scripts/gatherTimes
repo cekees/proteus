@@ -14,7 +14,7 @@ it which layout to expect -- the previous version required both, opening
 trust.
 
 Writes ``<name><addname>.ymf`` (the archive of record) and a matching
-``.xmf`` for viewers. ``ymf2xdmf`` does the second step alone if that is
+``.xmf`` for viewers. ``ymf2xmf`` does the second step alone if that is
 all that is wanted.
 """
 import os
