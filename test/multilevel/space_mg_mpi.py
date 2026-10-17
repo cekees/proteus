@@ -53,6 +53,9 @@ n.parallelPartitioningType = (MeshTools.MeshParallelPartitioningTypes.element
                               if spaceName.startswith('dg')
                               else MeshTools.MeshParallelPartitioningTypes.node)
 n.nLayersOfOverlapForParallel = 1
+if os.environ.get('PROTEUS_TEST_PARTITION') == 'node':
+    # for the guard test: a discontinuous space on a partition that lacks face neighbours
+    n.parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.node
 if mode == 'direct':
     n.multilevelLinearSolver = LinearSolvers.LU
     n.levelLinearSolver = LinearSolvers.LU

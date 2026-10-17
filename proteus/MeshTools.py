@@ -655,6 +655,39 @@ class Mesh(object):
         # #cmeshTools.deleteMeshDataStructures(self.cmesh)
         # logEvent(memory("Without global mesh","Mesh"),level=1)
         # comm.endSequential()
+    def facesMissingNeighbours(self):
+        """The faces of owned elements that are interior on the global mesh but
+        have no neighbour on this rank's subdomain.
+
+        A discretization that couples elements across faces (discontinuous
+        Galerkin, finite volumes) assembles such a face as domain boundary and
+        gets a different problem on every partition. Element partitioning brings
+        in every face neighbour of an owned element; node partitioning does not.
+
+        Faces are matched by their nodes in the original global numbering.
+        Returns None when this mesh was not partitioned in a way that recorded
+        the node renumbering (partitions read from files), since nothing can be
+        concluded then; otherwise the count on this rank.
+        """
+        old2new = getattr(self,'nodeNumbering_global_old2new',None)
+        sd = getattr(self,'subdomainMesh',None)
+        if old2new is None or sd is None:
+            return None
+        old2new = np.asarray(old2new)
+        new2old = np.empty_like(old2new)
+        new2old[old2new] = np.arange(old2new.size,dtype=old2new.dtype)
+        def keysOf(faceNodes):
+            faceNodes = np.ascontiguousarray(np.sort(faceNodes,axis=1),dtype=np.int64)
+            return faceNodes.view(np.dtype((np.void,faceNodes.dtype.itemsize*faceNodes.shape[1]))).ravel()
+        ebNodes = np.asarray(self.elementBoundaryNodesArray)
+        exterior = keysOf(ebNodes[np.asarray(self.exteriorElementBoundariesArray)])
+        sdFaces = np.asarray(sd.elementBoundariesArray)[:sd.nElements_owned].ravel()
+        sdFaces = np.unique(sdFaces[np.asarray(sd.elementBoundaryElementsArray)[sdFaces,1] < 0])
+        if sdFaces.size == 0:
+            return 0
+        sdNodes = np.asarray(sd.elementBoundaryNodesArray)[sdFaces]
+        oldNodes = new2old[np.asarray(self.nodeNumbering_subdomain2global)[sdNodes]]
+        return int(np.count_nonzero(~np.isin(keysOf(oldNodes),exterior)))
     def partitionMeshFromFiles(self,filebase,base,nLayersOfOverlap=1,parallelPartitioningType=MeshParallelPartitioningTypes.node):
         from . import cmeshTools
         from . import Comm

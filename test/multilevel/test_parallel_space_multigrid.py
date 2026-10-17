@@ -124,3 +124,24 @@ def test_discontinuous_direct_solve_does_not_depend_on_rank_count(n_ranks):
     serial = _checksum('dgp1', 'ksplu', 1, n_levels=1)
     parallel = _checksum('dgp1', 'ksplu', n_ranks, n_levels=1)
     assert abs(parallel - serial) < 1.0e-11 * abs(serial), (n_ranks, parallel, serial)
+
+
+@pytest.mark.parametrize('n_ranks', [2, 3])
+def test_discontinuous_space_on_a_node_partition_is_refused(n_ranks):
+    # node partitioning leaves face neighbours of owned elements off the rank;
+    # assembling those faces as boundary gave a rank-dependent answer silently.
+    # Every rank must raise -- a rank that carried on would hang the others.
+    mpiexec = _mpiexec()
+    if mpiexec is None:
+        pytest.skip('no MPI launcher available')
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'space_mg_mpi.py')
+    env = dict(os.environ)
+    env['PYTHONPATH'] = os.pathsep.join(
+        [p for p in sys.path if p] + [env.get('PYTHONPATH', '')]).strip(os.pathsep)
+    env['PROTEUS_TEST_PARTITION'] = 'node'
+    result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable, helper, 'dgp1', '1', 'ksplu'],
+                            capture_output=True, text=True, env=env, timeout=240)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert 'element partitioning' in output and 'have no neighbour on their rank' in output, output
+    assert output.count('have no neighbour on their rank') >= n_ranks, output

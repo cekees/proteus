@@ -1574,6 +1574,7 @@ class OneLevelTransport(NonlinearEquation):
                 self.numericalFlux.setFromOptions(options)
         else:
             self.numericalFlux = None
+        self._checkFaceNeighboursForFluxes()
         #set penalty terms
         #cek todo move into numerical flux initialization
         if 'penalty' in self.ebq_global:
@@ -1779,6 +1780,38 @@ class OneLevelTransport(NonlinearEquation):
 #                         for k in range(self.nElementBoundaryQuadraturePoints_elementBoundary):
 #                             for I in range(self.nSpace_global):
 #                                 self.ebqe[('velocity',ci)][ebNE,k,I] += self.ebqe['xt'][ebNE,k,I]
+    def _checkFaceNeighboursForFluxes(self):
+        """Refuse a face-coupled discontinuous problem on a partition that lacks face neighbours.
+
+        With a numerical flux, a discontinuous space couples elements only
+        through their shared faces. If a face of an owned element is interior
+        globally but has no neighbour on this rank, it is assembled as domain
+        boundary: the discrete problem, and the answer, then depend on the
+        partition. Node partitioning produces such faces; element partitioning
+        does not. Every rank takes part in the reduction and every rank raises,
+        so no rank is left waiting in a later collective.
+        """
+        comm = Comm.get()
+        if self.numericalFlux is None or comm.size() == 1:
+            return
+        if not any(isinstance(u.femSpace.dofMap,(DiscontinuousGalerkinDOFMap,p0DOFMap))
+                   for u in self.u.values()):
+            return
+        globalMesh = getattr(self.mesh,'globalMesh',None)
+        missing = None if globalMesh is None else globalMesh.facesMissingNeighbours()
+        known = comm.globalSum(0 if missing is None else 1)
+        if known < comm.size():
+            #a partition read from files does not record the renumbering
+            return
+        missing = comm.globalSum(missing)
+        if missing > 0:
+            raise RuntimeError(
+                "%s: %d interior faces of owned elements have no neighbour on their rank, "
+                "so a discontinuous space coupled by %s would treat them as domain boundary "
+                "and the solution would depend on the partition. Use element partitioning "
+                "(parallelPartitioningType = MeshParallelPartitioningTypes.element, or "
+                "domain.MeshOptions.setParallelPartitioningType('element', 1))."
+                % (self.name,int(missing),type(self.numericalFlux).__name__))
     def getResidual(self,u,r):
         """
         Calculate the element residuals and add in to the global residual
