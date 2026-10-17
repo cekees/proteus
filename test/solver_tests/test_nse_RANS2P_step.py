@@ -18,6 +18,10 @@ import petsc4py
 from petsc4py import PETSc
 import pytest
 
+# One xdist worker runs this file, in order: the AMG tests load the matrix
+# dumps (dump_test_*) that the two FullRun tests write.
+pytestmark = pytest.mark.xdist_group("nse_RANS2P_step_dumps")
+
 proteus.test_utils.TestTools.addSubFolders( inspect.currentframe() )
 from proteus import (defaults, default_p, default_n)
 from importlib import reload

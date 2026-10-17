@@ -12,6 +12,10 @@ import importlib
 import subprocess
 import pytest
 
+# One xdist worker runs this file, in order: test_adaptIBM_adaptMesh reads the
+# Reconstructed.* model and mesh that test_adaptIBM_genMesh writes.
+pytestmark = pytest.mark.xdist_group("cylinder2D_ibm_PUMI")
+
 
 comm = Comm.get()
 Profiling.logLevel = 7

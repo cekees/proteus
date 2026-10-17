@@ -6,6 +6,28 @@ import pytest
 
 _TEST_ROOT = os.path.dirname(os.path.abspath(__file__)) + os.sep
 
+
+def pytest_configure(config):
+    """Under pytest-xdist, run each worker in a directory of its own.
+
+    Tests write proteus.log, <so.name>.h5, matrix dumps and other files under
+    fixed names relative to the working directory. Workers sharing one
+    directory read back each other's files, or ones another worker has just
+    deleted. Run as CI does (python -m pytest -n auto --dist loadgroup from
+    an output directory), each worker gets <that directory>/<worker id>.
+
+    A file whose tests read what an earlier test in it wrote marks itself
+    pytestmark = pytest.mark.xdist_group(...), so --dist loadgroup keeps it
+    on one worker, in order.
+    """
+    config.addinivalue_line(
+        "markers", "xdist_group(name): run on one pytest-xdist worker, in order")
+    worker = getattr(config, "workerinput", {}).get("workerid")
+    if worker:
+        path = os.path.join(os.getcwd(), worker)
+        os.makedirs(path, exist_ok=True)
+        os.chdir(path)
+
 # Model modules a test imports at collection can call Comm.get(), which starts
 # PETSc with Comm.argv, by default all of sys.argv: pytest's own options would
 # reach PETSc. Start it with none instead, as importing proteus.iproteus did.

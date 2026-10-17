@@ -203,14 +203,11 @@ jobs:
         shell: bash -l {0}
         run: |
           export MPLBACKEND="AGG"
-          # OpenBLAS's pthread-based threading isn't fork-safe: a child forked
-          # by pytest-forked can inherit the parent's BLAS thread-pool state
-          # and abort (SIGABRT) the first time it calls into BLAS/LAPACK, even
-          # for something as innocuous as numpy.polynomial.legendre.leggauss
-          # at module-import time (proteus/Quadrature.py). Seen as
-          # "Fatal Python error: Aborted" during test collection on the
-          # arm64 macOS leg (macos-14 at the time; now macos-15). Force
-          # single-threaded BLAS instead.
+          # One BLAS thread per process: the tests run on pytest-xdist
+          # workers, one per core, and a threaded BLAS in each would
+          # oversubscribe the cores. (It was set first for pytest-forked:
+          # OpenBLAS's pthread pool isn't fork-safe, and a forked child
+          # inheriting it aborted in leggauss at collection on arm64 macOS.)
           export OPENBLAS_NUM_THREADS=1
           export OMP_NUM_THREADS=1
           mkdir test_output && cd test_output
@@ -272,5 +269,12 @@ jobs:
             --ignore=../test/richards/WRR_input_files
             --ignore=../test/richards/WRR_draft
           )
-          python -m pytest -v --forked --import-mode=importlib \
+          # One xdist worker per core, given tests one at a time. Each worker
+          # runs in test_output/<worker id> (test/conftest.py), since tests
+          # write files under fixed names. A file whose tests depend on each
+          # other's output declares an xdist_group, which loadgroup keeps on
+          # one worker in order. No --forked: the tests no longer share
+          # process state (each takes a fresh opts), and every test file
+          # passes alone in a fresh process.
+          python -m pytest -v -n auto --dist loadgroup --import-mode=importlib \
             "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" ../test
