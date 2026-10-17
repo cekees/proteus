@@ -2,6 +2,10 @@ import subprocess
 import os
 import pytest
 
+# One xdist worker runs this file, in order: test_massConservation_wPorosity_2D reads the
+# sloshing.log test_runTwoPhaseFlow_wPorosity_2D writes.
+pytestmark = pytest.mark.xdist_group("porosity_sloshing")
+
 @pytest.mark.porosity
 
 def teardown_method():
