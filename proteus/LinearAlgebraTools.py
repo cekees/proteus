@@ -681,7 +681,8 @@ class ParVec_mpi4py(object):
 
     def _flat(self):
         flat = self.proteus_array.reshape(-1)
-        assert numpy.shares_memory(flat,self.proteus_array), "the vector's array must be contiguous"
+        #an empty array (a rank that owns nothing) shares no memory with anything
+        assert flat.size == 0 or numpy.shares_memory(flat,self.proteus_array), "the vector's array must be contiguous"
         return flat
 
     def scatter_forward_insert(self):

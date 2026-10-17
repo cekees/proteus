@@ -7,6 +7,7 @@ Tools for creating and manipulating 1,2, and 3D meshes.
 from .EGeometry import *
 import numpy as np
 import array
+import inspect
 import h5py
 import os
 from xml.etree import ElementTree as ET
@@ -485,6 +486,72 @@ class MeshParallelPartitioningTypes(object):
     """
     element = 0 ;  node     = 1
 
+def _cartesianChunkStarts(nn, p):
+    """Where each of p near-equal chunks of 0..nn-1 starts, plus nn: the first
+    nn % p chunks are one longer, as in the partitioners' default partition."""
+    return np.cumsum([0] + [nn // p + (nn % p > a) for a in range(p)])
+
+def cartesianRankGrid(nnx, nny, nnz, size):
+    """The rank grid (px, py, pz), px*py*pz == size, with the least ghost surface.
+
+    Cutting an nnx x nny x nnz node grid into px x py x pz bricks puts
+    (px-1)*nny*nnz + (py-1)*nnx*nnz + (pz-1)*nnx*nny nodes on the cuts; the
+    factorization of size with the fewest wins. An axis with one node is never
+    cut. Ties go to the smaller largest brick, then to more cuts along x, then
+    along y, so the choice is deterministic.
+    """
+    best = None
+    for px in range(1, size + 1):
+        if size % px:
+            continue
+        for py in range(1, size // px + 1):
+            if (size // px) % py:
+                continue
+            pz = size // (px * py)
+            if (nnx == 1 and px > 1) or (nny == 1 and py > 1) or (nnz == 1 and pz > 1):
+                continue
+            surface = (px - 1) * nny * nnz + (py - 1) * nnx * nnz + (pz - 1) * nnx * nny
+            biggest = -(-nnx // px) * -(-nny // py) * -(-nnz // pz)
+            key = (surface, biggest, -px, -py)
+            if best is None or key < best[0]:
+                best = (key, (px, py, pz))
+    if best is None:
+        raise ValueError("a %d x %d x %d node grid cannot be cut among %d ranks" % (nnx, nny, nnz, size))
+    return best[1]
+
+def cartesianNodeOwners(nnx, nny, nnz, rankGrid=None, size=None, fastest='x'):
+    """The rank that owns each node of a regular nnx x nny x nnz node grid cut into bricks.
+
+    Rank (a, b, c) of the px x py x pz rankGrid, which is rank a + px*(b + py*c),
+    owns the nodes with indices in its brick [i0,i1) x [j0,j1) x [k0,k1). Along
+    each axis the bricks are the near-equal chunks the partitioners use for
+    their default partition, so they may be uneven, and a brick is empty when an
+    axis has more ranks than nodes. rankGrid defaults to
+    cartesianRankGrid(nnx, nny, nnz, size), size to the number of ranks.
+
+    The owners are in the generator's own node numbering, which fastest names:
+    'x' for i + nnx*(j + nny*k), as the triangle, tetrahedron and hexahedron
+    generators number them, or 'y' for j + nny*i, as the (2D) quadrilateral
+    generator does. Passed to Mesh.partitionMesh as nodeOwners, they replace
+    the graph partitioner, and the partitioner then needs no PETSc.
+    """
+    if rankGrid is None:
+        if size is None:
+            from . import Comm
+            size = Comm.get().size()
+        rankGrid = cartesianRankGrid(nnx, nny, nnz, size)
+    px, py, pz = rankGrid
+    a, b, c = (np.repeat(np.arange(p), np.diff(_cartesianChunkStarts(nn, p)))
+               for nn, p in ((nnx, px), (nny, py), (nnz, pz)))
+    if fastest == 'x':
+        owners = a[None, None, :] + px * (b[None, :, None] + py * c[:, None, None])
+    elif fastest == 'y':
+        assert nnz == 1 and pz == 1, "the y-fastest (quadrilateral) numbering is 2D"
+        owners = a[:, None] + px * b[None, :]
+    else:
+        raise ValueError("fastest must be 'x' or 'y', not %r" % (fastest,))
+    return np.ascontiguousarray(owners.ravel(), dtype=np.intc)
+
 class Mesh(object):
     """A partition of a domain in R^n into elements.
 
@@ -585,6 +652,13 @@ class Mesh(object):
         self.subdomainMesh.globalMesh = self
         self.subdomainMesh.cmesh=cmeshTools.CMesh()
         self.nLayersOfOverlap = nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
+        if comm.size() == 1:
+            #one rank owns everything, which is what the graph partitioner would
+            #say; prescribing it keeps a serial run from initializing PETSc
+            if parallelPartitioningType == MeshParallelPartitioningTypes.node and nodeOwners is None:
+                nodeOwners = np.zeros(self.nNodes_global,dtype=np.intc)
+            elif parallelPartitioningType != MeshParallelPartitioningTypes.node and elementOwners is None:
+                elementOwners = np.zeros(self.nElements_global,dtype=np.intc)
         logEvent(memory("partitionMesh 2","MeshTools"),level=4)
         if parallelPartitioningType == MeshParallelPartitioningTypes.node:
             #mwf for now always gives 1 layer of overlap
@@ -1723,6 +1797,14 @@ class MultilevelMesh(Mesh):
     #Whether a finer level inherits the partition of the coarser one. Turn it
     #off to partition every level independently, as proteus always used to.
     levelConsistentPartitioning = True
+    #A function f(mesh, parallelPartitioningType) of the coarsest level's mesh
+    #returning the rank that owns each of its nodes (node partitioning) or
+    #elements (element partitioning), in place of the graph partitioner -- for a
+    #regular grid, cartesianNodeOwners. With level-consistent partitioning the
+    #finer levels inherit from it, so the whole hierarchy is partitioned without
+    #PETSc. Like the switch above it is read while the constructor partitions,
+    #so set it on the class.
+    coarsestLevelOwners = None
 
     def partitionLevels(self,nLayersOfOverlap=1,
                         parallelPartitioningType=MeshParallelPartitioningTypes.node):
@@ -1760,8 +1842,12 @@ class MultilevelMesh(Mesh):
             logEvent("levels are partitioned independently: the hierarchy is not "
                      "nodally nested, so a finer level has no parents to inherit from",level=2)
             consistent = False
+        #a plain function set on the class would otherwise come back bound
+        coarsestLevelOwners = inspect.getattr_static(self,'coarsestLevelOwners')
         for l,mesh in enumerate(self.meshList):
             owners = None
+            if l == 0 and coarsestLevelOwners is not None:
+                owners = np.asarray(coarsestLevelOwners(mesh,parallelPartitioningType),dtype=np.intc)
             if consistent and l > 0:
                 owners = (self.inheritedNodeOwners(l-1) if byNodes
                           else self.inheritedElementOwners(l-1))

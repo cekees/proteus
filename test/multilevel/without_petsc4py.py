@@ -6,7 +6,8 @@ Installs an import hook that refuses petsc4py, then runs HELPER as __main__
 with ARGS. Proteus must then take its PETSc-free parallel path -- mpi4py
 halo exchanges, local transfer products, a redundant SuperLU coarse solve --
 and any code that still reaches for petsc4py fails loudly instead of quietly
-using it. The PETSc C library may still be loaded by the mesh partitioner.
+using it. The PETSc C library is still used by the graph partitioner; with the
+owners prescribed (with_cartesian_owners.py) nothing initializes it.
 """
 import importlib.abc
 import os

@@ -149,10 +149,19 @@ namespace proteus
     return 0;
   }
 
-  /* The partitioners use the PETSc C library (MatPartitioning, IS). petsc4py
-     initializes it when proteus runs with petsc4py; without petsc4py nothing
-     else does, so the partitioning entry points call this first. MPI is
-     already initialized by then (mpi4py), so PETSc runs on MPI_COMM_WORLD. */
+  /* The graph partitioner (MatPartitioning) and the partitioners that read
+     tetgen/triangle files use the PETSc C library. petsc4py initializes it when
+     proteus runs with petsc4py; without petsc4py nothing else does, so those
+     entry points call this first. partitionNodes and partitionElements given
+     their owners use no PETSc and do not. MPI is already initialized by then
+     (mpi4py), so PETSc runs on MPI_COMM_WORLD. */
+  inline bool petscIsInitialized()
+  {
+    PetscBool initialized = PETSC_FALSE;
+    PetscInitialized(&initialized);
+    return initialized == PETSC_TRUE;
+  }
+
   inline int ensurePetscInitialized()
   {
     PetscBool initialized = PETSC_FALSE;

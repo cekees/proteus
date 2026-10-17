@@ -5,7 +5,8 @@ Proteus's solvers need from PETSc only a ghosted vector and, for multigrid,
 the transfer operators applied to owned rows; without petsc4py those come from
 mpi4py (LinearAlgebraTools.ParVec_mpi4py, GhostExchange, DistMat) and the
 coarse level is solved by a redundant SuperLU factorization (RedundantLU). The
-PETSc C library is still used by the mesh partitioner.
+PETSc C library is still used by the graph partitioner, unless the partition is
+prescribed (test_partition_arrays.py runs multigrid with no PETSc at all).
 
 * The building blocks agree with PETSc's exactly: DistMat's mult and
   multTranspose, ParVec_mpi4py's forward insert and reverse add, on uneven

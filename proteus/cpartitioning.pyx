@@ -24,6 +24,7 @@ from mpi4py.libmpi cimport MPI_Comm
 cimport mesh
 from proteus cimport cmeshTools
 from proteus.partitioning cimport (c_ensurePetscInitialized,
+                                   c_petscIsInitialized,
                                    c_partitionElements,
                                    c_partitionNodes,
                                    c_partitionNodesFromTetgenFiles,
@@ -34,13 +35,22 @@ from proteus.partitioning cimport (c_ensurePetscInitialized,
                                    buildQuadraticCubeSubdomain2GlobalMappings_3d,
                                    buildDiscontinuousGalerkinSubdomain2GlobalMappings)
 
+cdef object _intArray(int* p, int n):
+    """A numpy view of n ints at p; a rank that owns nothing has empty arrays,
+    which a typed memoryview cannot describe."""
+    if n == 0:
+        return np.empty(0, dtype=np.intc)
+    return np.asarray(<int[:n]> p)
+
 def partitionElements(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh,
                       object elementOwners=None):
     """Partition by elements. elementOwners, if given, is an int array with the
     rank that owns each element (in the mesh's current numbering) and replaces
     the graph partitioner -- see MultilevelMesh.partitionLevels."""
-    #the partitioners need the PETSc C library, which petsc4py would have initialized
-    c_ensurePetscInitialized()
+    #only the graph partitioner needs the PETSc C library, which petsc4py would
+    #have initialized; given the owners this partitions without PETSc
+    if elementOwners is None:
+        c_ensurePetscInitialized()
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     cdef int[::1] owners
     cdef const int* ownersp = NULL
@@ -53,14 +63,14 @@ def partitionElements(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, c
                         nLayersOfOverlap,
                         ownersp)
     return (
-        np.asarray(<int[:(comm.size+1)]> cmesh.mesh.elementOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nElements_global]> cmesh.mesh.elementNumbering_subdomain2global),
-        np.asarray(<int[:(comm.size+1)]> cmesh.mesh.nodeOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nNodes_global]> cmesh.mesh.nodeNumbering_subdomain2global),
-        np.asarray(<int[:(comm.size+1)]> cmesh.mesh.elementBoundaryOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nElementBoundaries_global]> cmesh.mesh.elementBoundaryNumbering_subdomain2global),
-        np.asarray(<int[:(comm.size+1)]> cmesh.mesh.edgeOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nEdges_global]> cmesh.mesh.edgeNumbering_subdomain2global)
+        _intArray(cmesh.mesh.elementOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.elementNumbering_subdomain2global, cmesh.mesh.subdomainp.nElements_global),
+        _intArray(cmesh.mesh.nodeOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.nodeNumbering_subdomain2global, cmesh.mesh.subdomainp.nNodes_global),
+        _intArray(cmesh.mesh.elementBoundaryOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.elementBoundaryNumbering_subdomain2global, cmesh.mesh.subdomainp.nElementBoundaries_global),
+        _intArray(cmesh.mesh.edgeOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.edgeNumbering_subdomain2global, cmesh.mesh.subdomainp.nEdges_global)
     )
 
 def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh,
@@ -68,8 +78,10 @@ def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmes
     """Partition by nodes. nodeOwners, if given, is an int array with the rank
     that owns each node (in the mesh's current numbering) and replaces the
     graph partitioner -- see MultilevelMesh.partitionLevels."""
-    #the partitioners need the PETSc C library, which petsc4py would have initialized
-    c_ensurePetscInitialized()
+    #only the graph partitioner needs the PETSc C library, which petsc4py would
+    #have initialized; given the owners this partitions without PETSc
+    if nodeOwners is None:
+        c_ensurePetscInitialized()
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     cdef int[::1] owners
     cdef const int* ownersp = NULL
@@ -82,15 +94,23 @@ def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmes
                      nLayersOfOverlap,
                      ownersp)
     return (
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.elementOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nElements_global]> cmesh.mesh.elementNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.nodeOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nNodes_global]> cmesh.mesh.nodeNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.elementBoundaryOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nElementBoundaries_global]> cmesh.mesh.elementBoundaryNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.edgeOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nEdges_global]> cmesh.mesh.edgeNumbering_subdomain2global)
+        _intArray(cmesh.mesh.elementOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.elementNumbering_subdomain2global, cmesh.mesh.subdomainp.nElements_global),
+        _intArray(cmesh.mesh.nodeOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.nodeNumbering_subdomain2global, cmesh.mesh.subdomainp.nNodes_global),
+        _intArray(cmesh.mesh.elementBoundaryOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.elementBoundaryNumbering_subdomain2global, cmesh.mesh.subdomainp.nElementBoundaries_global),
+        _intArray(cmesh.mesh.edgeOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.edgeNumbering_subdomain2global, cmesh.mesh.subdomainp.nEdges_global)
     )
+
+def petscInitialized():
+    """Whether the PETSc C library has been initialized in this process.
+
+    Partitioning with prescribed owners does not need PETSc; a run with
+    petsc4py blocked that partitions only that way should leave this False.
+    """
+    return c_petscIsInitialized()
 
 def getNodeNumbering_global_old2new(cmeshTools.CMesh cmesh):
     """The permutation partitioning applied to the global node numbering.
@@ -106,7 +126,7 @@ def getNodeNumbering_global_old2new(cmeshTools.CMesh cmesh):
     """
     if cmesh.mesh.nodeNumbering_global_old2new == NULL:
         return None
-    return np.asarray(<int[:cmesh.mesh.nNodes_global]> cmesh.mesh.nodeNumbering_global_old2new)
+    return _intArray(cmesh.mesh.nodeNumbering_global_old2new, cmesh.mesh.nNodes_global)
 
 def getElementNumbering_global_old2new(cmeshTools.CMesh cmesh):
     """The permutation partitioning applied to the global element numbering
@@ -114,20 +134,20 @@ def getElementNumbering_global_old2new(cmeshTools.CMesh cmesh):
     partitioned by this code."""
     if cmesh.mesh.elementNumbering_global_old2new == NULL:
         return None
-    return np.asarray(<int[:cmesh.mesh.nElements_global]> cmesh.mesh.elementNumbering_global_old2new)
+    return _intArray(cmesh.mesh.elementNumbering_global_old2new, cmesh.mesh.nElements_global)
 
 def convertPUMIPartitionToPython(Comm comm, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
 #need to have Python handles for the cmesh arrays created from apf/PUMI mesh 
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     return (
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.elementOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nElements_global]> cmesh.mesh.elementNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.nodeOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nNodes_global]> cmesh.mesh.nodeNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.elementBoundaryOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nElementBoundaries_global]> cmesh.mesh.elementBoundaryNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.edgeOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nEdges_global]> cmesh.mesh.edgeNumbering_subdomain2global)
+        _intArray(cmesh.mesh.elementOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.elementNumbering_subdomain2global, cmesh.mesh.subdomainp.nElements_global),
+        _intArray(cmesh.mesh.nodeOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.nodeNumbering_subdomain2global, cmesh.mesh.subdomainp.nNodes_global),
+        _intArray(cmesh.mesh.elementBoundaryOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.elementBoundaryNumbering_subdomain2global, cmesh.mesh.subdomainp.nElementBoundaries_global),
+        _intArray(cmesh.mesh.edgeOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.edgeNumbering_subdomain2global, cmesh.mesh.subdomainp.nEdges_global)
     )
 
 def partitionNodesFromTetgenFiles(Comm comm, object filebase, int indexBase, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh, double memHardLimit):
@@ -143,14 +163,14 @@ def partitionNodesFromTetgenFiles(Comm comm, object filebase, int indexBase, int
                                     nLayersOfOverlap,
                                     memHardLimit)
     return (
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.elementOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nElements_global]> cmesh.mesh.elementNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.nodeOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nNodes_global]> cmesh.mesh.nodeNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.elementBoundaryOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nElementBoundaries_global]> cmesh.mesh.elementBoundaryNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.edgeOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nEdges_global]> cmesh.mesh.edgeNumbering_subdomain2global)
+        _intArray(cmesh.mesh.elementOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.elementNumbering_subdomain2global, cmesh.mesh.subdomainp.nElements_global),
+        _intArray(cmesh.mesh.nodeOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.nodeNumbering_subdomain2global, cmesh.mesh.subdomainp.nNodes_global),
+        _intArray(cmesh.mesh.elementBoundaryOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.elementBoundaryNumbering_subdomain2global, cmesh.mesh.subdomainp.nElementBoundaries_global),
+        _intArray(cmesh.mesh.edgeOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.edgeNumbering_subdomain2global, cmesh.mesh.subdomainp.nEdges_global)
     )
 
 def partitionNodesFromTriangleFiles(Comm comm, object filebase, int indexBase, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
@@ -165,14 +185,14 @@ def partitionNodesFromTriangleFiles(Comm comm, object filebase, int indexBase, i
                                     cmesh.mesh,
                                     nLayersOfOverlap)
     return (
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.elementOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nElements_global]> cmesh.mesh.elementNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.nodeOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nNodes_global]> cmesh.mesh.nodeNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.elementBoundaryOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nElementBoundaries_global]> cmesh.mesh.elementBoundaryNumbering_subdomain2global),
-        np.asarray(<int[:comm.size+1]> cmesh.mesh.edgeOffsets_subdomain_owned),
-        np.asarray(<int[:cmesh.mesh.subdomainp.nEdges_global]> cmesh.mesh.edgeNumbering_subdomain2global)
+        _intArray(cmesh.mesh.elementOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.elementNumbering_subdomain2global, cmesh.mesh.subdomainp.nElements_global),
+        _intArray(cmesh.mesh.nodeOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.nodeNumbering_subdomain2global, cmesh.mesh.subdomainp.nNodes_global),
+        _intArray(cmesh.mesh.elementBoundaryOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.elementBoundaryNumbering_subdomain2global, cmesh.mesh.subdomainp.nElementBoundaries_global),
+        _intArray(cmesh.mesh.edgeOffsets_subdomain_owned, comm.size+1),
+        _intArray(cmesh.mesh.edgeNumbering_subdomain2global, cmesh.mesh.subdomainp.nEdges_global)
     )
 
 def buildQuadraticLocal2GlobalMappings(Comm comm,
