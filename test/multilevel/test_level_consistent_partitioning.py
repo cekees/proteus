@@ -31,6 +31,10 @@ import sys
 
 import pytest
 
+# these test the global hierarchy builder (see conftest.py), not hierarchies
+# generated in pieces, which test_generated_hierarchy.py covers
+pytestmark = pytest.mark.global_hierarchy
+
 
 def _mpiexec():
     bindir = os.path.dirname(sys.executable)

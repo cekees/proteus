@@ -20,6 +20,7 @@ cdef extern from *:
 
 from mpi4py.MPI cimport (Comm,
                          Op)
+from libcpp.vector cimport vector
 from mpi4py.libmpi cimport MPI_Comm
 cimport mesh
 from proteus cimport cmeshTools
@@ -28,6 +29,8 @@ from proteus.partitioning cimport (c_ensurePetscInitialized,
                                    c_generateCartesianSubdomain,
                                    c_cartesianNumbering,
                                    c_cartesianGlobalCounts,
+                                   c_cartesianVertexInterpolation,
+                                   c_cartesianSubdomainParents,
                                    c_partitionElements,
                                    c_partitionNodes,
                                    c_partitionNodesFromTetgenFiles,
@@ -109,24 +112,31 @@ def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmes
 
 CARTESIAN_KINDS = {'quad': 0, 'hex': 1, 'tri': 2, 'tet': 3}
 
+def _grid3(object values, object fill):
+    return [values[d] if d < len(values) else fill for d in range(3)]
+
 def generateCartesianSubdomain(Comm comm, object kind, int triangleFlag, object nn, object L, object rankGrid,
-                               int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
+                               int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh,
+                               int level=0, object origin=(0.0, 0.0, 0.0)):
     """This rank's subdomain of a regular grid of kind 'quad', 'hex', 'tri'
-    (split by triangleFlag) or 'tet' with nn nodes per axis on [0,L], generated
-    directly for the rank grid rankGrid (px, py, pz): what partitionNodes gives
-    for the global grid and MeshTools.cartesianNodeOwners, without the global
-    mesh. Fills subdomain_cmesh; cmesh keeps only the global counts. Returns the
-    arrays partitionNodes returns."""
+    (split by triangleFlag) or 'tet' with nn nodes per axis on origin + [0,L],
+    generated directly for the rank grid rankGrid (px, py, pz): what
+    partitionNodes gives for the global grid and MeshTools.cartesianNodeOwners,
+    without the global mesh. level > 0 is that grid refined level times, cut
+    into the level-0 bricks scaled. Fills subdomain_cmesh; cmesh keeps only the
+    global counts. Returns the arrays partitionNodes returns."""
     cdef int[3] cnn
     cdef int[3] cgrid
     cdef double[3] cL
+    cdef double[3] cx0
     for d in range(3):
-        cnn[d] = nn[d] if d < len(nn) else 1
-        cL[d] = L[d] if d < len(L) else 1.0
-        cgrid[d] = rankGrid[d] if d < len(rankGrid) else 1
+        cnn[d] = _grid3(nn, 1)[d]
+        cL[d] = _grid3(L, 1.0)[d]
+        cgrid[d] = _grid3(rankGrid, 1)[d]
+        cx0[d] = _grid3(origin, 0.0)[d]
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
     c_generateCartesianSubdomain(comm.ob_mpi, CARTESIAN_KINDS[kind], triangleFlag, cnn, cL, cgrid,
-                                 nLayersOfOverlap, cmesh.mesh)
+                                 nLayersOfOverlap, cmesh.mesh, level, cx0)
     return (
         _intArray(cmesh.mesh.elementOffsets_subdomain_owned, comm.size+1),
         _intArray(cmesh.mesh.elementNumbering_subdomain2global, cmesh.mesh.subdomainp.nElements_global),
@@ -138,7 +148,8 @@ def generateCartesianSubdomain(Comm comm, object kind, int triangleFlag, object 
         _intArray(cmesh.mesh.edgeNumbering_subdomain2global, cmesh.mesh.subdomainp.nEdges_global)
     )
 
-def cartesianNumbering(object kind, int triangleFlag, object nn, object rankGrid, bint elements, object oldNumbers):
+def cartesianNumbering(object kind, int triangleFlag, object nn, object rankGrid, bint elements, object oldNumbers,
+                       int level=0):
     """The new numbers of nodes (elements=True: elements) with these old
     numbers, in the partition generateCartesianSubdomain generates: the
     permutation partitionNodes keeps as nodeNumbering_global_old2new (or
@@ -148,24 +159,51 @@ def cartesianNumbering(object kind, int triangleFlag, object nn, object rankGrid
     cdef int[3] cnn
     cdef int[3] cgrid
     for d in range(3):
-        cnn[d] = nn[d] if d < len(nn) else 1
-        cgrid[d] = rankGrid[d] if d < len(rankGrid) else 1
+        cnn[d] = _grid3(nn, 1)[d]
+        cgrid[d] = _grid3(rankGrid, 1)[d]
     cdef int[::1] old = np.ascontiguousarray(oldNumbers, dtype=np.intc)
     new = np.empty(old.shape[0], dtype=np.intc)
     cdef int[::1] newView = new
     if old.shape[0] > 0:
-        c_cartesianNumbering(CARTESIAN_KINDS[kind], triangleFlag, cnn, cgrid, elements, old.shape[0], &old[0], &newView[0])
+        c_cartesianNumbering(CARTESIAN_KINDS[kind], triangleFlag, cnn, cgrid, level, elements,
+                             old.shape[0], &old[0], &newView[0])
     return new
 
-def cartesianGlobalCounts(object kind, int triangleFlag, object nn):
+def cartesianGlobalCounts(object kind, int triangleFlag, object nn, int level=0):
     """The numbers of nodes, elements, element boundaries and edges of the
     global grid generateCartesianSubdomain partitions."""
     cdef int[3] cnn
     cdef int[4] counts
     for d in range(3):
-        cnn[d] = nn[d] if d < len(nn) else 1
-    c_cartesianGlobalCounts(CARTESIAN_KINDS[kind], triangleFlag, cnn, counts)
+        cnn[d] = _grid3(nn, 1)[d]
+    c_cartesianGlobalCounts(CARTESIAN_KINDS[kind], triangleFlag, cnn, level, counts)
     return tuple(counts[i] for i in range(4))
+
+def cartesianVertexInterpolation(object kind, int triangleFlag, object nn, object rankGrid, int level, int rank):
+    """The rows rank owns of the vertex prolongation from level-1 to level of a
+    generated hierarchy, as (rowptr, colind, nzval), columns in level-1's
+    partitioned numbering."""
+    cdef int[3] cnn
+    cdef int[3] cgrid
+    cdef vector[int] rowptr, colind
+    cdef vector[double] nzval
+    for d in range(3):
+        cnn[d] = _grid3(nn, 1)[d]
+        cgrid[d] = _grid3(rankGrid, 1)[d]
+    c_cartesianVertexInterpolation(CARTESIAN_KINDS[kind], triangleFlag, cnn, cgrid, level, rank, rowptr, colind, nzval)
+    return (np.array(rowptr, dtype=np.intc), np.array(colind, dtype=np.intc), np.array(nzval, dtype=np.float64))
+
+def cartesianSubdomainParents(object kind, int triangleFlag, object nn, object rankGrid, int level, int rank):
+    """For each element of rank's subdomain on level of a generated hierarchy,
+    its parent's index in rank's subdomain on level-1, or -1."""
+    cdef int[3] cnn
+    cdef int[3] cgrid
+    cdef vector[int] parents
+    for d in range(3):
+        cnn[d] = _grid3(nn, 1)[d]
+        cgrid[d] = _grid3(rankGrid, 1)[d]
+    c_cartesianSubdomainParents(CARTESIAN_KINDS[kind], triangleFlag, cnn, cgrid, level, rank, parents)
+    return np.array(parents, dtype=np.intc)
 
 def petscInitialized():
     """Whether the PETSc C library has been initialized in this process.

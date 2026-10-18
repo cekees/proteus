@@ -25,6 +25,10 @@ from proteus import Comm
 Comm.init()
 from proteus import MeshTools
 
+# these test the global hierarchy builder (see conftest.py), not hierarchies
+# generated in pieces, which test_generated_hierarchy.py covers
+pytestmark = pytest.mark.global_hierarchy
+
 CASES = {
     'edge': lambda: MeshTools.MultilevelEdgeMesh(
         5, 1, 1, x=2.0, Lx=3.0, refinementLevels=3),

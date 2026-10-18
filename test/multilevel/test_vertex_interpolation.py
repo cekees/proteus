@@ -35,6 +35,10 @@ from proteus import Comm
 Comm.init()
 from proteus import MeshTools
 
+# these test the global hierarchy builder (see conftest.py), not hierarchies
+# generated in pieces, which test_generated_hierarchy.py covers
+pytestmark = pytest.mark.global_hierarchy
+
 HIERARCHIES = {
     'quad': (lambda: MeshTools.MultilevelQuadrilateralMesh(
         3, 3, 1, x=1.0, y=2.0, Lx=2.0, Ly=3.0, refinementLevels=3), 2),

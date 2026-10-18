@@ -76,27 +76,37 @@ public:
   std::vector<int> starts[3];
   Index nodeStride[3], cellStride[3];
   int nodeOrder[3], cellOrder[3]; //axes from slowest to fastest
-  double h[3];
+  double h[3], x0[3];
   //the elements of a cell, node offsets in element order: patterns[0] and,
   //for union-jack triangles, patterns[1] for cells with odd i + j
   std::vector<std::vector<Ijk> > patterns[2];
   bool cornerInEveryElement;
 
-  CartesianGrid(int kindIn, int triangleFlagIn, const int* nnIn, const double* L, const int* rankGrid)
+  /* nnIn: node counts of the coarsest grid; level: how many times it is
+     refined (each cell halved along every axis). The bricks of a finer level
+     are the coarsest level's scaled, so that a level-consistent hierarchy
+     needs no inheritance step: every parent of a fine node a rank owns is a
+     node of its coarse subdomain. */
+  CartesianGrid(int kindIn, int triangleFlagIn, const int* nnIn, const double* L, const int* rankGrid,
+                int level = 0, const double* origin = NULL)
   {
     kind = kindIn;
     triangleFlag = triangleFlagIn;
     dim = (kind == HEX || kind == TET) ? 3 : 2;
     for (int d = 0; d < 3; d++)
       {
-        nn[d] = d < dim ? nnIn[d] : 1;
+        const int nn0 = d < dim ? nnIn[d] : 1;
+        nn[d] = d < dim ? ((nn0-1) << level) + 1 : 1;
         nc[d] = d < dim ? nn[d] - 1 : 1;
         p[d] = rankGrid[d];
         h[d] = d < dim ? L[d]/(nn[d]-1.0) : 0.0;
+        x0[d] = origin ? origin[d] : 0.0;
         starts[d].resize(p[d]+1);
         starts[d][0] = 0;
         for (int a = 0; a < p[d]; a++)
-          starts[d][a+1] = starts[d][a] + nn[d]/p[d] + (nn[d]%p[d] > a);
+          starts[d][a+1] = starts[d][a] + nn0/p[d] + (nn0%p[d] > a);
+        for (int a = 0; a <= p[d]; a++)
+          starts[d][a] = d < dim ? std::min(starts[d][a] << level, nn[d]) : starts[d][a];
       }
     size = p[0]*p[1]*p[2];
     if (kind == QUAD)
@@ -712,13 +722,199 @@ int elementBoundaryOwner(const CartesianGrid& g, const EntityType& et, const Ijk
     }
   return owner;
 }
+/* The subdomain's elements, by old number, in subdomain order, where element
+   numbers are arithmetic (every element contains its cell's lowest corner):
+   the same elements and order generateCartesianSubdomain builds. */
+std::vector<Index> arithmeticSubdomainElements(const CartesianGrid& g, int rank)
+{
+  BrickNumbering cells(g, true);
+  int lo[3], hi[3], cellLo[3], cellHi[3];
+  g.brick(rank, lo, hi);
+  g.touchingCells(rank, cellLo, cellHi);
+  std::vector<std::pair<Index,Index> > owned, ghost;
+  CartesianGrid::forBox(cellLo, cellHi, g.cellOrder, [&](const Ijk& c) {
+      for (int sub = 0; sub < g.nSub; sub++)
+        {
+          bool touches = false;
+          for (const Ijk& n : g.elementNodes(c, sub))
+            if (CartesianGrid::inBox(n, lo, hi))
+              touches = true;
+          if (touches)
+            (g.elementOwner(c, sub) == rank ? owned : ghost).push_back(
+              std::make_pair(cells.element(c, sub), g.elementOld(c, sub)));
+        }
+    });
+  std::sort(owned.begin(), owned.end());
+  std::sort(ghost.begin(), ghost.end());
+  std::vector<Index> order;
+  for (auto& o : owned) order.push_back(o.second);
+  for (auto& o : ghost) order.push_back(o.second);
+  return order;
+}
+
+/* Which element of a coarse cell holds element sub of a fine cell at offset
+   o (0 or 1 per axis) inside it: the one containing the fine element's
+   centroid, found once per pattern by its barycentric coordinates. */
+int coarseSubOf(const CartesianGrid& g, const Ijk& o, int sub)
+{
+  if (g.nSub == 1)
+    return 0;
+  double c[3] = {0.0,0.0,0.0};
+  const std::vector<Ijk>& fine = g.patterns[0][sub];
+  for (const Ijk& n : fine)
+    for (int d = 0; d < 3; d++)
+      c[d] += (o[d] + n[d])/(2.0*fine.size());
+  for (int cs = 0; cs < g.nSub; cs++)
+    {
+      const std::vector<Ijk>& v = g.patterns[0][cs];
+      //solve sum_k lambda_k v_k = c, sum lambda = 1, in the element's own dimension
+      const int nv = int(v.size()), dimE = nv-1;
+      double A[3][3], b[3];
+      for (int i = 0; i < dimE; i++)
+        {
+          for (int k = 0; k < dimE; k++)
+            A[i][k] = v[k+1][i] - v[0][i];
+          b[i] = c[i] - v[0][i];
+        }
+      //Cramer's rule is enough for 2x2 and 3x3
+      auto det = [&](double M[3][3]) {
+        return dimE == 2 ? M[0][0]*M[1][1]-M[0][1]*M[1][0]
+          : M[0][0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1]) - M[0][1]*(M[1][0]*M[2][2]-M[1][2]*M[2][0])
+          + M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0]);
+      };
+      const double D = det(A);
+      double lambda[4], sum = 0.0;
+      for (int k = 0; k < dimE; k++)
+        {
+          double M[3][3];
+          for (int i = 0; i < dimE; i++)
+            for (int j = 0; j < dimE; j++)
+              M[i][j] = j == k ? b[i] : A[i][j];
+          lambda[k+1] = det(M)/D;
+          sum += lambda[k+1];
+        }
+      lambda[0] = 1.0 - sum;
+      bool inside = true;
+      for (int k = 0; k < nv; k++)
+        if (lambda[k] < 1.0e-12)
+          inside = false;
+      if (inside)
+        return cs;
+    }
+  std::cerr<<"cartesianSubdomainParents: a fine element lies in no coarse element"<<std::endl;
+  std::abort();
+}
 }//namespace
 
-int cartesianGlobalCounts(int kind, int triangleFlag, const int* nn, int* counts)
+int cartesianVertexInterpolation(int kind, int triangleFlag, const int* nn, const int* rankGrid, int level, int rank,
+                                 std::vector<int>& rowptr, std::vector<int>& colind, std::vector<double>& nzval)
+{
+  /* The rows of the prolongation from level-1 to level for the fine nodes
+     this rank owns, in its owned order, with columns in the coarse level's
+     partitioned numbering. Q1 (quadrilaterals, hexahedra): products of one
+     dimensional hats, so a fine node with odd coordinates along the axes S has
+     2^|S| parents. P1 on the Kuhn simplices (right-leaning triangles, the six
+     tetrahedra): the fine node is the midpoint of the coarse edge along e_S,
+     whose ends are (x - e_S)/2 and (x + e_S)/2. */
+  const double L[3] = {1.0,1.0,1.0};
+  CartesianGrid fine(kind, triangleFlag, nn, L, rankGrid, level), coarse(kind, triangleFlag, nn, L, rankGrid, level-1);
+  BrickNumbering coarseNodes(coarse, false);
+  int lo[3], hi[3];
+  fine.brick(rank, lo, hi);
+  const bool q1 = kind == QUAD || kind == HEX;
+  rowptr.assign(1,0);
+  colind.clear();
+  nzval.clear();
+  CartesianGrid::forBox(lo, hi, fine.nodeOrder, [&](const Ijk& x) {
+      std::vector<std::pair<Index,double> > row;
+      if (q1)
+        {
+          std::vector<std::pair<Ijk,double> > terms(1, std::make_pair(Ijk{0,0,0}, 1.0));
+          for (int d = 0; d < 3; d++)
+            {
+              std::vector<std::pair<Ijk,double> > next;
+              for (auto& t : terms)
+                if (x[d] % 2 == 0)
+                  {
+                    Ijk c = t.first; c[d] = x[d]/2;
+                    next.push_back(std::make_pair(c, t.second));
+                  }
+                else
+                  for (int side = 0; side < 2; side++)
+                    {
+                      Ijk c = t.first; c[d] = x[d]/2 + side;
+                      next.push_back(std::make_pair(c, 0.5*t.second));
+                    }
+              terms = next;
+            }
+          for (auto& t : terms)
+            row.push_back(std::make_pair(coarseNodes.node(t.first), t.second));
+        }
+      else
+        {
+          Ijk a, b;
+          bool odd = false;
+          for (int d = 0; d < 3; d++)
+            {
+              a[d] = x[d]/2;
+              b[d] = (x[d]+1)/2;
+              odd = odd || (x[d] % 2);
+            }
+          if (odd)
+            {
+              row.push_back(std::make_pair(coarseNodes.node(a), 0.5));
+              row.push_back(std::make_pair(coarseNodes.node(b), 0.5));
+            }
+          else
+            row.push_back(std::make_pair(coarseNodes.node(a), 1.0));
+        }
+      for (auto& r : row)
+        {
+          colind.push_back(int(r.first));
+          nzval.push_back(r.second);
+        }
+      rowptr.push_back(int(colind.size()));
+    });
+  return 0;
+}
+
+int cartesianSubdomainParents(int kind, int triangleFlag, const int* nn, const int* rankGrid, int level, int rank,
+                              std::vector<int>& parents)
+{
+  /* For each element of this rank's subdomain on level, the element of its
+     subdomain on level-1 that contains it, or -1 if that one is not there.
+     Every fine element a rank owns has its parent owned: a fine cell's lowest
+     corner halves into the same brick. */
+  const double L[3] = {1.0,1.0,1.0};
+  CartesianGrid fine(kind, triangleFlag, nn, L, rankGrid, level), coarse(kind, triangleFlag, nn, L, rankGrid, level-1);
+  if (!fine.cornerInEveryElement)
+    {
+      std::cerr<<"cartesianSubdomainParents: these triangles do not refine into themselves"<<std::endl;
+      std::abort();
+    }
+  const std::vector<Index> fineOrder = arithmeticSubdomainElements(fine, rank);
+  const std::vector<Index> coarseOrder = arithmeticSubdomainElements(coarse, rank);
+  std::unordered_map<Index,int> coarseLocal;
+  for (size_t i = 0; i < coarseOrder.size(); i++)
+    coarseLocal[coarseOrder[i]] = int(i);
+  parents.resize(fineOrder.size());
+  for (size_t i = 0; i < fineOrder.size(); i++)
+    {
+      Ijk c;
+      int sub;
+      fine.elementFromOld(fineOrder[i], c, sub);
+      const Ijk cc{c[0]/2, c[1]/2, c[2]/2}, o{c[0]%2, c[1]%2, c[2]%2};
+      const std::unordered_map<Index,int>::iterator it = coarseLocal.find(coarse.elementOld(cc, coarseSubOf(fine, o, sub)));
+      parents[i] = it == coarseLocal.end() ? -1 : it->second;
+    }
+  return 0;
+}
+
+int cartesianGlobalCounts(int kind, int triangleFlag, const int* nn, int level, int* counts)
 {
   const int grid[3] = {1,1,1};
   const double L[3] = {1.0,1.0,1.0};
-  CartesianGrid g(kind, triangleFlag, nn, L, grid);
+  CartesianGrid g(kind, triangleFlag, nn, L, grid, level);
   EntityFamily faces(g, g.boundarySlots()), edges(g, g.edgePairs());
   counts[0] = int(Index(g.nn[0])*g.nn[1]*g.nn[2]);
   counts[1] = int(Index(g.nc[0])*g.nc[1]*g.nc[2]*g.nSub);
@@ -727,11 +923,11 @@ int cartesianGlobalCounts(int kind, int triangleFlag, const int* nn, int* counts
   return 0;
 }
 
-int cartesianNumbering(int kind, int triangleFlag, const int* nn, const int* rankGrid, int elements,
+int cartesianNumbering(int kind, int triangleFlag, const int* nn, const int* rankGrid, int level, int elements,
                        int n, const int* oldNumbers, int* newNumbers)
 {
   const double L[3] = {1.0,1.0,1.0};
-  CartesianGrid g(kind, triangleFlag, nn, L, rankGrid);
+  CartesianGrid g(kind, triangleFlag, nn, L, rankGrid, level);
   if (!elements || g.cornerInEveryElement)
     {
       BrickNumbering numbering(g, elements != 0);
@@ -772,7 +968,8 @@ int cartesianNumbering(int kind, int triangleFlag, const int* nn, const int* ran
 }
 
 int generateCartesianSubdomain(const MPI_Comm& PROTEUS_COMM_WORLD, int kind, int triangleFlag, const int* nn,
-                               const double* L, const int* rankGrid, int nLayersOfOverlap, Mesh& mesh)
+                               const double* L, const int* rankGrid, int nLayersOfOverlap, Mesh& mesh,
+                               int level, const double* origin)
 {
   using namespace std;
   int size, rank;
@@ -795,7 +992,7 @@ int generateCartesianSubdomain(const MPI_Comm& PROTEUS_COMM_WORLD, int kind, int
       cerr<<"generateCartesianSubdomain: only one layer of overlap so far, not "<<nLayersOfOverlap<<endl;
       MPI_Abort(PROTEUS_COMM_WORLD,1);
     }
-  CartesianGrid g(kind, triangleFlag, nn, L, rankGrid);
+  CartesianGrid g(kind, triangleFlag, nn, L, rankGrid, level, origin);
   for (int d = 0; d < g.dim; d++)
     if (g.nn[d] < 2)
       {
@@ -919,9 +1116,10 @@ int generateCartesianSubdomain(const MPI_Comm& PROTEUS_COMM_WORLD, int kind, int
   sd.nodeMaterialTypes = new int[sd.nNodes_global];
   for (int nN = 0; nN < sd.nNodes_global; nN++)
     {
-      //the generators' own expressions, so the coordinates agree to the bit
+      //the generators' own expressions, then the shift MeshTools applies to
+      //their output, so the coordinates agree to the bit
       for (int d = 0; d < 3; d++)
-        sd.nodeArray[nN*3+d] = d < g.dim ? sdNodes[nN][d]*g.h[d] : 0.0;
+        sd.nodeArray[nN*3+d] = (d < g.dim ? sdNodes[nN][d]*g.h[d] : 0.0) + g.x0[d];
       sd.nodeMaterialTypes[nN] = nodeMaterial(g, sdNodes[nN]);
     }
   sd.elementNodesArray = new int[sd.nElements_global*nNodes_element];
@@ -994,6 +1192,9 @@ int generateCartesianSubdomain(const MPI_Comm& PROTEUS_COMM_WORLD, int kind, int
   mesh.nNodes_element = nNodes_element;
   mesh.nNodes_elementBoundary = nNodes_elementBoundary;
   mesh.nElementBoundaries_element = nElementBoundaries_element;
+  //the global largest node star: every owned node's star is whole in its
+  //subdomain and no ghost's is larger than it is globally
+  MPI_Allreduce(&sd.max_nNodeNeighbors_node,&mesh.max_nNodeNeighbors_node,1,MPI_INT,MPI_MAX,PROTEUS_COMM_WORLD);
   delete [] mesh.nodeOffsets_subdomain_owned;
   delete [] mesh.elementOffsets_subdomain_owned;
   delete [] mesh.elementBoundaryOffsets_subdomain_owned;

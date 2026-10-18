@@ -24,17 +24,22 @@ import pytest
 
 from proteus import MeshTools
 
-
-def _hierarchies():
-    return [
-        ('triangles_2d', MeshTools.MultilevelTriangularMesh(5, 5, 1, refinementLevels=3)),
-        ('tetrahedra_3d', MeshTools.MultilevelTetrahedralMesh(3, 3, 3, refinementLevels=3)),
-    ]
+# these test the global hierarchy builder (see conftest.py), not hierarchies
+# generated in pieces, which test_generated_hierarchy.py covers
+pytestmark = pytest.mark.global_hierarchy
 
 
-@pytest.fixture(scope='module', params=_hierarchies(), ids=lambda hc: hc[0])
+_HIERARCHIES = {
+    'triangles_2d': lambda: MeshTools.MultilevelTriangularMesh(5, 5, 1, refinementLevels=3),
+    'tetrahedra_3d': lambda: MeshTools.MultilevelTetrahedralMesh(3, 3, 3, refinementLevels=3),
+}
+
+
+#built when the fixture runs, not at collection, so that the global_hierarchy
+#switch (conftest.py) is in effect
+@pytest.fixture(scope='module', params=sorted(_HIERARCHIES, reverse=True))
 def hierarchy(request):
-    return request.param[1]
+    return _HIERARCHIES[request.param]()
 
 
 def test_coarse_nodes_are_a_prefix_of_the_fine_nodes(hierarchy):

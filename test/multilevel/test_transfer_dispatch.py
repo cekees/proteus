@@ -20,6 +20,10 @@ import pytest
 
 from proteus import FemTools, MeshTools
 
+# these test the global hierarchy builder (see conftest.py), not hierarchies
+# generated in pieces, which test_generated_hierarchy.py covers
+pytestmark = pytest.mark.global_hierarchy
+
 
 def _hierarchy(refinementLevels=2):
     return MeshTools.MultilevelTriangularMesh(5, 5, 1,

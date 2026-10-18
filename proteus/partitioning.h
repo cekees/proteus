@@ -222,14 +222,26 @@ namespace proteus
      generators and MeshTools.cartesianNodeOwners, without the global mesh. mesh
      keeps only the global counts. See cartesianPartitioning.cpp. */
   extern int generateCartesianSubdomain(const MPI_Comm& PROTEUS_COMM_WORLD, int kind, int triangleFlag, const int* nn,
-                                        const double* L, const int* rankGrid, int nLayersOfOverlap, Mesh& mesh);
+                                        const double* L, const int* rankGrid, int nLayersOfOverlap, Mesh& mesh,
+                                        int level, const double* origin);
   /* The new numbers of nodes (elements != 0: elements) of that partition,
      from their old ones: the permutation partitionNodes keeps as
-     nodeNumbering_global_old2new, as a function. */
-  extern int cartesianNumbering(int kind, int triangleFlag, const int* nn, const int* rankGrid, int elements,
+     nodeNumbering_global_old2new, as a function. level > 0 is the grid nn
+     refined that many times, partitioned by the coarsest level's bricks
+     scaled. */
+  extern int cartesianNumbering(int kind, int triangleFlag, const int* nn, const int* rankGrid, int level, int elements,
                                 int n, const int* oldNumbers, int* newNumbers);
   /* Global numbers of nodes, elements, element boundaries and edges. */
-  extern int cartesianGlobalCounts(int kind, int triangleFlag, const int* nn, int* counts);
+  extern int cartesianGlobalCounts(int kind, int triangleFlag, const int* nn, int level, int* counts);
+  /* The rows this rank owns of the vertex prolongation from level-1 to level
+     of a generated hierarchy, in CSR, with columns in level-1's partitioned
+     numbering. */
+  extern int cartesianVertexInterpolation(int kind, int triangleFlag, const int* nn, const int* rankGrid, int level, int rank,
+                                          std::vector<int>& rowptr, std::vector<int>& colind, std::vector<double>& nzval);
+  /* For each element of this rank's subdomain on level, its parent's index in
+     the subdomain on level-1, or -1. */
+  extern int cartesianSubdomainParents(int kind, int triangleFlag, const int* nn, const int* rankGrid, int level, int rank,
+                                       std::vector<int>& parents);
 
   extern int partitionElementsOriginal(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nElements_overlap);
 

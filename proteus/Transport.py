@@ -6848,8 +6848,10 @@ class MultilevelTransport(object):
                 build=False)
             self.useParallelTransfers(mlMesh)
         else:
+            #a hierarchy generated in pieces has no global levels; on one rank its
+            #pieces are the whole levels, related by subdomainHierarchy
             self.meshTransfers = MultilevelProjectionOperatorType(
-                mlMesh,
+                mlMesh.subdomainHierarchy() if getattr(mlMesh,'generated',False) else mlMesh,
                 self.trialSpaceDictList,
                 self.offsetListList,
                 self.strideListList,
@@ -6888,14 +6890,18 @@ class MultilevelTransport(object):
         """
         #the nodal route reads node parents through the partitioner's node
         #renumbering, which only node partitioning records
-        permuted = all(getattr(mesh,'nodeNumbering_global_old2new',None) is not None
-                       for mesh in mlMesh.meshList)
+        if hasattr(mlMesh,'hasPartitionedNumbering'):
+            permuted = mlMesh.hasPartitionedNumbering()
+        else:
+            permuted = all(getattr(mesh,'nodeNumbering_global_old2new',None) is not None
+                           for mesh in mlMesh.meshList)
         if not permuted or not FemTools.nodalTransfersApply(mlMesh,
                                                             self.trialSpaceDictList,
                                                             self.bcDictList):
             self.useGeneralParallelTransfers(mlMesh)
             return
-        mlMesh.vertexInterpolation()
+        if not getattr(mlMesh,'generated',False):
+            mlMesh.vertexInterpolation()
         nc = len(self.trialSpaceDictList[0])
         cache = {}
         def levelMats(l):

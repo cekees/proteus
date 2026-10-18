@@ -519,7 +519,8 @@ def cartesianRankGrid(nnx, nny, nnz, size):
         raise ValueError("a %d x %d x %d node grid cannot be cut among %d ranks" % (nnx, nny, nnz, size))
     return best[1]
 
-def cartesianSubdomain(kind, nn, L, rankGrid=None, nLayersOfOverlap=1, triangleFlag=1):
+def cartesianSubdomain(kind, nn, L, rankGrid=None, nLayersOfOverlap=1, triangleFlag=1, level=0,
+                       origin=(0.0, 0.0, 0.0)):
     """This rank's piece of a regular grid, generated without the global mesh.
 
     kind is 'quad', 'hex', 'tri' or 'tet', nn the node counts (nnx, nny[, nnz])
@@ -534,6 +535,10 @@ def cartesianSubdomain(kind, nn, L, rankGrid=None, nLayersOfOverlap=1, triangleF
     (default cartesianRankGrid). nodeOld2New and elementOld2New map generator
     numbers to the partition's, in place of the nodeNumbering_global_old2new
     and elementNumbering_global_old2new arrays.
+
+    level > 0 generates the grid refined that many times, cut by the level-0
+    bricks scaled (cartesianNodeOwners(level=...)); nn stays the coarsest
+    counts. origin shifts the nodes as MeshTools shifts a generated mesh.
     """
     from . import cmeshTools, cpartitioning, Comm
     comm = Comm.get()
@@ -560,18 +565,30 @@ def cartesianSubdomain(kind, nn, L, rankGrid=None, nLayersOfOverlap=1, triangleF
      mesh.edgeOffsets_subdomain_owned,
      mesh.edgeNumbering_subdomain2global) = cpartitioning.generateCartesianSubdomain(
          comm.comm.tompi4py(), kind, triangleFlag, nn, L, rankGrid, nLayersOfOverlap,
-         mesh.cmesh, mesh.subdomainMesh.cmesh)
+         mesh.cmesh, mesh.subdomainMesh.cmesh, level, origin)
     (mesh.nNodes_global, mesh.nElements_global,
-     mesh.nElementBoundaries_global, mesh.nEdges_global) = cpartitioning.cartesianGlobalCounts(kind, triangleFlag, nn)
+     mesh.nElementBoundaries_global, mesh.nEdges_global) = cpartitioning.cartesianGlobalCounts(kind, triangleFlag, nn, level)
+    #the per-element counts and the largest node star, as the C++ set them
+    (_, _, mesh.nNodes_element, mesh.nNodes_elementBoundary, mesh.nElementBoundaries_element,
+     _, _, _, _, _, mesh.max_nNodeNeighbors_node) = cmeshTools.buildPythonMeshInterfaceNoArrays(mesh.cmesh)[:11]
     mesh.rankGrid = rankGrid
+    mesh.cartesianLevel = level
     mesh.nodeNumbering_global_old2new = None
     mesh.elementNumbering_global_old2new = None
-    mesh.nodeOld2New = lambda old: cpartitioning.cartesianNumbering(kind, triangleFlag, nn, rankGrid, False, old)
-    mesh.elementOld2New = lambda old: cpartitioning.cartesianNumbering(kind, triangleFlag, nn, rankGrid, True, old)
+    mesh.nodeOld2New = lambda old: cpartitioning.cartesianNumbering(kind, triangleFlag, nn, rankGrid, False, old, level)
+    mesh.elementOld2New = lambda old: cpartitioning.cartesianNumbering(kind, triangleFlag, nn, rankGrid, True, old, level)
     mesh._finishPartitioning(comm)
+    #the global scalars a mesh reports, from the pieces
+    mpi = comm.comm.tompi4py()
+    from mpi4py import MPI
+    sd = mesh.subdomainMesh
+    mesh.h = mpi.allreduce(sd.h, op=MPI.MAX)
+    mesh.hMin = mpi.allreduce(sd.hMin if sd.nElements_global > 0 else np.inf, op=MPI.MIN)
+    mesh.sigmaMax = mpi.allreduce(sd.sigmaMax, op=MPI.MAX)
+    mesh.volume = float(np.prod(L[:3 if kind in ('hex', 'tet') else 2]))
     return mesh
 
-def cartesianNodeOwners(nnx, nny, nnz, rankGrid=None, size=None, fastest='x'):
+def cartesianNodeOwners(nnx, nny, nnz, rankGrid=None, size=None, fastest='x', level=0):
     """The rank that owns each node of a regular nnx x nny x nnz node grid cut into bricks.
 
     Rank (a, b, c) of the px x py x pz rankGrid, which is rank a + px*(b + py*c),
@@ -586,6 +603,11 @@ def cartesianNodeOwners(nnx, nny, nnz, rankGrid=None, size=None, fastest='x'):
     generators number them, or 'y' for j + nny*i, as the (2D) quadrilateral
     generator does. Passed to Mesh.partitionMesh as nodeOwners, they replace
     the graph partitioner, and the partitioner then needs no PETSc.
+
+    level > 0 gives the owners on the grid refined that many times (every cell
+    halved along each axis), cut by the same bricks scaled -- the partition of
+    each level of a generated hierarchy (cartesianSubdomain(level=...)).
+    nnx, nny, nnz stay the coarsest level's counts.
     """
     if rankGrid is None:
         if size is None:
@@ -593,7 +615,11 @@ def cartesianNodeOwners(nnx, nny, nnz, rankGrid=None, size=None, fastest='x'):
             size = Comm.get().size()
         rankGrid = cartesianRankGrid(nnx, nny, nnz, size)
     px, py, pz = rankGrid
-    a, b, c = (np.repeat(np.arange(p), np.diff(_cartesianChunkStarts(nn, p)))
+    def starts(nn, p):
+        if nn == 1:
+            return _cartesianChunkStarts(nn, p)
+        return np.minimum(_cartesianChunkStarts(nn, p) << level, ((nn - 1) << level) + 1)
+    a, b, c = (np.repeat(np.arange(p), np.diff(starts(nn, p)))
                for nn, p in ((nnx, px), (nny, py), (nnz, pz)))
     if fastest == 'x':
         owners = a[None, None, :] + px * (b[None, :, None] + py * c[:, None, None])
@@ -1863,6 +1889,74 @@ class MultilevelMesh(Mesh):
     #PETSc. Like the switch above it is read while the constructor partitions,
     #so set it on the class.
     coarsestLevelOwners = None
+    #Generate regular-grid hierarchies in pieces (cartesianSubdomain): no
+    #global mesh, no partitioner, and no global-sized array on any rank. Off by
+    #default until MeshOptions selects it (campaign Phase 5);
+    #PROTEUS_GENERATE_REGULAR_GRIDS=1 turns it on.
+    generateRegularGrids = os.environ.get('PROTEUS_GENERATE_REGULAR_GRIDS', '0') == '1'
+    generated = False
+
+    def generatesInPieces(self, kind, triangleFlag, nLayersOfOverlap, parallelPartitioningType):
+        """Whether this regular grid's hierarchy is generated in pieces."""
+        if not self.generateRegularGrids:
+            return False
+        reasons = []
+        if kind == 'tri' and triangleFlag != 0:
+            reasons.append("triangleFlag %d triangles do not refine into themselves" % triangleFlag)
+        if nLayersOfOverlap != 1:
+            reasons.append("%d layers of overlap" % nLayersOfOverlap)
+        if parallelPartitioningType != MeshParallelPartitioningTypes.node:
+            reasons.append("element partitioning")
+        if reasons:
+            logEvent("the hierarchy is built globally, not in pieces: " + "; ".join(reasons), level=2)
+            return False
+        return True
+
+    def generateCartesianHierarchy(self, kind, counts, origin, L, nLevels, triangleFlag=0):
+        """A hierarchy of regular grids, each rank generating only its pieces.
+
+        Level l is the coarsest grid refined l times (cells halved along each
+        axis), generated by cartesianSubdomain(level=l): quadrilaterals and
+        hexahedra as generateStructuredHierarchy makes them, triangles
+        (triangleFlag 0) and tetrahedra as the generators' Kuhn splits at each
+        level's own resolution, which are nested. Every level is cut into the
+        coarsest level's bricks scaled, so the partition is level-consistent by
+        construction: every parent of a fine node a rank owns is in its coarse
+        subdomain. meshList holds meshes that stand for the global levels by
+        their counts only; the inter-level operators come from
+        partitionedVertexInterpolation and subdomainHierarchy, computed per rank.
+        """
+        from . import Comm
+        flat = kind in ('quad', 'tri')
+        dim = 2 if flat else 3
+        counts = tuple(counts[:dim])
+        rankGrid = cartesianRankGrid(counts[0], counts[1], 1 if flat else counts[2], Comm.get().size())
+        self.cartesian = dict(kind=kind, counts=counts, triangleFlag=triangleFlag, rankGrid=rankGrid)
+        self.generated = True
+        self.meshList = []
+        for l in range(nLevels):
+            mesh = cartesianSubdomain(kind, counts, tuple(L)[:dim], rankGrid=rankGrid,
+                                      triangleFlag=triangleFlag, level=l, origin=tuple(origin))
+            mesh.levelConsistent = l > 0
+            self.meshList.append(mesh)
+        self.nLevels = nLevels
+        self.cmultilevelMesh = None
+        #a diagnostic for test runs: which hierarchies were generated in pieces
+        log = os.environ.get('PROTEUS_GENERATED_HIERARCHY_LOG')
+        if log and Comm.get().rank() == 0:
+            with open(log, 'a') as f:
+                f.write("%s %s %d levels %d ranks\n" % (kind, 'x'.join(map(str, counts)), nLevels, Comm.get().size()))
+        #there are no global parent/child arrays: see subdomainHierarchy
+        self.elementParentsArrayList = None
+        self.elementChildrenArrayList = None
+        self.elementChildrenOffsetsList = None
+
+    def hasPartitionedNumbering(self):
+        """Whether the vertex route can read the hierarchy in the partitioned
+        numbering: node partitioning kept each level's permutation, or the
+        hierarchy was generated in that numbering."""
+        return self.generated or all(getattr(mesh, 'nodeNumbering_global_old2new', None) is not None
+                                     for mesh in self.meshList)
 
     def partitionLevels(self,nLayersOfOverlap=1,
                         parallelPartitioningType=MeshParallelPartitioningTypes.node):
@@ -1984,13 +2078,20 @@ class MultilevelMesh(Mesh):
         hierarchy.elementParentsArrayList = [[]]
         hierarchy.elementChildrenArrayList = []
         hierarchy.elementChildrenOffsetsList = []
-        globalOf = [self.globalElementsOfSubdomain(l) for l in range(len(self.meshList))]
+        if not self.generated:
+            globalOf = [self.globalElementsOfSubdomain(l) for l in range(len(self.meshList))]
         for l in range(len(self.meshList)-1):
             nCoarseSd = hierarchy.meshList[l].nElements_global
             nFineSd = hierarchy.meshList[l+1].nElements_global
-            subdomainOfGlobal = -np.ones((self.meshList[l].nElements_global,),'i')
-            subdomainOfGlobal[globalOf[l]] = np.arange(nCoarseSd,dtype='i')
-            parents = subdomainOfGlobal[np.asarray(self.elementParentsArrayList[l+1])[globalOf[l+1]]]
+            if self.generated:
+                from . import cpartitioning, Comm
+                c = self.cartesian
+                parents = cpartitioning.cartesianSubdomainParents(c['kind'], c['triangleFlag'], c['counts'],
+                                                                  c['rankGrid'], l+1, Comm.get().rank())
+            else:
+                subdomainOfGlobal = -np.ones((self.meshList[l].nElements_global,),'i')
+                subdomainOfGlobal[globalOf[l]] = np.arange(nCoarseSd,dtype='i')
+                parents = subdomainOfGlobal[np.asarray(self.elementParentsArrayList[l+1])[globalOf[l+1]]]
             hierarchy.elementParentsArrayList.append(parents.astype('i'))
             kids = np.nonzero(parents >= 0)[0]
             order = kids[np.argsort(parents[kids],kind='stable')].astype('i')
@@ -2304,6 +2405,9 @@ class MultilevelMesh(Mesh):
         """
         if getattr(self,'_vertexInterpolation',None) is not None and not recalculate:
             return self._vertexInterpolation
+        if self.generated:
+            raise ValueError("a hierarchy generated in pieces has no global vertex "
+                             "interpolation; see partitionedVertexInterpolation")
         nLevels = len(self.meshList)
         try:
             self.calculateNodeParents(recalculate=recalculate)
@@ -2326,7 +2430,10 @@ class MultilevelMesh(Mesh):
 
         A question about the mesh only; whether the operators apply also depends
         on the finite element space -- see FemTools.nodalTransfersApply.
+        A hierarchy generated in pieces has one by construction, held per rank.
         """
+        if self.generated:
+            return True
         try:
             self.vertexInterpolation()
         except ValueError:
@@ -2390,12 +2497,21 @@ class MultilevelMesh(Mesh):
     def partitionedVertexInterpolation(self,l):
         """vertexInterpolation()[l+1], in the partitioned global numbering.
 
+        For a hierarchy generated in pieces, only the rows this rank owns
+        (LinearAlgebraTools.vertexProlongationMat takes either).
+
         The same translation partitionedNodeParents makes, for a matrix: rows
         are fine nodes and columns coarse nodes, and partitioning renumbers each
         level's nodes independently so that every rank's owned ones are
         contiguous. An unpartitioned hierarchy has no permutation and the CSR is
         returned unchanged.
         """
+        if self.generated:
+            #only the rows of the fine nodes this rank owns, computed here
+            from . import cpartitioning, Comm
+            c = self.cartesian
+            return cpartitioning.cartesianVertexInterpolation(c['kind'], c['triangleFlag'], c['counts'],
+                                                              c['rankGrid'], l+1, Comm.get().rank())
         rowptr,colind,nzval = self.vertexInterpolation()[l+1]
         coarseOld2New = getattr(self.meshList[l],'nodeNumbering_global_old2new',None)
         fineOld2New = getattr(self.meshList[l+1],'nodeNumbering_global_old2new',None)
@@ -4669,7 +4785,9 @@ class MultilevelTetrahedralMesh(MultilevelMesh):
         self.nLayersOfOverlap = nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         logEvent("Generating tetrahedral mesh")
         if not skipInit:
-            if self.useC:
+            if self.generatesInPieces('tet', 0, nLayersOfOverlap, parallelPartitioningType):
+                self.generateCartesianHierarchy('tet', (nx,ny,nz), (x,y,z), (Lx,Ly,Lz), refinementLevels)
+            elif self.useC:
                 self.meshList.append(TetrahedralMesh())
                 self.meshList[0].generateTetrahedralMeshFromRectangularGrid(nx,ny,nz,Lx,Ly,Lz)
                 #Translate the coarse mesh *before* refining it. The C refinement copies
@@ -4797,7 +4915,9 @@ class MultilevelHexahedralMesh(MultilevelMesh):
         self.nLayersOfOverlap = nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         logEvent("Generating hexahedral mesh")
         if not skipInit:
-            if structured:
+            if self.generatesInPieces('hex', 0, nLayersOfOverlap, parallelPartitioningType):
+                self.generateCartesianHierarchy('hex', (nx,ny,nz), (x,y,z), (Lx,Ly,Lz), refinementLevels)
+            elif structured:
                 self._structuredLevels = refinementLevels
                 self.generateStructuredHierarchy(
                     HexahedralMesh,
@@ -5865,7 +5985,10 @@ class MultilevelTriangularMesh(MultilevelMesh):
         self.nLayersOfOverlap=nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         #self.useC = False
         if not skipInit:
-            if self.useC:
+            if self.generatesInPieces('tri', triangleFlag, nLayersOfOverlap, parallelPartitioningType):
+                self.generateCartesianHierarchy('tri', (nx,ny), (x,y,z), (Lx,Ly,Lz), refinementLevels,
+                                                triangleFlag=triangleFlag)
+            elif self.useC:
                 self.meshList.append(TriangularMesh())
                 self.meshList[0].generateTriangularMeshFromRectangularGrid(nx,ny,Lx,Ly,triangleFlag=triangleFlag)
                 #Translate the coarse mesh *before* refining it. The C refinement copies
@@ -6016,7 +6139,9 @@ class MultilevelQuadrilateralMesh(MultilevelMesh):
             self.useC = False  # Currently quad refinement is not supported in C routines.
         self.nLayersOfOverlap=nLayersOfOverlap ; self.parallelPartitioningType = parallelPartitioningType
         if not skipInit:
-            if structured:
+            if self.generatesInPieces('quad', 0, nLayersOfOverlap, parallelPartitioningType):
+                self.generateCartesianHierarchy('quad', (nx,ny), (x,y,z), (Lx,Ly,Lz), refinementLevels)
+            elif structured:
                 self._structuredLevels = refinementLevels
                 self.generateStructuredHierarchy(
                     QuadrilateralMesh,

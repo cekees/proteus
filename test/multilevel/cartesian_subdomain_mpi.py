@@ -13,10 +13,15 @@ subdomain-to-global maps, the old-to-new permutations (arrays on one side,
 functions on the other), the global counts, and every array of the subdomain
 mesh, floating-point ones included.
 
-Usage: cartesian_subdomain_mpi.py KIND NNX NNY [NNZ] [PX PY [PZ]]
+Usage: cartesian_subdomain_mpi.py KIND NNX NNY [NNZ] [PX PY [PZ]] [level=L]
 
 KIND is quad, hex, tet, or tri0, tri1 or tri2 (triangles split with that
-triangleFlag). The rank grid defaults to MeshTools.cartesianRankGrid.
+triangleFlag). The rank grid defaults to MeshTools.cartesianRankGrid. With
+level=L both sides are the grid refined L times (NN.. stay the coarsest
+counts): the global one from the generator at that resolution, partitioned with
+the scaled bricks cartesianNodeOwners(level=L) gives, against
+cartesianSubdomain(level=L), as a hierarchy generated in pieces builds its
+levels.
 
 Prints ``RESULT kind=.. nn=.. grid=.. ranks=.. mismatches=<arrays that differ,
 summed over ranks> digest=<sha256 of the generated arrays> petsc=<0|1>``.
@@ -38,9 +43,13 @@ if kind.startswith('tri'):
     kind, triangleFlag = 'tri', int(kind[3:])
 dim = 2 if kind in ('quad', 'tri') else 3
 nn = tuple(int(a) for a in sys.argv[2:2 + dim]) + (1,) * (3 - dim)
-rest = [int(a) for a in sys.argv[2 + dim:]]
+options = dict(a.split('=') for a in sys.argv[2:] if '=' in a)
+level = int(options.get('level', 0))
+rest = [int(a) for a in sys.argv[2 + dim:] if '=' not in a]
 grid = tuple(rest) + (1,) * (3 - len(rest)) if rest else MeshTools.cartesianRankGrid(nn[0], nn[1], nn[2], size)
 L = (1.0, 0.7, 1.3)
+#the refined grid's node counts
+nnL = tuple(((n - 1) << level) + 1 if d < dim else 1 for d, n in enumerate(nn))
 
 INTERFACE = ('nElements_global nNodes_global nNodes_element nNodes_elementBoundary '
              'nElementBoundaries_element nElementBoundaries_global '
@@ -78,21 +87,22 @@ def arraysOf(mesh, old2new):
 glob = {'quad': MeshTools.QuadrilateralMesh, 'hex': MeshTools.HexahedralMesh,
         'tri': MeshTools.TriangularMesh, 'tet': MeshTools.TetrahedralMesh}[kind]()
 if kind == 'quad':
-    glob.generateQuadrilateralMeshFromRectangularGrid(nn[0], nn[1], L[0], L[1])
+    glob.generateQuadrilateralMeshFromRectangularGrid(nnL[0], nnL[1], L[0], L[1])
 elif kind == 'hex':
-    glob.generateHexahedralMeshFromRectangularGrid(nn[0], nn[1], nn[2], L[0], L[1], L[2])
+    glob.generateHexahedralMeshFromRectangularGrid(nnL[0], nnL[1], nnL[2], L[0], L[1], L[2])
 elif kind == 'tri':
-    glob.generateTriangularMeshFromRectangularGrid(nn[0], nn[1], L[0], L[1], triangleFlag=triangleFlag)
+    glob.generateTriangularMeshFromRectangularGrid(nnL[0], nnL[1], L[0], L[1], triangleFlag=triangleFlag)
 else:
-    glob.generateTetrahedralMeshFromRectangularGrid(nn[0], nn[1], nn[2], L[0], L[1], L[2])
-owners = MeshTools.cartesianNodeOwners(nn[0], nn[1], nn[2], rankGrid=grid, fastest='y' if kind == 'quad' else 'x')
+    glob.generateTetrahedralMeshFromRectangularGrid(nnL[0], nnL[1], nnL[2], L[0], L[1], L[2])
+owners = MeshTools.cartesianNodeOwners(nn[0], nn[1], nn[2], rankGrid=grid, fastest='y' if kind == 'quad' else 'x',
+                                       level=level)
 glob.partitionMesh(nLayersOfOverlap=1, parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node,
                    nodeOwners=owners)
 reference = arraysOf(glob, (np.asarray(glob.nodeNumbering_global_old2new),
                             np.asarray(glob.elementNumbering_global_old2new)))
 
 #Phase 2: generated
-gen = MeshTools.cartesianSubdomain(kind, nn[:dim], L[:dim], rankGrid=grid, triangleFlag=triangleFlag)
+gen = MeshTools.cartesianSubdomain(kind, nn[:dim], L[:dim], rankGrid=grid, triangleFlag=triangleFlag, level=level)
 generated = arraysOf(gen, (gen.nodeOld2New(np.arange(gen.nNodes_global)),
                            gen.elementOld2New(np.arange(gen.nElements_global))))
 
@@ -117,7 +127,7 @@ for name in sorted(generated):
 digests = mpi.gather(h.hexdigest(), root=0)
 petsc = mpi.allreduce(int(cpartitioning.petscInitialized()), op=MPI.MAX)
 if rank == 0:
-    print("RESULT kind=%s nn=%s grid=%s ranks=%d mismatches=%d digest=%s petsc=%d"
-          % (sys.argv[1], 'x'.join(map(str, nn[:dim])), 'x'.join(map(str, grid)), size, mismatches,
+    print("RESULT kind=%s nn=%s grid=%s level=%d ranks=%d mismatches=%d digest=%s petsc=%d"
+          % (sys.argv[1], 'x'.join(map(str, nn[:dim])), 'x'.join(map(str, grid)), level, size, mismatches,
              hashlib.sha256(''.join(digests).encode()).hexdigest(), petsc))
     sys.stdout.flush()

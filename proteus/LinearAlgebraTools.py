@@ -2138,7 +2138,8 @@ def vertexProlongationMat(rowptr,colind,nzval,coarseNodeOffsets,fineNodeOffsets,
     ----------
     rowptr, colind, nzval : numpy.ndarray
         The global prolongation, one row per fine node, in global partitioned
-        numbers.
+        numbers -- or only the rows of the fine nodes this rank owns, in order,
+        as a hierarchy generated in pieces gives them.
     coarseNodeOffsets, fineNodeOffsets : numpy.ndarray
         nodeOffsets_subdomain_owned for the two levels.
     inheritedOnly : bool
@@ -2157,20 +2158,24 @@ def vertexProlongationMat(rowptr,colind,nzval,coarseNodeOffsets,fineNodeOffsets,
     coarse_lo,coarse_hi = int(coarseNodeOffsets[rank]),int(coarseNodeOffsets[rank+1])
     nFine_global = int(fineNodeOffsets[-1])
     nCoarse_global = int(coarseNodeOffsets[-1])
-    assert rowptr.shape[0] == nFine_global+1, (
-        "the prolongation has %i rows but the fine level has %i nodes"
-        % (rowptr.shape[0]-1,nFine_global))
+    if rowptr.shape[0] == nFine_global+1:
+        local = lambda r: r
+    else:
+        assert rowptr.shape[0] == fine_hi-fine_lo+1, (
+            "the prolongation has %i rows but the fine level has %i nodes, %i of them owned here"
+            % (rowptr.shape[0]-1,nFine_global,fine_hi-fine_lo))
+        local = lambda r: r-fine_lo
     rows = range(fine_lo,fine_hi)
     keep = numpy.ones((fine_hi-fine_lo,),dtype=bool)
     if inheritedOnly:
         for i,r in enumerate(rows):
-            lo,hi = rowptr[r],rowptr[r+1]
+            lo,hi = rowptr[local(r)],rowptr[local(r)+1]
             keep[i] = (hi-lo == 1) and abs(nzval[lo]-1.0) <= 1.0e-12
     d_nnz = numpy.zeros((fine_hi-fine_lo,),'i')
     o_nnz = numpy.zeros((fine_hi-fine_lo,),'i')
     for i,r in enumerate(rows):
         if keep[i]:
-            cols = colind[rowptr[r]:rowptr[r+1]]
+            cols = colind[rowptr[local(r)]:rowptr[local(r)+1]]
             inside = int(((cols >= coarse_lo) & (cols < coarse_hi)).sum())
             d_nnz[i] = inside
             o_nnz[i] = cols.shape[0]-inside
@@ -2184,8 +2189,8 @@ def vertexProlongationMat(rowptr,colind,nzval,coarseNodeOffsets,fineNodeOffsets,
     for i,r in enumerate(rows):
         if not keep[i]:
             continue
-        cols = colind[rowptr[r]:rowptr[r+1]]
-        vals = nzval[rowptr[r]:rowptr[r+1]]
+        cols = colind[rowptr[local(r)]:rowptr[local(r)+1]]
+        vals = nzval[rowptr[local(r)]:rowptr[local(r)+1]]
         for c in range(bs):
             prolong.setValues([bs*r+c],(bs*cols+c).tolist(),vals.tolist())
     prolong.assemblyBegin()
