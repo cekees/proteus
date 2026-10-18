@@ -16,11 +16,22 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.leg.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
+        # Each leg runs twice: the suite without the two FSI IBM tests
+        # (suite: main), and those two tests alone (suite: fsi). Each of the
+        # two is a full 1 s simulation, 200 steps in serial; serially on these
+        # runners they take 535 s + 395 s (macOS arm64) to 972 s + 502 s
+        # (macOS Intel), against about 8 min of CPU for all the other tests
+        # together. In the main run under xdist they set the job's wall time
+        # wherever they were scheduled: last, they ran alone after the other
+        # workers had finished; first, they shared the cores with the rest
+        # of the suite for the whole run and slowed down 1.6x (Intel) to 3.7x
+        # (arm64), sdf taking 1975 s on arm64 (cekees/proteus#57).
+        suite: [main, fsi]
+        leg:
           # Full test suite (PUMI mesh-adaptation + Chrono FSI included).
           # conda-forge ships the scorec package (PUMI) on linux-64, osx-64,
           # linux-aarch64 and osx-arm64. As of scorec 4.2.1 *build 1* it ships
@@ -82,22 +93,22 @@ jobs:
             os: macos-15
             python: "3.12.5"
             env_file: environment-openmpi-dev.yml
-    name: ${{ matrix.name }}
+    name: ${{ matrix.leg.name }}${{ matrix.suite == 'fsi' && ' / FSI IBM' || '' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Build environment file for this leg
         shell: bash
         run: |
-          cp "${{ matrix.env_file }}" environment-ci.yml
+          cp "${{ matrix.leg.env_file }}" environment-ci.yml
           # the openmpi/mpich files declare different env names; normalize so
           # activate-environment below matches whichever one this leg copied
           sed -i.bak "s/^name: .*/name: proteus-dev/" environment-ci.yml
           FILE_PY=$(sed -n 's/^  - python =\(.*\)$/\1/p' environment-ci.yml)
-          if [ "${{ matrix.python }}" = "$FILE_PY" ]; then
+          if [ "${{ matrix.leg.python }}" = "$FILE_PY" ]; then
             # This leg's python IS the one the file pins, so use the file verbatim:
             # that is the only leg that actually tests the committed lock.
-            echo "-- python ${{ matrix.python }} matches the file's pin; using the lock as-is"
+            echo "-- python ${{ matrix.leg.python }} matches the file's pin; using the lock as-is"
           else
             # Every exact "=x.y.z" pin in the dev environment files is part of one
             # lock chosen together with python =$FILE_PY, and many of those builds
@@ -124,10 +135,10 @@ jobs:
             # serial HDF5, and a flood of "h5py was built without MPI support"
             # failures. Verified on linux-64 py3.12: 376 packages, openblas 0.3.34,
             # h5py mpi_openmpi_*, libgfortran 16.1.0.
-            echo "-- python ${{ matrix.python }} differs from the file's pin $FILE_PY; converting exact pins to floors"
+            echo "-- python ${{ matrix.leg.python }} differs from the file's pin $FILE_PY; converting exact pins to floors"
             sed -i.bak -E 's/^(  - [a-z0-9_.-]+) *=([0-9][^ =]*)(=[^ ]*)$/\1 >=\2\3/' environment-ci.yml
             sed -i.bak -E 's/^(  - [a-z0-9_.-]+) *=([0-9][^ =]*)$/\1 >=\2/' environment-ci.yml
-            sed -i.bak "s/^  - python >=.*/  - python =${{ matrix.python }}/" environment-ci.yml
+            sed -i.bak "s/^  - python >=.*/  - python =${{ matrix.leg.python }}/" environment-ci.yml
           fi
           rm -f environment-ci.yml.bak
           cat environment-ci.yml
@@ -286,10 +297,6 @@ jobs:
           # process state (each takes a fresh opts), and every test file
           # passes alone in a fresh process.
           #
-          # --no-loadscope-reorder keeps the collection order, which
-          # test/conftest.py starts with the slowest tests; without it xdist
-          # hands out every multi-test xdist_group ahead of them.
-          #
           # The sampler records what the runner is doing while the tests run
           # (load, CPU user/sys split, busiest processes and their thread
           # counts, memory); the next step prints it. It is left running, not
@@ -321,9 +328,23 @@ jobs:
                 echo "threads of $pid: $n"
               done
             done ) > "$RUNNER_TEMP/runner_load.txt" 2>&1 < /dev/null &
-          python -m pytest -v -n auto --dist loadgroup --no-loadscope-reorder \
-            --import-mode=importlib --durations=30 \
-            "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" ../test
+          # The two FSI IBM tests run in their own job (see the matrix): the
+          # main suite deselects them, and the fsi suite runs only them, one
+          # per worker. These are node ids, relative to the checkout (pytest's
+          # rootdir), which is what --deselect matches; run from here, the
+          # same tests as arguments are ../<node id>.
+          FSI_IBM_TESTS=(
+            test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_sdf
+            test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_ball
+          )
+          if [ "${{ matrix.suite }}" = fsi ]; then
+            python -m pytest -v -n 2 --dist load --import-mode=importlib \
+              --durations=5 "${FSI_IBM_TESTS[@]/#/../}"
+          else
+            python -m pytest -v -n auto --dist loadgroup --import-mode=importlib \
+              --durations=30 "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" \
+              "${FSI_IBM_TESTS[@]/#/--deselect=}" ../test
+          fi
 
       - name: Show runner load during the tests
         if: always()
