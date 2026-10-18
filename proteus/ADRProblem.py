@@ -525,17 +525,6 @@ def linear_solver_choice(problem, spaces, linear_solver=None, petsc_options=None
                          % ("the default" if solver is None else solver))
     if solver is None:
         solver = "mumps" if null_space else "superlu"
-    if solver != "superlu" and problem.get("periodic"):
-        # Measured: periodic Poisson, CG1 at 8 and 16 cells, L2 error 0.047
-        # and 0.012 with superlu but 0.62 and 0.64 through PETSc. The serial
-        # periodic path (parallelPeriodic False, which mixed spaces need)
-        # does not survive KSP_petsc4py; before linear_solver was read, a
-        # periodic problem with a null space took that path silently.
-        raise ValueError(
-            "periodic conditions with a PETSc linear solver give wrong answers "
-            "in Proteus's serial periodic path; use linear_solver superlu%s"
-            % (" and pin a datum: the operator is singular (%s determined up to "
-               "a constant)" % ", ".join(problem["up_to_constant"]) if null_space else ""))
     if solver == "superlu":
         if null_space:
             raise ValueError(

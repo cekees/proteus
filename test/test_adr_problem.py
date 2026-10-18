@@ -747,14 +747,138 @@ def test_a_pinned_taylor_hood_pressure_solves_through_mumps(kovasznay_spec, tmp_
                                   [float(v) for v in superlu[1:4]], rtol=1e-8)
 
 
-def test_a_periodic_problem_is_not_handed_to_petsc():
-    with pytest.raises(ValueError, match="serial periodic path; use linear_solver superlu$"):
-        ADRProblem.linear_solver_choice({"periodic": [{"component": "u"}]}, CG1, "mumps")
-    with pytest.raises(ValueError, match="pin a datum"):
-        ADRProblem.linear_solver_choice(
-            {"periodic": [{"component": "p"}], "up_to_constant": ["p"]}, CG1)
-    assert ADRProblem.linear_solver_choice({"periodic": [{"component": "u"}]}, CG1) \
-        == ("superlu", None)
+PERIODIC_POISSON = """
+model:
+  name: "periodic Poisson"
+  physical_model: {provenance: human_specified}
+  strong_form:
+    provenance: human_specified
+    unknowns: [u]
+    equation_formulation: "Poisson"
+    equations: ["-Δu = 5π² sin(2πx) sin(πy)  in Ω"]
+    domain: "Ω = [0, 1] × [0, 1]"
+    boundary_regions:
+      - {name: walls, where: "y = 0 or y = 1"}
+      - {name: ends, where: "x = 0 or x = 1"}
+    boundary_conditions:
+      - {region: walls, variable: u, type: dirichlet, value: 0.0}
+      - {region: ends, variable: u, type: periodic}
+solution_paths:
+  analytical:
+    - {name: exact, provenance: human_specified, method: closed_form,
+       solution: {formula: "u = sin(2πx) sin(πy)"}}
+  discretizations:
+    - {name: superlu, provenance: human_specified, finite_element: {fields: {family: CG, order: 1}},
+       solver: {type: linear, linear_solver: superlu}}
+    - {name: mumps, provenance: human_specified, finite_element: {fields: {family: CG, order: 1}},
+       solver: {type: linear, linear_solver: mumps}}
+    - {name: cg, provenance: human_specified, finite_element: {fields: {family: CG, order: 1}},
+       solver: {type: linear, linear_solver: petsc,
+                petsc_options: {ksp_type: cg, pc_type: jacobi, ksp_rtol: "1e-12"}}}
+"""
+
+
+def _errors_by_branch(stdout):
+    """{branch: [error columns of its first row]} from ymf_run's report."""
+    found, branch = {}, None
+    for line in stdout.splitlines():
+        if " -- " in line and not line.startswith(" "):
+            branch = line.split(" -- ")[0]
+        elif branch and line.strip()[:1].isdigit() and branch not in found:
+            found[branch] = [float(v) for v in line.split()[1:] if "e" in v and "." in v]
+    return found
+
+
+def test_a_periodic_problem_solves_the_same_through_each_linear_solver(tmp_path):
+    """The serial periodic path under KSP_petsc4py.
+
+    It used to solve with the periodic faces disconnected (L2 error 0.62
+    where SuperLU gives 0.047): keeping the Dirichlet DOFs in the system,
+    as KSP needs, skipped building the periodic DOF map altogether, and the
+    PETSc vectors were sized by the space's DOFs rather than the merged
+    unknowns.
+    """
+    pytest.importorskip("ymf.symbolic")
+    pytest.importorskip("strictyaml")
+    spec = tmp_path / "pp.ymf"
+    spec.write_text(PERIODIC_POISSON, encoding="utf-8")
+    out = ymf_run(spec, "--cells", "8", "--outdir", tmp_path)
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    errors = _errors_by_branch(out.stdout)
+    assert set(errors) == {"superlu", "mumps", "cg"}
+    assert 0.04 < errors["superlu"][0] < 0.05
+    for branch in ("mumps", "cg"):
+        numpy.testing.assert_allclose(errors[branch], errors["superlu"], rtol=1e-6)
+
+
+PERIODIC_CHANNEL = """
+model:
+  name: "plane Poiseuille, periodic"
+  physical_model: {provenance: human_specified}
+  strong_form:
+    provenance: human_specified
+    unknowns: [{name: v, rank: 1}, p]
+    equation_formulation: "incompressible Navier-Stokes"
+    equations:
+      - "ρ ∂v/∂t + ∇·(ρ v⊗v) − μΔv + ∇p = f  in Ω"
+      - "∇·v = 0  in Ω"
+    domain: "Ω = [0, 4] × [0, 1]"
+    boundary_regions:
+      - {name: walls, where: "y = 0 or y = 1"}
+      - {name: ends, where: "x = 0 or x = 4"}
+      - {name: datum, where: "x = 0 and y = 0 or x = 4 and y = 0"}
+    boundary_conditions:
+      - {region: walls, variable: v, type: dirichlet, value: 0.0}
+      - {region: ends, variable: v, type: periodic}
+      - {region: ends, variable: p, type: periodic}
+      - {region: datum, variable: p, type: dirichlet, value: 0.0}
+    coefficients:
+      ρ: {value: 1.0}
+      μ: {value: 1.0}
+      f: {formula: "(8, 0)"}
+  weak_forms:
+    - {label: galerkin, provenance: human_specified, derivation: "by parts",
+       solution_spaces: {trial: "H1² × L2", test: "H1_0² × L2"},
+       bilinear: "...", linear: "...", stabilization_method: none}
+    - {label: stabilized, provenance: human_specified, derivation: "by parts",
+       solution_spaces: {trial: "H1² × H1", test: "H1_0² × H1"},
+       bilinear: "...", linear: "...", stabilization_method: "SUPG/PSPG"}
+solution_paths:
+  analytical:
+    - {name: exact, provenance: human_specified, method: closed_form,
+       solution: {formula: "v = (4 y (1 - y), 0)\\np = 0"}}
+  discretizations:
+    - {name: th_mumps, provenance: human_specified, from_weak_form: galerkin,
+       finite_element: {velocity: {family: CG, order: 2}, pressure: {family: CG, order: 1}},
+       solver: {type: nonlinear, linear_solver: mumps}}
+    - {name: p1_superlu, provenance: human_specified, from_weak_form: stabilized,
+       finite_element: {velocity: {family: CG, order: 1}, pressure: {family: CG, order: 1}},
+       solver: {type: nonlinear, linear_solver: superlu}}
+    - {name: p1_mumps, provenance: human_specified, from_weak_form: stabilized,
+       finite_element: {velocity: {family: CG, order: 1}, pressure: {family: CG, order: 1}},
+       solver: {type: nonlinear, linear_solver: mumps}}
+"""
+
+
+def test_a_periodic_velocity_pressure_system_solves_through_mumps(tmp_path):
+    """Mixed spaces, a pinned periodic pressure, and unequal free counts.
+
+    Pressure is pinned at the periodic corners and velocity at the walls, so
+    after merging the periodic pairs the components have different numbers
+    of unknowns; Transport must not interleave them then. Taylor-Hood holds
+    this flow exactly; SUPG/PSPG must give SuperLU's errors.
+    """
+    pytest.importorskip("ymf.symbolic")
+    pytest.importorskip("strictyaml")
+    spec = tmp_path / "channel.ymf"
+    spec.write_text(PERIODIC_CHANNEL, encoding="utf-8")
+    out = ymf_run(spec, "--cells", "4", "--outdir", tmp_path)
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    errors = _errors_by_branch(out.stdout)
+    assert set(errors) == {"th_mumps", "p1_superlu", "p1_mumps"}, out.stdout[-2000:]
+    assert max(errors["th_mumps"]) < 1e-10
+    numpy.testing.assert_allclose(errors["p1_mumps"], errors["p1_superlu"], rtol=1e-6,
+                                  atol=1e-12)
 
 
 # --- regions that are not boxes: unstructured meshes of size h ----------------------
