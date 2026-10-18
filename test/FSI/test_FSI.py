@@ -61,6 +61,10 @@ class TestIBM(unittest.TestCase):
         runtime.start()
         opts = runtime.RunOptions()
         from . import fallingCylinder
+        # a fresh case, as test_fallingCylinderIBM_sdf takes: the module keeps
+        # the body and the problem of whichever test ran it last in this
+        # process, and after _sdf's run the body started 3.4 m lower
+        importlib.reload(fallingCylinder)
         from proteus import defaults
         case = fallingCylinder
         case.m['flow'].p.coefficients.use_ball_as_particle = 1.
