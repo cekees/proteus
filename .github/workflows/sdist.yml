@@ -329,8 +329,12 @@ jobs:
               done
             done ) > "$RUNNER_TEMP/runner_load.txt" 2>&1 < /dev/null &
           # The two FSI IBM tests run in their own job (see the matrix): the
-          # main suite deselects them, and the fsi suite runs only them, one
-          # per worker. These are node ids, relative to the checkout (pytest's
+          # main suite deselects them, and the fsi suite runs only them: one
+          # per worker on Linux, one after the other on macOS. Run side by
+          # side, each of them slowed down there 1.7x (Intel: sdf 1607 s
+          # against 972 s alone) to 2.8x (arm64 mpich: 1472 s against 535 s),
+          # more than running them in turn costs. These are node ids,
+          # relative to the checkout (pytest's
           # rootdir), which is what --deselect matches; run from here, the
           # same tests as arguments are ../<node id>.
           FSI_IBM_TESTS=(
@@ -338,7 +342,8 @@ jobs:
             test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_ball
           )
           if [ "${{ matrix.suite }}" = fsi ]; then
-            python -m pytest -v -n 2 --dist load --import-mode=importlib \
+            if [ "$RUNNER_OS" = macOS ]; then FSI_WORKERS=1; else FSI_WORKERS=2; fi
+            python -m pytest -v -n $FSI_WORKERS --dist load --import-mode=importlib \
               --durations=5 "${FSI_IBM_TESTS[@]/#/../}"
           else
             python -m pytest -v -n auto --dist loadgroup --import-mode=importlib \
