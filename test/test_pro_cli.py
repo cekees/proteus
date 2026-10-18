@@ -4,6 +4,7 @@ The end-to-end test runs one model with ``parun`` and with ``pro run`` and
 requires the two archives to be bitwise identical: ``pro run`` is meant to
 reproduce parun's behaviour while having its own command line.
 """
+import json
 import math
 import os
 import shutil
@@ -696,3 +697,19 @@ def test_weak_of_an_abstract_model_is_refused(tmp_path):
     _spec(tmp_path, "ymf_state: abstract\nmodel:\n  name: \"m\"\n", name="model.ymf")
     report = _weak("model.ymf", cwd=tmp_path)
     assert report["exit_status"] == 1 and "is abstract" in report["error"]
+def test_json_output_survives_what_mpi_prints_to_stdout():
+    """Open MPI's UCX layer writes an error line to stdout from C when it
+    starts on a machine whose network it cannot use (the locked py3.13 CI
+    leg), and that broke --json for any program reading the output."""
+    code = ("import os, sys\n"
+            "from proteus.cli import json_stdout\n"
+            "out = json_stdout()\n"
+            "os.write(1, b'[UCX ERROR] from C, at start-up\\n')\n"
+            "print('from Python, after')\n"
+            "print('{\"ok\": true}', file=out, flush=True)\n"
+            "os.write(1, b'[UCX] at exit\\n')\n")
+    ran = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    assert json.loads(ran.stdout) == {"ok": True}
+    assert "UCX ERROR" in ran.stderr and "from Python, after" in ran.stderr
+    assert "at exit" in ran.stderr

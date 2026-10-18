@@ -31,7 +31,7 @@ import json
 import os
 import sys
 
-from . import missing, parser_kwargs
+from . import json_stdout, missing, parser_kwargs
 
 __all__ = ["add_parser", "run", "formulations", "weak_form", "NEEDS"]
 
@@ -365,6 +365,8 @@ def run(args):
               "Install the front end with: pip install 'ymf[symbolic]'"
               .format(", ".join(absent)), file=sys.stderr)
         return 2
+    # before anything imports mpi4py: see json_stdout
+    stdout = json_stdout() if args.json else sys.stdout
     from proteus import Profiling
     if Profiling.procID is None:          # no proteus_default.log (see pro spec)
         Profiling.procID = 0
@@ -387,7 +389,8 @@ def run(args):
                 report["error"] = str(exc)
     status = 1 if report["error"] else 0
     if args.json:
-        print(json.dumps(dict(report, exit_status=status), indent=2, ensure_ascii=False))
+        print(json.dumps(dict(report, exit_status=status), indent=2, ensure_ascii=False),
+              file=stdout, flush=True)
     else:
         print(_render(report))
     return status

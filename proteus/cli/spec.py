@@ -24,7 +24,7 @@ agent driving the steps.
 import json
 import sys
 
-from . import missing, parser_kwargs
+from . import json_stdout, missing, parser_kwargs
 
 __all__ = ["add_parser", "run", "lint", "NEEDS"]
 
@@ -255,13 +255,16 @@ def run(args):
     # Writes nothing: not even the proteus_default.log Profiling opens at
     # exit when no log was ever opened. Setting procID is what
     # runtime.start does with log=None, without starting MPI and PETSc.
+    # before anything imports mpi4py: see json_stdout
+    out = json_stdout() if args.json else sys.stdout
     from proteus import Profiling
     if Profiling.procID is None:
         Profiling.procID = 0
     report = lint(args.spec, missing_units=args.missing_units)
     status = _exit_status(report, args.require)
     if args.json:
-        print(json.dumps(dict(report, exit_status=status), indent=2, ensure_ascii=False))
+        print(json.dumps(dict(report, exit_status=status), indent=2, ensure_ascii=False),
+              file=out, flush=True)
     else:
         print(_render(report))
     return status

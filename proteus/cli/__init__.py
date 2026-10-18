@@ -17,7 +17,7 @@ import argparse
 import importlib.util
 import sys
 
-__all__ = ["main", "build_parser", "missing"]
+__all__ = ["main", "build_parser", "missing", "json_stdout"]
 
 #: subcommand -> module in this package; each module defines
 #: ``add_parser(subparsers)`` and ``run(args) -> int``
@@ -50,6 +50,24 @@ def missing(*modules):
         if not found:
             absent.append(name)
     return absent
+
+
+def json_stdout():
+    """A text stream on the process's stdout, kept for output a program reads
+    (``--json``), with file descriptor 1 pointed at stderr from here on.
+
+    MPI stacks write diagnostics to stdout from C -- Open MPI's UCX layer,
+    for one, when it starts on a machine whose network it cannot use -- and
+    a Python-level redirect of ``sys.stdout`` does not reach them. Call this
+    before importing anything that starts MPI; whatever is printed after it,
+    by Python or by C, at start-up or at exit, goes to stderr, and only what
+    is written to the returned stream reaches stdout.
+    """
+    import os
+    sys.stdout.flush()
+    kept = os.dup(1)
+    os.dup2(2, 1)
+    return os.fdopen(kept, "w", encoding="utf-8")
 
 
 def parser_kwargs():
