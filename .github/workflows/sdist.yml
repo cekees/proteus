@@ -230,6 +230,18 @@ jobs:
           # inheriting it aborted in leggauss at collection on arm64 macOS.)
           export OPENBLAS_NUM_THREADS=1
           export OMP_NUM_THREADS=1
+          # conda-forge's MPICH runs over libfabric (ch4:ofi), and on macOS
+          # libfabric picks its "sockets" provider, whose two connection
+          # threads (sock_conn_listener_thread, sock_ep_cm_thread) busy-poll
+          # kevent at 100% CPU each, from MPI_Init on, in every process, even
+          # a single-rank one. So every MPICH process held three cores, half
+          # of it system time, and the 3-vCPU arm64 runner ran each test 2-7x
+          # slower whenever more than one ran. Seen with MPICH 4.3.2, 5.0.1
+          # and 5.0.2 and libfabric 2.2.0 and 2.6.0. The tcp provider has no
+          # such threads (one thread, no system time, multi-rank jobs fine).
+          case "${{ matrix.leg.env_file }}" in
+            *mpich*) export FI_PROVIDER=tcp ;;
+          esac
           mkdir test_output && cd test_output
           # These are known-failing (real numerics/environment issues, not
           # collection errors) and deliberately left unskipped in source so
