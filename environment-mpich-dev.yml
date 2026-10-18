@@ -24,6 +24,12 @@
 # own caveat: OpenMPI is not fork()-safe, so whole-suite `pytest --forked` runs
 # can show unrelated SIGSEGV crashes that don't occur when running test files
 # individually).
+#
+# macOS: export FI_PROVIDER=tcp. MPICH runs over libfabric, whose default
+# provider there ("sockets") busy-polls two threads at 100% CPU in every
+# process from MPI_Init on, about three cores per rank. `import proteus` sets
+# it on macOS unless it is already set; see README.md, "Choosing between
+# OpenMPI and MPICH".
 name: proteus-dev-mpich
 channels:
   - conda-forge
