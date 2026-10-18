@@ -4,6 +4,7 @@ The end-to-end test runs one model with ``parun`` and with ``pro run`` and
 requires the two archives to be bitwise identical: ``pro run`` is meant to
 reproduce parun's behaviour while having its own command line.
 """
+import json
 import math
 import os
 import shutil
@@ -447,3 +448,138 @@ def test_msh_and_status_point_a_spec_at_its_emitted_files(tmp_path, command):
     out = pro(command, "spec.ymf", cwd=tmp_path)
     assert out.returncode == 2
     assert "pro run spec.ymf --emit-pn" in out.stderr
+
+
+# --- pro spec: the linter --------------------------------------------------------
+
+
+def _spec(tmp_path, text=POISSON_SPEC, name="poisson.ymf"):
+    pytest.importorskip("ymf.symbolic")
+    pytest.importorskip("strictyaml")
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _report(*args, cwd):
+    import json
+    out = pro("spec", "--json", *args, cwd=cwd)
+    report = json.loads(out.stdout)
+    assert report["exit_status"] == out.returncode, out.stderr[-2000:]
+    return report
+
+
+def test_spec_reports_a_well_posed_spec_and_writes_nothing(tmp_path):
+    _spec(tmp_path)
+    out = pro("spec", "poisson.ymf", cwd=tmp_path)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "state: well-posed" in out.stdout
+    assert "P1: runs, given a mesh (--cells or --h)" in out.stdout
+    assert sorted(os.listdir(tmp_path)) == ["poisson.ymf"]
+
+
+def test_spec_json_is_the_same_report_as_data(tmp_path):
+    _spec(tmp_path, POISSON_SPEC.replace(
+        "      solver: {type: linear}\n",
+        "      mesh: {cells: [4, 8]}\n      solver: {type: linear}\n"))
+    report = _report("poisson.ymf", cwd=tmp_path)
+    assert report["state"] == "discretized" and report["name"] == "Poisson"
+    assert report["adr"] == {"unknowns": {"u": ["u"]}, "dimension": 2,
+                             "time_dependent": False, "up_to_constant": [],
+                             "periodic": []}
+    assert report["discretizations"] == {"P1": "runs: 2 outputs"}
+    assert not [i for i in report["issues"] if i["severity"] == "error"]
+
+
+def test_spec_names_the_line_of_a_schema_error(tmp_path):
+    _spec(tmp_path, POISSON_SPEC.replace("type: dirichlet", "type: dirichelt"))
+    report = _report("poisson.ymf", cwd=tmp_path)
+    (issue,) = report["issues"]
+    assert issue["check"] == "schema" and issue["severity"] == "error"
+    assert issue["location"].endswith("poisson.ymf:11"), issue
+    assert report["state"] is None and report["exit_status"] == 1
+
+
+def test_spec_reports_notation_it_cannot_read(tmp_path):
+    _spec(tmp_path, POISSON_SPEC.replace("-Δu = 2π² sin(πx) sin(πy)",
+                                         "-Δu = 2π² sin πx sin(πy)"))
+    report = _report("poisson.ymf", cwd=tmp_path)
+    (issue,) = [i for i in report["issues"] if i["check"] == "adr"]
+    assert issue["severity"] == "error" and "sin(x)" in issue["message"]
+    assert report["exit_status"] == 1
+
+
+def test_spec_says_which_branches_pro_run_would_skip(tmp_path):
+    _spec(tmp_path, POISSON_SPEC.replace(
+        "      solver: {type: linear}\n",
+        "      solver: {type: linear, linear_solver: umfpack}\n"
+        "    - {name: P1_dg, provenance: human_specified, from_weak_form: galerkin,\n"
+        "       finite_element: {fields: {family: RT, order: 1}}, solver: {type: linear}}\n"))
+    report = _report("poisson.ymf", cwd=tmp_path)
+    assert report["discretizations"]["P1"] == "skipped"
+    found = {i["location"]: i["message"] for i in report["issues"]
+             if i["check"] == "discretization"}
+    assert "has no Proteus solver" in found["solution_paths.discretizations[P1]"]
+    assert report["exit_status"] == 0          # a skipped branch warns; it is not an error
+
+
+def test_spec_refuses_a_state_the_content_does_not_reach(tmp_path):
+    _spec(tmp_path, "ymf_state: discretized\n" + POISSON_SPEC)
+    report = _report("poisson.ymf", cwd=tmp_path)
+    (issue,) = [i for i in report["issues"] if i["check"] == "state"]
+    assert "declares ymf_state: discretized, but it is only well-posed" in issue["message"]
+    assert report["exit_status"] == 1
+
+
+def test_spec_of_an_abstract_model_passes_only_when_asked(tmp_path):
+    _spec(tmp_path, """\
+ymf_state: abstract
+model:
+  strong_form:
+    provenance: human_specified
+    unknowns: [u]
+    equation_formulation: "Poisson"
+    equations: ["-Δu = f  in Ω"]
+""", name="model.ymf")
+    out = pro("spec", "model.ymf", cwd=tmp_path)
+    assert out.returncode == 1 and "a model to be extended" in out.stdout
+    assert pro("spec", "model.ymf", "--require", "abstract", cwd=tmp_path).returncode == 0
+
+
+def test_spec_reports_a_generated_file_that_was_edited(tmp_path):
+    """ymf.generated (ymf >= cekees/ymf#14): a tool-written file someone edited."""
+    generated = pytest.importorskip("ymf.generated")
+    import copy
+    from ymf.compose import load_composed
+    _spec(tmp_path)
+    parent = load_composed(tmp_path / "poisson.ymf")
+    weak = dict(copy.deepcopy(parent["model"]["weak_forms"][0]),
+                label="galerkin_2", provenance="proteus_derived")
+    generated.write(tmp_path / "poisson.weak.ymf", "poisson.ymf", "pro weak (test)",
+                    "model_without_weak_forms", parent, {"model": {"weak_forms": [weak]}})
+    assert not [i for i in _report("poisson.weak.ymf", cwd=tmp_path)["issues"]
+                if i["check"] == "generated"]
+    path = tmp_path / "poisson.weak.ymf"
+    path.write_text(path.read_text(encoding="utf-8").replace("proteus_derived", "human_edited"),
+                    encoding="utf-8")
+    (issue,) = [i for i in _report("poisson.weak.ymf", cwd=tmp_path)["issues"]
+                if i["check"] == "generated"]
+    assert issue["severity"] == "warning" and "edited since pro weak (test)" in issue["message"]
+
+
+def test_json_output_survives_what_mpi_prints_to_stdout():
+    """Open MPI's UCX layer writes an error line to stdout from C when it
+    starts on a machine whose network it cannot use (the locked py3.13 CI
+    leg), and that broke --json for any program reading the output."""
+    code = ("import os, sys\n"
+            "from proteus.cli import json_stdout\n"
+            "out = json_stdout()\n"
+            "os.write(1, b'[UCX ERROR] from C, at start-up\\n')\n"
+            "print('from Python, after')\n"
+            "print('{\"ok\": true}', file=out, flush=True)\n"
+            "os.write(1, b'[UCX] at exit\\n')\n")
+    ran = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    assert json.loads(ran.stdout) == {"ok": True}
+    assert "UCX ERROR" in ran.stderr and "from Python, after" in ran.stderr
+    assert "at exit" in ran.stderr
