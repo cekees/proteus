@@ -73,14 +73,15 @@ jobs:
             os: macos-15
             python: "3.12.5"
             env_file: environment-mpich-dev.yml
-          # TEMPORARY, remove before merging: the same leg with each test in a
-          # fork of its worker, to tell whether the 3x per-test slowdown this
-          # leg shows under xdist comes from long-lived worker processes.
-          - name: macos-15 (Apple Silicon) / py3.12 / xdist --forked (temporary)
+          # TEMPORARY, remove before merging: the same leg on the openmpi
+          # environment file, to tell whether the 2-7x per-test slowdown the
+          # mpich leg shows under xdist comes from MPICH. (A --forked variant
+          # ran 33.7 min against 34.0 without, so it is not the long-lived
+          # worker processes.)
+          - name: macos-15 (Apple Silicon) / py3.12 / openmpi (temporary)
             os: macos-15
             python: "3.12.5"
-            env_file: environment-mpich-dev.yml
-            pytest_extra: --forked
+            env_file: environment-openmpi-dev.yml
     name: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
@@ -290,26 +291,38 @@ jobs:
           # hands out every multi-test xdist_group ahead of them.
           #
           # The sampler records what the runner is doing while the tests run
-          # (busiest processes, memory, swap); the next step prints it.
-          ( while sleep 60; do
+          # (load, CPU user/sys split, busiest processes and their thread
+          # counts, memory); the next step prints it. It is left running, not
+          # killed: the runner reaps it at the end of the job, and pytest
+          # stays this step's last command, so its status is the step's.
+          # (Two earlier versions failed the step after every test had
+          # passed: an "exit $status", which on Ubuntu goes through
+          # ~/.bash_logout in this login shell, and a "kill" of a sampler
+          # that had already died on "ps | head"'s broken pipe on macOS.)
+          ( set +e
+            P="$RUNNER_TEMP/ps.txt"
+            while sleep 30; do
               echo "=== $(date -u +%H:%M:%S) $(uptime)"
               if [ "$RUNNER_OS" = macOS ]; then
-                sysctl -n vm.swapusage
-                top -l 1 -n 0 | grep -E '^(PhysMem|VM|Swap)'
-                ps -Ao pid,ppid,pcpu,rss,etime,command -r | head -8 | cut -c1-160
+                top -l 1 -n 0 > "$RUNNER_TEMP/top.txt"
+                grep -E '^(Load|CPU usage|PhysMem|VM)' "$RUNNER_TEMP/top.txt"
+                ps -Ao pid,ppid,pcpu,rss,etime,command -r > "$P"
               else
                 free -m | sed -n 1,3p
-                ps -eo pid,ppid,pcpu,rss,etime,args --sort=-pcpu | head -8 | cut -c1-160
+                ps -eo pid,ppid,pcpu,rss,etime,args --sort=-pcpu > "$P"
               fi
-            done ) > "$RUNNER_TEMP/runner_load.txt" 2>&1 &
-          # Stopped by a trap, with pytest left as the last command, because
-          # this shell is a login shell (bash -l): there the exit builtin runs
-          # ~/.bash_logout, and on the Ubuntu runners that file's last test
-          # returns 1, which bash takes as the step's exit status. An explicit
-          # "exit $status" failed all three Linux legs on 824 passed.
-          trap "kill $! 2>/dev/null" EXIT
+              sed -n 1,8p "$P" | cut -c1-160
+              for pid in $(sed -n 2,5p "$P" | awk '{print $1}'); do
+                if [ "$RUNNER_OS" = macOS ]; then
+                  n=$(ps -M -p "$pid" | sed 1d | wc -l)
+                else
+                  n=$(ls /proc/"$pid"/task 2>/dev/null | wc -l)
+                fi
+                echo "threads of $pid: $n"
+              done
+            done ) > "$RUNNER_TEMP/runner_load.txt" 2>&1 < /dev/null &
           python -m pytest -v -n auto --dist loadgroup --no-loadscope-reorder \
-            --import-mode=importlib --durations=30 ${{ matrix.pytest_extra }} \
+            --import-mode=importlib --durations=30 \
             "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" ../test
 
       - name: Show runner load during the tests
