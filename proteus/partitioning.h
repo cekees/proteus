@@ -2,6 +2,8 @@
 #define PARTITIONING_H
 #include <iostream>
 #include <valarray>
+#include <vector>
+#include <cstdlib>
 #include <iterator>
 #include "mpi.h"
 #include "hdf5.h"
@@ -170,6 +172,63 @@ namespace proteus
       return 0;
     return PetscInitializeNoArguments();
   }
+
+  /* Wall-clock time of each stage of a partitioner, reported (the maximum over
+     ranks) on rank 0 when PROTEUS_PARTITION_TIMING is set in the environment.
+     This replaces what PetscLogEvent would record, without PETSc. */
+  class StageTimer
+  {
+  public:
+    StageTimer(const MPI_Comm& comm, const char* name)
+      : comm_(comm), name_(name), last_(MPI_Wtime()), on_(std::getenv("PROTEUS_PARTITION_TIMING") != NULL) {}
+    void mark(const char* stage)
+    {
+      const double now = MPI_Wtime();
+      stages_.push_back(stage);
+      seconds_.push_back(now - last_);
+      last_ = now;
+    }
+    void report()
+    {
+      if (!on_)
+        return;
+      int rank;
+      MPI_Comm_rank(comm_,&rank);
+      std::vector<double> worst(seconds_.size());
+      MPI_Reduce(seconds_.data(),worst.data(),int(seconds_.size()),MPI_DOUBLE,MPI_MAX,0,comm_);
+      if (rank == 0)
+        {
+          std::cout<<"PARTITION_TIMING "<<name_;
+          for (size_t i = 0; i < stages_.size(); i++)
+            std::cout<<" "<<stages_[i]<<"="<<worst[i];
+          std::cout<<std::endl;
+        }
+    }
+  private:
+    MPI_Comm comm_;
+    const char* name_;
+    double last_;
+    bool on_;
+    std::vector<const char*> stages_;
+    std::vector<double> seconds_;
+  };
+
+  /* A regular quadrilateral (nNodes_element 4) or hexahedral (8) grid of
+     nn[0] x nn[1] (x nn[2]) nodes on [0,L], generated directly as this rank's
+     subdomain of the rankGrid partition: the subdomain mesh (mesh.subdomainp),
+     offsets and subdomain-to-global maps that partitionNodes gives for the
+     global grid from the rectangular-grid generators and
+     MeshTools.cartesianNodeOwners, without the global mesh. mesh keeps only
+     the global counts. See cartesianPartitioning.cpp. */
+  extern int generateCartesianSubdomain(const MPI_Comm& PROTEUS_COMM_WORLD, int nNodes_element, const int* nn,
+                                        const double* L, const int* rankGrid, int nLayersOfOverlap, Mesh& mesh);
+  /* The new numbers of nodes (elements != 0: elements) of that partition,
+     from their old ones: the permutation partitionNodes keeps as
+     nodeNumbering_global_old2new, as a function. */
+  extern int cartesianNumbering(int nNodes_element, const int* nn, const int* rankGrid, int elements,
+                                int n, const int* oldNumbers, int* newNumbers);
+  /* Global numbers of nodes, elements, element boundaries and edges. */
+  extern int cartesianGlobalCounts(int nNodes_element, const int* nn, int* counts);
 
   extern int partitionElementsOriginal(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nElements_overlap);
 

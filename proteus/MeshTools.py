@@ -519,6 +519,56 @@ def cartesianRankGrid(nnx, nny, nnz, size):
         raise ValueError("a %d x %d x %d node grid cannot be cut among %d ranks" % (nnx, nny, nnz, size))
     return best[1]
 
+def cartesianSubdomain(kind, nn, L, rankGrid=None, nLayersOfOverlap=1):
+    """This rank's piece of a regular grid, generated without the global mesh.
+
+    kind is 'quad' or 'hex', nn the node counts (nnx, nny[, nnz]) and L the
+    lengths, as for generateQuadrilateralMeshFromRectangularGrid and
+    generateHexahedralMeshFromRectangularGrid. Returns a mesh that stands for
+    the global one -- the global counts only, no arrays -- with subdomainMesh
+    and the partition's offsets and subdomain-to-global maps set exactly as
+    partitionMesh sets them for that global mesh and the node owners
+    cartesianNodeOwners gives for rankGrid (default cartesianRankGrid).
+    nodeOld2New and elementOld2New map generator numbers to the partition's,
+    in place of the nodeNumbering_global_old2new and
+    elementNumbering_global_old2new arrays.
+    """
+    from . import cmeshTools, cpartitioning, Comm
+    comm = Comm.get()
+    nNodes_element = {'quad': 4, 'hex': 8}[kind]
+    nn = tuple(nn) + (1,) * (3 - len(nn))
+    L = tuple(L) + (1.0,) * (3 - len(L))
+    if rankGrid is None:
+        rankGrid = cartesianRankGrid(nn[0], nn[1], nn[2] if kind == 'hex' else 1, comm.size())
+    rankGrid = tuple(rankGrid)
+    mesh = QuadrilateralMesh() if kind == 'quad' else HexahedralMesh()
+    mesh.comm = comm
+    mesh.cmesh = cmeshTools.CMesh()
+    mesh.subdomainMesh = mesh.__class__()
+    mesh.subdomainMesh.globalMesh = mesh
+    mesh.subdomainMesh.cmesh = cmeshTools.CMesh()
+    mesh.nLayersOfOverlap = nLayersOfOverlap
+    mesh.parallelPartitioningType = MeshParallelPartitioningTypes.node
+    (mesh.elementOffsets_subdomain_owned,
+     mesh.elementNumbering_subdomain2global,
+     mesh.nodeOffsets_subdomain_owned,
+     mesh.nodeNumbering_subdomain2global,
+     mesh.elementBoundaryOffsets_subdomain_owned,
+     mesh.elementBoundaryNumbering_subdomain2global,
+     mesh.edgeOffsets_subdomain_owned,
+     mesh.edgeNumbering_subdomain2global) = cpartitioning.generateCartesianSubdomain(
+         comm.comm.tompi4py(), nNodes_element, nn, L, rankGrid, nLayersOfOverlap,
+         mesh.cmesh, mesh.subdomainMesh.cmesh)
+    (mesh.nNodes_global, mesh.nElements_global,
+     mesh.nElementBoundaries_global, mesh.nEdges_global) = cpartitioning.cartesianGlobalCounts(nNodes_element, nn)
+    mesh.rankGrid = rankGrid
+    mesh.nodeNumbering_global_old2new = None
+    mesh.elementNumbering_global_old2new = None
+    mesh.nodeOld2New = lambda old: cpartitioning.cartesianNumbering(nNodes_element, nn, rankGrid, False, old)
+    mesh.elementOld2New = lambda old: cpartitioning.cartesianNumbering(nNodes_element, nn, rankGrid, True, old)
+    mesh._finishPartitioning(comm)
+    return mesh
+
 def cartesianNodeOwners(nnx, nny, nnz, rankGrid=None, size=None, fastest='x'):
     """The rank that owns each node of a regular nnx x nny x nnz node grid cut into bricks.
 
@@ -696,6 +746,12 @@ class Mesh(object):
         #nodeNumbering_subdomain2global refers to.
         self.nodeNumbering_global_old2new = cpartitioning.getNodeNumbering_global_old2new(self.cmesh)
         self.elementNumbering_global_old2new = cpartitioning.getElementNumbering_global_old2new(self.cmesh)
+        self._finishPartitioning(comm)
+
+    def _finishPartitioning(self,comm):
+        """What every partitioner does once the C++ has built the subdomain mesh
+        and the maps: the Python view of the subdomain, the owned counts, and
+        the node diameters on the ghosts."""
         self.subdomainMesh.buildFromC(self.subdomainMesh.cmesh)
         self.subdomainMesh.nElements_owned = self.elementOffsets_subdomain_owned[comm.rank()+1] - self.elementOffsets_subdomain_owned[comm.rank()]
         self.subdomainMesh.nNodes_owned = self.nodeOffsets_subdomain_owned[comm.rank()+1] - self.nodeOffsets_subdomain_owned[comm.rank()]

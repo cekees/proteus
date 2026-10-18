@@ -6,7 +6,7 @@ global mesh and partitions it, as proteus does today, and this reports the
 wall-clock time of each step (the maximum over ranks) and the peak resident
 memory per rank.
 
-Usage: partition_scaling_mpi.py KIND NNX NNY NNZ LEVELS [graph|cartesian]
+Usage: partition_scaling_mpi.py KIND NNX NNY NNZ LEVELS [graph|cartesian|generated]
 
 KIND     tri, tet, quad or hex; NNX NNY NNZ are coarsest-level node counts
          (NNZ is ignored in 2D)
@@ -14,7 +14,9 @@ LEVELS   1: generate one mesh and partition it by nodes, timed separately;
          >1: the MultilevelXMesh constructor, with generation, hierarchy
          construction and partitioning of the levels timed separately
 owners   graph (default): the graph partitioner; cartesian: node bricks from
-         MeshTools.cartesianNodeOwners on the coarsest level
+         MeshTools.cartesianNodeOwners on the coarsest level; generated: no
+         global mesh, MeshTools.cartesianSubdomain (quad or hex, LEVELS 1),
+         timed as part
 
 Set PROTEUS_PARTITION_TIMING=1 to also get the partitioner's own stage timings
 (PARTITION_TIMING lines, one per partitioned mesh).
@@ -65,7 +67,11 @@ if ownersKind == 'cartesian':
     MeshTools.MultilevelMesh.coarsestLevelOwners = staticmethod(
         lambda mesh, partitioningType: MeshTools.cartesianNodeOwners(nnx, nny, nnz, fastest=fastest))
 start = time.perf_counter()
-if nLevels == 1:
+if ownersKind == 'generated':
+    assert nLevels == 1 and kind in ('quad', 'hex'), "generated: one level of quads or hexes"
+    finest = timed('part', MeshTools.cartesianSubdomain)(
+        kind, (nnx, nny, nnz)[:2 if kind == 'quad' else 3], L[:2 if kind == 'quad' else 3])
+elif nLevels == 1:
     mesh = {'tri': MeshTools.TriangularMesh, 'quad': MeshTools.QuadrilateralMesh,
             'tet': MeshTools.TetrahedralMesh, 'hex': MeshTools.HexahedralMesh}[kind]()
     gen = {'tri': lambda: mesh.generateTriangularMeshFromRectangularGrid(nnx, nny, L[0], L[1]),

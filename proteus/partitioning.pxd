@@ -5,6 +5,16 @@ cimport mesh
 cdef extern from "partitioning.h" namespace "proteus":
     extern int c_ensurePetscInitialized "proteus::ensurePetscInitialized" ()
     extern bint c_petscIsInitialized "proteus::petscIsInitialized" ()
+    extern int c_generateCartesianSubdomain "proteus::generateCartesianSubdomain" (const MPI_Comm& PROTEUS_COMM_WORLD,
+                                                                                   int nNodes_element,
+                                                                                   const int* nn,
+                                                                                   const double* L,
+                                                                                   const int* rankGrid,
+                                                                                   int nLayersOfOverlap,
+                                                                                   mesh.Mesh& mesh)
+    extern int c_cartesianNumbering "proteus::cartesianNumbering" (int nNodes_element, const int* nn, const int* rankGrid,
+                                                                   int elements, int n, const int* oldNumbers, int* newNumbers)
+    extern int c_cartesianGlobalCounts "proteus::cartesianGlobalCounts" (int nNodes_element, const int* nn, int* counts)
     extern int c_partitionNodes "proteus::partitionNodes" (const MPI_Comm& PROTEUS_COMM_WORLD,
                                                            mesh.Mesh& mesh,
                                                            int nNodes_overlap,

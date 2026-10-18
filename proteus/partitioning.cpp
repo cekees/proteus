@@ -32,46 +32,6 @@ void warnIfNotRepartitioning(const MPI_Comm& comm, MatPartitioning part)
     }
 }
 
-/* Wall-clock time of each stage of a partitioner, reported (the maximum over
-   ranks) on rank 0 when PROTEUS_PARTITION_TIMING is set in the environment.
-   This replaces what PetscLogEvent would record, without PETSc. */
-class StageTimer
-{
-public:
-  StageTimer(const MPI_Comm& comm, const char* name)
-    : comm_(comm), name_(name), last_(MPI_Wtime()), on_(std::getenv("PROTEUS_PARTITION_TIMING") != NULL) {}
-  void mark(const char* stage)
-  {
-    const double now = MPI_Wtime();
-    stages_.push_back(stage);
-    seconds_.push_back(now - last_);
-    last_ = now;
-  }
-  void report()
-  {
-    if (!on_)
-      return;
-    int rank;
-    MPI_Comm_rank(comm_,&rank);
-    std::vector<double> worst(seconds_.size());
-    MPI_Reduce(seconds_.data(),worst.data(),int(seconds_.size()),MPI_DOUBLE,MPI_MAX,0,comm_);
-    if (rank == 0)
-      {
-        std::cout<<"PARTITION_TIMING "<<name_;
-        for (size_t i = 0; i < stages_.size(); i++)
-          std::cout<<" "<<stages_[i]<<"="<<worst[i];
-        std::cout<<std::endl;
-      }
-  }
-private:
-  MPI_Comm comm_;
-  const char* name_;
-  double last_;
-  bool on_;
-  std::vector<const char*> stages_;
-  std::vector<double> seconds_;
-};
-
 /* partitionNodes and partitionElements once ran on PETSc index sets and bit
    arrays: ISPartitioningCount, ISPartitioningToNumbering and ISAllGather to
    number the entities each rank owns, and PetscBT masks passed from rank r-1
