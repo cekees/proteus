@@ -27,13 +27,12 @@ COMMANDS = {
     "status": "status",
     "shell": "shell",
     "spec": "spec",
+    "weak": "weak",
 }
 
 #: front-end subcommands -> (help, modules they import); not implemented
 #: yet, but listed so the help shows where they will go
 FRONTEND = {
-    "weak": ("fill a spec's weak forms from Proteus-supported formulations",
-             ("ymf.symbolic", "sympy")),
     "disc": ("fill a spec's discretizations and numerical parameters",
              ("ymf.symbolic", "sympy")),
 }

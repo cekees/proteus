@@ -51,7 +51,7 @@ def test_typo_suggests_the_command():
 
 
 def test_frontend_command_explains_itself():
-    out = pro("weak")
+    out = pro("disc")
     assert out.returncode == 2
     if missing("ymf.symbolic", "sympy"):
         assert "ymf[symbolic]" in out.stderr
@@ -564,3 +564,135 @@ def test_spec_reports_a_generated_file_that_was_edited(tmp_path):
     (issue,) = [i for i in _report("poisson.weak.ymf", cwd=tmp_path)["issues"]
                 if i["check"] == "generated"]
     assert issue["severity"] == "warning" and "edited since pro weak (test)" in issue["message"]
+
+
+# --- pro weak: the weak forms Proteus would solve -------------------------------
+
+CHANNEL_SPEC = """\
+model:
+  name: "Channel"
+  physical_model: {provenance: human_specified}
+  strong_form:
+    provenance: human_specified
+    unknowns: [{name: v, rank: 1}, p]
+    equation_formulation: "Navier-Stokes"
+    equations:
+      - "ρ ∂v/∂t + ∇·(ρ v⊗v) − μΔv + ∇p = 0  in Ω"
+      - "∇·v = 0  in Ω"
+    domain: "Ω = [0, 4] × [0, 1]"
+    boundary_regions: [{name: walls, where: "∂Ω"}]
+    boundary_conditions:
+      - {region: walls, variable: v, type: dirichlet, formula: "(4 y (1 - y), 0)"}
+    coefficients:
+      ρ: {value: 1.0}
+      μ: {value: 1.0}
+solution_paths:
+  analytical: []
+  discretizations:
+    - name: P2P1
+      provenance: human_specified
+      finite_element: {velocity: {family: CG, order: 2}, pressure: {family: CG, order: 1}}
+      solver: {type: nonlinear}
+"""
+
+
+def _weak(*args, cwd):
+    import json
+    out = pro("weak", "--json", *args, cwd=cwd)
+    report = json.loads(out.stdout)
+    assert report["exit_status"] == out.returncode, out.stderr[-2000:]
+    return report
+
+
+def test_weak_list_says_what_applies_and_writes_nothing(tmp_path):
+    _spec(tmp_path)
+    report = _weak("poisson.ymf", "--list", cwd=tmp_path)
+    applies = {f["label"]: f["applies"] for f in report["formulations"]}
+    assert applies == {"proteus_galerkin": True, "proteus_supg_pspg": False}
+    why = [f["why"] for f in report["formulations"] if not f["applies"]][0]
+    assert "velocity-pressure" in why
+    assert report["written"] is None and sorted(os.listdir(tmp_path)) == ["poisson.ymf"]
+
+
+def test_weak_writes_a_generated_file_that_composes(tmp_path):
+    from ymf import generated
+    from ymf.compose import load_composed
+    _spec(tmp_path)
+    report = _weak("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 0 and report["written"].endswith("poisson.weak.ymf")
+    path = tmp_path / "poisson.weak.ymf"
+    assert generated.check(path).current
+    doc = load_composed(path)
+    (weak,) = [w for w in doc["model"]["weak_forms"] if w["label"] == "proteus_galerkin"]
+    assert weak["bilinear"] == "u: ∫Ω ∇u·∇w dx"
+    assert weak["linear"] == "u: ∫Ω 2 π² sin(π x) sin(π y) w dx"
+    assert weak["provenance"] == "proteus_derived"
+    assert weak["solution_spaces"] == {"trial": "H1(Ω)", "test": "H1_0(Ω)"}
+    assert pro("spec", "poisson.weak.ymf", cwd=tmp_path).returncode == 0
+
+
+def test_weak_writes_both_formulations_of_a_velocity_pressure_system(tmp_path):
+    from ymf.compose import load_composed
+    _spec(tmp_path, CHANNEL_SPEC.replace(CHANNEL_SPEC[CHANNEL_SPEC.index("    - name: P2P1"):],
+                                         "").replace("  discretizations:\n",
+                                                     "  discretizations: []\n"),
+          name="channel.ymf")
+    report = _weak("channel.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 0, report["error"]
+    forms = {w["label"]: w for w in
+             load_composed(tmp_path / "channel.weak.ymf")["model"]["weak_forms"]}
+    assert set(forms) == {"proteus_galerkin", "proteus_supg_pspg"}
+    assert forms["proteus_galerkin"]["solution_spaces"]["trial"] == "H1(Ω)² × L2(Ω)"
+    assert forms["proteus_supg_pspg"]["solution_spaces"]["trial"] == "H1(Ω)² × H1(Ω)"
+    assert forms["proteus_galerkin"]["bilinear"].splitlines()[2] == "p: - ∫Ω (v_0, v_1)·∇q dx"
+    assert "Σ_K τ_K" in forms["proteus_supg_pspg"]["bilinear"]
+    assert forms["proteus_supg_pspg"]["stabilization_method"] == "SUPG/PSPG"
+
+
+def test_weak_will_not_make_a_discretization_ambiguous(tmp_path):
+    """The spec cannot name a weak form only the generated file has."""
+    from ymf.compose import load_composed
+    _spec(tmp_path, CHANNEL_SPEC, name="channel.ymf")
+    report = _weak("channel.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "P2P1 names no weak form" in report["error"]
+    assert "--only" in report["error"] and not (tmp_path / "channel.weak.ymf").exists()
+    report = _weak("channel.ymf", "--only", "proteus_galerkin", cwd=tmp_path)
+    assert report["exit_status"] == 0, report["error"]
+    doc = load_composed(tmp_path / "channel.weak.ymf")
+    (entry,) = doc["solution_paths"]["discretizations"]
+    assert entry["from_weak_form"] == "proteus_galerkin"      # the only one: defaulted
+
+
+def test_weak_regenerates_its_own_file_but_not_an_edited_one(tmp_path):
+    _spec(tmp_path)
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0      # unchanged: regenerated
+    path = tmp_path / "poisson.weak.ymf"
+    path.write_text(path.read_text(encoding="utf-8").replace("proteus_derived", "human_edited"),
+                    encoding="utf-8")
+    report = _weak("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "was edited since" in report["error"]
+    assert "human_edited" in path.read_text(encoding="utf-8")         # left alone
+    assert _weak("poisson.ymf", "--force", cwd=tmp_path)["exit_status"] == 0
+    assert "human_edited" not in path.read_text(encoding="utf-8")
+
+
+def test_weak_will_not_overwrite_a_file_no_tool_wrote(tmp_path):
+    _spec(tmp_path)
+    (tmp_path / "poisson.weak.ymf").write_text("model: {name: mine}\n", encoding="utf-8")
+    report = _weak("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "not written by a tool" in report["error"]
+
+
+def test_weak_only_writes_what_applies(tmp_path):
+    _spec(tmp_path)
+    report = _weak("poisson.ymf", "--only", "proteus_supg_pspg", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "does not apply" in report["error"]
+    report = _weak("poisson.ymf", "--only", "nonesuch", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "no formulation nonesuch" in report["error"]
+
+
+def test_weak_of_an_abstract_model_is_refused(tmp_path):
+    _spec(tmp_path, "ymf_state: abstract\nmodel:\n  name: \"m\"\n", name="model.ymf")
+    report = _weak("model.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "is abstract" in report["error"]

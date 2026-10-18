@@ -485,6 +485,30 @@ def velocity_pressure(problem):
     return vectors[0], scalars[0]
 
 
+def check_stabilization(problem, stabilization):
+    """The stabilization, normalized, if Proteus can install it for this problem.
+
+    Raises ValueError saying why not otherwise. Shared by :func:`numerics`
+    and ``pro weak``, which offers a formulation only where it would run.
+    """
+    stabilization = (stabilization or "none").lower()
+    if stabilization not in STABILIZATIONS:
+        raise ValueError("stabilization %r is not wired up (have %s)"
+                         % (stabilization, ", ".join(STABILIZATIONS)))
+    if stabilization == "supg/pspg":
+        velocity, _ = velocity_pressure(problem)
+        # The stabilization reads the density from the momentum equations'
+        # mass coefficient (dm), so they need their ρ ∂v/∂t term even when
+        # the solve is steady (which drops it).
+        missing = [eq["component"] for eq in problem["adr"]["equations"]
+                   if eq["component"] in velocity and "mass" not in eq]
+        if missing:
+            raise ValueError("SUPG/PSPG takes the density from the time derivative "
+                             "ρ ∂v/∂t, which the equations for %s lack; include it "
+                             "(a steady solve drops it)" % ", ".join(missing))
+    return stabilization
+
+
 #: PETSc options for a singular operator (a constant in its null space)
 NULL_SPACE_SOLVER = {"ksp_type": "gmres", "pc_type": "lu",
                      "pc_factor_mat_solver_type": "mumps", "mat_mumps_icntl_24": "1",
@@ -621,24 +645,13 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None,
         n.numericalFluxType = NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG_exterior \
             if all(f == "CG" for f, _ in spaces.values()) else \
             NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG
-    stabilization = (stabilization or "none").lower()
-    if stabilization not in STABILIZATIONS:
-        raise ValueError("stabilization %r is not wired up (have %s)"
-                         % (stabilization, ", ".join(STABILIZATIONS)))
+    stabilization = check_stabilization(problem, stabilization)
     if stabilization == "supg/pspg":
         from proteus import SubgridError
         velocity, pressure = velocity_pressure(problem)
         if names[0] != pressure or names[1:1 + dim] != velocity:
             raise ValueError("SUPG/PSPG needs the pressure first, then the velocity "
                              "(reorder the problem); got %s" % names)
-        # The stabilization reads the density from the momentum equations'
-        # mass coefficient (dm), so they need their ρ ∂v/∂t term even when
-        # the solve is steady (which drops it).
-        missing = [c for c, eq in zip(names, adr["equations"]) if c in velocity and "mass" not in eq]
-        if missing:
-            raise ValueError("SUPG/PSPG takes the density from the time derivative "
-                             "ρ ∂v/∂t, which the equations for %s lack; include it "
-                             "(a steady solve drops it)" % ", ".join(missing))
         n.subgridError = SubgridError.NavierStokesASGS_velocity_pressure(
             coefficients, dim, lag=False)
     if time is None:
