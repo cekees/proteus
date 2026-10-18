@@ -1,5 +1,6 @@
 import subprocess
 import os
+import re
 import pytest
 
 # One xdist worker runs this file, in order: test_massConservation_wPorosity_2D reads the
@@ -40,7 +41,12 @@ def test_massConservation_wPorosity_2D(mcorr_nl_atol_res=1e-10):
     nSteps=0
     for i,j in enumerate(lines):
         if "Phase 0 mass (consistent) after mass correction" in j:
-            mcorr.append([float(lines[i+1].split()[7][:-1]),float(j.split()[-1])])
+            # The next line is "[<elapsed>] Step Taken, Model step t= <t>, ...".
+            # Profiling writes the elapsed time as "[%8.4f]", which is no
+            # longer padded with a space after "[" once the run passes 100 s,
+            # so t is found by name rather than by its field number.
+            t = re.search(r"\bt=\s*([-+.0-9eE]+),", lines[i+1]).group(1)
+            mcorr.append([float(t),float(j.split()[-1])])
             nSteps +=1
     if (mcorr[0][1]+nSteps*mcorr_nl_atol_res)<=mcorr[-1][-1] or (mcorr[0][1]-nSteps*mcorr_nl_atol_res)>=mcorr[-1][-1]:
         pytest.fail("Mass is not being conserved within nonlinear residual tolerance for MCorr. Absolute mass error: {0:e}\n".format(abs(mcorr[-1][-1]-mcorr[0][1])))
