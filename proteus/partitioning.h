@@ -213,22 +213,23 @@ namespace proteus
     std::vector<double> seconds_;
   };
 
-  /* A regular quadrilateral (nNodes_element 4) or hexahedral (8) grid of
-     nn[0] x nn[1] (x nn[2]) nodes on [0,L], generated directly as this rank's
-     subdomain of the rankGrid partition: the subdomain mesh (mesh.subdomainp),
-     offsets and subdomain-to-global maps that partitionNodes gives for the
-     global grid from the rectangular-grid generators and
-     MeshTools.cartesianNodeOwners, without the global mesh. mesh keeps only
-     the global counts. See cartesianPartitioning.cpp. */
-  extern int generateCartesianSubdomain(const MPI_Comm& PROTEUS_COMM_WORLD, int nNodes_element, const int* nn,
+  /* A regular grid of nn[0] x nn[1] (x nn[2]) nodes on [0,L] -- kind 0
+     quadrilaterals, 1 hexahedra, 2 triangles (split by triangleFlag as
+     generateTriangularMeshFromRectangularGrid splits them), 3 tetrahedra --
+     generated directly as this rank's subdomain of the rankGrid partition: the
+     subdomain mesh (mesh.subdomainp), offsets and subdomain-to-global maps that
+     partitionNodes gives for the global grid from the rectangular-grid
+     generators and MeshTools.cartesianNodeOwners, without the global mesh. mesh
+     keeps only the global counts. See cartesianPartitioning.cpp. */
+  extern int generateCartesianSubdomain(const MPI_Comm& PROTEUS_COMM_WORLD, int kind, int triangleFlag, const int* nn,
                                         const double* L, const int* rankGrid, int nLayersOfOverlap, Mesh& mesh);
   /* The new numbers of nodes (elements != 0: elements) of that partition,
      from their old ones: the permutation partitionNodes keeps as
      nodeNumbering_global_old2new, as a function. */
-  extern int cartesianNumbering(int nNodes_element, const int* nn, const int* rankGrid, int elements,
+  extern int cartesianNumbering(int kind, int triangleFlag, const int* nn, const int* rankGrid, int elements,
                                 int n, const int* oldNumbers, int* newNumbers);
   /* Global numbers of nodes, elements, element boundaries and edges. */
-  extern int cartesianGlobalCounts(int nNodes_element, const int* nn, int* counts);
+  extern int cartesianGlobalCounts(int kind, int triangleFlag, const int* nn, int* counts);
 
   extern int partitionElementsOriginal(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nElements_overlap);
 

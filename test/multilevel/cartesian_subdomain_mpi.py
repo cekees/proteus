@@ -1,6 +1,6 @@
 """Helper run under mpiexec by test_cartesian_subdomain.py; not collected.
 
-Builds one rank's piece of a regular quadrilateral or hexahedral grid twice:
+Builds one rank's piece of a regular grid twice:
 
 * Phase 1's way -- the global mesh from the rectangular-grid generator,
   partitioned by partitionMesh with MeshTools.cartesianNodeOwners for a rank
@@ -15,7 +15,8 @@ mesh, floating-point ones included.
 
 Usage: cartesian_subdomain_mpi.py KIND NNX NNY [NNZ] [PX PY [PZ]]
 
-KIND is quad or hex. The rank grid defaults to MeshTools.cartesianRankGrid.
+KIND is quad, hex, tet, or tri0, tri1 or tri2 (triangles split with that
+triangleFlag). The rank grid defaults to MeshTools.cartesianRankGrid.
 
 Prints ``RESULT kind=.. nn=.. grid=.. ranks=.. mismatches=<arrays that differ,
 summed over ranks> digest=<sha256 of the generated arrays> petsc=<0|1>``.
@@ -32,7 +33,10 @@ from proteus import MeshTools, cmeshTools, cpartitioning
 rank, size = comm.rank(), comm.size()
 mpi = comm.comm.tompi4py()
 kind = sys.argv[1]
-dim = 2 if kind == 'quad' else 3
+triangleFlag = 1
+if kind.startswith('tri'):
+    kind, triangleFlag = 'tri', int(kind[3:])
+dim = 2 if kind in ('quad', 'tri') else 3
 nn = tuple(int(a) for a in sys.argv[2:2 + dim]) + (1,) * (3 - dim)
 rest = [int(a) for a in sys.argv[2 + dim:]]
 grid = tuple(rest) + (1,) * (3 - len(rest)) if rest else MeshTools.cartesianRankGrid(nn[0], nn[1], nn[2], size)
@@ -71,11 +75,16 @@ def arraysOf(mesh, old2new):
 
 
 #Phase 1: the global mesh, partitioned with Cartesian owners
-glob = MeshTools.QuadrilateralMesh() if kind == 'quad' else MeshTools.HexahedralMesh()
+glob = {'quad': MeshTools.QuadrilateralMesh, 'hex': MeshTools.HexahedralMesh,
+        'tri': MeshTools.TriangularMesh, 'tet': MeshTools.TetrahedralMesh}[kind]()
 if kind == 'quad':
     glob.generateQuadrilateralMeshFromRectangularGrid(nn[0], nn[1], L[0], L[1])
-else:
+elif kind == 'hex':
     glob.generateHexahedralMeshFromRectangularGrid(nn[0], nn[1], nn[2], L[0], L[1], L[2])
+elif kind == 'tri':
+    glob.generateTriangularMeshFromRectangularGrid(nn[0], nn[1], L[0], L[1], triangleFlag=triangleFlag)
+else:
+    glob.generateTetrahedralMeshFromRectangularGrid(nn[0], nn[1], nn[2], L[0], L[1], L[2])
 owners = MeshTools.cartesianNodeOwners(nn[0], nn[1], nn[2], rankGrid=grid, fastest='y' if kind == 'quad' else 'x')
 glob.partitionMesh(nLayersOfOverlap=1, parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node,
                    nodeOwners=owners)
@@ -83,7 +92,7 @@ reference = arraysOf(glob, (np.asarray(glob.nodeNumbering_global_old2new),
                             np.asarray(glob.elementNumbering_global_old2new)))
 
 #Phase 2: generated
-gen = MeshTools.cartesianSubdomain(kind, nn[:dim], L[:dim], rankGrid=grid)
+gen = MeshTools.cartesianSubdomain(kind, nn[:dim], L[:dim], rankGrid=grid, triangleFlag=triangleFlag)
 generated = arraysOf(gen, (gen.nodeOld2New(np.arange(gen.nNodes_global)),
                            gen.elementOld2New(np.arange(gen.nElements_global))))
 
@@ -109,6 +118,6 @@ digests = mpi.gather(h.hexdigest(), root=0)
 petsc = mpi.allreduce(int(cpartitioning.petscInitialized()), op=MPI.MAX)
 if rank == 0:
     print("RESULT kind=%s nn=%s grid=%s ranks=%d mismatches=%d digest=%s petsc=%d"
-          % (kind, 'x'.join(map(str, nn[:dim])), 'x'.join(map(str, grid)), size, mismatches,
+          % (sys.argv[1], 'x'.join(map(str, nn[:dim])), 'x'.join(map(str, grid)), size, mismatches,
              hashlib.sha256(''.join(digests).encode()).hexdigest(), petsc))
     sys.stdout.flush()

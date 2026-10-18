@@ -107,13 +107,15 @@ def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmes
         _intArray(cmesh.mesh.edgeNumbering_subdomain2global, cmesh.mesh.subdomainp.nEdges_global)
     )
 
-def generateCartesianSubdomain(Comm comm, int nNodes_element, object nn, object L, object rankGrid,
+CARTESIAN_KINDS = {'quad': 0, 'hex': 1, 'tri': 2, 'tet': 3}
+
+def generateCartesianSubdomain(Comm comm, object kind, int triangleFlag, object nn, object L, object rankGrid,
                                int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh):
-    """This rank's subdomain of a regular quadrilateral (nNodes_element 4) or
-    hexahedral (8) grid with nn nodes per axis on [0,L], generated directly for
-    the rank grid rankGrid (px, py, pz): what partitionNodes gives for the
-    global grid and MeshTools.cartesianNodeOwners, without the global mesh.
-    Fills subdomain_cmesh; cmesh keeps only the global counts. Returns the
+    """This rank's subdomain of a regular grid of kind 'quad', 'hex', 'tri'
+    (split by triangleFlag) or 'tet' with nn nodes per axis on [0,L], generated
+    directly for the rank grid rankGrid (px, py, pz): what partitionNodes gives
+    for the global grid and MeshTools.cartesianNodeOwners, without the global
+    mesh. Fills subdomain_cmesh; cmesh keeps only the global counts. Returns the
     arrays partitionNodes returns."""
     cdef int[3] cnn
     cdef int[3] cgrid
@@ -123,7 +125,8 @@ def generateCartesianSubdomain(Comm comm, int nNodes_element, object nn, object 
         cL[d] = L[d] if d < len(L) else 1.0
         cgrid[d] = rankGrid[d] if d < len(rankGrid) else 1
     cmesh.mesh.subdomainp = &subdomain_cmesh.mesh
-    c_generateCartesianSubdomain(comm.ob_mpi, nNodes_element, cnn, cL, cgrid, nLayersOfOverlap, cmesh.mesh)
+    c_generateCartesianSubdomain(comm.ob_mpi, CARTESIAN_KINDS[kind], triangleFlag, cnn, cL, cgrid,
+                                 nLayersOfOverlap, cmesh.mesh)
     return (
         _intArray(cmesh.mesh.elementOffsets_subdomain_owned, comm.size+1),
         _intArray(cmesh.mesh.elementNumbering_subdomain2global, cmesh.mesh.subdomainp.nElements_global),
@@ -135,11 +138,13 @@ def generateCartesianSubdomain(Comm comm, int nNodes_element, object nn, object 
         _intArray(cmesh.mesh.edgeNumbering_subdomain2global, cmesh.mesh.subdomainp.nEdges_global)
     )
 
-def cartesianNumbering(int nNodes_element, object nn, object rankGrid, bint elements, object oldNumbers):
+def cartesianNumbering(object kind, int triangleFlag, object nn, object rankGrid, bint elements, object oldNumbers):
     """The new numbers of nodes (elements=True: elements) with these old
     numbers, in the partition generateCartesianSubdomain generates: the
     permutation partitionNodes keeps as nodeNumbering_global_old2new (or
-    elementNumbering_global_old2new), as a function."""
+    elementNumbering_global_old2new), as a function. Elements that need not
+    contain their cell's lowest corner (triangleFlag 1 or 2) are counted over
+    the whole grid: fine for checking, not for production runs."""
     cdef int[3] cnn
     cdef int[3] cgrid
     for d in range(3):
@@ -149,17 +154,17 @@ def cartesianNumbering(int nNodes_element, object nn, object rankGrid, bint elem
     new = np.empty(old.shape[0], dtype=np.intc)
     cdef int[::1] newView = new
     if old.shape[0] > 0:
-        c_cartesianNumbering(nNodes_element, cnn, cgrid, elements, old.shape[0], &old[0], &newView[0])
+        c_cartesianNumbering(CARTESIAN_KINDS[kind], triangleFlag, cnn, cgrid, elements, old.shape[0], &old[0], &newView[0])
     return new
 
-def cartesianGlobalCounts(int nNodes_element, object nn):
+def cartesianGlobalCounts(object kind, int triangleFlag, object nn):
     """The numbers of nodes, elements, element boundaries and edges of the
     global grid generateCartesianSubdomain partitions."""
     cdef int[3] cnn
     cdef int[4] counts
     for d in range(3):
         cnn[d] = nn[d] if d < len(nn) else 1
-    c_cartesianGlobalCounts(nNodes_element, cnn, counts)
+    c_cartesianGlobalCounts(CARTESIAN_KINDS[kind], triangleFlag, cnn, counts)
     return tuple(counts[i] for i in range(4))
 
 def petscInitialized():

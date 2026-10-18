@@ -15,8 +15,7 @@ LEVELS   1: generate one mesh and partition it by nodes, timed separately;
          construction and partitioning of the levels timed separately
 owners   graph (default): the graph partitioner; cartesian: node bricks from
          MeshTools.cartesianNodeOwners on the coarsest level; generated: no
-         global mesh, MeshTools.cartesianSubdomain (quad or hex, LEVELS 1),
-         timed as part
+         global mesh, MeshTools.cartesianSubdomain (LEVELS 1), timed as part
 
 Set PROTEUS_PARTITION_TIMING=1 to also get the partitioner's own stage timings
 (PARTITION_TIMING lines, one per partitioned mesh).
@@ -68,9 +67,10 @@ if ownersKind == 'cartesian':
         lambda mesh, partitioningType: MeshTools.cartesianNodeOwners(nnx, nny, nnz, fastest=fastest))
 start = time.perf_counter()
 if ownersKind == 'generated':
-    assert nLevels == 1 and kind in ('quad', 'hex'), "generated: one level of quads or hexes"
+    assert nLevels == 1, "generated: one level"
+    flat = kind in ('quad', 'tri')
     finest = timed('part', MeshTools.cartesianSubdomain)(
-        kind, (nnx, nny, nnz)[:2 if kind == 'quad' else 3], L[:2 if kind == 'quad' else 3])
+        kind, (nnx, nny, nnz)[:2 if flat else 3], L[:2 if flat else 3])
 elif nLevels == 1:
     mesh = {'tri': MeshTools.TriangularMesh, 'quad': MeshTools.QuadrilateralMesh,
             'tet': MeshTools.TetrahedralMesh, 'hex': MeshTools.HexahedralMesh}[kind]()
