@@ -490,6 +490,71 @@ NULL_SPACE_SOLVER = {"ksp_type": "gmres", "pc_type": "lu",
                      "pc_factor_mat_solver_type": "mumps", "mat_mumps_icntl_24": "1",
                      "ksp_rtol": "1e-14", "ksp_atol": "1e-14", "ksp_max_it": "50"}
 
+#: a direct solve through PETSc: LU by MUMPS, applied once
+MUMPS_SOLVER = {"ksp_type": "preonly", "pc_type": "lu",
+                "pc_factor_mat_solver_type": "mumps"}
+
+#: the spec's ``linear_solver`` values Proteus has a solver for (see
+#: :func:`linear_solver_choice`); ``umfpack`` is the schema's fourth, and has none
+LINEAR_SOLVERS = ("superlu", "mumps", "petsc")
+
+
+def linear_solver_choice(problem, spaces, linear_solver=None, petsc_options=None):
+    """``(solver, petsc options)`` for a spec's ``linear_solver`` and ``petsc_options``.
+
+    * ``superlu``: Proteus's own LU (SuperLU), serial.
+    * ``mumps``: a direct solve through PETSc, LU by MUMPS.
+    * ``petsc``: a PETSc Krylov solve, set by ``petsc_options``; PETSc's
+      defaults without them.
+    * omitted: what Proteus picked before it read the field -- its serial
+      LU, or MUMPS when the operator has a null space.
+
+    A singular operator (``problem["up_to_constant"]``) needs a PETSc
+    solver, which removes the null space, and MUMPS's null-pivot detection
+    when it is ``mumps``. ``petsc_options`` (without the leading dash) are
+    laid over ``mumps``'s or applied as ``petsc``'s, and refused for
+    anything else rather than ignored.
+    """
+    null_space = bool(problem.get("up_to_constant"))
+    solver = None if linear_solver is None else str(linear_solver).strip().lower()
+    if solver is not None and solver not in LINEAR_SOLVERS:
+        raise ValueError("linear_solver %r has no Proteus solver (have %s)"
+                         % (linear_solver, ", ".join(LINEAR_SOLVERS)))
+    if petsc_options and solver not in ("petsc", "mumps"):
+        raise ValueError("petsc_options apply to linear_solver petsc or mumps, not %s"
+                         % ("the default" if solver is None else solver))
+    if solver is None:
+        solver = "mumps" if null_space else "superlu"
+    if solver == "superlu":
+        if null_space:
+            raise ValueError(
+                "the operator is singular (%s determined up to a constant), so it "
+                "needs linear_solver mumps or petsc, which remove the null space; "
+                "superlu does not" % ", ".join(problem["up_to_constant"]))
+        return solver, None
+    if null_space and any(f == "DG" for f, _ in spaces.values()):
+        raise ValueError("a null space with DG spaces is not wired up")
+    if solver == "mumps":
+        from petsc4py import PETSc
+        if not PETSc.Sys.hasExternalPackage("mumps"):
+            raise ValueError("linear_solver mumps, but this PETSc was built without MUMPS")
+        options = dict(NULL_SPACE_SOLVER if null_space else MUMPS_SOLVER)
+    else:
+        options = {}
+    options.update({str(k): str(v) for k, v in (petsc_options or {}).items()})
+    return solver, options
+
+
+def keeps_dirichlet_dofs(n, spaces):
+    """Whether strong Dirichlet DOFs stay in the system, rows replaced by u = g.
+
+    The layout :class:`LinearSolvers.KSP_petsc4py` expects, so it follows
+    the linear solver. DG spaces impose Dirichlet data weakly, through their
+    numerical flux, and have no such DOFs.
+    """
+    return (n.levelLinearSolver is LinearSolvers.KSP_petsc4py
+            and not any(f == "DG" for f, _ in spaces.values()))
+
 
 def mesh_constraint(h, dim):
     """triangle's (2-D) or tetgen's (3-D) options for element size ``h``.
@@ -506,7 +571,8 @@ def mesh_constraint(h, dim):
 
 def numerics(problem, spaces, cells, time=None, quadrature_order=None,
              stabilization="none", coefficients=None, levels=1,
-             tolerance=None, max_iterations=None, h=None):
+             tolerance=None, max_iterations=None, h=None,
+             linear_solver=None, petsc_options=None):
     """The discrete problem.
 
     ``spaces`` maps each scalar component to a (family, order) pair;
@@ -519,6 +585,8 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None,
     pressure-first order (see :func:`reorder`) and its ``coefficients``.
     ``tolerance`` and ``max_iterations`` set Newton's absolute residual
     tolerance (default 1e-10) and iteration limit (default 25).
+    ``linear_solver`` and ``petsc_options`` are the spec's; see
+    :func:`linear_solver_choice`.
     """
     adr = problem["adr"]
     dim = adr["dim"]
@@ -593,23 +661,29 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None,
     n.tolFac = 0.0
     n.nl_atol_res = float(tolerance or 1.0e-10)
     n.matrix = LinearAlgebraTools.SparseMatrix
-    n.multilevelLinearSolver = LinearSolvers.LU
-    n.levelLinearSolver = LinearSolvers.LU
-    if problem.get("up_to_constant"):
-        # A singular operator: LU through PETSc (MUMPS, which detects the
-        # null pivot) inside GMRES, which removes the null space. The
-        # petsc4py solver wants the Dirichlet DOFs kept in the system with
-        # their rows replaced, not eliminated; setup() sets that flux.
-        if any(f == "DG" for f, _ in spaces.values()):
-            raise ValueError("a null space with DG spaces is not wired up")
-        n.multilevelLinearSolver = n.levelLinearSolver = LinearSolvers.KSP_petsc4py
-        n.linearSmoother = None
-        n.linear_solver_options_prefix = "adr_"
+    solver, options = linear_solver_choice(problem, spaces, linear_solver, petsc_options)
+    if solver == "superlu":
+        n.multilevelLinearSolver = n.levelLinearSolver = LinearSolvers.LU
+        return n
+    # Through PETSc. The petsc4py solver wants the Dirichlet DOFs kept in
+    # the system with their rows replaced, not eliminated; setup() sets
+    # that flux (see keeps_dirichlet_dofs).
+    n.multilevelLinearSolver = n.levelLinearSolver = LinearSolvers.KSP_petsc4py
+    n.linearSmoother = None
+    n.linear_solver_options_prefix = "adr_"
+    if solver == "mumps":
+        # exact, so as tight as the arithmetic allows; with a null space,
+        # MUMPS LU (null pivot detection) inside GMRES, which removes it
         n.linTolFac = 0.0
         n.l_atol_res = 1.0e-14
-        # data, not a write to PETSc's options database: NS_base sets them
-        # while it builds and runs the solvers, then puts the database back
-        n.petscOptions = dict(NULL_SPACE_SOLVER)
+    else:
+        # inexact: Proteus's usual pairing, relative 1e-3 and an absolute
+        # floor well under Newton's, so Newton still meets its tolerance
+        n.linTolFac = 0.001
+        n.l_atol_res = 0.001 * n.nl_atol_res
+    # data, not a write to PETSc's options database: NS_base sets them
+    # while it builds and runs the solvers, then puts the database back
+    n.petscOptions = options
     return n
 
 
@@ -674,8 +748,46 @@ def l2_errors(model, problem, t):
     return errors
 
 
+def with_kept_dof_diagonals(problem):
+    """The problem, with a zero self-coupling where a kept Dirichlet DOF needs one.
+
+    When Dirichlet DOFs stay in the system (:func:`keeps_dirichlet_dofs`),
+    Proteus replaces each one's row by u = g, which needs the row's
+    diagonal entry to exist in the sparsity pattern. An equation that does
+    not involve its own unknown has none: the incompressibility equation
+    of a Taylor-Hood velocity-pressure system, say, once a pressure datum
+    is pinned. So such an equation gets a reaction term that is zero, and
+    has zero derivative, but is declared to depend on its own unknown --
+    a structural diagonal and nothing else. Equations that need none are
+    left alone, so a problem that already ran solves bitwise as before.
+    """
+    import copy
+    adr = problem["adr"]
+    pinned = {e["component"] for e in problem.get("dirichlet") or []}
+
+    def involves_itself(eq, name):
+        if name in eq.get("diffusion", {}):
+            return True
+        return any(name in eq[term].get("depends_on", {})
+                   for term in ("mass", "advection", "reaction", "hamiltonian") if term in eq)
+
+    missing = [k for k, eq in enumerate(adr["equations"])
+               if eq["component"] in pinned and not involves_itself(eq, eq["component"])]
+    if not missing:
+        return problem
+    problem = copy.deepcopy(problem)
+    for k in missing:
+        eq = problem["adr"]["equations"][k]
+        name = eq["component"]
+        reaction = eq.setdefault("reaction", {"r": "0.0", "dr": {}, "depends_on": {}})
+        reaction["dr"][name] = "0.0"
+        reaction["depends_on"][name] = "linear"
+    return problem
+
+
 def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
-          levels=1, tolerance=None, max_iterations=None, h=None):
+          levels=1, tolerance=None, max_iterations=None, h=None,
+          linear_solver=None, petsc_options=None):
     """The problem as solved, its physics and numerics, and the system settings.
 
     Returns ``(problem, p, n, system)``: the problem (reordered pressure
@@ -687,10 +799,15 @@ def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
     if (stabilization or "none").lower() == "supg/pspg":
         velocity, pressure = velocity_pressure(problem)
         problem = reorder(problem, [pressure] + velocity)
+    solver, _ = linear_solver_choice(problem, spaces, linear_solver, petsc_options)
+    if solver != "superlu" and not any(f == "DG" for f, _ in spaces.values()):
+        # Dirichlet DOFs will be kept (see keeps_dirichlet_dofs)
+        problem = with_kept_dof_diagonals(problem)
     p = physics(problem, name)
     n = numerics(problem, spaces, cells, time, stabilization=stabilization,
                  coefficients=p.coefficients, levels=levels,
-                 tolerance=tolerance, max_iterations=max_iterations, h=h)
+                 tolerance=tolerance, max_iterations=max_iterations, h=h,
+                 linear_solver=linear_solver, petsc_options=petsc_options)
     if p.domain is not None:
         # the region's own mesh options: generated by triangle or tetgen
         # from <name>.poly (see write_poly), then refined levels-1 times
@@ -701,7 +818,8 @@ def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
         p.domain.polyfile = name
     if problem.get("periodic"):
         n.periodicDirichletConditions = p.periodicDirichletConditions
-    if problem.get("up_to_constant"):
+    keep = keeps_dirichlet_dofs(n, spaces)
+    if keep:
         n.numericalFluxType = NumericalFlux.StrongDirichletFactory(p.fluxBoundaryConditions,
                                                                    keepDOFs=True)
     if p.robinConditions:
@@ -715,7 +833,7 @@ def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
             p.robinConditions,
             base=NumericalFlux.StrongDirichletFactory(
                 p.fluxBoundaryConditions,
-                keepDOFs=bool(problem.get("up_to_constant"))))
+                keepDOFs=keep))
     if time is None:
         system = {"tnList": [0.0, 1.0]}
     else:
@@ -732,7 +850,8 @@ def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
 
 
 def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
-        opts=None, levels=1, tolerance=None, max_iterations=None, h=None):
+        opts=None, levels=1, tolerance=None, max_iterations=None, h=None,
+        linear_solver=None, petsc_options=None):
     """Solve; return (NS_base, the finest level model, L2 errors at the end).
 
     ``time`` is None for a steady solve, or ``{"dt": ...}`` to step through
@@ -747,7 +866,8 @@ def run(problem, spaces, cells, time=None, name="adr", stabilization="none",
         opts = runtime.RunOptions()
     runtime.start(log=None)
     problem, p, n, system = setup(problem, spaces, cells, time, name, stabilization,
-                                  levels, tolerance, max_iterations, h)
+                                  levels, tolerance, max_iterations, h,
+                                  linear_solver, petsc_options)
     write_poly(p)
     so = defaults.System_base(name=name, pnList=[(p, n)], sList=[default_s])
     so.tnList = system["tnList"]
@@ -805,7 +925,7 @@ def _function(dim, code):
 
 def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
             levels=1, tolerance=None, max_iterations=None, directory=".", header=None,
-            h=None):
+            h=None, linear_solver=None, petsc_options=None):
     """Write the problem as a classic Proteus ``<name>_p.py``, ``_n.py`` and ``_so.py``.
 
     The files say in Python exactly what :func:`run` builds in memory: the
@@ -823,7 +943,9 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
     import pprint
     from proteus import SubgridError
     problem, p, n, system = setup(problem, spaces, cells, time, name, stabilization,
-                                  levels, tolerance, max_iterations, h)
+                                  levels, tolerance, max_iterations, h,
+                                  linear_solver, petsc_options)
+    keep = keeps_dirichlet_dofs(n, spaces)
     c = p.coefficients
     adr = problem["adr"]
     dim = adr["dim"]
@@ -1030,7 +1152,7 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
         "                     NumericalFlux, Quadrature, StepControl, SubgridError, TimeIntegration)",
         "from %s_p import %s" % (name, ", ".join(["coefficients", "nd"] + (
             ["periodicDirichletConditions"] if periodic else []) + (
-            ["fluxBoundaryConditions"] if problem.get("up_to_constant") else []))),
+            ["fluxBoundaryConditions"] if keep else []))),
         "",
         "femSpaces = {"]
     N += ["    %d: %s,   # %s" % (i, _spelled(FemTools, n.femSpaces[i]), names[i])
@@ -1045,7 +1167,7 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
         N.append("triangleOptions = %r   # h = %r; the p file's meshOptions carry it"
                  % (n.triangleOptions, h))
     N.append("nLevels = %d   # uniform refinements of that mesh, plus one" % n.nLevels)
-    if problem.get("up_to_constant"):
+    if keep:
         N += ["# strong Dirichlet conditions with the DOFs kept in the system (rows",
               "# replaced by u = g), the layout KSP_petsc4py expects",
               "numericalFluxType = NumericalFlux.StrongDirichletFactory(fluxBoundaryConditions,",
@@ -1077,10 +1199,12 @@ def emit_pn(problem, spaces, cells, time=None, name="adr", stabilization="none",
           "matrix = %s" % _spelled(LinearAlgebraTools, n.matrix),
           "multilevelLinearSolver = %s" % _spelled(LinearSolvers, n.multilevelLinearSolver),
           "levelLinearSolver = %s" % _spelled(LinearSolvers, n.levelLinearSolver)]
-    if getattr(n, "petscOptions", None):
-        N += ["# a singular operator: MUMPS LU (null pivot detection) inside GMRES,",
-              "# which removes the null space the coefficients declare",
-              "linearSmoother = None",
+    if n.levelLinearSolver is LinearSolvers.KSP_petsc4py:
+        N += (["# a singular operator: MUMPS LU (null pivot detection) inside GMRES,",
+               "# which removes the null space the coefficients declare"]
+              if problem.get("up_to_constant") else
+              ["# solved through PETSc (the spec's linear_solver)"])
+        N += ["linearSmoother = None",
               "linear_solver_options_prefix = %r" % n.linear_solver_options_prefix,
               "linTolFac = %r" % n.linTolFac,
               "l_atol_res = %r" % n.l_atol_res,

@@ -6632,7 +6632,8 @@ class DOFBoundaryConditions(object):
      initially, only weak bc's will allow this functionality though
     """
     def __init__(self,femSpace,getPointwiseBoundaryConditions=None,weakDirichletConditions=False,
-                 getPeriodicBoundaryConditions=None,allowNodalMaterialBoundaryTypes=True):
+                 getPeriodicBoundaryConditions=None,allowNodalMaterialBoundaryTypes=True,
+                 mergeKeptPeriodicDOFs=False):
         self.DOFBoundaryConditionsDict={}
         self.DOFBoundaryPointDict={}
         self.DOFBoundaryMaterialFlag={}
@@ -6770,6 +6771,30 @@ class DOFBoundaryConditions(object):
                     #has correspondence between interpolation conditions and mesh nodes
                 #k
             #eN
+        elif (mergeKeptPeriodicDOFs and getPeriodicBoundaryConditions is not None
+              and femSpace.strongDirichletConditions):
+            # Strong Dirichlet constraints kept in the system (keepDOFs, for
+            # KSP_petsc4py, which asks for weakDirichletConditions so that
+            # nothing is eliminated): the DOFs of a periodic pair are still
+            # one unknown. Without this branch the periodic map was never
+            # built on that path, and a periodic problem was solved with
+            # its periodic faces simply disconnected. A genuinely weak
+            # Dirichlet flux (IIPG, say) is given the periodic conditions
+            # itself and does not ask for this.
+            self.freeDOFSet = set(range(femSpace.dim))
+            mesh = femSpace.elementMaps.mesh
+            interpolation = femSpace.referenceFiniteElement.interpolationConditions
+            for eN in range(mesh.nElements_global):
+                for k in range(interpolation.nQuadraturePoints):
+                    for ebN_element in range(mesh.nElementBoundaries_element):
+                        if not interpolation.definedOnLocalElementBoundary(k,ebN_element):
+                            continue
+                        ebN = mesh.elementBoundariesArray[eN,ebN_element]
+                        x = femSpace.interpolationPoints[eN,k]
+                        p = getPeriodicBoundaryConditions(x,mesh.elementBoundaryMaterialTypes[ebN])
+                        if p is not None:
+                            dofN = femSpace.dofMap.l2g[eN,interpolation.quadrature2DOF_element(k)]
+                            self.periodicDOFDict.setdefault(ptuple(p),set()).add(dofN)
         else:
             self.freeDOFSet = set(range(femSpace.dim))
         #
