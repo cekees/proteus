@@ -746,10 +746,10 @@ def test_dis_writes_a_discretized_file_that_pro_run_runs(tmp_path):
     assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
     listed = _dis("poisson.weak.ymf", "--list", cwd=tmp_path)
     assert listed["exit_status"] == 0 and listed["written"] is None
-    assert not (tmp_path / "poisson.disc.ymf").exists()
+    assert not (tmp_path / "poisson.discrete.ymf").exists()
     report = _dis("poisson.weak.ymf", cwd=tmp_path)
     assert report["exit_status"] == 0, report["error"]
-    path = tmp_path / "poisson.disc.ymf"
+    path = tmp_path / "poisson.discrete.ymf"
     assert report["written"] == str(path) and generated.check(path).current
     doc = load_composed(path)                          # checks ymf_state: discretized
     assert doc["ymf_state"] == "discretized"
@@ -760,11 +760,11 @@ def test_dis_writes_a_discretized_file_that_pro_run_runs(tmp_path):
     assert entry["mesh"] == {"cells": 16}
     assert entry["solver"]["type"] == "linear"
     assert entry["solver"]["linear_solver"] in ("mumps", "superlu")
-    spec = _report("poisson.disc.ymf", cwd=tmp_path)
+    spec = _report("poisson.discrete.ymf", cwd=tmp_path)
     assert spec["state"] == "discretized", spec
-    out = pro("run", "poisson.disc.ymf", cwd=tmp_path)
+    out = pro("run", "poisson.discrete.ymf", cwd=tmp_path)
     assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
-    assert (tmp_path / "poisson.disc.archive.ymf").exists()
+    assert (tmp_path / "poisson.discrete.archive.ymf").exists()
 
 
 def test_dis_of_a_velocity_pressure_system_uses_each_formulations_elements(tmp_path):
@@ -774,7 +774,7 @@ def test_dis_of_a_velocity_pressure_system_uses_each_formulations_elements(tmp_p
     report = _dis("channel.weak.ymf", cwd=tmp_path)
     assert report["exit_status"] == 0, report["error"]
     entries = {d["name"]: d for d in
-               load_composed(tmp_path / "channel.disc.ymf")["solution_paths"]["discretizations"]}
+               load_composed(tmp_path / "channel.discrete.ymf")["solution_paths"]["discretizations"]}
     assert set(entries) == {"galerkin_taylor_hood", "supg_pspg_p1p1"}
     th, eq = entries["galerkin_taylor_hood"], entries["supg_pspg_p1p1"]
     assert th["finite_element"]["velocity"]["order"] == 2
@@ -791,7 +791,7 @@ def test_dis_gives_an_existing_discretization_only_what_it_lacks(tmp_path):
     assert report["exit_status"] == 0, report["error"]
     assert report["discretizations"] == [
         {"name": "P1", "new": False, "from_weak_form": "galerkin", "adds": ["mesh"]}]
-    (entry,) = load_composed(tmp_path / "poisson.disc.ymf")["solution_paths"]["discretizations"]
+    (entry,) = load_composed(tmp_path / "poisson.discrete.ymf")["solution_paths"]["discretizations"]
     assert entry["mesh"] == {"cells": [4, 8]}         # a study
     assert entry["provenance"] == "human_specified"    # the rest is the person's
     assert entry["solver"] == {"type": "linear"}
@@ -809,7 +809,7 @@ def test_dis_picks_a_scalable_solver_for_a_large_problem(tmp_path):
     assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
     report = _dis("poisson.weak.ymf", "--cells", "400", cwd=tmp_path)    # 401² nodes
     assert report["exit_status"] == 0, report["error"]
-    (entry,) = load_composed(tmp_path / "poisson.disc.ymf")["solution_paths"]["discretizations"]
+    (entry,) = load_composed(tmp_path / "poisson.discrete.ymf")["solution_paths"]["discretizations"]
     assert entry["solver"]["linear_solver"] == "petsc"
     assert "160801 unknowns" in entry["discretization_details"]
 
@@ -840,7 +840,7 @@ def test_dis_steps_a_time_dependent_problem_with_backward_euler(tmp_path):
     _spec(tmp_path, HEAT_SPEC, name="heat.ymf")
     assert _weak("heat.ymf", cwd=tmp_path)["exit_status"] == 0
     assert _dis("heat.weak.ymf", cwd=tmp_path)["exit_status"] == 0
-    (entry,) = load_composed(tmp_path / "heat.disc.ymf")["solution_paths"]["discretizations"]
+    (entry,) = load_composed(tmp_path / "heat.discrete.ymf")["solution_paths"]["discretizations"]
     assert entry["discretization"]["time_integration"] == "backward_euler"
     assert float(entry["discretization"]["dt"]) == pytest.approx(0.02)   # 100 steps
 
@@ -849,7 +849,7 @@ def test_dis_regenerates_its_own_file_but_not_an_edited_one(tmp_path):
     _spec(tmp_path)
     assert _dis("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
     assert _dis("poisson.ymf", cwd=tmp_path)["exit_status"] == 0      # its own: regenerated
-    path = tmp_path / "poisson.disc.ymf"
+    path = tmp_path / "poisson.discrete.ymf"
     path.write_text(path.read_text(encoding="utf-8").replace("cells: 16", "cells: 32"),
                     encoding="utf-8")
     report = _dis("poisson.ymf", cwd=tmp_path)
