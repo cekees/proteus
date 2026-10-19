@@ -327,7 +327,9 @@ def blockers(doc, problem, entry):
 def main(argv=None, prog="ymf_run"):
     """Run the YMF runner; ``prog`` names it in help and in the archive's
     record of command-line overrides."""
-    parser = argparse.ArgumentParser(prog=prog, description=__doc__.splitlines()[0])
+    from . import parser_kwargs
+    parser = argparse.ArgumentParser(prog=prog, description=__doc__.splitlines()[0],
+                                     **parser_kwargs())
     parser.add_argument("input", help="a spec .ymf, or an archive")
     parser.add_argument("--discretization", action="append",
                         help="run only this one (by name; repeatable)")

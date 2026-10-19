@@ -18,9 +18,14 @@ import os
 
 __all__ = ["file_info", "chain", "descendants", "stale", "regenerate_command"]
 
-#: the commands that write generated files, as their records name them (a
-#: record written before pro disc was renamed pro dis matches "pro dis" too)
-_STEPS = ("pro weak", "pro dis")
+#: how a ``generated`` record's ``by`` begins -> the module that wrote it.
+#: Records keep the name they were written under: ``pro wk`` and ``pro
+#: dis`` now, ``pro weak`` and ``pro disc`` before the short names (``pro
+#: dis`` matches ``pro disc`` as a prefix).
+_STEPS = (("pro wk", "weak"), ("pro weak", "weak"), ("pro dis", "dis"))
+
+#: the file each step writes by default, after the spec's stem
+_DEFAULT = {"weak": ".weak.ymf", "dis": ".discrete.ymf"}
 
 
 def _read(path):
@@ -34,7 +39,8 @@ def _read(path):
 def regenerate_command(path, record):
     """The command that writes ``path`` again, from its ``generated`` record."""
     data = _read(path)
-    step = next((s for s in _STEPS if str(record.get("by", "")).startswith(s)), None)
+    by = str(record.get("by", ""))
+    step = next((module for prefix, module in _STEPS if by.startswith(prefix)), None)
     source = data.get("extends")
     if step is None or source is None:
         return None
@@ -44,10 +50,10 @@ def regenerate_command(path, record):
     stem = archive_stem(source)
     if stem.endswith(".weak"):
         stem = stem[:-len(".weak")]
-    default = {"pro weak": ".weak.ymf", "pro dis": ".discrete.ymf"}[step]
-    out = "" if os.path.basename(path) == stem + default else " -o %s" % (
+    out = "" if os.path.basename(path) == stem + _DEFAULT[step] else " -o %s" % (
         os.path.relpath(path),)
-    return "%s %s%s" % (step, source, out)
+    from . import command
+    return "%s %s%s" % (command(step), source, out)
 
 
 def file_info(path):

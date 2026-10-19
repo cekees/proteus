@@ -24,7 +24,10 @@ agent driving the steps.
 import json
 import sys
 
-from . import json_stdout, missing, parser_kwargs
+from . import add_command, command, json_stdout, missing
+
+_PRO = command("spec")
+
 
 __all__ = ["add_parser", "run", "lint", "NEEDS"]
 
@@ -36,14 +39,13 @@ _ORDER = ("abstract", "well-posed", "discretized", "closed")
 
 
 def add_parser(subparsers):
-    p = subparsers.add_parser(
-        "spec",
+    p = add_command(
+        subparsers, "spec",
         help="check a YMF spec and say how far it has got (writes nothing)",
         description="Check a YMF spec: schema, composition, units, notation, "
                     "whether it becomes a Proteus problem, and what pro run "
                     "would refuse in each discretization. Reports the "
-                    "ymf_state it reaches. Writes nothing.",
-        **parser_kwargs())
+                    "ymf_state it reaches. Writes nothing.")
     p.add_argument("spec", metavar="SPEC.ymf", help="a YMF spec or archive")
     p.add_argument("--json", action="store_true",
                    help="print the report as JSON")
@@ -248,7 +250,7 @@ def _exit_status(report, require):
 def run(args):
     absent = missing(*NEEDS)
     if absent:
-        print("pro spec: needs {0}, which this environment lacks.\n"
+        print(_PRO + ": needs {0}, which this environment lacks.\n"
               "Install the front end with: pip install 'ymf[symbolic]'"
               .format(", ".join(absent)), file=sys.stderr)
         return 2

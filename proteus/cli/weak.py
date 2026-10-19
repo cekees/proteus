@@ -31,7 +31,10 @@ import json
 import os
 import sys
 
-from . import json_stdout, load_error, load_errors, missing, parser_kwargs
+from . import add_command, command, json_stdout, load_error, load_errors, missing
+
+_PRO, _DIS = command("weak"), command("dis")
+
 
 __all__ = ["add_parser", "run", "formulations", "weak_form", "NEEDS"]
 
@@ -47,13 +50,12 @@ _SUPERSCRIPT = {2: "²", 3: "³"}
 
 
 def add_parser(subparsers):
-    p = subparsers.add_parser(
-        "weak",
+    p = add_command(
+        subparsers, "weak",
         help="write the weak forms Proteus would solve a spec with",
         description="Write the weak forms Proteus supports for a YMF spec's "
                     "strong form to <stem>.weak.ymf, a file that extends the "
-                    "spec. --list says which apply, and writes nothing.",
-        **parser_kwargs())
+                    "spec. --list says which apply, and writes nothing.")
     p.add_argument("spec", metavar="SPEC.ymf", help="a well-posed YMF spec")
     p.add_argument("--list", action="store_true",
                    help="say which formulations apply, and write nothing")
@@ -248,7 +250,7 @@ def weak_form(problem, space, residuals, formulation, versions):
         "stabilization_method": formulation["method"],
         "notes": ("One line per scalar component: the line for c in bilinear equals "
                   "the line for c in linear, for every test function of c. Written "
-                  "by pro weak from what Proteus solves, not by hand."),
+                  "by " + _PRO + " from what Proteus solves, not by hand."),
     }
     if saddle:
         entry["inf_sup_stability"] = (
@@ -332,14 +334,14 @@ def write(spec, out, parent, problem, space, residuals, chosen, force=False):
         raise ValueError(
             "discretization%s %s name%s no weak form, which is ambiguous once there "
             "are several. Write one formulation with --only, or leave the "
-            "discretizations to pro dis, which names the weak form each solves"
+            "discretizations to %s, which names the weak form each solves"
             % ("s" if len(names) > 1 else "", ", ".join(names),
-               "" if len(names) > 1 else "s"))
+               "" if len(names) > 1 else "s", _DIS))
     versions = _versions()
     forms = [weak_form(problem, space, residuals, f, versions) for f in chosen]
     extends = os.path.relpath(os.path.abspath(spec), os.path.dirname(out))
     return generated.write(out, extends,
-                           "pro weak (proteus %s, ymf %s)" % (versions["proteus"], versions["ymf"]),
+                           "%s (proteus %s, ymf %s)" % (_PRO, versions["proteus"], versions["ymf"]),
                            "model_without_weak_forms", parent,
                            {"model": {"weak_forms": forms}})
 
@@ -354,14 +356,14 @@ def _render(report):
         lines.append("wrote %s (%d weak form%s)" % (
             report["written"], report["count"], "" if report["count"] == 1 else "s"))
     if report["error"]:
-        lines.append("pro weak: " + report["error"])
+        lines.append(_PRO + ": " + report["error"])
     return "\n".join(lines)
 
 
 def run(args):
     absent = missing(*NEEDS)
     if absent:
-        print("pro weak: needs {0}, which this environment lacks.\n"
+        print(_PRO + ": needs {0}, which this environment lacks.\n"
               "Install the front end with: pip install 'ymf[symbolic]'"
               .format(", ".join(absent)), file=sys.stderr)
         return 2

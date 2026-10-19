@@ -24,21 +24,20 @@ import ast
 import os
 import sys
 
-from . import parser_kwargs
+from . import add_command
 
 __all__ = ["add_parser", "run", "model_kind"]
 
 
 def add_parser(subparsers):
-    p = subparsers.add_parser(
-        "run",
+    p = add_command(
+        subparsers, "run",
         help="run a model (what parun does)",
         description="Run a Proteus model: an so module, a TwoPhaseFlow "
                     "case module, or a p module and an n module. A YMF spec "
                     "or archive (SPEC.ymf) goes to the YMF runner instead, "
                     "which needs ymf[symbolic] and has options of its own: "
-                    "see pro run SPEC.ymf --help.",
-        **parser_kwargs())
+                    "see pro run SPEC.ymf --help.")
     p.add_argument("inputs", nargs="+", metavar="MODEL.py",
                    help="so module, TwoPhaseFlow case module, or p and n modules")
 

@@ -12,19 +12,18 @@ missing or out of date.
 """
 import sys
 
-from . import parser_kwargs
+from . import add_command
 
 __all__ = ["add_parser", "run"]
 
 
 def add_parser(subparsers):
-    p = subparsers.add_parser(
-        "msh",
+    p = add_command(
+        subparsers, "msh",
         help="generate the mesh files, without running the model",
         description="Generate a model's mesh files (serial) unless they are "
                     "already up to date. pro run would do the same before "
-                    "running; this does it as a job of its own.",
-        **parser_kwargs())
+                    "running; this does it as a job of its own.")
     p.add_argument("inputs", nargs="+", metavar="MODEL.py",
                    help="so module, TwoPhaseFlow case module, or p and n modules")
     p.add_argument("-C", "--context", metavar="'NAME=VALUE ...'",

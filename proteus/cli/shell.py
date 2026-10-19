@@ -23,20 +23,22 @@ A batch file runs on every rank under mpiexec. The prompt is serial only.
 import code
 import sys
 
-from . import parser_kwargs
+from . import add_command, command
+
+_PRO = command("shell")
+
 
 __all__ = ["add_parser", "run", "namespace"]
 
 
 def add_parser(subparsers):
-    p = subparsers.add_parser(
-        "shell",
+    p = add_command(
+        subparsers, "shell",
         help="Python prompt with a model loaded; run() solves it "
              "(parun -i and -b)",
         description="Open a Python prompt, or run a batch file, with a model "
                     "loaded and a run() that solves it with whatever the "
-                    "model objects hold at the time.",
-        **parser_kwargs())
+                    "model objects hold at the time.")
     p.add_argument("inputs", nargs="*", metavar="MODEL.py",
                    help="so module, TwoPhaseFlow case module, or p and n "
                         "modules; optional (load() them later)")
@@ -103,7 +105,7 @@ def run(args):
     comm = runtime.init(args.petsc, args.petsc_file)
     if args.batch is None and comm.size() > 1:
         if comm.isMaster():
-            print("pro shell: the prompt is serial; under mpiexec give a "
+            print(_PRO + ": the prompt is serial; under mpiexec give a "
                   "batch file with --batch", file=sys.stderr)
         return 2
 
@@ -124,7 +126,7 @@ def run(args):
         return ns.get("status", 0)
     model = ("loaded: " + ns["so"].name) if ns["so"] is not None else "no model loaded"
     code.interact(
-        banner="pro shell ({0}). run() solves the model as it stands; "
+        banner=_PRO + " ({0}). run() solves the model as it stands; "
                "opts holds the run options; load(...) loads another.".format(model),
         local=ns, exitmsg="")
     return ns.get("status", 0)
