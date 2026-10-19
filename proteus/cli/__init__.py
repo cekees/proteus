@@ -28,7 +28,7 @@ COMMANDS = {
     "shell": "shell",
     "spec": "spec",
     "weak": "weak",
-    "disc": "disc",
+    "dis": "dis",
 }
 
 #: front-end subcommands -> (help, modules they import); not implemented

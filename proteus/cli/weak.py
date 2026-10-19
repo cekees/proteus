@@ -1,6 +1,6 @@
 """``pro weak``: the weak forms Proteus would solve a spec with, written out.
 
-The second step of ``pro spec`` -> ``pro weak`` -> ``pro disc`` -> ``pro
+The second step of ``pro spec`` -> ``pro weak`` -> ``pro dis`` -> ``pro
 run``. ``pro weak SPEC.ymf --list`` says which formulations Proteus
 supports for the spec's strong form, and why the others do not apply. ``pro
 weak SPEC.ymf`` writes them to ``<stem>.weak.ymf``, a file that ``extends``
@@ -328,11 +328,11 @@ def write(spec, out, parent, problem, space, residuals, chosen, force=False):
     names = _ambiguous(parent, len(chosen))
     if names:
         # The spec cannot name a weak form this file adds (it would not
-        # validate on its own), so naming them is pro disc's to do.
+        # validate on its own), so naming them is pro dis's to do.
         raise ValueError(
             "discretization%s %s name%s no weak form, which is ambiguous once there "
             "are several. Write one formulation with --only, or leave the "
-            "discretizations to pro disc, which names the weak form each solves"
+            "discretizations to pro dis, which names the weak form each solves"
             % ("s" if len(names) > 1 else "", ", ".join(names),
                "" if len(names) > 1 else "s"))
     versions = _versions()

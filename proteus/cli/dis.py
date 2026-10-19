@@ -1,7 +1,7 @@
-"""``pro disc``: the discretizations a spec's weak forms are solved with, written out.
+"""``pro dis``: the discretizations a spec's weak forms are solved with, written out.
 
-The third step of ``pro spec`` -> ``pro weak`` -> ``pro disc`` -> ``pro
-run``. ``pro disc F`` reads a well-posed spec that has its weak forms
+The third step of ``pro spec`` -> ``pro weak`` -> ``pro dis`` -> ``pro
+run``. ``pro dis F`` reads a well-posed spec that has its weak forms
 (usually ``<stem>.weak.ymf``, from ``pro weak``) and writes
 ``<stem>.disc.ymf``: a file that ``extends`` it, records that it was
 generated (``ymf.generated``), and declares ``ymf_state: discretized``,
@@ -25,7 +25,7 @@ study), ``--only`` limits the new discretizations to some weak forms, and
 edited it since, as with ``pro weak``.
 
 A spec with no weak form is refused, with the command that writes them:
-which formulation a discretization solves is a choice ``pro disc`` does not
+which formulation a discretization solves is a choice ``pro dis`` does not
 make silently.
 """
 import json
@@ -41,7 +41,7 @@ NEEDS = ("ymf.symbolic", "ymf.generated", "sympy", "strictyaml")
 
 def add_parser(subparsers):
     p = subparsers.add_parser(
-        "disc",
+        "dis",
         help="write the discretizations a spec's weak forms are solved with",
         description="Write a discretization for each weak form of a YMF spec "
                     "that has none, and a mesh for each one that lacks it, to "
@@ -239,7 +239,7 @@ def write(spec, out, parent, entries, force=False):
                              % (out, status.record["by"]))
     extends = os.path.relpath(os.path.abspath(spec), os.path.dirname(out))
     record = generated.write(out, extends,
-                             "pro disc (proteus %s, ymf %s)" % (proteus.__version__,
+                             "pro dis (proteus %s, ymf %s)" % (proteus.__version__,
                                                                 ymf.__version__),
                              "model_and_analytical", parent,
                              {"solution_paths": {"discretizations": entries}},
@@ -248,7 +248,7 @@ def write(spec, out, parent, entries, force=False):
         load_composed(out)                 # the full schema, and the declared state
     except Exception as exc:
         os.remove(out)
-        raise ValueError("what pro disc would write does not load (%s); nothing was "
+        raise ValueError("what pro dis would write does not load (%s); nothing was "
                          "written" % (exc,))
     return record
 
@@ -271,14 +271,14 @@ def _render(report):
     if report["written"]:
         lines.append("wrote %s" % (report["written"],))
     if report["error"]:
-        lines.append("pro disc: " + report["error"])
+        lines.append("pro dis: " + report["error"])
     return "\n".join(lines)
 
 
 def run(args):
     absent = missing(*NEEDS)
     if absent:
-        print("pro disc: needs {0}, which this environment lacks.\n"
+        print("pro dis: needs {0}, which this environment lacks.\n"
               "Install the front end with: pip install 'ymf[symbolic]'"
               .format(", ".join(absent)), file=sys.stderr)
         return 2

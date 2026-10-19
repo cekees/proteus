@@ -39,7 +39,7 @@ def test_help_does_not_start_mpi_or_petsc():
 def test_help_lists_the_commands():
     out = pro("--help")
     assert out.returncode == 0
-    for command in ("run", "spec", "weak", "disc"):
+    for command in ("run", "spec", "weak", "dis"):
         assert command in out.stdout
 
 
@@ -52,9 +52,9 @@ def test_typo_suggests_the_command():
 
 
 def test_frontend_command_explains_what_it_needs(monkeypatch, capsys):
-    from proteus.cli import disc
-    monkeypatch.setattr(disc, "missing", lambda *names: ["sympy"])
-    assert disc.run(build_parser().parse_args(["disc", "x.ymf"])) == 2
+    from proteus.cli import dis
+    monkeypatch.setattr(dis, "missing", lambda *names: ["sympy"])
+    assert dis.run(build_parser().parse_args(["dis", "x.ymf"])) == 2
     assert "ymf[symbolic]" in capsys.readouterr().err
 
 
@@ -713,12 +713,12 @@ def test_json_output_survives_what_mpi_prints_to_stdout():
     assert "at exit" in ran.stderr
 
 
-# --- pro disc --------------------------------------------------------------------------
+# --- pro dis --------------------------------------------------------------------------
 
 
-def _disc(*args, cwd):
+def _dis(*args, cwd):
     import json
-    out = pro("disc", "--json", *args, cwd=cwd)
+    out = pro("dis", "--json", *args, cwd=cwd)
     report = json.loads(out.stdout)
     assert report["exit_status"] == out.returncode, out.stderr[-2000:]
     return report
@@ -732,22 +732,22 @@ def _without_weak_forms(text):
     return text[:text.index("  weak_forms:")] + text[text.index("solution_paths:"):]
 
 
-def test_disc_needs_the_weak_forms_and_says_how_to_write_them(tmp_path):
+def test_dis_needs_the_weak_forms_and_says_how_to_write_them(tmp_path):
     _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
-    report = _disc("poisson.ymf", cwd=tmp_path)
+    report = _dis("poisson.ymf", cwd=tmp_path)
     assert report["exit_status"] == 1 and "run: pro weak poisson.ymf" in report["error"]
     assert sorted(os.listdir(tmp_path)) == ["poisson.ymf"]
 
 
-def test_disc_writes_a_discretized_file_that_pro_run_runs(tmp_path):
+def test_dis_writes_a_discretized_file_that_pro_run_runs(tmp_path):
     from ymf import generated
     from ymf.compose import load_composed
     _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
     assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
-    listed = _disc("poisson.weak.ymf", "--list", cwd=tmp_path)
+    listed = _dis("poisson.weak.ymf", "--list", cwd=tmp_path)
     assert listed["exit_status"] == 0 and listed["written"] is None
     assert not (tmp_path / "poisson.disc.ymf").exists()
-    report = _disc("poisson.weak.ymf", cwd=tmp_path)
+    report = _dis("poisson.weak.ymf", cwd=tmp_path)
     assert report["exit_status"] == 0, report["error"]
     path = tmp_path / "poisson.disc.ymf"
     assert report["written"] == str(path) and generated.check(path).current
@@ -767,11 +767,11 @@ def test_disc_writes_a_discretized_file_that_pro_run_runs(tmp_path):
     assert (tmp_path / "poisson.disc.archive.ymf").exists()
 
 
-def test_disc_of_a_velocity_pressure_system_uses_each_formulations_elements(tmp_path):
+def test_dis_of_a_velocity_pressure_system_uses_each_formulations_elements(tmp_path):
     from ymf.compose import load_composed
     _spec(tmp_path, _without_discretizations(CHANNEL_SPEC), name="channel.ymf")
     assert _weak("channel.ymf", cwd=tmp_path)["exit_status"] == 0
-    report = _disc("channel.weak.ymf", cwd=tmp_path)
+    report = _dis("channel.weak.ymf", cwd=tmp_path)
     assert report["exit_status"] == 0, report["error"]
     entries = {d["name"]: d for d in
                load_composed(tmp_path / "channel.disc.ymf")["solution_paths"]["discretizations"]}
@@ -784,10 +784,10 @@ def test_disc_of_a_velocity_pressure_system_uses_each_formulations_elements(tmp_
     assert th["solver"]["type"] == "nonlinear" and th["solver"]["nonlinear_solver"] == "newton"
 
 
-def test_disc_gives_an_existing_discretization_only_what_it_lacks(tmp_path):
+def test_dis_gives_an_existing_discretization_only_what_it_lacks(tmp_path):
     from ymf.compose import load_composed
     _spec(tmp_path)                                    # P1 has no mesh
-    report = _disc("poisson.ymf", "--cells", "4", "8", cwd=tmp_path)
+    report = _dis("poisson.ymf", "--cells", "4", "8", cwd=tmp_path)
     assert report["exit_status"] == 0, report["error"]
     assert report["discretizations"] == [
         {"name": "P1", "new": False, "from_weak_form": "galerkin", "adds": ["mesh"]}]
@@ -797,17 +797,17 @@ def test_disc_gives_an_existing_discretization_only_what_it_lacks(tmp_path):
     assert entry["solver"] == {"type": "linear"}
 
 
-def test_disc_meshes_a_box_by_cells_not_h(tmp_path):
+def test_dis_meshes_a_box_by_cells_not_h(tmp_path):
     _spec(tmp_path)
-    report = _disc("poisson.ymf", "--h", "0.1", cwd=tmp_path)
+    report = _dis("poisson.ymf", "--h", "0.1", cwd=tmp_path)
     assert report["exit_status"] == 1 and "give --cells, not --h" in report["error"]
 
 
-def test_disc_picks_a_scalable_solver_for_a_large_problem(tmp_path):
+def test_dis_picks_a_scalable_solver_for_a_large_problem(tmp_path):
     from ymf.compose import load_composed
     _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
     assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
-    report = _disc("poisson.weak.ymf", "--cells", "400", cwd=tmp_path)    # 401² nodes
+    report = _dis("poisson.weak.ymf", "--cells", "400", cwd=tmp_path)    # 401² nodes
     assert report["exit_status"] == 0, report["error"]
     (entry,) = load_composed(tmp_path / "poisson.disc.ymf")["solution_paths"]["discretizations"]
     assert entry["solver"]["linear_solver"] == "petsc"
@@ -835,32 +835,32 @@ solution_paths:
 """
 
 
-def test_disc_steps_a_time_dependent_problem_with_backward_euler(tmp_path):
+def test_dis_steps_a_time_dependent_problem_with_backward_euler(tmp_path):
     from ymf.compose import load_composed
     _spec(tmp_path, HEAT_SPEC, name="heat.ymf")
     assert _weak("heat.ymf", cwd=tmp_path)["exit_status"] == 0
-    assert _disc("heat.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("heat.weak.ymf", cwd=tmp_path)["exit_status"] == 0
     (entry,) = load_composed(tmp_path / "heat.disc.ymf")["solution_paths"]["discretizations"]
     assert entry["discretization"]["time_integration"] == "backward_euler"
     assert float(entry["discretization"]["dt"]) == pytest.approx(0.02)   # 100 steps
 
 
-def test_disc_regenerates_its_own_file_but_not_an_edited_one(tmp_path):
+def test_dis_regenerates_its_own_file_but_not_an_edited_one(tmp_path):
     _spec(tmp_path)
-    assert _disc("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
-    assert _disc("poisson.ymf", cwd=tmp_path)["exit_status"] == 0      # its own: regenerated
+    assert _dis("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("poisson.ymf", cwd=tmp_path)["exit_status"] == 0      # its own: regenerated
     path = tmp_path / "poisson.disc.ymf"
     path.write_text(path.read_text(encoding="utf-8").replace("cells: 16", "cells: 32"),
                     encoding="utf-8")
-    report = _disc("poisson.ymf", cwd=tmp_path)
+    report = _dis("poisson.ymf", cwd=tmp_path)
     assert report["exit_status"] == 1 and "was edited since" in report["error"]
-    assert _disc("poisson.ymf", "--force", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("poisson.ymf", "--force", cwd=tmp_path)["exit_status"] == 0
 
 
-def test_disc_says_when_there_is_nothing_to_write(tmp_path):
+def test_dis_says_when_there_is_nothing_to_write(tmp_path):
     _spec(tmp_path, POISSON_SPEC.replace(
         "      solver: {type: linear}", "      mesh: {cells: 4}\n      solver: {type: linear}"))
-    report = _disc("poisson.ymf", cwd=tmp_path)
+    report = _dis("poisson.ymf", cwd=tmp_path)
     assert report["exit_status"] == 1 and "nothing to write" in report["error"]
 
 

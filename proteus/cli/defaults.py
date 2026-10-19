@@ -1,6 +1,6 @@
-"""The numerics ``pro disc`` writes when the spec does not choose them.
+"""The numerics ``pro dis`` writes when the spec does not choose them.
 
-``pro disc`` fills a spec's discretizations from the table here. They are
+``pro dis`` fills a spec's discretizations from the table here. They are
 Proteus's choices, so they live in Proteus, not in ymf. Every value is a
 starting point a person reviews in the ``<stem>.disc.ymf`` it writes, and
 changes there (the file is then theirs), or in a file that extends it.
