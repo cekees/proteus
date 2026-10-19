@@ -90,6 +90,9 @@ class RKEV(proteus.TimeIntegration.SSP):
         argsDict["dLow"] = self.transport.dLow
         argsDict["run_cfl"] = self.runCFL
         argsDict["edge_based_cfl"] = self.transport.edge_based_cfl
+        if self.transport.wall_dof is None:
+            self.transport.setWallDOFs()
+        argsDict["wall_dof"] = self.transport.wall_dof
         argsDict["debug"] = 0
         adjusted_maxCFL = self.transport.sw2d.calculateEdgeBasedCFL(argsDict)
 
@@ -262,7 +265,14 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  LINEAR_FRICTION=0,
                  mannings=0.,
                  forceStrongConditions=True,
-                 constrainedDOFs=None):
+                 constrainedDOFs=None,
+                 INTEGRATE_BY_PARTS_WALLS=1):
+        # 1: walls (all boundaries with reflecting_BCs, or nodes flagged 99)
+        # integrate the advective terms by parts with zero advective flux
+        # through the wall; the pressure reaction comes from the
+        # non-conservative pressure term. 0: the older nodal projection of
+        # the momentum onto the wall tangent ("reflecting").
+        self.INTEGRATE_BY_PARTS_WALLS = INTEGRATE_BY_PARTS_WALLS
         self.forceStrongConditions = forceStrongConditions
         self.constrainedDOFs = constrainedDOFs
         self.bathymetry = bathymetry
@@ -763,6 +773,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.boundaryIndex = None
         self.reflectingBoundaryConditions = False
         self.reflectingBoundaryIndex = None
+        self.wall_dof = None
 
         if 'reflecting_BCs' in dir(options) and options.reflecting_BCs == True:
             self.reflectingBoundaryConditions = True
@@ -1218,8 +1229,22 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                 self.u[2].dof[index] = -vt * self.normalx[index]
     #
 
+    def setWallDOFs(self):
+        """1 on the DOFs whose rows treat the boundary as a no-flux wall."""
+        self.wall_dof = np.zeros(self.u[0].dof.shape, 'd')
+        if not self.coefficients.INTEGRATE_BY_PARTS_WALLS:
+            return
+        if self.reflectingBoundaryConditions:
+            ebN = self.mesh.exteriorElementBoundariesArray
+            nodes = np.unique(self.mesh.elementBoundaryNodesArray[ebN].ravel())
+            self.wall_dof[nodes] = 1.0
+        else:
+            self.wall_dof[self.mesh.nodeMaterialTypes == 99] = 1.0
+    #
+
     def initDataStructures(self):
         comm = Comm.get()
+        self.setWallDOFs()
         # old vectors
         self.h_dof_old = np.copy(self.u[0].dof)
         self.hu_dof_old = np.copy(self.u[1].dof)
@@ -1366,11 +1391,14 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         r.fill(0.0)
 
         # REFLECTING BOUNDARY CONDITIONS ON ALL BOUNDARIES #
-        if self.reflectingBoundaryConditions and self.boundaryIndex is not None:
+        # (only for the older nodal projection; integrated-by-parts walls
+        #  need nothing here)
+        legacy_walls = not self.coefficients.INTEGRATE_BY_PARTS_WALLS
+        if legacy_walls and self.reflectingBoundaryConditions and self.boundaryIndex is not None:
             self.updateAllReflectingBoundaryConditions()
 
         # REFLECTING BOUNDARY CONDITIONS ON PARTIAL BOUNDARIES  #
-        if not self.reflectingBoundaryConditions and self.reflectingBoundaryIndex is not None:
+        if legacy_walls and not self.reflectingBoundaryConditions and self.reflectingBoundaryIndex is not None:
             self.updatePartialReflectingBoundaryConditions()
         #
 
@@ -1505,6 +1533,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["quantDOFs"] = self.quantDOFs
         argsDict["SECOND_CALL_CALCULATE_RESIDUAL"] = self.secondCallCalculateResidual
         argsDict["COMPUTE_NORMALS"] = self.COMPUTE_NORMALS
+        argsDict["wall_dof"] = self.wall_dof
         argsDict["normalx"] = self.normalx
         argsDict["normaly"] = self.normaly
         argsDict["dLow"] = self.dLow
@@ -1549,7 +1578,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #
 
         # for reflecting conditions on all boundaries
-        if self.reflectingBoundaryConditions and self.boundaryIndex is not None:
+        legacy_walls = not self.coefficients.INTEGRATE_BY_PARTS_WALLS
+        if legacy_walls and self.reflectingBoundaryConditions and self.boundaryIndex is not None:
             for dummy, index in enumerate(self.boundaryIndex):
                 r[self.offset[1]+self.stride[1]*index]=0.
                 r[self.offset[2]+self.stride[2]*index]=0.
@@ -1557,7 +1587,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #
 
         # for reflecting conditions on partial boundaries
-        if not self.reflectingBoundaryConditions and self.reflectingBoundaryIndex is not None:
+        if legacy_walls and not self.reflectingBoundaryConditions and self.reflectingBoundaryIndex is not None:
             for dummy, index in enumerate(self.reflectingBoundaryIndex):
                 r[self.offset[1]+self.stride[1]*index]=0.
                 r[self.offset[2]+self.stride[2]*index]=0.
@@ -1682,7 +1712,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.calculateJacobian(argsDict)
 
         # for reflecting conditions on ALL boundaries
-        if self.reflectingBoundaryConditions and self.boundaryIndex is not None:
+        legacy_walls = not self.coefficients.INTEGRATE_BY_PARTS_WALLS
+        if legacy_walls and self.reflectingBoundaryConditions and self.boundaryIndex is not None:
             for dummy, index in enumerate(self.boundaryIndex):
                 global_dofN = self.offset[1] + self.stride[1] * index
                 for i in range(self.rowptr[global_dofN], self.rowptr[global_dofN + 1]):
@@ -1704,7 +1735,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #
 
         # for reflecting conditions partial boundaries
-        if not self.reflectingBoundaryConditions and self.reflectingBoundaryIndex is not None:
+        if legacy_walls and not self.reflectingBoundaryConditions and self.reflectingBoundaryIndex is not None:
             for dummy, index in enumerate(self.reflectingBoundaryIndex):
                 global_dofN = self.offset[1] + self.stride[1] * index
                 for i in range(self.rowptr[global_dofN], self.rowptr[global_dofN + 1]):
