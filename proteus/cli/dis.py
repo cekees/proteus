@@ -36,7 +36,10 @@ import json
 import os
 import sys
 
-from . import json_stdout, load_error, load_errors, missing, parser_kwargs
+from . import add_command, command, json_stdout, load_error, load_errors, missing
+
+_PRO, _WEAK = command("dis"), command("weak")
+
 
 __all__ = ["add_parser", "run", "plan", "write", "NEEDS"]
 
@@ -44,17 +47,16 @@ NEEDS = ("ymf.symbolic", "ymf.generated", "sympy", "strictyaml")
 
 
 def add_parser(subparsers):
-    p = subparsers.add_parser(
-        "dis",
+    p = add_command(
+        subparsers, "dis",
         help="write the discretizations a spec's weak forms are solved with",
         description="Write a discretization for each weak form of a YMF spec "
                     "that has none, and a mesh for each one that lacks it, to "
                     "<stem>.discrete.ymf, a file that extends the spec and is "
                     "ymf_state: discretized. --list says what would be "
-                    "written, and writes nothing.",
-        **parser_kwargs())
+                    "written, and writes nothing.")
     p.add_argument("spec", metavar="SPEC.ymf",
-                   help="a well-posed YMF spec with its weak forms (pro weak writes them)")
+                   help="a well-posed YMF spec with its weak forms (%s writes them)" % (_WEAK,))
     p.add_argument("--list", action="store_true",
                    help="say what would be written, and write nothing")
     p.add_argument("--only", nargs="+", metavar="LABEL",
@@ -160,7 +162,7 @@ def plan(spec, only=None, cells=None, h=None, levels=None):
     weak_forms = (parent.get("model") or {}).get("weak_forms") or []
     if not weak_forms:
         report["error"] = ("%s has no weak form, so nothing says which formulation a "
-                           "discretization solves; run: pro weak %s" % (spec, spec))
+                           "discretization solves; run: %s %s" % (spec, _WEAK, spec))
         return report, parent, []
     labels = [w["label"] for w in weak_forms]
     unknown = sorted(set(only or ()) - set(labels))
@@ -182,7 +184,7 @@ def plan(spec, only=None, cells=None, h=None, levels=None):
         if method != "mesh":               # a mesh and elements would not belong in it
             report["skipped"].append({
                 "discretization": d["name"],
-                "why": "method %s: pro dis fills mesh discretizations only" % (method,)})
+                "why": "method %s: %s fills mesh discretizations only" % (method, _PRO)})
             continue
         fill = {}
         if not d.get("mesh"):
@@ -251,8 +253,8 @@ def write(spec, out, parent, entries, force=False):
                              % (out, status.record["by"]))
     extends = os.path.relpath(os.path.abspath(spec), os.path.dirname(out))
     record = generated.write(out, extends,
-                             "pro dis (proteus %s, ymf %s)" % (proteus.__version__,
-                                                                ymf.__version__),
+                             "%s (proteus %s, ymf %s)" % (_PRO, proteus.__version__,
+                                                         ymf.__version__),
                              "model_and_analytical", parent,
                              {"solution_paths": {"discretizations": entries}},
                              state="discretized")
@@ -260,8 +262,8 @@ def write(spec, out, parent, entries, force=False):
         load_composed(out)                 # the full schema, and the declared state
     except Exception as exc:
         os.remove(out)
-        raise ValueError("what pro dis would write does not load (%s); nothing was "
-                         "written" % (exc,))
+        raise ValueError("what %s would write does not load (%s); nothing was "
+                         "written" % (_PRO, exc))
     return record
 
 
@@ -284,14 +286,14 @@ def _render(report):
     if report["written"]:
         lines.append("wrote %s" % (report["written"],))
     if report["error"]:
-        lines.append("pro dis: " + report["error"])
+        lines.append(_PRO + ": " + report["error"])
     return "\n".join(lines)
 
 
 def run(args):
     absent = missing(*NEEDS)
     if absent:
-        print("pro dis: needs {0}, which this environment lacks.\n"
+        print(_PRO + ": needs {0}, which this environment lacks.\n"
               "Install the front end with: pip install 'ymf[symbolic]'"
               .format(", ".join(absent)), file=sys.stderr)
         return 2

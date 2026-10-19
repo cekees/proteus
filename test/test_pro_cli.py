@@ -734,7 +734,7 @@ def _without_weak_forms(text):
 def test_dis_needs_the_weak_forms_and_says_how_to_write_them(tmp_path):
     _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
     report = _dis("poisson.ymf", cwd=tmp_path)
-    assert report["exit_status"] == 1 and "run: pro weak poisson.ymf" in report["error"]
+    assert report["exit_status"] == 1 and "run: pro wk poisson.ymf" in report["error"]
     assert sorted(os.listdir(tmp_path)) == ["poisson.ymf"]
 
 
@@ -889,7 +889,7 @@ def _status(path, cwd):
 
 def test_status_follows_a_spec_through_its_steps(tmp_path):
     _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
-    assert _status("poisson.ymf", tmp_path)[1] == "pro weak poisson.ymf"
+    assert _status("poisson.ymf", tmp_path)[1] == "pro wk poisson.ymf"
     assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
     assert _status("poisson.ymf", tmp_path)[1] == "pro dis poisson.weak.ymf"
     assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
@@ -915,7 +915,7 @@ def test_a_stale_step_is_named_and_pro_run_refuses_it(tmp_path):
     assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
     spec.write_text(spec.read_text(encoding="utf-8").replace("2π²", "π²"), encoding="utf-8")
     report, step = _status("poisson.discrete.ymf", tmp_path)
-    assert step == "poisson.weak.ymf is stale; regenerate it: pro weak poisson.ymf"
+    assert step == "poisson.weak.ymf is stale; regenerate it: pro wk poisson.ymf"
     weak = report["files"][str(tmp_path / "poisson.weak.ymf")]["generated"]
     assert weak["stale"] and not weak["edited"]
     out = pro("run", "poisson.discrete.ymf", cwd=tmp_path)
@@ -944,7 +944,7 @@ def test_regenerate_command_keeps_a_chosen_output_name(tmp_path, monkeypatch):
     _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
     assert _weak("poisson.ymf", "-o", "mine.ymf", cwd=tmp_path)["exit_status"] == 0
     monkeypatch.chdir(tmp_path)
-    assert file_info("mine.ymf")["generated"]["regenerate"] == "pro weak poisson.ymf -o mine.ymf"
+    assert file_info("mine.ymf")["generated"]["regenerate"] == "pro wk poisson.ymf -o mine.ymf"
 
 
 def test_dis_names_the_method_of_what_it_writes(tmp_path):
@@ -981,4 +981,70 @@ def test_a_spec_that_fails_the_schema_is_an_error_not_a_traceback(tmp_path, comm
     assert out.returncode == 1 and "Traceback" not in out.stderr
     assert report["error"].startswith("poisson.ymf, line ")
     assert "required key(s) 'solver' not found" in report["error"]
-    assert report["error"].endswith("(run pro spec poisson.ymf)")
+    assert report["error"].endswith("(run pro sp poisson.ymf)")
+
+
+# --- command names: a short name, and a whole-word long name ---------------------------
+
+
+def _choices():
+    import argparse
+    from proteus.cli import build_parser
+    (action,) = [a for a in build_parser()._actions
+                 if isinstance(a, argparse._SubParsersAction)]
+    return action.choices
+
+
+@pytest.mark.parametrize("short", sorted(__import__("proteus.cli").cli.COMMANDS))
+def test_a_command_is_the_same_under_both_its_names(short):
+    from proteus.cli import COMMANDS
+    module, long = COMMANDS[short]
+    choices = _choices()
+    assert choices[short] is choices[long]          # one parser: same options, help, handler
+    assert choices[short].prog == "pro " + short
+
+
+@pytest.mark.parametrize("short", sorted(__import__("proteus.cli").cli.COMMANDS))
+def test_a_short_name_abbreviates_its_whole_word_long_name(short):
+    from proteus.cli import COMMANDS
+    long = COMMANDS[short][1]
+    assert 2 <= len(short) <= 3 and short.isalpha() and short.islower()
+    assert long.isalpha() and long.islower()        # a whole word: no hyphen, no digits
+    rest = iter(long)
+    assert long[0] == short[0] and all(c in rest for c in short), (short, long)
+
+
+def test_no_two_commands_share_a_name():
+    from proteus.cli import COMMANDS
+    names = [n for short, (_, long) in COMMANDS.items() for n in {short, long}]
+    assert len(names) == len(set(names))
+    assert sorted(_choices()) == sorted(names)
+
+
+def test_help_lists_each_command_with_its_long_name():
+    out = pro("--help")
+    assert out.returncode == 0
+    for short, long in [("wk", "weak"), ("dis", "discrete"), ("st", "status"),
+                        ("sh", "shell"), ("sp", "spec"), ("msh", "mesh")]:
+        assert "%s (%s)" % (short, long) in out.stdout
+    assert "run (" not in out.stdout                # run has one name
+
+
+def test_an_option_is_never_matched_by_a_prefix(tmp_path):
+    _spec(tmp_path)
+    out = pro("dis", "poisson.ymf", "--cel", "4", cwd=tmp_path)
+    assert out.returncode == 2 and "unrecognized arguments: --cel" in out.stderr
+    out = pro("run", "poisson.ymf", "--discretiz", "P1", cwd=tmp_path)      # the YMF runner's
+    assert out.returncode == 2 and "unrecognized arguments: --discretiz" in out.stderr
+
+
+def test_a_record_written_under_a_long_name_regenerates_under_the_short_one(tmp_path,
+                                                                            monkeypatch):
+    from proteus.cli.chain import regenerate_command
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    monkeypatch.chdir(tmp_path)
+    for by in ("pro weak (proteus 2.0.0.dev0, ymf 0.2.1)", "pro wk (proteus 2.0.0.dev0)"):
+        assert regenerate_command("poisson.weak.ymf", {"by": by}) == "pro wk poisson.ymf"
+    assert regenerate_command("poisson.weak.ymf", {"by": "pro disc (old)"}) == \
+        "pro dis poisson.ymf -o poisson.weak.ymf"

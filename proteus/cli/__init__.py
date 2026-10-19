@@ -1,7 +1,15 @@
 """``pro``: the Proteus command line, one command with subcommands.
 
-``pro run`` runs a model, as ``parun`` does. The other commands are being
-added one phase at a time; see PRO_CLI_RESEARCH.md in the planning notes.
+``pro run`` runs a model, as ``parun`` does. The others mesh it (``msh``),
+report where it stands (``st``), open a shell on it (``sh``), and take a
+YMF spec through its steps: check it (``sp``), write its weak form
+(``wk``) and its discrete form (``dis``). See PRO_CLI_RESEARCH.md in the
+planning notes.
+
+Each command has a short name, which is what ``pro`` prints in hints and
+records, and a whole-word long name that is the same command: ``pro wk``
+is ``pro weak``, ``pro dis`` is ``pro discrete`` (:data:`COMMANDS`).
+Neither is matched by a prefix, and no option is either.
 
 Each subcommand's module imports what it needs inside its ``run``, never
 at module level, so ``pro --help`` and argument errors are answered without
@@ -17,19 +25,46 @@ import argparse
 import importlib.util
 import sys
 
-__all__ = ["main", "build_parser", "missing", "json_stdout", "load_error", "load_errors"]
+__all__ = ["main", "build_parser", "missing", "json_stdout", "load_error", "load_errors",
+           "command", "add_command", "COMMANDS"]
 
-#: subcommand -> module in this package; each module defines
-#: ``add_parser(subparsers)`` and ``run(args) -> int``
+#: short name -> (module in this package, long name). Each command has a
+#: short name of two or three letters, which is what pro prints, and a long
+#: name of one whole word, its alias: the same command, options and help.
+#: The short name abbreviates the long one, and the long one names what the
+#: command produces (PRO_COMMAND_NAMES_CAMPAIGN.md in the planning notes).
+#: Each module defines ``add_parser(subparsers)``, which calls
+#: :func:`add_command`, and ``run(args) -> int``.
 COMMANDS = {
-    "run": "run",
-    "msh": "msh",
-    "status": "status",
-    "shell": "shell",
-    "spec": "spec",
-    "weak": "weak",
-    "dis": "dis",
+    "run": ("run", "run"),
+    "msh": ("msh", "mesh"),
+    "st": ("status", "status"),
+    "sh": ("shell", "shell"),
+    "sp": ("spec", "spec"),
+    "wk": ("weak", "weak"),
+    "dis": ("dis", "discrete"),
 }
+
+
+def _names(module):
+    for short, (mod, long) in COMMANDS.items():
+        if mod == module:
+            return short, long
+    raise KeyError(module)
+
+
+def command(module):
+    """What ``pro`` prints for the command a module implements: ``"pro wk"``
+    for ``weak``. Hints are copied as commands, so they give the short name."""
+    return "pro " + _names(module)[0]
+
+
+def add_command(subparsers, module, **kwargs):
+    """The subparser for ``module``'s command, under its short name with its
+    long name as an alias, and :func:`parser_kwargs`."""
+    short, long = _names(module)
+    aliases = [long] if long != short else []
+    return subparsers.add_parser(short, aliases=aliases, **dict(parser_kwargs(), **kwargs))
 
 #: front-end subcommands -> (help, modules they import); not implemented
 #: yet, but listed so the help shows where they will go. None at present.
@@ -80,7 +115,7 @@ def load_error(exc, spec):
         text = "%s%s: %s" % (spec, where, problem)
     else:
         text = str(exc)
-    return "%s (run pro spec %s)" % (text, spec)
+    return "%s (run %s %s)" % (text, command("spec"), spec)
 
 
 def load_errors():
@@ -93,14 +128,17 @@ def load_errors():
 
 
 def parser_kwargs():
-    """ArgumentParser options this Python supports beyond 3.12's.
+    """ArgumentParser options for every ``pro`` parser.
 
-    3.14 suggests the nearest command on a typo ("maybe you meant 'run'?")
-    and colours help and errors. Older Pythons get neither and still work.
+    No option is matched by a prefix (``--cel`` is not ``--cells``), so a
+    script's abbreviation cannot change meaning when an option is added.
+    3.14 also suggests the nearest command on a typo ("maybe you meant
+    'run'?") and colours help and errors; older Pythons get neither.
     """
+    kwargs = {"allow_abbrev": False}
     if sys.version_info >= (3, 14):
-        return {"suggest_on_error": True, "color": True}
-    return {}
+        kwargs.update(suggest_on_error=True, color=True)
+    return kwargs
 
 
 def _version():
@@ -117,7 +155,7 @@ def build_parser():
                         version="%(prog)s (proteus) " + _version())
     subparsers = parser.add_subparsers(
         dest="command", metavar="<command>", required=True)
-    for name, module in COMMANDS.items():
+    for module, _ in COMMANDS.values():
         importlib.import_module("." + module, __name__).add_parser(subparsers)
     for name, (summary, needs) in FRONTEND.items():
         absent = missing(*needs)

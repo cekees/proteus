@@ -20,7 +20,10 @@ import json
 import os
 import sys
 
-from . import json_stdout, missing, parser_kwargs
+from . import add_command, command, json_stdout, missing
+
+_PRO, _SPEC, _WEAK, _DIS = (command(m) for m in ("status", "spec", "weak", "dis"))
+
 
 __all__ = ["add_parser", "run", "describe", "spec_status"]
 
@@ -29,13 +32,12 @@ SPEC_NEEDS = ("ymf.generated", "ymf.compose", "strictyaml")
 
 
 def add_parser(subparsers):
-    p = subparsers.add_parser(
-        "status",
+    p = add_command(
+        subparsers, "status",
         help="show whether the mesh is up to date and what pro run would do",
         description="Show a model's mesh plan, whether its mesh files are "
                     "up to date, and what pro run would do. Runs no mesh "
-                    "generator (the model's own modules still run).",
-        **parser_kwargs())
+                    "generator (the model's own modules still run).")
     p.add_argument("inputs", nargs="+", metavar="MODEL.py|SPEC.ymf",
                    help="so module, TwoPhaseFlow case module, or p and n modules; "
                         "or a YMF spec, for its chain of files")
@@ -130,13 +132,13 @@ def _next(leaf, chain_infos):
             command = g["regenerate"] or "regenerate it"
             return "%s is stale; regenerate it: %s" % (os.path.relpath(info["file"]), command)
     if leaf["state"] is None:
-        return "fix it: %s (pro spec %s says more)" % (leaf["why"], rel)
+        return "fix it: %s (%s %s says more)" % (leaf["why"], _SPEC, rel)
     if leaf["state"] == "abstract":
         return "extend it into a well-posed spec"
     if leaf["state"] == "well-posed":
         if not leaf["weak_forms"]:
-            return "pro weak " + rel
-        return "pro dis " + rel
+            return _WEAK + " " + rel
+        return _DIS + " " + rel
     archive = leaf.get("archive")
     if archive and archive["planned"] and archive["present"] == archive["planned"]:
         return "nothing to do: every planned output is in %s" % (
@@ -230,11 +232,11 @@ def _render_spec(report):
 
 def _spec_run(args):
     if len(args.inputs) != 1:
-        print("pro status: give one spec", file=sys.stderr)
+        print(_PRO + ": give one spec", file=sys.stderr)
         return 2
     absent = missing(*SPEC_NEEDS)
     if absent:
-        print("pro status: a spec needs {0}, which this environment lacks.\n"
+        print(_PRO + ": a spec needs {0}, which this environment lacks.\n"
               "Install it with: pip install 'ymf[spec]'".format(", ".join(absent)),
               file=sys.stderr)
         return 2
@@ -244,12 +246,12 @@ def _spec_run(args):
         Profiling.procID = 0
     path = args.inputs[0]
     if not os.path.isfile(path):
-        print("pro status: %s: no such file" % (path,), file=sys.stderr)
+        print("%s: %s: no such file" % (_PRO, path), file=sys.stderr)
         return 2
     try:
         report = spec_status(path)
     except ValueError as exc:
-        print("pro status: %s" % (exc,), file=sys.stderr)
+        print("%s: %s" % (_PRO, exc), file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False), file=stdout, flush=True)
@@ -264,7 +266,7 @@ def run(args):
     from .run import _check_inputs, _context_string, _load
     error = _check_inputs(args)
     if error:
-        print("pro status: " + error, file=sys.stderr)
+        print(_PRO + ": " + error, file=sys.stderr)
         return 2
     from proteus import runtime
     comm = runtime.init()
