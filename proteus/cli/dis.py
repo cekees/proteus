@@ -3,9 +3,9 @@
 The third step of ``pro spec`` -> ``pro weak`` -> ``pro dis`` -> ``pro
 run``. ``pro dis F`` reads a well-posed spec that has its weak forms
 (usually ``<stem>.weak.ymf``, from ``pro weak``) and writes
-``<stem>.disc.ymf``: a file that ``extends`` it, records that it was
+``<stem>.discrete.ymf``: a file that ``extends`` it, records that it was
 generated (``ymf.generated``), and declares ``ymf_state: discretized``,
-which the loader checks. ``pro run <stem>.disc.ymf`` then runs it.
+which the loader checks. ``pro run <stem>.discrete.ymf`` then runs it.
 
 What it writes:
 
@@ -21,7 +21,7 @@ What it writes:
 ``--cells``, ``--h`` and ``--levels`` replace the default mesh (a list is a
 study), ``--only`` limits the new discretizations to some weak forms, and
 ``--list`` says what would be written and writes nothing. An existing
-``<stem>.disc.ymf`` is regenerated only if a tool wrote it and nobody has
+``<stem>.discrete.ymf`` is regenerated only if a tool wrote it and nobody has
 edited it since, as with ``pro weak``.
 
 A spec with no weak form is refused, with the command that writes them:
@@ -45,7 +45,7 @@ def add_parser(subparsers):
         help="write the discretizations a spec's weak forms are solved with",
         description="Write a discretization for each weak form of a YMF spec "
                     "that has none, and a mesh for each one that lacks it, to "
-                    "<stem>.disc.ymf, a file that extends the spec and is "
+                    "<stem>.discrete.ymf, a file that extends the spec and is "
                     "ymf_state: discretized. --list says what would be "
                     "written, and writes nothing.",
         **parser_kwargs())
@@ -62,7 +62,7 @@ def add_parser(subparsers):
     p.add_argument("--levels", type=int, nargs="+", metavar="L",
                    help="levels of uniform refinement (several: a study)")
     p.add_argument("-o", "--output", metavar="FILE",
-                   help="where to write (default: <stem>.disc.ymf beside the spec)")
+                   help="where to write (default: <stem>.discrete.ymf beside the spec)")
     p.add_argument("--force", action="store_true",
                    help="overwrite a file that was edited since, or not generated")
     p.add_argument("--json", action="store_true", help="print the report as JSON")
@@ -219,7 +219,7 @@ def _out_path(spec, output):
     stem = archive_stem(spec)
     if stem.endswith(".weak"):
         stem = stem[:-len(".weak")]
-    return os.path.join(os.path.dirname(os.path.abspath(spec)), stem + ".disc.ymf")
+    return os.path.join(os.path.dirname(os.path.abspath(spec)), stem + ".discrete.ymf")
 
 
 def write(spec, out, parent, entries, force=False):
