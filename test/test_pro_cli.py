@@ -39,7 +39,7 @@ def test_help_does_not_start_mpi_or_petsc():
 def test_help_lists_the_commands():
     out = pro("--help")
     assert out.returncode == 0
-    for command in ("run", "spec", "weak", "disc"):
+    for command in ("run", "spec", "weak", "dis"):
         assert command in out.stdout
 
 
@@ -51,13 +51,11 @@ def test_typo_suggests_the_command():
     assert "maybe you meant 'run'?" in out.stderr
 
 
-def test_frontend_command_explains_itself():
-    out = pro("weak")
-    assert out.returncode == 2
-    if missing("ymf.symbolic", "sympy"):
-        assert "ymf[symbolic]" in out.stderr
-    else:
-        assert "not implemented yet" in out.stderr
+def test_frontend_command_explains_what_it_needs(monkeypatch, capsys):
+    from proteus.cli import dis
+    monkeypatch.setattr(dis, "missing", lambda *names: ["sympy"])
+    assert dis.run(build_parser().parse_args(["dis", "x.ymf"])) == 2
+    assert "ymf[symbolic]" in capsys.readouterr().err
 
 
 def test_missing():
@@ -442,10 +440,9 @@ def test_emitted_region_files_mesh_with_pro_msh(tmp_path):
     assert ran.returncode == 0, ran.stderr[-2000:]
 
 
-@pytest.mark.parametrize("command", ["msh", "status"])
-def test_msh_and_status_point_a_spec_at_its_emitted_files(tmp_path, command):
+def test_msh_points_a_spec_at_its_emitted_files(tmp_path):
     (tmp_path / "spec.ymf").write_text("model: {}\n")
-    out = pro(command, "spec.ymf", cwd=tmp_path)
+    out = pro("msh", "spec.ymf", cwd=tmp_path)
     assert out.returncode == 2
     assert "pro run spec.ymf --emit-pn" in out.stderr
 
@@ -567,6 +564,136 @@ def test_spec_reports_a_generated_file_that_was_edited(tmp_path):
     assert issue["severity"] == "warning" and "edited since pro weak (test)" in issue["message"]
 
 
+# --- pro weak: the weak forms Proteus would solve -------------------------------
+
+CHANNEL_SPEC = """\
+model:
+  name: "Channel"
+  physical_model: {provenance: human_specified}
+  strong_form:
+    provenance: human_specified
+    unknowns: [{name: v, rank: 1}, p]
+    equation_formulation: "Navier-Stokes"
+    equations:
+      - "ρ ∂v/∂t + ∇·(ρ v⊗v) − μΔv + ∇p = 0  in Ω"
+      - "∇·v = 0  in Ω"
+    domain: "Ω = [0, 4] × [0, 1]"
+    boundary_regions: [{name: walls, where: "∂Ω"}]
+    boundary_conditions:
+      - {region: walls, variable: v, type: dirichlet, formula: "(4 y (1 - y), 0)"}
+    coefficients:
+      ρ: {value: 1.0}
+      μ: {value: 1.0}
+solution_paths:
+  analytical: []
+  discretizations:
+    - name: P2P1
+      provenance: human_specified
+      finite_element: {velocity: {family: CG, order: 2}, pressure: {family: CG, order: 1}}
+      solver: {type: nonlinear}
+"""
+
+
+def _weak(*args, cwd):
+    import json
+    out = pro("weak", "--json", *args, cwd=cwd)
+    report = json.loads(out.stdout)
+    assert report["exit_status"] == out.returncode, out.stderr[-2000:]
+    return report
+
+
+def test_weak_list_says_what_applies_and_writes_nothing(tmp_path):
+    _spec(tmp_path)
+    report = _weak("poisson.ymf", "--list", cwd=tmp_path)
+    applies = {f["label"]: f["applies"] for f in report["formulations"]}
+    assert applies == {"proteus_galerkin": True, "proteus_supg_pspg": False}
+    why = [f["why"] for f in report["formulations"] if not f["applies"]][0]
+    assert "velocity-pressure" in why
+    assert report["written"] is None and sorted(os.listdir(tmp_path)) == ["poisson.ymf"]
+
+
+def test_weak_writes_a_generated_file_that_composes(tmp_path):
+    from ymf import generated
+    from ymf.compose import load_composed
+    _spec(tmp_path)
+    report = _weak("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 0 and report["written"].endswith("poisson.weak.ymf")
+    path = tmp_path / "poisson.weak.ymf"
+    assert generated.check(path).current
+    doc = load_composed(path)
+    (weak,) = [w for w in doc["model"]["weak_forms"] if w["label"] == "proteus_galerkin"]
+    assert weak["bilinear"] == "u: ∫Ω ∇u·∇w dx"
+    assert weak["linear"] == "u: ∫Ω 2 π² sin(π x) sin(π y) w dx"
+    assert weak["provenance"] == "proteus_derived"
+    assert weak["solution_spaces"] == {"trial": "H1(Ω)", "test": "H1_0(Ω)"}
+    assert pro("spec", "poisson.weak.ymf", cwd=tmp_path).returncode == 0
+
+
+def test_weak_writes_both_formulations_of_a_velocity_pressure_system(tmp_path):
+    from ymf.compose import load_composed
+    _spec(tmp_path, CHANNEL_SPEC.replace(CHANNEL_SPEC[CHANNEL_SPEC.index("    - name: P2P1"):],
+                                         "").replace("  discretizations:\n",
+                                                     "  discretizations: []\n"),
+          name="channel.ymf")
+    report = _weak("channel.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 0, report["error"]
+    forms = {w["label"]: w for w in
+             load_composed(tmp_path / "channel.weak.ymf")["model"]["weak_forms"]}
+    assert set(forms) == {"proteus_galerkin", "proteus_supg_pspg"}
+    assert forms["proteus_galerkin"]["solution_spaces"]["trial"] == "H1(Ω)² × L2(Ω)"
+    assert forms["proteus_supg_pspg"]["solution_spaces"]["trial"] == "H1(Ω)² × H1(Ω)"
+    assert forms["proteus_galerkin"]["bilinear"].splitlines()[2] == "p: - ∫Ω (v_0, v_1)·∇q dx"
+    assert "Σ_K τ_K" in forms["proteus_supg_pspg"]["bilinear"]
+    assert forms["proteus_supg_pspg"]["stabilization_method"] == "SUPG/PSPG"
+
+
+def test_weak_will_not_make_a_discretization_ambiguous(tmp_path):
+    """The spec cannot name a weak form only the generated file has."""
+    from ymf.compose import load_composed
+    _spec(tmp_path, CHANNEL_SPEC, name="channel.ymf")
+    report = _weak("channel.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "P2P1 names no weak form" in report["error"]
+    assert "--only" in report["error"] and not (tmp_path / "channel.weak.ymf").exists()
+    report = _weak("channel.ymf", "--only", "proteus_galerkin", cwd=tmp_path)
+    assert report["exit_status"] == 0, report["error"]
+    doc = load_composed(tmp_path / "channel.weak.ymf")
+    (entry,) = doc["solution_paths"]["discretizations"]
+    assert entry["from_weak_form"] == "proteus_galerkin"      # the only one: defaulted
+
+
+def test_weak_regenerates_its_own_file_but_not_an_edited_one(tmp_path):
+    _spec(tmp_path)
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0      # unchanged: regenerated
+    path = tmp_path / "poisson.weak.ymf"
+    path.write_text(path.read_text(encoding="utf-8").replace("proteus_derived", "human_edited"),
+                    encoding="utf-8")
+    report = _weak("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "was edited since" in report["error"]
+    assert "human_edited" in path.read_text(encoding="utf-8")         # left alone
+    assert _weak("poisson.ymf", "--force", cwd=tmp_path)["exit_status"] == 0
+    assert "human_edited" not in path.read_text(encoding="utf-8")
+
+
+def test_weak_will_not_overwrite_a_file_no_tool_wrote(tmp_path):
+    _spec(tmp_path)
+    (tmp_path / "poisson.weak.ymf").write_text("model: {name: mine}\n", encoding="utf-8")
+    report = _weak("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "not written by a tool" in report["error"]
+
+
+def test_weak_only_writes_what_applies(tmp_path):
+    _spec(tmp_path)
+    report = _weak("poisson.ymf", "--only", "proteus_supg_pspg", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "does not apply" in report["error"]
+    report = _weak("poisson.ymf", "--only", "nonesuch", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "no formulation nonesuch" in report["error"]
+
+
+def test_weak_of_an_abstract_model_is_refused(tmp_path):
+    _spec(tmp_path, "ymf_state: abstract\nmodel:\n  name: \"m\"\n", name="model.ymf")
+    report = _weak("model.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "is abstract" in report["error"]
 def test_json_output_survives_what_mpi_prints_to_stdout():
     """Open MPI's UCX layer writes an error line to stdout from C when it
     starts on a machine whose network it cannot use (the locked py3.13 CI
@@ -583,3 +710,238 @@ def test_json_output_survives_what_mpi_prints_to_stdout():
     assert json.loads(ran.stdout) == {"ok": True}
     assert "UCX ERROR" in ran.stderr and "from Python, after" in ran.stderr
     assert "at exit" in ran.stderr
+
+
+# --- pro dis --------------------------------------------------------------------------
+
+
+def _dis(*args, cwd):
+    import json
+    out = pro("dis", "--json", *args, cwd=cwd)
+    report = json.loads(out.stdout)
+    assert report["exit_status"] == out.returncode, out.stderr[-2000:]
+    return report
+
+
+def _without_discretizations(text):
+    return text[:text.index("  discretizations:")] + "  discretizations: []\n"
+
+
+def _without_weak_forms(text):
+    return text[:text.index("  weak_forms:")] + text[text.index("solution_paths:"):]
+
+
+def test_dis_needs_the_weak_forms_and_says_how_to_write_them(tmp_path):
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    report = _dis("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "run: pro weak poisson.ymf" in report["error"]
+    assert sorted(os.listdir(tmp_path)) == ["poisson.ymf"]
+
+
+def test_dis_writes_a_discretized_file_that_pro_run_runs(tmp_path):
+    from ymf import generated
+    from ymf.compose import load_composed
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    listed = _dis("poisson.weak.ymf", "--list", cwd=tmp_path)
+    assert listed["exit_status"] == 0 and listed["written"] is None
+    assert not (tmp_path / "poisson.discrete.ymf").exists()
+    report = _dis("poisson.weak.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 0, report["error"]
+    path = tmp_path / "poisson.discrete.ymf"
+    assert report["written"] == str(path) and generated.check(path).current
+    doc = load_composed(path)                          # checks ymf_state: discretized
+    assert doc["ymf_state"] == "discretized"
+    (entry,) = doc["solution_paths"]["discretizations"]
+    assert entry["name"] == "galerkin_p1" and entry["from_weak_form"] == "proteus_galerkin"
+    assert entry["provenance"] == "proteus_derived"
+    assert entry["finite_element"] == {"fields": {"family": "CG", "order": 1}}
+    assert entry["mesh"] == {"cells": 16}
+    assert entry["solver"]["type"] == "linear"
+    assert entry["solver"]["linear_solver"] in ("mumps", "superlu")
+    spec = _report("poisson.discrete.ymf", cwd=tmp_path)
+    assert spec["state"] == "discretized", spec
+    out = pro("run", "poisson.discrete.ymf", cwd=tmp_path)
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    assert (tmp_path / "poisson.discrete.archive.ymf").exists()
+
+
+def test_dis_of_a_velocity_pressure_system_uses_each_formulations_elements(tmp_path):
+    from ymf.compose import load_composed
+    _spec(tmp_path, _without_discretizations(CHANNEL_SPEC), name="channel.ymf")
+    assert _weak("channel.ymf", cwd=tmp_path)["exit_status"] == 0
+    report = _dis("channel.weak.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 0, report["error"]
+    entries = {d["name"]: d for d in
+               load_composed(tmp_path / "channel.discrete.ymf")["solution_paths"]["discretizations"]}
+    assert set(entries) == {"galerkin_taylor_hood", "supg_pspg_p1p1"}
+    th, eq = entries["galerkin_taylor_hood"], entries["supg_pspg_p1p1"]
+    assert th["finite_element"]["velocity"]["order"] == 2
+    assert th["finite_element"]["pressure"]["order"] == 1
+    assert eq["finite_element"]["velocity"]["order"] == eq["finite_element"]["pressure"]["order"] == 1
+    assert eq["from_weak_form"] == "proteus_supg_pspg"
+    assert th["solver"]["type"] == "nonlinear" and th["solver"]["nonlinear_solver"] == "newton"
+
+
+def test_dis_gives_an_existing_discretization_only_what_it_lacks(tmp_path):
+    from ymf.compose import load_composed
+    _spec(tmp_path)                                    # P1 has no mesh
+    report = _dis("poisson.ymf", "--cells", "4", "8", cwd=tmp_path)
+    assert report["exit_status"] == 0, report["error"]
+    assert report["discretizations"] == [
+        {"name": "P1", "new": False, "from_weak_form": "galerkin", "adds": ["mesh"]}]
+    (entry,) = load_composed(tmp_path / "poisson.discrete.ymf")["solution_paths"]["discretizations"]
+    assert entry["mesh"] == {"cells": [4, 8]}         # a study
+    assert entry["provenance"] == "human_specified"    # the rest is the person's
+    assert entry["solver"] == {"type": "linear"}
+
+
+def test_dis_meshes_a_box_by_cells_not_h(tmp_path):
+    _spec(tmp_path)
+    report = _dis("poisson.ymf", "--h", "0.1", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "give --cells, not --h" in report["error"]
+
+
+def test_dis_picks_a_scalable_solver_for_a_large_problem(tmp_path):
+    from ymf.compose import load_composed
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    report = _dis("poisson.weak.ymf", "--cells", "400", cwd=tmp_path)    # 401² nodes
+    assert report["exit_status"] == 0, report["error"]
+    (entry,) = load_composed(tmp_path / "poisson.discrete.ymf")["solution_paths"]["discretizations"]
+    assert entry["solver"]["linear_solver"] == "petsc"
+    assert "160801 unknowns" in entry["discretization_details"]
+
+
+HEAT_SPEC = """\
+model:
+  name: "Heat"
+  physical_model: {provenance: human_specified}
+  strong_form:
+    provenance: human_specified
+    unknowns: [T]
+    equation_formulation: "heat equation"
+    equations: ["∂T/∂t = ∇·(κ∇T)  in Ω"]
+    domain: "Ω = [0, 1] × [0, 1],  t ∈ (0, 2]"
+    boundary_regions: [{name: walls, where: "∂Ω"}]
+    initial_conditions: [{field: T, type: function, formula: "sin(πx) sin(πy)"}]
+    boundary_conditions: [{region: walls, variable: T, type: dirichlet, value: 0.0}]
+    coefficients:
+      κ: {value: 1.0e-2}
+solution_paths:
+  analytical: []
+  discretizations: []
+"""
+
+
+def test_dis_steps_a_time_dependent_problem_with_backward_euler(tmp_path):
+    from ymf.compose import load_composed
+    _spec(tmp_path, HEAT_SPEC, name="heat.ymf")
+    assert _weak("heat.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("heat.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    (entry,) = load_composed(tmp_path / "heat.discrete.ymf")["solution_paths"]["discretizations"]
+    assert entry["discretization"]["time_integration"] == "backward_euler"
+    assert float(entry["discretization"]["dt"]) == pytest.approx(0.02)   # 100 steps
+
+
+def test_dis_regenerates_its_own_file_but_not_an_edited_one(tmp_path):
+    _spec(tmp_path)
+    assert _dis("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("poisson.ymf", cwd=tmp_path)["exit_status"] == 0      # its own: regenerated
+    path = tmp_path / "poisson.discrete.ymf"
+    path.write_text(path.read_text(encoding="utf-8").replace("cells: 16", "cells: 32"),
+                    encoding="utf-8")
+    report = _dis("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "was edited since" in report["error"]
+    assert _dis("poisson.ymf", "--force", cwd=tmp_path)["exit_status"] == 0
+
+
+def test_dis_says_when_there_is_nothing_to_write(tmp_path):
+    _spec(tmp_path, POISSON_SPEC.replace(
+        "      solver: {type: linear}", "      mesh: {cells: 4}\n      solver: {type: linear}"))
+    report = _dis("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "nothing to write" in report["error"]
+
+
+def test_default_unknowns_are_counted_on_the_finest_mesh_of_a_study():
+    from proteus.cli.defaults import estimated_dofs
+    problem = {"domain": {"lower": [0.0, 0.0], "upper": [1.0, 1.0]},
+               "unknowns": {"u": ["u"]}}
+    p1 = {"fields": {"family": "CG", "order": 1}}
+    p2 = {"fields": {"family": "CG", "order": 2}}
+    assert estimated_dofs(problem, p1, {"cells": [4, 8]}) == 81
+    assert estimated_dofs(problem, p2, {"cells": 4, "levels": 2}) == 17 ** 2
+    region = dict(problem, domain=dict(problem["domain"], region="pslg"))
+    assert estimated_dofs(region, p1, {"h": [0.5, 0.25]}) == 25
+
+
+# --- pro status of a spec: the chain --------------------------------------------------
+
+
+def _status(path, cwd):
+    import json
+    out = pro("status", "--json", path, cwd=cwd)
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    report = json.loads(out.stdout)
+    (step,) = report["next"].values()
+    return report, step
+
+
+def test_status_follows_a_spec_through_its_steps(tmp_path):
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _status("poisson.ymf", tmp_path)[1] == "pro weak poisson.ymf"
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _status("poisson.ymf", tmp_path)[1] == "pro dis poisson.weak.ymf"
+    assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    report, step = _status("poisson.ymf", tmp_path)
+    assert step == "pro run poisson.discrete.ymf"
+    disc = report["files"][str(tmp_path / "poisson.discrete.ymf")]
+    assert disc["state"] == "discretized" and disc["generated"]["current"]
+    assert disc["weak_forms"] == {"proteus_derived": 1} and disc["discretizations"] == 1
+    assert pro("run", "poisson.discrete.ymf", cwd=tmp_path).returncode == 0
+    report, step = _status("poisson.discrete.ymf", tmp_path)
+    assert step.startswith("nothing to do")
+    assert [os.path.basename(e["file"]) for e in report["chain"]] == [
+        "poisson.ymf", "poisson.weak.ymf", "poisson.discrete.ymf"]
+    assert report["chain"][-1]["state"] == "closed"
+    assert report["chain"][-1]["archive"]["present"] == 1
+    text = pro("status", "poisson.ymf", cwd=tmp_path).stdout
+    assert "└ poisson.weak.ymf" in text and "pro dis, current" in text
+
+
+def test_a_stale_step_is_named_and_pro_run_refuses_it(tmp_path):
+    spec = _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    spec.write_text(spec.read_text(encoding="utf-8").replace("2π²", "π²"), encoding="utf-8")
+    report, step = _status("poisson.discrete.ymf", tmp_path)
+    assert step == "poisson.weak.ymf is stale; regenerate it: pro weak poisson.ymf"
+    weak = report["files"][str(tmp_path / "poisson.weak.ymf")]["generated"]
+    assert weak["stale"] and not weak["edited"]
+    out = pro("run", "poisson.discrete.ymf", cwd=tmp_path)
+    assert out.returncode == 2 and "is stale" in out.stderr
+    assert "regenerate it: pro dis poisson.weak.ymf" in out.stderr
+    assert not (tmp_path / "poisson.discrete.archive.ymf").exists()
+    assert pro("run", "poisson.discrete.ymf", "--stale-ok", cwd=tmp_path).returncode == 0
+
+
+def test_a_hand_edited_step_is_reported_and_still_runs(tmp_path):
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    path = tmp_path / "poisson.discrete.ymf"
+    path.write_text(path.read_text(encoding="utf-8").replace("cells: 16", "cells: 8"),
+                    encoding="utf-8")
+    report, step = _status("poisson.discrete.ymf", tmp_path)
+    assert step == "pro run poisson.discrete.ymf"           # an edit is the editor's choice
+    assert report["chain"][-1]["generated"]["edited"]
+    assert "hand-edited" in pro("status", "poisson.discrete.ymf", cwd=tmp_path).stdout
+    assert pro("run", "poisson.discrete.ymf", cwd=tmp_path).returncode == 0
+
+
+def test_regenerate_command_keeps_a_chosen_output_name(tmp_path, monkeypatch):
+    from proteus.cli.chain import file_info
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", "-o", "mine.ymf", cwd=tmp_path)["exit_status"] == 0
+    monkeypatch.chdir(tmp_path)
+    assert file_info("mine.ymf")["generated"]["regenerate"] == "pro weak poisson.ymf -o mine.ymf"
