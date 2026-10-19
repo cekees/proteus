@@ -1,11 +1,11 @@
 """The chain of YMF files a spec is built from, and the state of each.
 
-``pro weak`` and ``pro disc`` each write a file that ``extends`` its input,
+``pro weak`` and ``pro dis`` each write a file that ``extends`` its input,
 so a spec is a chain::
 
     poisson.ymf             written by a person
       └ poisson.weak.ymf    pro weak poisson.ymf
-          └ poisson.disc.ymf    pro disc poisson.weak.ymf
+          └ poisson.disc.ymf    pro dis poisson.weak.ymf
     poisson.disc.archive.ymf    pro run poisson.disc.ymf
 
 This module follows ``extends`` up from a file, finds the files beside it
@@ -18,8 +18,9 @@ import os
 
 __all__ = ["file_info", "chain", "descendants", "stale", "regenerate_command"]
 
-#: the commands that write generated files, as their records name them
-_STEPS = ("pro weak", "pro disc")
+#: the commands that write generated files, as their records name them (a
+#: record written before pro disc was renamed pro dis matches "pro dis" too)
+_STEPS = ("pro weak", "pro dis")
 
 
 def _read(path):
@@ -39,7 +40,7 @@ def regenerate_command(path, record):
         return None
     here = os.path.dirname(os.path.abspath(path))
     source = os.path.relpath(os.path.join(here, source))
-    default = {"pro weak": ".weak.ymf", "pro disc": ".disc.ymf"}[step]
+    default = {"pro weak": ".weak.ymf", "pro dis": ".disc.ymf"}[step]
     from ymf.closure import archive_stem
     stem = archive_stem(source)
     if stem.endswith(".weak"):
@@ -93,7 +94,7 @@ def descendants(path):
     """``{file: [the files beside it that extend it]}``, for the tree under ``path``.
 
     Only the YMF files in ``path``'s own directory are looked at, which is
-    where ``pro weak`` and ``pro disc`` write. Archives extend nothing.
+    where ``pro weak`` and ``pro dis`` write. Archives extend nothing.
     """
     here = os.path.dirname(os.path.abspath(path))
     parents = {}

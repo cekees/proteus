@@ -891,8 +891,8 @@ def test_status_follows_a_spec_through_its_steps(tmp_path):
     _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
     assert _status("poisson.ymf", tmp_path)[1] == "pro weak poisson.ymf"
     assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
-    assert _status("poisson.ymf", tmp_path)[1] == "pro disc poisson.weak.ymf"
-    assert _disc("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _status("poisson.ymf", tmp_path)[1] == "pro dis poisson.weak.ymf"
+    assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
     report, step = _status("poisson.ymf", tmp_path)
     assert step == "pro run poisson.disc.ymf"
     disc = report["files"][str(tmp_path / "poisson.disc.ymf")]
@@ -906,13 +906,13 @@ def test_status_follows_a_spec_through_its_steps(tmp_path):
     assert report["chain"][-1]["state"] == "closed"
     assert report["chain"][-1]["archive"]["present"] == 1
     text = pro("status", "poisson.ymf", cwd=tmp_path).stdout
-    assert "└ poisson.weak.ymf" in text and "pro disc, current" in text
+    assert "└ poisson.weak.ymf" in text and "pro dis, current" in text
 
 
 def test_a_stale_step_is_named_and_pro_run_refuses_it(tmp_path):
     spec = _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
     assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
-    assert _disc("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
     spec.write_text(spec.read_text(encoding="utf-8").replace("2π²", "π²"), encoding="utf-8")
     report, step = _status("poisson.disc.ymf", tmp_path)
     assert step == "poisson.weak.ymf is stale; regenerate it: pro weak poisson.ymf"
@@ -920,7 +920,7 @@ def test_a_stale_step_is_named_and_pro_run_refuses_it(tmp_path):
     assert weak["stale"] and not weak["edited"]
     out = pro("run", "poisson.disc.ymf", cwd=tmp_path)
     assert out.returncode == 2 and "is stale" in out.stderr
-    assert "regenerate it: pro disc poisson.weak.ymf" in out.stderr
+    assert "regenerate it: pro dis poisson.weak.ymf" in out.stderr
     assert not (tmp_path / "poisson.disc.archive.ymf").exists()
     assert pro("run", "poisson.disc.ymf", "--stale-ok", cwd=tmp_path).returncode == 0
 
@@ -928,7 +928,7 @@ def test_a_stale_step_is_named_and_pro_run_refuses_it(tmp_path):
 def test_a_hand_edited_step_is_reported_and_still_runs(tmp_path):
     _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
     assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
-    assert _disc("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
     path = tmp_path / "poisson.disc.ymf"
     path.write_text(path.read_text(encoding="utf-8").replace("cells: 16", "cells: 8"),
                     encoding="utf-8")

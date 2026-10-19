@@ -335,7 +335,7 @@ def main(argv=None, prog="ymf_run"):
     with open(args.input, encoding="utf-8") as f:
         input_is_archive = is_archive_text(f.read())
     if not input_is_archive and not args.stale_ok:
-        # A file pro weak or pro disc wrote from an input that has changed
+        # A file pro weak or pro dis wrote from an input that has changed
         # since describes the old input: running it would solve that.
         from .chain import stale
         found = stale(args.input)

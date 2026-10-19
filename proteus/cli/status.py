@@ -13,7 +13,7 @@ disc``'s ``.disc.ymf``), and for each: the ``ymf_state`` it reaches,
 whether a tool wrote it and if so whether it is current, stale (its input
 changed since) or hand-edited, its weak forms and discretizations, and how
 many of its planned outputs its archive holds. Then the next command:
-regenerate a stale file, ``pro weak``, ``pro disc`` or ``pro run``, or
+regenerate a stale file, ``pro weak``, ``pro dis`` or ``pro run``, or
 nothing to do. It writes nothing; ``--json`` gives the report as data.
 """
 import json
@@ -136,7 +136,7 @@ def _next(leaf, chain_infos):
     if leaf["state"] == "well-posed":
         if not leaf["weak_forms"]:
             return "pro weak " + rel
-        return "pro disc " + rel
+        return "pro dis " + rel
     archive = leaf.get("archive")
     if archive and archive["planned"] and archive["present"] == archive["planned"]:
         return "nothing to do: every planned output is in %s" % (
