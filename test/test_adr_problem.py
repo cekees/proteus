@@ -595,11 +595,53 @@ def test_a_spec_s_linear_solver_is_honoured(poisson_spec, tmp_path):
         assert discrete["petsc_options"] == {"adr_ksp_type": "cg", "adr_pc_type": "jacobi"}
 
 
-def test_a_linear_solver_proteus_lacks_skips_the_branch(poisson_spec, tmp_path):
+def test_a_linear_solver_proteus_lacks_stops_the_run(poisson_spec, tmp_path):
     _with_solver(poisson_spec, "{type: linear, linear_solver: umfpack}")
     out = ymf_run(poisson_spec, "--cells", "4", "--outdir", tmp_path)
-    assert "P1 -- skipped: linear_solver 'umfpack' has no Proteus solver" in out.stdout
+    assert out.returncode == 2
+    assert "P1: linear_solver 'umfpack' has no Proteus solver" in out.stderr
     assert not rows(out.stdout)
+    assert not (tmp_path / "poisson.archive.ymf").exists()      # nothing was run
+    # --ignore leaves it out; the archive is written, and is not closed
+    out = ymf_run(poisson_spec, "--cells", "4", "--outdir", tmp_path, "--ignore")
+    assert out.returncode == 1
+    assert "P1 -- left out (--ignore): P1: linear_solver 'umfpack'" in out.stdout
+    assert "ymf_state: discretized" in out.stdout
+
+
+def test_a_branch_without_a_mesh_stops_the_run_with_a_hint(poisson_spec, tmp_path):
+    out = ymf_run(poisson_spec, "--outdir", tmp_path)
+    assert out.returncode == 2
+    assert ("P1 is missing a mesh: give mesh: {h: ...} (or {cells: ...} on a box), "
+            "or --h (--cells) on the command line") in out.stderr
+    assert "rerun with --ignore" in out.stderr
+    assert not (tmp_path / "poisson.archive.ymf").exists()
+
+
+def test_ignore_runs_the_branches_that_can_close(poisson_spec, tmp_path):
+    text = poisson_spec.read_text(encoding="utf-8")
+    assert text.endswith("      solver: {type: linear}\n")
+    poisson_spec.write_text(text + """\
+    - name: P2
+      provenance: human_specified
+      from_weak_form: galerkin
+      finite_element: {fields: {family: CG, order: 2}}
+      solver: {type: linear}
+      mesh: {cells: 4}
+""", encoding="utf-8")
+    out = ymf_run(poisson_spec, "--outdir", tmp_path, "--ignore")
+    assert out.returncode == 1                 # it ran, but the archive is not closed
+    assert "P1 -- left out (--ignore): P1 is missing a mesh" in out.stdout
+    assert len(rows(out.stdout)) == 1          # P2 on its one mesh
+    assert "ymf_state: well-posed" in out.stdout
+    assert "not closed: P1 is missing a mesh" in out.stdout
+    archive = (tmp_path / "poisson.archive.ymf").read_text(encoding="utf-8")
+    assert "\nymf_state: well-posed\n" in archive
+    # given its mesh, P1 runs too, P2 is already there, and the archive closes
+    out = ymf_run(poisson_spec, "--outdir", tmp_path, "--discretization", "P1",
+                  "--cells", "4")
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    assert "ymf_state: closed" in out.stdout
 
 
 def test_emitted_pn_files_reproduce_a_krylov_solve_under_parun(poisson_spec, tmp_path):

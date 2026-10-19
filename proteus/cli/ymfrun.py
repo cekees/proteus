@@ -291,6 +291,39 @@ def report(problem, rows):
         previous = (size, errors)
 
 
+def blockers(doc, problem, entry):
+    """Why one discretization cannot close in this run: what ymf says it
+    lacks (with ymf's hints), then what Proteus cannot run. Empty if it can.
+    """
+    from ymf.discretizations import missing
+    from proteus.ADRProblem import STABILIZATIONS, linear_solver_choice
+    name = entry["name"]
+    try:
+        lacking = missing(entry)
+    except ValueError as e:                    # an unknown method
+        return [str(e)]
+    if lacking:
+        return ["%s is missing %s: %s" % (name, m.what, m.hint) for m in lacking]
+    if entry.get("method", "mesh") != "mesh":
+        return ["%s: Proteus solves method mesh only, and this branch's method is %s"
+                % (name, entry["method"])]
+    method = stabilization_of(doc, entry)
+    if method not in STABILIZATIONS:
+        # running it without would solve a different weak form under this
+        # branch's name
+        return ["%s: its weak form needs %s stabilization, which Proteus does not "
+                "wire up yet (have %s)" % (name, method, ", ".join(STABILIZATIONS))]
+    spaces = element_spaces(problem, entry.get("finite_element") or {})
+    solver = entry.get("solver") or {}
+    try:
+        linear_solver_choice(problem, spaces, solver.get("linear_solver"),
+                             solver.get("petsc_options"))
+    except ValueError as e:
+        # running it with another solver would not be what it asks for
+        return ["%s: %s" % (name, e)]
+    return []
+
+
 def main(argv=None, prog="ymf_run"):
     """Run the YMF runner; ``prog`` names it in help and in the archive's
     record of command-line overrides."""
@@ -321,6 +354,10 @@ def main(argv=None, prog="ymf_run"):
     parser.add_argument("--prune", action="store_true",
                         help="drop outputs of an earlier version of the input from the "
                              "archive (their files are left in place)")
+    parser.add_argument("--ignore", action="store_true",
+                        help="run the discretizations that can close and leave out the "
+                             "rest; without it, a run that cannot close stops before "
+                             "computing anything")
     args = parser.parse_args(argv)
 
     from ymf import closure
@@ -376,35 +413,39 @@ def main(argv=None, prog="ymf_run"):
             raise SystemExit("refusing to drop them: rerun with --prune, or use another --outdir")
 
     problem = adr_problem(doc)
-    from proteus.ADRProblem import STABILIZATIONS, linear_solver_choice
     print("%s: %s" % (args.input, doc["model"]["name"]))
     print("unknowns: %s" % ", ".join("%s (%s)" % (n, ", ".join(c))
                                     for n, c in problem["unknowns"].items()))
     env = software()
     planned = list(closure.planned_outputs(doc))
-    new, refused = [], []
+
+    # Every selected branch is checked before anything is computed: what
+    # ymf says it lacks (ymf.discretizations), and what Proteus can run.
+    runnable, blocked = [], []
     for name in selected:
         entry = next(d for d in doc["solution_paths"]["discretizations"] if d["name"] == name)
-        mine = [(k, r) for k, n, r in planned if n == name]
-        if not mine:
-            print("\n%s -- no mesh: give it one (mesh: {cells: [4, 8]}) or pass --cells" % name)
-            continue
+        reasons = blockers(doc, problem, entry)
+        if reasons:
+            blocked.append((name, reasons))
+        else:
+            runnable.append((name, entry, [(k, r) for k, n, r in planned if n == name]))
+    if blocked and not args.ignore:
+        print("\n%s: %s cannot close, so nothing was run:" % (
+            prog, "this discretization" if len(blocked) == 1 else
+            "%d discretizations" % len(blocked)), file=sys.stderr)
+        for name, reasons in blocked:
+            for reason in reasons:
+                print("  " + reason, file=sys.stderr)
+        print("Give what is missing, choose the branches with --discretization, or "
+              "rerun with --ignore to run the ones that can close.", file=sys.stderr)
+        return 2
+    for name, reasons in blocked:
+        print("\n%s -- left out (--ignore): %s" % (name, "; ".join(reasons)))
+
+    new, refused = [], []
+    for name, entry, mine in runnable:
         method = stabilization_of(doc, entry)
-        if method not in STABILIZATIONS:
-            # Running it without would solve a different weak form under
-            # this branch's name.
-            print("\n%s -- skipped: its weak form needs %s stabilization, which is "
-                  "not wired up yet" % (name, method))
-            continue
         spaces = element_spaces(problem, entry.get("finite_element") or {})
-        solver = entry.get("solver") or {}
-        try:
-            linear_solver_choice(problem, spaces, solver.get("linear_solver"),
-                                 solver.get("petsc_options"))
-        except ValueError as e:
-            # running it with another solver would not be what it asks for
-            print("\n%s -- skipped: %s" % (name, e))
-            continue
         print("\n%s -- %s%s" % (name, ", ".join("%s %s%d" % (c, f, o)
                                                 for c, (f, o) in spaces.items()),
                                 "" if method == "none" else ", " + method))
@@ -450,7 +491,10 @@ def main(argv=None, prog="ymf_run"):
     closure.write(archive, doc, outputs)
     if new:
         archive2xmf(archive, outdir, new)
-    print("\nwrote %s: %d outputs, %d new" % (archive, len(outputs), len(new)))
+    from ymf.state import reached
+    state, why = reached(dict(doc, outputs=outputs))
+    print("\nwrote %s: %d outputs, %d new; ymf_state: %s" % (archive, len(outputs),
+                                                            len(new), state))
     if refused:
         print("\nNOT REPRODUCED (--keep-different keeps a differing rerun):")
         for key, found in refused:
@@ -459,5 +503,10 @@ def main(argv=None, prog="ymf_run"):
     if args.check:
         print("every rerun reproduced its record: same ADR form, same errors, "
               "every array bitwise identical")
+    # 0 only when every run succeeded and the archive is closed. Which
+    # non-zero code means what is still to be defined (PROTEUS_2.0_TASK_LIST).
+    if state != "closed":
+        print("not closed: " + why)
+        return 1
     return 0
 
