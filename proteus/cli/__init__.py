@@ -28,14 +28,12 @@ COMMANDS = {
     "shell": "shell",
     "spec": "spec",
     "weak": "weak",
+    "dis": "dis",
 }
 
 #: front-end subcommands -> (help, modules they import); not implemented
-#: yet, but listed so the help shows where they will go
-FRONTEND = {
-    "disc": ("fill a spec's discretizations and numerical parameters",
-             ("ymf.symbolic", "sympy")),
-}
+#: yet, but listed so the help shows where they will go. None at present.
+FRONTEND = {}
 
 
 def missing(*modules):

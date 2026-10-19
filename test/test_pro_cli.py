@@ -39,7 +39,7 @@ def test_help_does_not_start_mpi_or_petsc():
 def test_help_lists_the_commands():
     out = pro("--help")
     assert out.returncode == 0
-    for command in ("run", "spec", "weak", "disc"):
+    for command in ("run", "spec", "weak", "dis"):
         assert command in out.stdout
 
 
@@ -51,13 +51,11 @@ def test_typo_suggests_the_command():
     assert "maybe you meant 'run'?" in out.stderr
 
 
-def test_frontend_command_explains_itself():
-    out = pro("disc")
-    assert out.returncode == 2
-    if missing("ymf.symbolic", "sympy"):
-        assert "ymf[symbolic]" in out.stderr
-    else:
-        assert "not implemented yet" in out.stderr
+def test_frontend_command_explains_what_it_needs(monkeypatch, capsys):
+    from proteus.cli import dis
+    monkeypatch.setattr(dis, "missing", lambda *names: ["sympy"])
+    assert dis.run(build_parser().parse_args(["dis", "x.ymf"])) == 2
+    assert "ymf[symbolic]" in capsys.readouterr().err
 
 
 def test_missing():
@@ -713,3 +711,166 @@ def test_json_output_survives_what_mpi_prints_to_stdout():
     assert json.loads(ran.stdout) == {"ok": True}
     assert "UCX ERROR" in ran.stderr and "from Python, after" in ran.stderr
     assert "at exit" in ran.stderr
+
+
+# --- pro dis --------------------------------------------------------------------------
+
+
+def _dis(*args, cwd):
+    import json
+    out = pro("dis", "--json", *args, cwd=cwd)
+    report = json.loads(out.stdout)
+    assert report["exit_status"] == out.returncode, out.stderr[-2000:]
+    return report
+
+
+def _without_discretizations(text):
+    return text[:text.index("  discretizations:")] + "  discretizations: []\n"
+
+
+def _without_weak_forms(text):
+    return text[:text.index("  weak_forms:")] + text[text.index("solution_paths:"):]
+
+
+def test_dis_needs_the_weak_forms_and_says_how_to_write_them(tmp_path):
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    report = _dis("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "run: pro weak poisson.ymf" in report["error"]
+    assert sorted(os.listdir(tmp_path)) == ["poisson.ymf"]
+
+
+def test_dis_writes_a_discretized_file_that_pro_run_runs(tmp_path):
+    from ymf import generated
+    from ymf.compose import load_composed
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    listed = _dis("poisson.weak.ymf", "--list", cwd=tmp_path)
+    assert listed["exit_status"] == 0 and listed["written"] is None
+    assert not (tmp_path / "poisson.discrete.ymf").exists()
+    report = _dis("poisson.weak.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 0, report["error"]
+    path = tmp_path / "poisson.discrete.ymf"
+    assert report["written"] == str(path) and generated.check(path).current
+    doc = load_composed(path)                          # checks ymf_state: discretized
+    assert doc["ymf_state"] == "discretized"
+    (entry,) = doc["solution_paths"]["discretizations"]
+    assert entry["name"] == "galerkin_p1" and entry["from_weak_form"] == "proteus_galerkin"
+    assert entry["provenance"] == "proteus_derived"
+    assert entry["finite_element"] == {"fields": {"family": "CG", "order": 1}}
+    assert entry["mesh"] == {"cells": 16}
+    assert entry["solver"]["type"] == "linear"
+    assert entry["solver"]["linear_solver"] in ("mumps", "superlu")
+    spec = _report("poisson.discrete.ymf", cwd=tmp_path)
+    assert spec["state"] == "discretized", spec
+    out = pro("run", "poisson.discrete.ymf", cwd=tmp_path)
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    assert (tmp_path / "poisson.discrete.archive.ymf").exists()
+
+
+def test_dis_of_a_velocity_pressure_system_uses_each_formulations_elements(tmp_path):
+    from ymf.compose import load_composed
+    _spec(tmp_path, _without_discretizations(CHANNEL_SPEC), name="channel.ymf")
+    assert _weak("channel.ymf", cwd=tmp_path)["exit_status"] == 0
+    report = _dis("channel.weak.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 0, report["error"]
+    entries = {d["name"]: d for d in
+               load_composed(tmp_path / "channel.discrete.ymf")["solution_paths"]["discretizations"]}
+    assert set(entries) == {"galerkin_taylor_hood", "supg_pspg_p1p1"}
+    th, eq = entries["galerkin_taylor_hood"], entries["supg_pspg_p1p1"]
+    assert th["finite_element"]["velocity"]["order"] == 2
+    assert th["finite_element"]["pressure"]["order"] == 1
+    assert eq["finite_element"]["velocity"]["order"] == eq["finite_element"]["pressure"]["order"] == 1
+    assert eq["from_weak_form"] == "proteus_supg_pspg"
+    assert th["solver"]["type"] == "nonlinear" and th["solver"]["nonlinear_solver"] == "newton"
+
+
+def test_dis_gives_an_existing_discretization_only_what_it_lacks(tmp_path):
+    from ymf.compose import load_composed
+    _spec(tmp_path)                                    # P1 has no mesh
+    report = _dis("poisson.ymf", "--cells", "4", "8", cwd=tmp_path)
+    assert report["exit_status"] == 0, report["error"]
+    assert report["discretizations"] == [
+        {"name": "P1", "new": False, "from_weak_form": "galerkin", "adds": ["mesh"]}]
+    (entry,) = load_composed(tmp_path / "poisson.discrete.ymf")["solution_paths"]["discretizations"]
+    assert entry["mesh"] == {"cells": [4, 8]}         # a study
+    assert entry["provenance"] == "human_specified"    # the rest is the person's
+    assert entry["solver"] == {"type": "linear"}
+
+
+def test_dis_meshes_a_box_by_cells_not_h(tmp_path):
+    _spec(tmp_path)
+    report = _dis("poisson.ymf", "--h", "0.1", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "give --cells, not --h" in report["error"]
+
+
+def test_dis_picks_a_scalable_solver_for_a_large_problem(tmp_path):
+    from ymf.compose import load_composed
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    report = _dis("poisson.weak.ymf", "--cells", "400", cwd=tmp_path)    # 401² nodes
+    assert report["exit_status"] == 0, report["error"]
+    (entry,) = load_composed(tmp_path / "poisson.discrete.ymf")["solution_paths"]["discretizations"]
+    assert entry["solver"]["linear_solver"] == "petsc"
+    assert "160801 unknowns" in entry["discretization_details"]
+
+
+HEAT_SPEC = """\
+model:
+  name: "Heat"
+  physical_model: {provenance: human_specified}
+  strong_form:
+    provenance: human_specified
+    unknowns: [T]
+    equation_formulation: "heat equation"
+    equations: ["∂T/∂t = ∇·(κ∇T)  in Ω"]
+    domain: "Ω = [0, 1] × [0, 1],  t ∈ (0, 2]"
+    boundary_regions: [{name: walls, where: "∂Ω"}]
+    initial_conditions: [{field: T, type: function, formula: "sin(πx) sin(πy)"}]
+    boundary_conditions: [{region: walls, variable: T, type: dirichlet, value: 0.0}]
+    coefficients:
+      κ: {value: 1.0e-2}
+solution_paths:
+  analytical: []
+  discretizations: []
+"""
+
+
+def test_dis_steps_a_time_dependent_problem_with_backward_euler(tmp_path):
+    from ymf.compose import load_composed
+    _spec(tmp_path, HEAT_SPEC, name="heat.ymf")
+    assert _weak("heat.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("heat.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    (entry,) = load_composed(tmp_path / "heat.discrete.ymf")["solution_paths"]["discretizations"]
+    assert entry["discretization"]["time_integration"] == "backward_euler"
+    assert float(entry["discretization"]["dt"]) == pytest.approx(0.02)   # 100 steps
+
+
+def test_dis_regenerates_its_own_file_but_not_an_edited_one(tmp_path):
+    _spec(tmp_path)
+    assert _dis("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("poisson.ymf", cwd=tmp_path)["exit_status"] == 0      # its own: regenerated
+    path = tmp_path / "poisson.discrete.ymf"
+    path.write_text(path.read_text(encoding="utf-8").replace("cells: 16", "cells: 32"),
+                    encoding="utf-8")
+    report = _dis("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "was edited since" in report["error"]
+    assert _dis("poisson.ymf", "--force", cwd=tmp_path)["exit_status"] == 0
+
+
+def test_dis_says_when_there_is_nothing_to_write(tmp_path):
+    _spec(tmp_path, POISSON_SPEC.replace(
+        "      solver: {type: linear}", "      mesh: {cells: 4}\n      solver: {type: linear}"))
+    report = _dis("poisson.ymf", cwd=tmp_path)
+    assert report["exit_status"] == 1 and "nothing to write" in report["error"]
+
+
+def test_default_unknowns_are_counted_on_the_finest_mesh_of_a_study():
+    from proteus.cli.defaults import estimated_dofs
+    problem = {"domain": {"lower": [0.0, 0.0], "upper": [1.0, 1.0]},
+               "unknowns": {"u": ["u"]}}
+    p1 = {"fields": {"family": "CG", "order": 1}}
+    p2 = {"fields": {"family": "CG", "order": 2}}
+    assert estimated_dofs(problem, p1, {"cells": [4, 8]}) == 81
+    assert estimated_dofs(problem, p2, {"cells": 4, "levels": 2}) == 17 ** 2
+    region = dict(problem, domain=dict(problem["domain"], region="pslg"))
+    assert estimated_dofs(region, p1, {"h": [0.5, 0.25]}) == 25
