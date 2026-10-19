@@ -321,6 +321,10 @@ def main(argv=None, prog="ymf_run"):
     parser.add_argument("--prune", action="store_true",
                         help="drop outputs of an earlier version of the input from the "
                              "archive (their files are left in place)")
+    parser.add_argument("--stale-ok", action="store_true",
+                        help="run even though a generated file in the spec's chain (a "
+                             ".weak.ymf or .disc.ymf) is stale: its input changed since "
+                             "it was written")
     args = parser.parse_args(argv)
 
     from ymf import closure
@@ -330,6 +334,23 @@ def main(argv=None, prog="ymf_run"):
 
     with open(args.input, encoding="utf-8") as f:
         input_is_archive = is_archive_text(f.read())
+    if not input_is_archive and not args.stale_ok:
+        # A file pro weak or pro disc wrote from an input that has changed
+        # since describes the old input: running it would solve that.
+        from .chain import stale
+        found = stale(args.input)
+        if found:
+            print("%s: refusing to run: a generated file in its chain is stale"
+                  % (prog,), file=sys.stderr)
+            for info in found:
+                g = info["generated"]
+                print("  %s: %s" % (os.path.relpath(info["file"]),
+                                    "; ".join(g.get("reasons") or [g.get("error", "")])),
+                      file=sys.stderr)
+                if g.get("regenerate"):
+                    print("    regenerate it: %s" % (g["regenerate"],), file=sys.stderr)
+            print("or run it as it is with --stale-ok", file=sys.stderr)
+            return 2
     stem = closure.archive_stem(args.input)
     if args.outdir:
         outdir = os.path.abspath(args.outdir)
