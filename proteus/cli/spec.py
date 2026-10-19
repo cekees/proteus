@@ -1,6 +1,6 @@
 """``pro spec``: check a YMF spec, and say how far it has got.
 
-The linter for the first step of ``pro spec`` -> ``pro weak`` -> ``pro disc``
+The linter for the first step of ``pro spec`` -> ``pro weak`` -> ``pro dis``
 -> ``pro run``. It writes nothing. It loads the document as the runner
 would, then reports, each with where it was found:
 
