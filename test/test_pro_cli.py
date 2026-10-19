@@ -440,10 +440,9 @@ def test_emitted_region_files_mesh_with_pro_msh(tmp_path):
     assert ran.returncode == 0, ran.stderr[-2000:]
 
 
-@pytest.mark.parametrize("command", ["msh", "status"])
-def test_msh_and_status_point_a_spec_at_its_emitted_files(tmp_path, command):
+def test_msh_points_a_spec_at_its_emitted_files(tmp_path):
     (tmp_path / "spec.ymf").write_text("model: {}\n")
-    out = pro(command, "spec.ymf", cwd=tmp_path)
+    out = pro("msh", "spec.ymf", cwd=tmp_path)
     assert out.returncode == 2
     assert "pro run spec.ymf --emit-pn" in out.stderr
 
@@ -874,3 +873,75 @@ def test_default_unknowns_are_counted_on_the_finest_mesh_of_a_study():
     assert estimated_dofs(problem, p2, {"cells": 4, "levels": 2}) == 17 ** 2
     region = dict(problem, domain=dict(problem["domain"], region="pslg"))
     assert estimated_dofs(region, p1, {"h": [0.5, 0.25]}) == 25
+
+
+# --- pro status of a spec: the chain --------------------------------------------------
+
+
+def _status(path, cwd):
+    import json
+    out = pro("status", "--json", path, cwd=cwd)
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    report = json.loads(out.stdout)
+    (step,) = report["next"].values()
+    return report, step
+
+
+def test_status_follows_a_spec_through_its_steps(tmp_path):
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _status("poisson.ymf", tmp_path)[1] == "pro weak poisson.ymf"
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _status("poisson.ymf", tmp_path)[1] == "pro dis poisson.weak.ymf"
+    assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    report, step = _status("poisson.ymf", tmp_path)
+    assert step == "pro run poisson.discrete.ymf"
+    disc = report["files"][str(tmp_path / "poisson.discrete.ymf")]
+    assert disc["state"] == "discretized" and disc["generated"]["current"]
+    assert disc["weak_forms"] == {"proteus_derived": 1} and disc["discretizations"] == 1
+    assert pro("run", "poisson.discrete.ymf", cwd=tmp_path).returncode == 0
+    report, step = _status("poisson.discrete.ymf", tmp_path)
+    assert step.startswith("nothing to do")
+    assert [os.path.basename(e["file"]) for e in report["chain"]] == [
+        "poisson.ymf", "poisson.weak.ymf", "poisson.discrete.ymf"]
+    assert report["chain"][-1]["state"] == "closed"
+    assert report["chain"][-1]["archive"]["present"] == 1
+    text = pro("status", "poisson.ymf", cwd=tmp_path).stdout
+    assert "└ poisson.weak.ymf" in text and "pro dis, current" in text
+
+
+def test_a_stale_step_is_named_and_pro_run_refuses_it(tmp_path):
+    spec = _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    spec.write_text(spec.read_text(encoding="utf-8").replace("2π²", "π²"), encoding="utf-8")
+    report, step = _status("poisson.discrete.ymf", tmp_path)
+    assert step == "poisson.weak.ymf is stale; regenerate it: pro weak poisson.ymf"
+    weak = report["files"][str(tmp_path / "poisson.weak.ymf")]["generated"]
+    assert weak["stale"] and not weak["edited"]
+    out = pro("run", "poisson.discrete.ymf", cwd=tmp_path)
+    assert out.returncode == 2 and "is stale" in out.stderr
+    assert "regenerate it: pro dis poisson.weak.ymf" in out.stderr
+    assert not (tmp_path / "poisson.discrete.archive.ymf").exists()
+    assert pro("run", "poisson.discrete.ymf", "--stale-ok", cwd=tmp_path).returncode == 0
+
+
+def test_a_hand_edited_step_is_reported_and_still_runs(tmp_path):
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    path = tmp_path / "poisson.discrete.ymf"
+    path.write_text(path.read_text(encoding="utf-8").replace("cells: 16", "cells: 8"),
+                    encoding="utf-8")
+    report, step = _status("poisson.discrete.ymf", tmp_path)
+    assert step == "pro run poisson.discrete.ymf"           # an edit is the editor's choice
+    assert report["chain"][-1]["generated"]["edited"]
+    assert "hand-edited" in pro("status", "poisson.discrete.ymf", cwd=tmp_path).stdout
+    assert pro("run", "poisson.discrete.ymf", cwd=tmp_path).returncode == 0
+
+
+def test_regenerate_command_keeps_a_chosen_output_name(tmp_path, monkeypatch):
+    from proteus.cli.chain import file_info
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", "-o", "mine.ymf", cwd=tmp_path)["exit_status"] == 0
+    monkeypatch.chdir(tmp_path)
+    assert file_info("mine.ymf")["generated"]["regenerate"] == "pro weak poisson.ymf -o mine.ymf"
