@@ -13,10 +13,14 @@ What it writes:
   Proteus can solve (``ADRProblem.check_stabilization``), with the
   defaults of :mod:`proteus.cli.defaults`: the elements for the
   formulation, a mesh, the solver, and backward Euler for a problem with a
-  time interval. It names its weak form (``from_weak_form``) even where
-  that could be left out, so it says which formulation it solves.
-* **What an existing discretization lacks to be discretized:** a mesh, and
-  the elements when it gives none. Nothing it does give is changed.
+  time interval. It names its weak form (``from_weak_form``) and its
+  ``method`` (``mesh``) even where those could be left out, so it says
+  which formulation it solves and how.
+* **What an existing mesh discretization lacks to be discretized:** a
+  mesh, and the elements when it gives none. Nothing it does give is
+  changed. One of another method (``neural``, ``particle``;
+  ``ymf.discretizations``) is left alone and reported as skipped: a mesh
+  and elements do not belong in it.
 
 ``--cells``, ``--h`` and ``--levels`` replace the default mesh (a list is a
 study), ``--only`` limits the new discretizations to some weak forms, and
@@ -32,7 +36,7 @@ import json
 import os
 import sys
 
-from . import json_stdout, missing, parser_kwargs
+from . import json_stdout, load_error, load_errors, missing, parser_kwargs
 
 __all__ = ["add_parser", "run", "plan", "write", "NEEDS"]
 
@@ -119,6 +123,7 @@ def _new_entry(problem, weak, mesh_block):
         "name": _name(weak["label"], short),
         "provenance": "proteus_derived",
         "from_weak_form": weak["label"],
+        "method": "mesh",
         "finite_element": finite_element,
         "mesh": mesh_block,
         "solver": solver,
@@ -171,7 +176,14 @@ def plan(spec, only=None, cells=None, h=None, levels=None):
     existing = (parent.get("solution_paths") or {}).get("discretizations") or []
     used = {d.get("from_weak_form") for d in existing}
     entries = []
+    from ymf.discretizations import method_of
     for d in existing:                     # what an existing one lacks
+        method = method_of(d).name
+        if method != "mesh":               # a mesh and elements would not belong in it
+            report["skipped"].append({
+                "discretization": d["name"],
+                "why": "method %s: pro dis fills mesh discretizations only" % (method,)})
+            continue
         fill = {}
         if not d.get("mesh"):
             fill["mesh"] = mesh_block
@@ -267,7 +279,8 @@ def _render(report):
         else:
             lines.append("  %-24s adds %s" % (d["name"], ", ".join(d["adds"])))
     for s in report["skipped"]:
-        lines.append("  %-24s skipped: %s" % (s["weak_form"], s["why"]))
+        lines.append("  %-24s skipped: %s" % (s.get("weak_form") or s["discretization"],
+                                               s["why"]))
     if report["written"]:
         lines.append("wrote %s" % (report["written"],))
     if report["error"]:
@@ -289,10 +302,9 @@ def run(args):
     entries, parent = [], None
     try:
         report, parent, entries = plan(args.spec, args.only, args.cells, args.h, args.levels)
-    except ValueError as exc:             # the loader's, the classifier's, the mesh's
+    except load_errors() as exc:          # the loader's, the schema's, the classifier's
         report = {"spec": args.spec, "name": None, "discretizations": [], "skipped": [],
-                  "written": None, "generated": None,
-                  "error": "%s (run pro spec %s)" % (exc, args.spec)}
+                  "written": None, "generated": None, "error": load_error(exc, args.spec)}
     if not report["error"] and not args.list:
         out = _out_path(args.spec, args.output)
         try:

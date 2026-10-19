@@ -17,7 +17,7 @@ import argparse
 import importlib.util
 import sys
 
-__all__ = ["main", "build_parser", "missing", "json_stdout"]
+__all__ = ["main", "build_parser", "missing", "json_stdout", "load_error", "load_errors"]
 
 #: subcommand -> module in this package; each module defines
 #: ``add_parser(subparsers)`` and ``run(args) -> int``
@@ -66,6 +66,30 @@ def json_stdout():
     kept = os.dup(1)
     os.dup2(2, 1)
     return os.fdopen(kept, "w", encoding="utf-8")
+
+
+def load_error(exc, spec):
+    """One line for a spec that does not load: a ValueError (the loader's,
+    composition's, a classifier's), or strictyaml's schema or syntax error,
+    which is not a ValueError and would otherwise end in a traceback. Its
+    full location is ``pro spec``'s to give, and the line says so."""
+    problem = getattr(exc, "problem", None)
+    if problem:
+        mark = getattr(exc, "problem_mark", None)
+        where = ", line %d" % (mark.line + 1,) if mark is not None else ""
+        text = "%s%s: %s" % (spec, where, problem)
+    else:
+        text = str(exc)
+    return "%s (run pro spec %s)" % (text, spec)
+
+
+def load_errors():
+    """The exceptions :func:`load_error` turns into a line."""
+    try:
+        from strictyaml.ruamel.error import YAMLError
+    except ImportError:                   # no front end: nothing raises it
+        return (ValueError,)
+    return (ValueError, YAMLError)
 
 
 def parser_kwargs():
