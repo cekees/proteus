@@ -31,7 +31,7 @@ import json
 import os
 import sys
 
-from . import json_stdout, missing, parser_kwargs
+from . import json_stdout, load_error, load_errors, missing, parser_kwargs
 
 __all__ = ["add_parser", "run", "formulations", "weak_form", "NEEDS"]
 
@@ -372,9 +372,9 @@ def run(args):
         Profiling.procID = 0
     try:
         report, parent, problem, space, residuals, chosen = plan(args.spec, args.only)
-    except ValueError as exc:             # the loader's or the classifier's
+    except load_errors() as exc:          # the loader's, the schema's, the classifier's
         report = {"spec": args.spec, "name": None, "formulations": [], "written": None,
-                  "generated": None, "error": "%s (run pro spec %s)" % (exc, args.spec)}
+                  "generated": None, "error": load_error(exc, args.spec)}
         chosen = []
     if not report["error"] and not args.list:
         if not chosen:

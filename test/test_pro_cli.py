@@ -945,3 +945,40 @@ def test_regenerate_command_keeps_a_chosen_output_name(tmp_path, monkeypatch):
     assert _weak("poisson.ymf", "-o", "mine.ymf", cwd=tmp_path)["exit_status"] == 0
     monkeypatch.chdir(tmp_path)
     assert file_info("mine.ymf")["generated"]["regenerate"] == "pro weak poisson.ymf -o mine.ymf"
+
+
+def test_dis_names_the_method_of_what_it_writes(tmp_path):
+    from ymf.compose import load_composed
+    _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
+    assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
+    (entry,) = load_composed(tmp_path / "poisson.discrete.ymf")["solution_paths"]["discretizations"]
+    assert entry["method"] == "mesh"
+
+
+def test_dis_leaves_a_discretization_of_another_method_alone(tmp_path):
+    neural = "      finite_element: {fields: {family: CG, order: 1}}\n"
+    spec = POISSON_SPEC.replace(
+        "    - name: P1\n", "    - name: NN\n      method: neural\n"
+        "      neural: {width: 32, depth: 4, points: 1000}\n").replace(neural, "")
+    assert "method: neural" in spec and "finite_element: {fields" not in spec
+    _spec(tmp_path, spec)
+    report = _dis("poisson.ymf", cwd=tmp_path)
+    assert report["skipped"] == [{"discretization": "NN",
+                                  "why": "method neural: pro dis fills mesh discretizations only"}]
+    assert report["exit_status"] == 1 and "nothing to write" in report["error"]
+    assert not (tmp_path / "poisson.discrete.ymf").exists()
+    text = pro("dis", "poisson.ymf", "--list", cwd=tmp_path).stdout
+    assert "NN" in text and "skipped: method neural" in text
+
+
+@pytest.mark.parametrize("command", ["weak", "dis"])
+def test_a_spec_that_fails_the_schema_is_an_error_not_a_traceback(tmp_path, command):
+    import json
+    _spec(tmp_path, POISSON_SPEC.replace("      solver: {type: linear}\n", ""))
+    out = pro(command, "--json", "poisson.ymf", cwd=tmp_path)
+    report = json.loads(out.stdout)
+    assert out.returncode == 1 and "Traceback" not in out.stderr
+    assert report["error"].startswith("poisson.ymf, line ")
+    assert "required key(s) 'solver' not found" in report["error"]
+    assert report["error"].endswith("(run pro spec poisson.ymf)")
