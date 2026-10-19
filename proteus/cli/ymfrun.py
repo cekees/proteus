@@ -323,7 +323,7 @@ def main(argv=None, prog="ymf_run"):
                              "archive (their files are left in place)")
     parser.add_argument("--stale-ok", action="store_true",
                         help="run even though a generated file in the spec's chain (a "
-                             ".weak.ymf or .disc.ymf) is stale: its input changed since "
+                             ".weak.ymf or .discrete.ymf) is stale: its input changed since "
                              "it was written")
     args = parser.parse_args(argv)
 

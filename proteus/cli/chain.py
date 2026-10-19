@@ -5,8 +5,8 @@ so a spec is a chain::
 
     poisson.ymf             written by a person
       └ poisson.weak.ymf    pro weak poisson.ymf
-          └ poisson.disc.ymf    pro dis poisson.weak.ymf
-    poisson.disc.archive.ymf    pro run poisson.disc.ymf
+          └ poisson.discrete.ymf    pro dis poisson.weak.ymf
+    poisson.discrete.archive.ymf    pro run poisson.discrete.ymf
 
 This module follows ``extends`` up from a file, finds the files beside it
 that extend it, and says for each generated one whether it still holds
@@ -40,11 +40,11 @@ def regenerate_command(path, record):
         return None
     here = os.path.dirname(os.path.abspath(path))
     source = os.path.relpath(os.path.join(here, source))
-    default = {"pro weak": ".weak.ymf", "pro dis": ".disc.ymf"}[step]
     from ymf.closure import archive_stem
     stem = archive_stem(source)
     if stem.endswith(".weak"):
         stem = stem[:-len(".weak")]
+    default = {"pro weak": ".weak.ymf", "pro dis": ".discrete.ymf"}[step]
     out = "" if os.path.basename(path) == stem + default else " -o %s" % (
         os.path.relpath(path),)
     return "%s %s%s" % (step, source, out)

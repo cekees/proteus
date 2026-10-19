@@ -894,15 +894,15 @@ def test_status_follows_a_spec_through_its_steps(tmp_path):
     assert _status("poisson.ymf", tmp_path)[1] == "pro dis poisson.weak.ymf"
     assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
     report, step = _status("poisson.ymf", tmp_path)
-    assert step == "pro run poisson.disc.ymf"
-    disc = report["files"][str(tmp_path / "poisson.disc.ymf")]
+    assert step == "pro run poisson.discrete.ymf"
+    disc = report["files"][str(tmp_path / "poisson.discrete.ymf")]
     assert disc["state"] == "discretized" and disc["generated"]["current"]
     assert disc["weak_forms"] == {"proteus_derived": 1} and disc["discretizations"] == 1
-    assert pro("run", "poisson.disc.ymf", cwd=tmp_path).returncode == 0
-    report, step = _status("poisson.disc.ymf", tmp_path)
+    assert pro("run", "poisson.discrete.ymf", cwd=tmp_path).returncode == 0
+    report, step = _status("poisson.discrete.ymf", tmp_path)
     assert step.startswith("nothing to do")
     assert [os.path.basename(e["file"]) for e in report["chain"]] == [
-        "poisson.ymf", "poisson.weak.ymf", "poisson.disc.ymf"]
+        "poisson.ymf", "poisson.weak.ymf", "poisson.discrete.ymf"]
     assert report["chain"][-1]["state"] == "closed"
     assert report["chain"][-1]["archive"]["present"] == 1
     text = pro("status", "poisson.ymf", cwd=tmp_path).stdout
@@ -914,29 +914,29 @@ def test_a_stale_step_is_named_and_pro_run_refuses_it(tmp_path):
     assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
     assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
     spec.write_text(spec.read_text(encoding="utf-8").replace("2π²", "π²"), encoding="utf-8")
-    report, step = _status("poisson.disc.ymf", tmp_path)
+    report, step = _status("poisson.discrete.ymf", tmp_path)
     assert step == "poisson.weak.ymf is stale; regenerate it: pro weak poisson.ymf"
     weak = report["files"][str(tmp_path / "poisson.weak.ymf")]["generated"]
     assert weak["stale"] and not weak["edited"]
-    out = pro("run", "poisson.disc.ymf", cwd=tmp_path)
+    out = pro("run", "poisson.discrete.ymf", cwd=tmp_path)
     assert out.returncode == 2 and "is stale" in out.stderr
     assert "regenerate it: pro dis poisson.weak.ymf" in out.stderr
-    assert not (tmp_path / "poisson.disc.archive.ymf").exists()
-    assert pro("run", "poisson.disc.ymf", "--stale-ok", cwd=tmp_path).returncode == 0
+    assert not (tmp_path / "poisson.discrete.archive.ymf").exists()
+    assert pro("run", "poisson.discrete.ymf", "--stale-ok", cwd=tmp_path).returncode == 0
 
 
 def test_a_hand_edited_step_is_reported_and_still_runs(tmp_path):
     _spec(tmp_path, _without_discretizations(_without_weak_forms(POISSON_SPEC)))
     assert _weak("poisson.ymf", cwd=tmp_path)["exit_status"] == 0
     assert _dis("poisson.weak.ymf", cwd=tmp_path)["exit_status"] == 0
-    path = tmp_path / "poisson.disc.ymf"
+    path = tmp_path / "poisson.discrete.ymf"
     path.write_text(path.read_text(encoding="utf-8").replace("cells: 16", "cells: 8"),
                     encoding="utf-8")
-    report, step = _status("poisson.disc.ymf", tmp_path)
-    assert step == "pro run poisson.disc.ymf"           # an edit is the editor's choice
+    report, step = _status("poisson.discrete.ymf", tmp_path)
+    assert step == "pro run poisson.discrete.ymf"           # an edit is the editor's choice
     assert report["chain"][-1]["generated"]["edited"]
-    assert "hand-edited" in pro("status", "poisson.disc.ymf", cwd=tmp_path).stdout
-    assert pro("run", "poisson.disc.ymf", cwd=tmp_path).returncode == 0
+    assert "hand-edited" in pro("status", "poisson.discrete.ymf", cwd=tmp_path).stdout
+    assert pro("run", "poisson.discrete.ymf", cwd=tmp_path).returncode == 0
 
 
 def test_regenerate_command_keeps_a_chosen_output_name(tmp_path, monkeypatch):

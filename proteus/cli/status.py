@@ -9,7 +9,7 @@ of their own, such as the domain's .poly.
 
 For a **spec** (``SPEC.ymf``): the chain of files it is built from and the
 files beside it that extend it (``pro weak``'s ``.weak.ymf``, ``pro
-disc``'s ``.disc.ymf``), and for each: the ``ymf_state`` it reaches,
+dis``'s ``.discrete.ymf``), and for each: the ``ymf_state`` it reaches,
 whether a tool wrote it and if so whether it is current, stale (its input
 changed since) or hand-edited, its weak forms and discretizations, and how
 many of its planned outputs its archive holds. Then the next command:
