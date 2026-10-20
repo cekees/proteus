@@ -7223,6 +7223,15 @@ def setDomainFromPhysics(p, n):
     meshOptions.triangleFlag=n.triangleFlag
     meshOptions.triangleOptions=n.triangleOptions
     meshOptions.genMesh=p.genMesh
+    # The solvers read the partition from n (parallelUsesFullOverlap), so
+    # the mesh must be partitioned the same way. Without these two lines an
+    # element partition without overlap asked for in n was meshed as the
+    # default node partition with one layer, and assembled as if it had
+    # none: every overlapping element counted twice.
+    meshOptions.parallelPartitioningType = getattr(
+        n, 'parallelPartitioningType', meshOptions.parallelPartitioningType)
+    meshOptions.nLayersOfOverlapForParallel = getattr(
+        n, 'nLayersOfOverlapForParallel', meshOptions.nLayersOfOverlapForParallel)
 
 def meshFiles(domain, meshOptions):
     """What :func:`writeMeshFiles` would do for this domain, or None.
