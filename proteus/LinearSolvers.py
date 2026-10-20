@@ -4451,10 +4451,13 @@ class ConstantComponentsNullSpace(SolverNullSpace):
     velocity: the continuity rows tested with q = 1 sum to the boundary
     flux of interior basis functions, which is zero.
 
-    On several ranks only when every component is in it: the vector is then
-    the constant, which PETSc builds for any layout. Otherwise serial only
-    for now: the vector is laid out with the model's offset/stride over the
-    free global degrees of freedom.
+    In serial and in parallel alike: each rank sets the entries it owns.
+    Which component an owned entry belongs to comes from the model's own
+    layout -- ``owned_local`` maps a rank's owned PETSc entries to its
+    local degrees of freedom, and ``offset``/``stride`` map those to
+    components -- so it holds for interleaved (equal-order, block size nc)
+    and component-blocked (mixed spaces) layouts. In serial ``owned_local``
+    is the identity.
     """
     def __init__(self, proteus_ksp):
         super(ConstantComponentsNullSpace, self).__init__(proteus_ksp)
@@ -4463,26 +4466,33 @@ class ConstantComponentsNullSpace(SolverNullSpace):
     def get_name():
         return 'constant_components'
 
+    @staticmethod
+    def components_of_owned(model):
+        """The component of each degree of freedom this rank owns, in the
+        order of its part of the PETSc vector."""
+        local = sum(model.nFreeDOF_global)
+        component = np.full(local, -1, dtype='i')
+        for ci in range(model.coefficients.nc):
+            component[model.offset[ci] +
+                      model.stride[ci] * np.arange(model.nFreeDOF_global[ci])] = ci
+        return component[np.asarray(model.owned_local)]
+
     def apply_ns(self, par_b):
         try:
             self.components_null_space
         except AttributeError:
             model = self.get_global_ksp().par_L.pde
-            if p4pyPETSc.COMM_WORLD.size > 1:
-                if sorted(model.coefficients.nullSpaceComponents) != list(range(model.coefficients.nc)):
-                    raise NotImplementedError("ConstantComponentsNullSpace is serial only "
-                                              "unless every component is in it")
-                self.components_null_space = p4pyPETSc.NullSpace().create(
-                    constant=True, comm=p4pyPETSc.COMM_WORLD)
-                return self.apply_ns(par_b)
             vector = par_b.copy()
             values = vector.getArray()
+            owned = self.components_of_owned(model)
+            if owned.shape[0] != values.shape[0]:
+                raise RuntimeError("ConstantComponentsNullSpace: %d owned degrees of "
+                                   "freedom, but the vector holds %d on this rank"
+                                   % (owned.shape[0], values.shape[0]))
+            mask = np.isin(owned, list(model.coefficients.nullSpaceComponents))
+            n = p4pyPETSc.COMM_WORLD.tompi4py().allreduce(int(mask.sum()))
             values.fill(0.0)
-            n = 0
-            for ci in model.coefficients.nullSpaceComponents:
-                for k in range(model.nFreeDOF_global[ci]):
-                    values[model.offset[ci] + model.stride[ci] * k] = 1.0
-                n += model.nFreeDOF_global[ci]
+            values[mask] = 1.0
             values /= sqrt(n)
             vector.assemblyBegin()
             vector.assemblyEnd()

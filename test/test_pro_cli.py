@@ -1190,16 +1190,67 @@ def test_a_whole_system_null_space_runs_on_two_ranks(tmp_path):
 
 
 @needs_mpiexec
-def test_what_runs_on_one_process_only_is_refused_before_computing(tmp_path):
-    _spec(tmp_path, CHANNEL_SPEC, name="channel.ymf")         # the pressure null space
-    out = pro_on(2, "run", "channel.ymf", "--cells", "4", cwd=tmp_path)
-    assert out.returncode == 2
-    assert "is solved on one process only for now (this run has 2 ranks)" in out.stderr
+def test_superlu_is_refused_on_two_ranks_before_computing(tmp_path):
     _spec(tmp_path, POISSON_SPEC.replace("solver: {type: linear}",
                                          "solver: {type: linear, linear_solver: superlu}"))
     out = pro_on(2, "run", "poisson.ymf", "--cells", "4", cwd=tmp_path)
     assert out.returncode == 2 and "linear_solver superlu is serial" in out.stderr
     assert not list(tmp_path.glob("*.h5"))                    # nothing was solved
+
+
+POISEUILLE = """\
+  analytical:
+    - name: poiseuille
+      provenance: human_specified
+      method: closed_form
+      solution:
+        formula: |-
+          v = (4 y (1 - y), 0)
+          p = -8 x
+"""
+
+
+@needs_mpiexec
+def test_a_pressure_null_space_runs_on_two_ranks(tmp_path):
+    """Taylor-Hood (each rank's DOFs blocked by component) and SUPG/PSPG P1/P1
+    (interleaved, block size 3), the pressure fixed only up to a constant."""
+    _spec(tmp_path, _without_discretizations(CHANNEL_SPEC).replace(
+        "  analytical: []\n", POISEUILLE), name="channel.ymf")
+    assert _weak("channel.ymf", cwd=tmp_path)["exit_status"] == 0
+    assert _dis("channel.weak.ymf", "--cells", "4", cwd=tmp_path)["exit_status"] == 0
+    errors = {}
+    for ranks in (1, 2):
+        out = pro_on(ranks, "run", "channel.discrete.ymf", "--outdir", str(ranks),
+                     cwd=tmp_path)
+        assert out.returncode == 0, out.stderr[-3000:]
+        outputs = _outputs(tmp_path / str(ranks) / "channel.discrete.archive.ymf")
+        assert {o["transformations"]["solve"]["by"]["ranks"] for o in outputs.values()} \
+            == {ranks}
+        errors[ranks] = {k: o["verification"]["l2_errors"] for k, o in outputs.items()}
+    (th,) = [k for k in errors[1] if k.startswith("galerkin_taylor_hood/")]
+    (p1,) = [k for k in errors[1] if k.startswith("supg_pspg_p1p1/")]
+    for ranks in (1, 2):
+        assert max(errors[ranks][th].values()) < 1e-10    # Poiseuille is in the space
+    for name, e in errors[1][p1].items():
+        assert abs(errors[2][p1][name] - e) <= 1e-10 * e
+
+
+def test_the_null_space_knows_each_owned_degree_of_freedoms_component():
+    import numpy
+    from types import SimpleNamespace
+    from proteus.LinearSolvers import ConstantComponentsNullSpace as NS
+    coefficients = SimpleNamespace(nc=3)
+    # equal order, interleaved (block size 3): node by node, p v_0 v_1
+    interleaved = SimpleNamespace(coefficients=coefficients, nFreeDOF_global=[4, 4, 4],
+                                  offset=[0, 1, 2], stride=[3, 3, 3],
+                                  owned_local=numpy.arange(9))     # 3 of 4 nodes owned
+    assert list(NS.components_of_owned(interleaved)) == [0, 1, 2] * 3
+    # mixed (Taylor-Hood), blocked: p's DOFs, then v_0's, then v_1's; each
+    # component's owned ones first, the rest ghosts
+    blocked = SimpleNamespace(coefficients=coefficients, nFreeDOF_global=[3, 5, 5],
+                              offset=[0, 3, 8], stride=[1, 1, 1],
+                              owned_local=numpy.array([0, 1, 3, 4, 5, 6, 8, 9, 10, 11]))
+    assert list(NS.components_of_owned(blocked)) == [0, 0, 1, 1, 1, 1, 2, 2, 2, 2]
 
 
 def test_the_default_solver_on_several_ranks_is_a_parallel_one():
