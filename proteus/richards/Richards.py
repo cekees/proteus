@@ -260,7 +260,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  SC=0.0,
                  FCT=True,
                  num_fct_iter=1,
-                 FCT_SATURATED_LOW_ORDER=False,
+                 FCT_SATURATED_LOW_ORDER=True,
                  # FOR ENTROPY VISCOSITY
                  cE=1.0,
                  uL=0.0,
@@ -390,7 +390,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.ENTROPY_TYPE = ENTROPY_TYPE
         self.FCT = FCT
         self.num_fct_iter=num_fct_iter
-        # When True, the FCT correction is switched off at DOFs whose low-order
+        # When True (default), the FCT correction is switched off at DOFs whose low-order
         # predictor is saturated (u >= 0) for retention laws with a saturated
         # plateau (VG, BC, Hornung-Messing; not Gardner). There theta is pinned at
         # theta_S, so a limited mass below it cannot be inverted back to the

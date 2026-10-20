@@ -36,7 +36,7 @@ order on the finest meshes:
 The low order has the same non-monotone coarse-mesh regime (h = 1/2 → 1/4) as the JNMA Table 1.
 
 ### What the FCT needed
-The deck turns on two options that are off by default (they leave the WRR 1-D results unchanged):
+The deck sets two `Coefficients` options explicitly. `forceStrongConditions` is off by default; `FCT_SATURATED_LOW_ORDER` has been on by default since it was added. Both leave the WRR 1-D results unchanged:
 - `strong_bc` → `forceStrongConditions=True`. With weak (IIPG) Dirichlet the boundary DOFs are free, and the
   FCT correction moved them by up to 1.5e-3, which dominated the error. (`Coefficients` previously ignored
   this argument and always used weak enforcement.)
