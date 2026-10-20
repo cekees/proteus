@@ -17,9 +17,27 @@ import proteus.TransportCoefficients
 
 
 class ThetaScheme(TimeIntegration.BackwardEuler):
-    def __init__(self,transport,integrateInterpolationPoints=False):
+    """Two-level theta method for the Richards LevelModel.
+
+    The storage term is always (m(u^{n+1}) - m(u^n))/dt; the Galerkin flux terms
+    are weighted theta*F(u^{n+1}) + (1-theta)*F(u^n). theta = 1 (default) is
+    backward Euler and theta = 1/2 is Crank-Nicolson. Set it in the numerics
+    file with ``timeIntegrationTheta = 0.5``.
+
+    With STABILIZATION_TYPE=0 the theta weighting applies to the Galerkin
+    element integrals (exterior boundary fluxes stay implicit). With the
+    edge-based schemes the low-order operator stays backward Euler and theta
+    enters only the high-order flux used to build the FCT correction.
+    """
+    def __init__(self,transport,integrateInterpolationPoints=False,theta=1.0):
         self.transport=transport
         TimeIntegration.BackwardEuler.__init__(self,transport, integrateInterpolationPoints)
+        self.theta = theta
+    def setFromOptions(self,nOptions):
+        TimeIntegration.BackwardEuler.setFromOptions(self,nOptions)
+        if 'timeIntegrationTheta' in dir(nOptions):
+            self.theta = float(nOptions.timeIntegrationTheta)
+        assert 0.0 <= self.theta <= 1.0, "timeIntegrationTheta must be in [0,1]"
     def updateTimeHistory(self,resetFromDOF=False):
         TimeIntegration.BackwardEuler.updateTimeHistory(self,resetFromDOF)
         self.transport.u_dof_old[:] = self.u
@@ -303,10 +321,16 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         # the Kirchhoff transform hbar = exp(alpha*psi) linearise Richards and
         # the closed forms exist.  alpha is Gardner's exponent [1/m] and
         # vgm_n_types is unused.
+        #
+        # 'HornungMessing' is the manufactured law s = thetaR + thetaSR*(1 -
+        # (4/pi^2) atan(psi)^2), kr = 1/(1+psi^2) for psi < 0 (saturated above).
+        # Use thetaR = 0, thetaSR = pi^2/2, Ks = 2 for the published test;
+        # alpha and vgm_n_types are unused.
         psk_types = {"VG": 0,          # van Genuchten retention + Mualem  kr
                      "BC": 1,          # Brooks-Corey  retention + Burdine kr
                      "BC_MUALEM": 2,   # Brooks-Corey  retention + Mualem  kr
-                     "Gardner": 3}     # Gardner exponential retention + kr=Se
+                     "Gardner": 3,     # Gardner exponential retention + kr=Se
+                     "HornungMessing": 4}
         try:
             if isinstance(PSK_type, int):
                 PSK_type = [key for key, value in psk_types.items() if value == PSK_type][0]
@@ -1574,8 +1598,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict = cArgumentsDict.ArgumentsDict()
         argsDict["bc_mask"] = self.bc_mask
         argsDict["dt"] = self.timeIntegration.dt
-        argsDict["Theta"] = 1.0
-        argsDict["Theta_h"] = 0.5
+        # ThetaScheme.theta weights the high-order (Galerkin) fluxes; the low-order
+        # edge-based operator is always backward Euler (Theta = 1).
+        time_theta = getattr(self.timeIntegration, 'theta', 1.0)
+        argsDict["Theta"] = time_theta if self.coefficients.STABILIZATION_TYPE == 0 else 1.0
+        argsDict["Theta_h"] = time_theta
         argsDict["mesh_trial_ref"] = self.u[0].femSpace.elementMaps.psi
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
         argsDict["mesh_dof"] = self.mesh.nodeArray
@@ -2006,6 +2033,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0,0)]
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["VMS"] = self.coefficients.VMS
+        argsDict["Theta"] = getattr(self.timeIntegration, 'theta', 1.0) if self.coefficients.STABILIZATION_TYPE == 0 else 1.0
         #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
 
         self.calculateJacobian(argsDict)

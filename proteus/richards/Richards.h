@@ -74,7 +74,8 @@ public:
   std::vector<double> rho_dof_member;
   // Pore size distribution / relative permeability model selected from Python
   // (Coefficients.PSK_type). 0 = van Genuchten-Mualem (default), 1 = Brooks-
-  // Corey-Burdine, 2 = Brooks-Corey-Mualem, 3 = Gardner. Refreshed from args at
+  // Corey-Burdine, 2 = Brooks-Corey-Mualem, 3 = Gardner, 4 = Hornung-Messing.
+  // Refreshed from args at
   // the top of every kernel that evaluates the closure.
   int PSK_TYPE_member = 0;
   Richards() : nDOF_test_X_trial_element(nDOF_test_element * nDOF_trial_element), ck() { }
@@ -92,6 +93,10 @@ public:
                                : proteus::richards::psk::bc_kr::burdine);
     } else if (PSK_TYPE_member == 3) {
       proteus::richards::psk::gardner_wetting(
+          psiC, alpha, n_vg, thetaR, thetaSR,
+          thetaW, DthetaW_DpsiC, KWr, DKWr_DpsiC);
+    } else if (PSK_TYPE_member == 4) {
+      proteus::richards::psk::hm_wetting(
           psiC, alpha, n_vg, thetaR, thetaSR,
           thetaW, DthetaW_DpsiC, KWr, DKWr_DpsiC);
     } else {
@@ -134,6 +139,8 @@ public:
       proteus::richards::psk::bc_invert_analytic(m, rho, alpha, n_vg, thetaR, thetaSR, u);
     } else if (PSK_TYPE_member == 3) {
       proteus::richards::psk::gardner_invert_analytic(m, rho, alpha, n_vg, thetaR, thetaSR, u);
+    } else if (PSK_TYPE_member == 4) {
+      proteus::richards::psk::hm_invert_analytic(m, rho, alpha, n_vg, thetaR, thetaSR, u);
     } else {
       proteus::richards::psk::vgm_invert_analytic(m, rho, alpha, n_vg, thetaR, thetaSR, u);
     }
@@ -167,6 +174,8 @@ inline void evaluateInverseCoefficients_Newton(const int rowptr[nSpace],
     proteus::richards::psk::bc_invert_newton(m, rho, beta, alpha, n_vg, thetaR, thetaSR, u);
   } else if (PSK_TYPE_member == 3) {
     proteus::richards::psk::gardner_invert_newton(m, rho, beta, alpha, n_vg, thetaR, thetaSR, u);
+  } else if (PSK_TYPE_member == 4) {
+    proteus::richards::psk::hm_invert_newton(m, rho, beta, alpha, n_vg, thetaR, thetaSR, u);
   } else {
     proteus::richards::psk::vgm_invert_newton(m, rho, beta, alpha, n_vg, thetaR, thetaSR, u);
   }
@@ -199,7 +208,10 @@ inline void evaluateInverseCoefficients_Newton(const int rowptr[nSpace],
     double v_d_Gv = 0.0;
     for (int I = 0; I < nSpace; I++)
       for (int J = 0; J < nSpace; J++) v_d_Gv += Ai[I] * G[I * nSpace + J] * Ai[J];
-    tau_v = 1.0 / sqrt(Ct_sge * A0 * A0 + v_d_Gv);
+    // Floored like the 1.0e-8 in the elementDiameter version above: in a
+    // saturated region without gravity A0 = dm_t = 0 and Ai = df = 0, and an
+    // infinite tau_v turns useMetrics*tau1 = 0*inf into NaN in the residual.
+    tau_v = 1.0 / sqrt(Ct_sge * A0 * A0 + v_d_Gv + 1.0e-16);
   }
 
   inline void calculateNumericalDiffusion(const double &shockCapturingDiffusion, const double &elementDiameter, const double &strong_residual, const double grad_u[nSpace], double &numDiff)
@@ -390,6 +402,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     proteus::pyarray<double> &ebqe_flux                                  = args.array<double>("ebqe_flux");
     // VMS
     double VMS = args.scalar<double>("VMS");
+    // Time-weighting of the flux terms (ThetaScheme): 1 = backward Euler,
+    // 1/2 = Crank-Nicolson. The mass term is always (m - m^n)/dt.
+    const double Theta = args.scalar<double>("Theta");
     // PARAMETERS FOR EDGE BASED STABILIZATION
     double cE = args.scalar<double>("cE");
     double cK = args.scalar<double>("cK");
@@ -474,6 +489,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         ck.valFromDOF(u_dof.data(), &u_l2g.data()[eN_nDOF_trial_element], &u_trial_ref.data()[k * nDOF_trial_element], u);
         //get the solution gradients
         ck.gradFromDOF(u_dof.data(), &u_l2g.data()[eN_nDOF_trial_element], u_grad_trial, grad_u);
+        //old-time solution and gradient for the (1-Theta) flux terms
+        double un = 0.0;
+        ck.valFromDOF(u_dof_old.data(), &u_l2g.data()[eN_nDOF_trial_element], &u_trial_ref.data()[k * nDOF_trial_element], un);
+        ck.gradFromDOF(u_dof_old.data(), &u_l2g.data()[eN_nDOF_trial_element], u_grad_trial, grad_u_old);
 
         // //populate q_x
         // const int eN_k_3d = eN_k * 3;
@@ -497,7 +516,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_local, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[eN]], n.data()[elementMaterialTypes.data()[eN]], thetaR.data()[elementMaterialTypes.data()[eN]],
                              thetaSR.data()[elementMaterialTypes.data()[eN]], &KWs.data()[elementMaterialTypes.data()[eN] * nnz], u, m, dm, f, df, a, da, as, Kr, dKr, thetaW);
         q_theta.data()[eN_k] = thetaW;
-        
+        double mn_q, dmn_q, fn[nSpace], dfn[nSpace], an[nnz], dan[nnz], asn[nnz], Krn, dKrn, thetaWn;
+        if (Theta < 1.0) {
+          evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_local, beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[eN]], n.data()[elementMaterialTypes.data()[eN]], thetaR.data()[elementMaterialTypes.data()[eN]],
+                               thetaSR.data()[elementMaterialTypes.data()[eN]], &KWs.data()[elementMaterialTypes.data()[eN] * nnz], un, mn_q, dmn_q, fn, dfn, an, dan, asn, Krn, dKrn, thetaWn);
+        }
 
         for (int I = 0; I < nSpace; ++I) {
           q_velocity.data()[eN_k_nSpace + I] = grad_u[I];
@@ -550,7 +573,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         for (int i = 0; i < nDOF_test_element; i++) {
           int eN_k_i = eN_k * nDOF_test_element + i, eN_k_i_nSpace = eN_k_i * nSpace, i_nSpace = i * nSpace;
 
-          elementResidual_u[i] += ck.Mass_weak(m_t, u_test_dV[i]) + ck.Advection_weak(f, &u_grad_test_dV[i_nSpace]) + ck.Diffusion_weak(a_rowptr.data(), a_colind.data(), a, grad_u, &u_grad_test_dV[i_nSpace]) + VMS * ck.SubgridError(subgridError_u, Lstar_u[i]) + VMS * ck.NumericalDiffusion(q_numDiff_u_last[eN_k], grad_u, &u_grad_test_dV[i_nSpace]);
+          elementResidual_u[i] += ck.Mass_weak(m_t, u_test_dV[i]) + Theta * (ck.Advection_weak(f, &u_grad_test_dV[i_nSpace]) + ck.Diffusion_weak(a_rowptr.data(), a_colind.data(), a, grad_u, &u_grad_test_dV[i_nSpace])) + VMS * ck.SubgridError(subgridError_u, Lstar_u[i]) + VMS * ck.NumericalDiffusion(q_numDiff_u_last[eN_k], grad_u, &u_grad_test_dV[i_nSpace]);
+          if (Theta < 1.0)
+            elementResidual_u[i] += (1.0 - Theta) * (ck.Advection_weak(fn, &u_grad_test_dV[i_nSpace]) + ck.Diffusion_weak(a_rowptr.data(), a_colind.data(), an, grad_u_old, &u_grad_test_dV[i_nSpace]));
         } //i
         //
         q_m.data()[eN_k] = m;
@@ -721,6 +746,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     double               shockCapturingDiffusion   = args.scalar<double>("shockCapturingDiffusion");
     // VMS
     double               VMS                                        = args.scalar<double>("VMS");
+    const double         Theta                                      = args.scalar<double>("Theta"); // see calculateResidual
     proteus::pyarray<int>    &u_l2g                                      = args.array<int>("u_l2g");
     proteus::pyarray<double> &elementDiameter                            = args.array<double>("elementDiameter");
     proteus::pyarray<double> &u_dof                                      = args.array<double>("u_dof");
@@ -818,8 +844,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
           for (int j = 0; j < nDOF_trial_element; j++) {
             int j_nSpace = j * nSpace;
             int i_nSpace = i * nSpace;
-            elementJacobian_u_u[i][j] += ck.MassJacobian_weak(dm_t, u_trial_ref.data()[k * nDOF_trial_element + j], u_test_dV[i]) + ck.AdvectionJacobian_weak(df, u_trial_ref.data()[k * nDOF_trial_element + j], &u_grad_test_dV[i_nSpace]) +
-                                         ck.DiffusionJacobian_weak(a_rowptr.data(), a_colind.data(), a, da, grad_u, &u_grad_test_dV[i_nSpace], 1.0, u_trial_ref.data()[k * nDOF_trial_element + j], &u_grad_trial[j_nSpace]) + VMS * ck.SubgridErrorJacobian(dsubgridError_u_u[j], Lstar_u[i]) + VMS * ck.NumericalDiffusionJacobian(q_numDiff_u_last[eN_k], &u_grad_trial[j_nSpace], &u_grad_test_dV[i_nSpace]);
+            elementJacobian_u_u[i][j] += ck.MassJacobian_weak(dm_t, u_trial_ref.data()[k * nDOF_trial_element + j], u_test_dV[i]) + Theta * (ck.AdvectionJacobian_weak(df, u_trial_ref.data()[k * nDOF_trial_element + j], &u_grad_test_dV[i_nSpace]) +
+                                         ck.DiffusionJacobian_weak(a_rowptr.data(), a_colind.data(), a, da, grad_u, &u_grad_test_dV[i_nSpace], 1.0, u_trial_ref.data()[k * nDOF_trial_element + j], &u_grad_trial[j_nSpace])) + VMS * ck.SubgridErrorJacobian(dsubgridError_u_u[j], Lstar_u[i]) + VMS * ck.NumericalDiffusionJacobian(q_numDiff_u_last[eN_k], &u_grad_trial[j_nSpace], &u_grad_test_dV[i_nSpace]);
           } //j
         } //i
       } //k
@@ -1921,8 +1947,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         }
         double dLowij, dLij, dEVij, dHij, fH, fL, fA=0.0;
         double fL_CN =0.0, fA_CN=0.0 ; 
-        fH = -Theta * TransportMatrixConsistent[ij] * delta_phi - (1 - Theta) * TransportMatrixConsistentn[ij] * delta_phin;
-        // fH = -Theta_h * TransportMatrixConsistent[ij] * delta_phi - (1 - Theta_h) * TransportMatrixConsistentn[ij] * delta_phin; //previous: Theta
+        // High-order (Galerkin) flux with its own time weight Theta_h (ThetaScheme.theta);
+        // the low-order fL below keeps Theta, which LevelModel sets to 1 (backward Euler).
+        fH = -Theta_h * TransportMatrixConsistent[ij] * delta_phi - (1 - Theta_h) * TransportMatrixConsistentn[ij] * delta_phin;
         ith_consistent_flux_term += fH;
         fA = fH;
         fA_CN = fH;
