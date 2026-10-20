@@ -440,11 +440,72 @@ def test_emitted_region_files_mesh_with_pro_msh(tmp_path):
     assert ran.returncode == 0, ran.stderr[-2000:]
 
 
-def test_msh_points_a_spec_at_its_emitted_files(tmp_path):
-    (tmp_path / "spec.ymf").write_text("model: {}\n")
-    out = pro("msh", "spec.ymf", cwd=tmp_path)
+LSHAPE = """\
+    domain:
+      kind: piecewise_linear
+      dimension: 2
+      vertices: [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], [0.0, 2.0]]
+      segments: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 0]]
+"""
+
+
+def _lshape(tmp_path):
+    """The Poisson spec on an L-shaped region, by P1 and by P2 on one h."""
+    pytest.importorskip("ymf.symbolic")
+    pytest.importorskip("strictyaml")
+    if shutil.which("triangle") is None:
+        pytest.skip("triangle not on PATH")
+    box = '    domain: "Ω = [0, 1] × [0, 1]"\n'
+    spec = POISSON_SPEC.replace(box, LSHAPE).replace(
+        "      solver: {type: linear}\n", "      solver: {type: linear}\n      mesh: {h: 0.5}\n")
+    spec += ("    - name: P2\n      provenance: human_specified\n      from_weak_form: galerkin\n"
+             "      finite_element: {fields: {family: CG, order: 2}}\n"
+             "      solver: {type: linear}\n      mesh: {h: 0.5}\n")
+    (tmp_path / "lshape.ymf").write_text(spec, encoding="utf-8")
+
+
+def test_a_spec_run_meshes_a_region_once_and_reuses_it(tmp_path):
+    _lshape(tmp_path)
+    out = pro("run", "lshape.ymf", cwd=tmp_path)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.count("running triangle") == 1        # P1 and P2: one mesh
+    assert len(list(tmp_path.glob("lshape_mesh_*.mesh.ymf"))) == 1
+    assert "2 outputs, 2 new" in out.stdout
+    again = pro("run", "lshape.ymf", "--check", cwd=tmp_path)
+    assert again.returncode == 0, again.stderr[-2000:]
+    assert "running triangle" not in again.stdout and ": up to date" in again.stdout
+    assert again.stdout.count("reproduced, bitwise") == 2
+
+
+def test_no_mesh_refuses_a_stale_mesh_and_pro_msh_makes_it(tmp_path):
+    _lshape(tmp_path)
+    assert pro("run", "lshape.ymf", cwd=tmp_path).returncode == 0
+    (node,) = tmp_path.glob("lshape_mesh_*.node")
+    node.write_text(node.read_text() + "# edited\n")
+    out = pro("run", "lshape.ymf", "--check", "--no-mesh", cwd=tmp_path)
     assert out.returncode == 2
-    assert "pro run spec.ymf --emit-pn" in out.stderr
+    assert "a mesh is missing or stale, and --no-mesh was given" in out.stderr
+    assert "changed since it was generated" in out.stderr
+    assert "make it with: pro msh lshape.ymf --check" in out.stderr
+    assert "reproduced" not in out.stdout                    # nothing was solved
+    made = pro("mesh", "lshape.ymf", "--check", cwd=tmp_path)   # the long name
+    assert made.returncode == 0 and made.stdout.count("running triangle") == 1
+    assert "reproduced" not in made.stdout                    # pro msh solves nothing
+    out = pro("run", "lshape.ymf", "--check", "--no-mesh", cwd=tmp_path)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.count("reproduced, bitwise") == 2
+
+
+def test_pro_msh_of_a_spec_says_when_there_is_nothing_to_mesh(tmp_path):
+    _spec(tmp_path)                                           # a box: meshed in memory
+    out = pro("msh", "poisson.ymf", "--cells", "4", cwd=tmp_path)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "nothing to mesh: every output to compute is on a box" in out.stdout
+    assert not (tmp_path / "poisson.archive.ymf").exists()
+    _lshape(tmp_path)
+    assert pro("run", "lshape.ymf", cwd=tmp_path).returncode == 0
+    out = pro("msh", "lshape.ymf", cwd=tmp_path)
+    assert "nothing to mesh: every output is in the archive (--check" in out.stdout
 
 
 # --- pro spec: the linter --------------------------------------------------------

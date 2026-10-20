@@ -157,8 +157,11 @@ def emit(doc, problem, name, realization, outdir, files, key, archive):
         **run_arguments(doc, problem, name, realization))
 
 
-def solve(doc, problem, name, realization, outdir, files, inline, env):
+def solve(doc, problem, name, realization, outdir, files, inline, env, mesh=None):
     """Run one discretization on one realization; return its output record.
+
+    ``mesh`` is the prefix of a region's mesh files, already made
+    (:mod:`proteus.cli.ymfmesh`); None meshes as part of the solve.
 
     ``files`` names what Proteus writes (``<files>.h5``); the .ymf it writes
     beside it is dropped, since the archive holds the record.
@@ -175,7 +178,7 @@ def solve(doc, problem, name, realization, outdir, files, inline, env):
     cwd = os.getcwd()
     os.chdir(outdir)
     try:
-        ns, _, errors = ADRProblem.run(problem, name=files, opts=opts, **kwargs)
+        ns, _, errors = ADRProblem.run(problem, name=files, opts=opts, mesh=mesh, **kwargs)
     finally:
         os.chdir(cwd)
     solved = problem
@@ -324,9 +327,10 @@ def blockers(doc, problem, entry):
     return []
 
 
-def main(argv=None, prog="ymf_run"):
+def main(argv=None, prog="ymf_run", mesh_only=False):
     """Run the YMF runner; ``prog`` names it in help and in the archive's
-    record of command-line overrides."""
+    record of command-line overrides. ``mesh_only`` (``pro msh SPEC.ymf``)
+    brings the meshes the run needs up to date, and solves nothing."""
     from . import parser_kwargs
     parser = argparse.ArgumentParser(prog=prog, description=__doc__.splitlines()[0],
                                      **parser_kwargs())
@@ -364,6 +368,12 @@ def main(argv=None, prog="ymf_run"):
                         help="run even though a generated file in the spec's chain (a "
                              ".weak.ymf or .discrete.ymf) is stale: its input changed since "
                              "it was written")
+    parser.add_argument("--no-mesh", action="store_true",
+                        help="stop with an error, before solving anything, when the mesh "
+                             "of a region (not a box) is missing or out of date, instead "
+                             "of making it on rank 0; pro msh SPEC.ymf makes it")
+    parser.add_argument("--force", action="store_true",
+                        help="remake the meshes of regions even if they are up to date")
     args = parser.parse_args(argv)
 
     from ymf import closure
@@ -465,6 +475,44 @@ def main(argv=None, prog="ymf_run"):
     for name, reasons in blocked:
         print("\n%s -- left out (--ignore): %s" % (name, "; ".join(reasons)))
 
+    # What will be solved, and the meshes it is solved on: those of regions
+    # are brought up to date first, on rank 0, before anything is computed
+    # (see proteus.cli.ymfmesh). A box is meshed in memory by each solve.
+    from . import command, ymfmesh
+    todo = [(name, key, realization) for name, _, mine in runnable
+            for key, realization in mine if args.check or key not in outputs]
+    meshes = ymfmesh.needed(doc, problem, todo, outdir, stem)
+    mesh_of = {}
+    if meshes:
+        from proteus import runtime
+        comm = runtime.start()
+        if mesh_only and comm.size() > 1:
+            if comm.isMaster():
+                print("%s: meshing is serial; run it on one process, not under mpiexec"
+                      % (prog,), file=sys.stderr)
+            return 2
+        # the same outputs, so the same meshes: what selects them carries over
+        remedy = "%s %s%s%s%s%s" % (
+            command("msh"), args.input, flags,
+            " --h " + " ".join(map(str, args.h)) if args.h else "",
+            " --outdir " + args.outdir if args.outdir else "",
+            " --check" if args.check else "")
+        print()
+        error = ymfmesh.bring_up_to_date(meshes, comm, no_mesh=args.no_mesh and not mesh_only,
+                                         force=args.force, remedy=remedy)
+        if error:
+            sys.stdout.flush()
+            print("\n%s: %s" % (prog, error), file=sys.stderr)
+            return 2
+        mesh_of = {key: prefix for prefix, m in meshes.items() for key in m["outputs"]}
+    if mesh_only:
+        if not meshes:
+            print("\n%s: nothing to mesh: %s" % (prog, "every output to compute is on a box, "
+                                                 "meshed in memory" if todo else
+                                                 "every output is in the archive (--check "
+                                                 "meshes for them too)"))
+        return 0
+
     new, refused = [], []
     for name, entry, mine in runnable:
         method = stabilization_of(doc, entry)
@@ -482,7 +530,8 @@ def main(argv=None, prog="ymf_run"):
                 n += 1
             slot = "%s~%d" % (key, n) if n > 1 else key
             output = solve(doc, problem, name, realization, outdir,
-                           closure.file_stem(stem, slot), args.inline, env)
+                           closure.file_stem(stem, slot), args.inline, env,
+                           mesh=mesh_of.get(key))
             if key not in outputs:
                 outputs[key] = output
                 new.append(key)
