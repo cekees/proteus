@@ -580,13 +580,6 @@ def linear_solver_choice(problem, spaces, linear_solver=None, petsc_options=None
         return solver, None
     if null_space and any(f == "DG" for f, _ in spaces.values()):
         raise ValueError("a null space with DG spaces is not wired up")
-    if null_space and ranks > 1 and \
-            set(problem["up_to_constant"]) != set(problem["adr"]["components"]):
-        # LinearSolvers.ConstantComponentsNullSpace lays out its vector serially
-        raise ValueError(
-            "%s determined only up to a constant, with the other components fixed, "
-            "is solved on one process only for now (this run has %d ranks)"
-            % (", ".join(problem["up_to_constant"]), ranks))
     if solver == "mumps":
         from petsc4py import PETSc
         if not PETSc.Sys.hasExternalPackage("mumps"):

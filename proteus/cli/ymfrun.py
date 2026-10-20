@@ -37,10 +37,8 @@ the meshes of regions (:mod:`proteus.cli.ymfmesh`), reads what Proteus
 wrote, writes the archive and reports, and the other ranks print nothing.
 The archive records the number of ranks, and a rerun on another number is
 not expected to be bitwise the same: its partition sums in another order.
-Proteus's serial LU (``linear_solver: superlu``) and a constant fixed in
-some components but not others (a velocity-pressure system's pressure) are
-refused on more than one rank, before anything is solved; the default solver
-there is MUMPS.
+Proteus's serial LU (``linear_solver: superlu``) is refused on more than
+one rank, before anything is solved; the default solver there is MUMPS.
 
 This is the front end, so it imports sympy through ymf.symbolic. Proteus
 itself (proteus.ADRProblem) never does: it is handed plain data.
