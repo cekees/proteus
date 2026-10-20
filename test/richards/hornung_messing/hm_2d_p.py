@@ -23,6 +23,8 @@ ct = Context.Options([
     ("nDT", 4, "number of fixed time steps on [0, T]"),
     ("T", 0.05, "final time"),
     ("theta_time", 1.0, "ThetaScheme weight: 1 = backward Euler, 0.5 = Crank-Nicolson"),
+    ("fct_sat_lo", True, "FCT: no correction at DOFs with a saturated low-order predictor"),
+    ("strong_bc", True, "strong Dirichlet (bc_mask = 0 on the boundary), as in the JNMA formulation"),
 ], mutable=True)
 
 nd = 2
@@ -66,6 +68,8 @@ coefficients = Richards.Coefficients(nd,
                                      FCT=ct.FCT,
                                      MONOLITHIC=False,
                                      num_fct_iter=1,
+                                     FCT_SATURATED_LOW_ORDER=ct.fct_sat_lo,
+                                     forceStrongConditions=ct.strong_bc,
                                      cE=1.0,
                                      uL=0.0,
                                      uR=1.0,

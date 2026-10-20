@@ -951,6 +951,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
   int                  LUMPED_MASS_MATRIX        = args.scalar<int>("LUMPED_MASS_MATRIX");
   int                  MONOLITHIC                = args.scalar<int>("MONOLITHIC");
   int                  fct_pass                  = args.scalar<int>("fct_pass");
+  // 1 at DOFs whose low-order predictor is saturated (Coefficients.FCT_SATURATED_LOW_ORDER)
+  xt::pyarray<double> &satLow                    = args.array<double>("satLow");
 
   //PARALLEL. The limiter is L_ij = min(Rpos_i, Rneg_j), so an owned row i reads the ratio of a column
   //j that may be a ghost, and everything a ratio is built from -- the row's own sparsity, ML, mDotLow,
@@ -1038,6 +1040,9 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     ///////////////////////
     // COMPUTE R VECTORS //
     ///////////////////////
+    // Saturated predictor: no admissible change of theta at this DOF, so every
+    // flux touching it is limited to zero (alpha_ij = alpha_ji, still conservative).
+    if (satLow.at(i) > 0.0) { Qposi = 0.0; Qnegi = 0.0; }
     Rpos.at(i) = ((Pposi == 0.0) ? 1.0 : fmin(1.0, Qposi / Pposi));
     Rneg.at(i) = ((Pnegi == 0.0) ? 1.0 : fmin(1.0, Qnegi / Pnegi));
   } // i DOFs
