@@ -1109,3 +1109,110 @@ def test_a_record_written_under_a_long_name_regenerates_under_the_short_one(tmp_
         assert regenerate_command("poisson.weak.ymf", {"by": by}) == "pro wk poisson.ymf"
     assert regenerate_command("poisson.weak.ymf", {"by": "pro disc (old)"}) == \
         "pro dis poisson.ymf -o poisson.weak.ymf"
+
+
+# --- pro run SPEC.ymf on several ranks --------------------------------------------------
+
+
+def _mpiexec():
+    """The launcher beside this interpreter (see test_archive_parallel_metadata:
+    a mismatched one runs N single-rank jobs, and a test passes for the wrong
+    reason; so these tests also check the ranks the archive records)."""
+    beside = os.path.join(os.path.dirname(sys.executable), "mpiexec")
+    return beside if os.path.exists(beside) else shutil.which("mpiexec")
+
+
+MPIEXEC = _mpiexec()
+needs_mpiexec = pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+
+
+def pro_on(ranks, *args, cwd):
+    env = dict(os.environ, OMP_NUM_THREADS="1")
+    env.setdefault("FI_PROVIDER", "tcp")
+    env.setdefault("OMPI_MCA_rmaps_base_oversubscribe", "1")
+    env.setdefault("PRTE_MCA_rmaps_default_mapping_policy", ":oversubscribe")
+    return subprocess.run([MPIEXEC, "-n", str(ranks), sys.executable, "-m", "proteus.cli"]
+                          + list(args), cwd=cwd, capture_output=True, text=True,
+                          timeout=600, env=env)
+
+
+def _outputs(path):
+    from ymf import closure
+    _, outputs, _ = closure.load(str(path), check_state=False)
+    return outputs
+
+
+@needs_mpiexec
+def test_a_spec_runs_on_two_ranks_with_the_errors_of_one(tmp_path):
+    for ranks in (1, 2):
+        (tmp_path / str(ranks)).mkdir()
+        _spec(tmp_path / str(ranks))
+        out = pro_on(ranks, "run", "poisson.ymf", "--cells", "8", cwd=tmp_path / str(ranks))
+        assert out.returncode == 0, out.stderr[-3000:]
+        assert out.stdout.count("wrote ") == 1                # rank 0 reports, once
+    (one,), (two,) = (_outputs(tmp_path / r / "poisson.archive.ymf").values()
+                      for r in ("1", "2"))
+    assert two["transformations"]["solve"]["by"]["ranks"] == 2
+    a, b = one["verification"]["l2_errors"]["u"], two["verification"]["l2_errors"]["u"]
+    assert abs(a - b) <= 1e-12 * a                            # summed over the ranks
+    again = pro_on(2, "run", "poisson.ymf", "--cells", "8", "--check", cwd=tmp_path / "2")
+    assert again.returncode == 0 and "reproduced, bitwise" in again.stdout
+    other = pro_on(2, "run", "poisson.ymf", "--cells", "8", "--check", cwd=tmp_path / "1")
+    assert other.returncode == 1
+    assert "recorded on 1 rank, rerun on 2: a different partition" in other.stdout
+
+
+@needs_mpiexec
+def test_two_ranks_mesh_a_region_on_rank_0(tmp_path):
+    _lshape(tmp_path)
+    out = pro_on(2, "run", "lshape.ymf", cwd=tmp_path)
+    assert out.returncode == 0, out.stderr[-3000:]
+    assert out.stdout.count("running triangle") == 1
+    outputs = _outputs(tmp_path / "lshape.archive.ymf")
+    assert len(outputs) == 2
+    assert {o["transformations"]["solve"]["by"]["ranks"] for o in outputs.values()} == {2}
+    msh = pro_on(2, "msh", "lshape.ymf", "--check", cwd=tmp_path)
+    assert msh.returncode == 2 and "meshing is serial" in msh.stderr
+
+
+@needs_mpiexec
+def test_a_whole_system_null_space_runs_on_two_ranks(tmp_path):
+    spec = (POISSON_SPEC.replace("2π² sin(πx) sin(πy)", "2π² cos(πx) cos(πy)")
+            .replace("type: dirichlet, value: 0.0", "type: neumann, value: 0.0")
+            .replace("test: H1_0", "test: H1")
+            .replace('"u = sin(πx) sin(πy)"', '"u = cos(πx) cos(πy)"'))
+    _spec(tmp_path, spec)
+    out = pro_on(2, "run", "poisson.ymf", "--cells", "8", cwd=tmp_path)
+    assert out.returncode == 0, out.stderr[-3000:]
+    (output,) = _outputs(tmp_path / "poisson.archive.ymf").values()
+    assert output["verification"]["modulo_constants"] == ["u"]
+    assert output["verification"]["l2_errors"]["u"] < 3e-2
+
+
+@needs_mpiexec
+def test_what_runs_on_one_process_only_is_refused_before_computing(tmp_path):
+    _spec(tmp_path, CHANNEL_SPEC, name="channel.ymf")         # the pressure null space
+    out = pro_on(2, "run", "channel.ymf", "--cells", "4", cwd=tmp_path)
+    assert out.returncode == 2
+    assert "is solved on one process only for now (this run has 2 ranks)" in out.stderr
+    _spec(tmp_path, POISSON_SPEC.replace("solver: {type: linear}",
+                                         "solver: {type: linear, linear_solver: superlu}"))
+    out = pro_on(2, "run", "poisson.ymf", "--cells", "4", cwd=tmp_path)
+    assert out.returncode == 2 and "linear_solver superlu is serial" in out.stderr
+    assert not list(tmp_path.glob("*.h5"))                    # nothing was solved
+
+
+def test_the_default_solver_on_several_ranks_is_a_parallel_one():
+    from proteus import ADRProblem
+    problem = {"adr": {"components": ["u"]}}
+    cg1 = {"u": ("CG", 1)}
+    assert ADRProblem.linear_solver_choice(problem, cg1, ranks=1)[0] == "superlu"
+    assert ADRProblem.linear_solver_choice(problem, cg1, ranks=2)[0] in ("mumps", "petsc")
+    with pytest.raises(ValueError, match="superlu is serial"):
+        ADRProblem.linear_solver_choice(problem, cg1, "superlu", ranks=2)
+
+
+def test_a_missing_spec_is_an_argument_error(tmp_path):
+    out = pro("run", "nothere.ymf", cwd=tmp_path)
+    assert out.returncode == 2 and "nothere.ymf: no such file" in out.stderr
+    assert "Traceback" not in out.stderr

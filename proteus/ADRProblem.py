@@ -523,15 +523,28 @@ MUMPS_SOLVER = {"ksp_type": "preonly", "pc_type": "lu",
 LINEAR_SOLVERS = ("superlu", "mumps", "petsc")
 
 
-def linear_solver_choice(problem, spaces, linear_solver=None, petsc_options=None):
+def _ranks():
+    """The number of MPI ranks of a Proteus that has started; 1 if none has
+    (this never starts MPI: a linter on a login node must not)."""
+    from proteus import Comm
+    return Comm.comm.size() if Comm.comm is not None else 1
+
+
+def linear_solver_choice(problem, spaces, linear_solver=None, petsc_options=None,
+                         ranks=None):
     """``(solver, petsc options)`` for a spec's ``linear_solver`` and ``petsc_options``.
 
-    * ``superlu``: Proteus's own LU (SuperLU), serial.
+    * ``superlu``: Proteus's own LU (SuperLU), serial; refused on more than
+      one rank.
     * ``mumps``: a direct solve through PETSc, LU by MUMPS.
     * ``petsc``: a PETSc Krylov solve, set by ``petsc_options``; PETSc's
       defaults without them.
     * omitted: what Proteus picked before it read the field -- its serial
-      LU, or MUMPS when the operator has a null space.
+      LU, or MUMPS when the operator has a null space. On more than one
+      rank: MUMPS, or ``petsc`` where this PETSc has no MUMPS.
+
+    ``ranks`` is the run's number of MPI ranks (default: the started
+    Proteus's, else 1).
 
     A singular operator (``problem["up_to_constant"]``) needs a PETSc
     solver, which removes the null space, and MUMPS's null-pivot detection
@@ -547,8 +560,17 @@ def linear_solver_choice(problem, spaces, linear_solver=None, petsc_options=None
     if petsc_options and solver not in ("petsc", "mumps"):
         raise ValueError("petsc_options apply to linear_solver petsc or mumps, not %s"
                          % ("the default" if solver is None else solver))
+    if ranks is None:
+        ranks = _ranks()
     if solver is None:
-        solver = "mumps" if null_space else "superlu"
+        if ranks > 1:
+            from petsc4py import PETSc
+            solver = "mumps" if PETSc.Sys.hasExternalPackage("mumps") else "petsc"
+        else:
+            solver = "mumps" if null_space else "superlu"
+    if solver == "superlu" and ranks > 1:
+        raise ValueError("linear_solver superlu is serial, and this run has %d ranks; "
+                         "give mumps or petsc, or run on one process" % (ranks,))
     if solver == "superlu":
         if null_space:
             raise ValueError(
@@ -558,6 +580,13 @@ def linear_solver_choice(problem, spaces, linear_solver=None, petsc_options=None
         return solver, None
     if null_space and any(f == "DG" for f, _ in spaces.values()):
         raise ValueError("a null space with DG spaces is not wired up")
+    if null_space and ranks > 1 and \
+            set(problem["up_to_constant"]) != set(problem["adr"]["components"]):
+        # LinearSolvers.ConstantComponentsNullSpace lays out its vector serially
+        raise ValueError(
+            "%s determined only up to a constant, with the other components fixed, "
+            "is solved on one process only for now (this run has %d ranks)"
+            % (", ".join(problem["up_to_constant"]), ranks))
     if solver == "mumps":
         from petsc4py import PETSc
         if not PETSc.Sys.hasExternalPackage("mumps"):
@@ -745,10 +774,26 @@ def l2_errors(model, problem, t):
     For a component the problem determines only up to a constant
     (``problem["up_to_constant"]``), the error modulo constants: its mean
     is removed first.
+
+    On several ranks each sum is over the elements a rank owns (the rest of
+    its mesh is other ranks' elements, held for coupling), then over the
+    ranks, so every rank returns the error over the whole domain. On one
+    rank it is the plain sum, unchanged.
     """
     names = problem["adr"]["components"]
     dim = problem["adr"]["dim"]
     q = model.q
+    owned = model.mesh.nElements_owned
+    from proteus import Comm
+    comm = Comm.comm if Comm.comm is not None and Comm.comm.size() > 1 else None
+
+    def total(values):
+        local = numpy.sum(values[:owned])
+        if comm is None:
+            return local
+        from mpi4py import MPI
+        return comm.comm.tompi4py().allreduce(float(local), op=MPI.SUM)
+
     errors = {}
     for name, code in problem.get("exact", {}).items():
         i = names.index(name)
@@ -756,8 +801,8 @@ def l2_errors(model, problem, t):
         error = q[('u', i)] - exact
         if name in (problem.get("up_to_constant") or []):
             # modulo constants: the problem does not determine one
-            error = error - numpy.sum(error * q[('dV_u', i)]) / numpy.sum(q[('dV_u', i)])
-        errors[name] = float(numpy.sqrt(numpy.sum(error ** 2 * q[('dV_u', i)])))
+            error = error - total(error * q[('dV_u', i)]) / total(q[('dV_u', i)])
+        errors[name] = float(numpy.sqrt(total(error ** 2 * q[('dV_u', i)])))
     return errors
 
 
