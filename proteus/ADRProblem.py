@@ -530,6 +530,46 @@ def _ranks():
     return Comm.comm.size() if Comm.comm is not None else 1
 
 
+def parallel_periodic(problem, spaces, ranks=None):
+    """Whether a run's periodic conditions go through Proteus's parallel
+    periodic numbering (``n.parallelPeriodic``): on more than one rank,
+    for a periodic problem. Raises ValueError where it cannot.
+
+    That numbering merges each periodic pair of mesh nodes into one unknown
+    across ranks, on an element partition without overlap, and gives every
+    component component 0's map: so every component must be in CG1, whose
+    degrees of freedom are the mesh nodes. On one rank the serial path
+    merges each component's own pairs, in any space.
+
+    And no equation may have an advective term: on a partition without
+    overlap, the faces between ranks are exterior faces of each rank's
+    mesh, and Proteus computes an advective boundary flux on them that does
+    not cancel (non-periodic problems give wrong answers there too, on such
+    a partition; ADRProblem never uses one otherwise). Diffusion computes
+    nothing on a face without a boundary condition, so is unaffected.
+    """
+    if not problem.get("periodic"):
+        return False
+    if ranks is None:
+        ranks = _ranks()
+    if ranks == 1:
+        return False
+    if set(tuple(s) for s in spaces.values()) != {("CG", 1)}:
+        raise ValueError(
+            "periodic conditions on more than one rank need every component in CG1 "
+            "(this run has %d ranks, and %s): Proteus's parallel periodic numbering is "
+            "nodal and shared by all components; run on one process"
+            % (ranks, ", ".join("%s %s%d" % (c, f, o) for c, (f, o) in spaces.items())))
+    advective = [e["component"] for e in problem["adr"]["equations"] if e.get("advection")]
+    if advective:
+        raise ValueError(
+            "periodic conditions on more than one rank are solved without advection "
+            "only for now (this run has %d ranks, and %s advected): on the partition "
+            "they need, Proteus's advective flux across the faces between ranks is "
+            "wrong; run on one process" % (ranks, ", ".join(advective)))
+    return True
+
+
 def linear_solver_choice(problem, spaces, linear_solver=None, petsc_options=None,
                          ranks=None):
     """``(solver, petsc options)`` for a spec's ``linear_solver`` and ``petsc_options``.
@@ -684,10 +724,13 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None,
         n.DT = float(time["dt"])
     if problem.get("periodic"):
         n.periodicDirichletConditions = None   # set from the physics in run()
-        # The parallel-periodic path numbers every component's periodic DOFs
-        # with component 0's space, which breaks mixed (e.g. Taylor-Hood)
-        # spaces; the serial path handles each component's own space.
-        n.parallelPeriodic = False
+        # Serial: each component's own periodic pairs merged, in any space.
+        # Parallel: Proteus's parallel periodic numbering, CG1 only, on an
+        # element partition without overlap (see parallel_periodic).
+        n.parallelPeriodic = parallel_periodic(problem, spaces)
+        if n.parallelPeriodic:
+            n.parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.element
+            n.nLayersOfOverlapForParallel = 0
     n.multilevelNonlinearSolver = NonlinearSolvers.Newton
     n.levelNonlinearSolver = NonlinearSolvers.Newton
     n.fullNewtonFlag = True
@@ -867,6 +910,9 @@ def setup(problem, spaces, cells, time=None, name="adr", stabilization="none",
         options = MeshTools.getMeshOptions(p.domain)
         options.triangleOptions = n.triangleOptions
         options.nLevels = n.nLevels
+        # partitioned as the solvers will assume (see parallel_periodic)
+        options.parallelPartitioningType = n.parallelPartitioningType
+        options.nLayersOfOverlapForParallel = n.nLayersOfOverlapForParallel
         options.genMesh = mesh is None
         p.domain.polyfile = name if mesh is None else mesh
     if problem.get("periodic"):

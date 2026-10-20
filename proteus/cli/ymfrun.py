@@ -37,8 +37,10 @@ the meshes of regions (:mod:`proteus.cli.ymfmesh`), reads what Proteus
 wrote, writes the archive and reports, and the other ranks print nothing.
 The archive records the number of ranks, and a rerun on another number is
 not expected to be bitwise the same: its partition sums in another order.
-Proteus's serial LU (``linear_solver: superlu``) is refused on more than
-one rank, before anything is solved; the default solver there is MUMPS.
+Refused on more than one rank, before anything is solved: Proteus's serial
+LU (``linear_solver: superlu``; the default there is MUMPS), and periodic
+conditions other than in CG1 without advection (see
+``ADRProblem.parallel_periodic``).
 
 This is the front end, so it imports sympy through ymf.symbolic. Proteus
 itself (proteus.ADRProblem) never does: it is handed plain data.
@@ -323,7 +325,7 @@ def blockers(doc, problem, entry):
     lacks (with ymf's hints), then what Proteus cannot run. Empty if it can.
     """
     from ymf.discretizations import missing
-    from proteus.ADRProblem import STABILIZATIONS, linear_solver_choice
+    from proteus.ADRProblem import STABILIZATIONS, linear_solver_choice, parallel_periodic
     name = entry["name"]
     try:
         lacking = missing(entry)
@@ -345,6 +347,7 @@ def blockers(doc, problem, entry):
     try:
         linear_solver_choice(problem, spaces, solver.get("linear_solver"),
                              solver.get("petsc_options"))
+        parallel_periodic(problem, spaces)
     except ValueError as e:
         # running it with another solver would not be what it asks for
         return ["%s: %s" % (name, e)]

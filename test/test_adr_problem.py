@@ -923,6 +923,114 @@ def test_a_periodic_velocity_pressure_system_solves_through_mumps(tmp_path):
                                   atol=1e-12)
 
 
+# --- periodic conditions on several ranks -------------------------------------------
+
+
+def _mpiexec():
+    """The launcher beside this interpreter: a mismatched one runs N single-rank
+    jobs (see test_archive_parallel_metadata), so these tests also check the
+    ranks the archive records."""
+    import shutil
+    beside = os.path.join(os.path.dirname(sys.executable), "mpiexec")
+    return beside if os.path.exists(beside) else shutil.which("mpiexec")
+
+
+MPIEXEC = _mpiexec()
+
+
+def ymf_run_on(ranks, *args):
+    env = dict(os.environ, OMP_NUM_THREADS="1")
+    env.setdefault("FI_PROVIDER", "tcp")
+    env.setdefault("OMPI_MCA_rmaps_base_oversubscribe", "1")
+    env.setdefault("PRTE_MCA_rmaps_default_mapping_policy", ":oversubscribe")
+    return subprocess.run([MPIEXEC, "-n", str(ranks), sys.executable, SCRIPT, *map(str, args)],
+                          capture_output=True, text=True, timeout=600, env=env)
+
+
+def _recorded_ranks(archive):
+    from ymf import closure
+    _, outputs, _ = closure.load(str(archive), check_state=False)
+    return {o["transformations"]["solve"]["by"]["ranks"] for o in outputs.values()}
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("ranks", [2, 3])
+def test_a_periodic_problem_solves_on_several_ranks_as_on_one(tmp_path, ranks):
+    """Proteus's parallel periodic numbering, on an element partition without
+    overlap: the mesh must be partitioned that way too (it was meshed as the
+    default node partition with overlap, and every overlapping element was
+    assembled twice)."""
+    pytest.importorskip("ymf.symbolic")
+    pytest.importorskip("strictyaml")
+    spec = tmp_path / "pp.ymf"
+    spec.write_text(PERIODIC_POISSON, encoding="utf-8")
+    serial = ymf_run(spec, "--cells", "8", "--outdir", tmp_path / "1")
+    errors = _errors_by_branch(serial.stdout)
+    out = ymf_run_on(ranks, spec, "--cells", "8", "--discretization", "mumps",
+                     "--discretization", "cg", "--outdir", tmp_path / "n")
+    assert out.returncode == 1, out.stdout[-2000:] + out.stderr[-2000:]   # superlu left out
+    parallel = _errors_by_branch(out.stdout)
+    assert set(parallel) == {"mumps", "cg"}, out.stdout[-2000:]
+    for branch in ("mumps", "cg"):
+        numpy.testing.assert_allclose(parallel[branch], errors[branch], rtol=1e-8)
+    assert _recorded_ranks(tmp_path / "n" / "pp.archive.ymf") == {ranks}
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+def test_what_the_parallel_periodic_path_cannot_solve_is_refused(tmp_path):
+    pytest.importorskip("ymf.symbolic")
+    pytest.importorskip("strictyaml")
+    advected = tmp_path / "pa.ymf"
+    advected.write_text(PERIODIC_POISSON.replace(
+        '"-Δu = 5π² sin(2πx) sin(πy)  in Ω"',
+        '"∇·((1, 0) u) - Δu = 5π² sin(2πx) sin(πy) + 2π cos(2πx) sin(πy)  in Ω"'),
+        encoding="utf-8")
+    out = ymf_run_on(2, advected, "--cells", "4", "--discretization", "mumps",
+                     "--outdir", tmp_path)
+    assert out.returncode == 2
+    assert "solved without advection only for now (this run has 2 ranks, and u " \
+           "advected)" in out.stderr
+    channel = tmp_path / "pc.ymf"
+    channel.write_text(PERIODIC_CHANNEL, encoding="utf-8")
+    out = ymf_run_on(2, channel, "--cells", "4", "--discretization", "th_mumps",
+                     "--outdir", tmp_path)
+    assert out.returncode == 2 and "need every component in CG1" in out.stderr
+    assert not list(tmp_path.glob("*.h5"))                    # nothing was solved
+
+
+def test_parallel_periodic_is_chosen_by_rank_count_space_and_advection():
+    problem = {"periodic": [{"component": "u"}],
+               "adr": {"equations": [{"component": "u", "diffusion": {}}]}}
+    cg1, cg2 = {"u": ("CG", 1)}, {"u": ("CG", 2)}
+    assert ADRProblem.parallel_periodic(problem, cg1, ranks=1) is False
+    assert ADRProblem.parallel_periodic(problem, cg2, ranks=1) is False   # serial: any space
+    assert ADRProblem.parallel_periodic(problem, cg1, ranks=2) is True
+    assert ADRProblem.parallel_periodic({"periodic": []}, cg2, ranks=2) is False
+    with pytest.raises(ValueError, match="need every component in CG1"):
+        ADRProblem.parallel_periodic(problem, cg2, ranks=2)
+    advected = dict(problem, adr={"equations": [{"component": "u", "advection": {"f": ["u"]}}]})
+    with pytest.raises(ValueError, match="without advection"):
+        ADRProblem.parallel_periodic(advected, cg1, ranks=2)
+
+
+def test_an_old_style_model_is_meshed_with_its_n_modules_partition():
+    """setDomainFromPhysics copied the mesh size from n but not the
+    partition, so n's element partition without overlap was meshed as the
+    default node partition with one layer of overlap."""
+    from types import SimpleNamespace
+    from proteus import MeshTools
+    p = SimpleNamespace(domain=None, nd=2, L=(1.0, 1.0, 1.0), x0=(0.0, 0.0, 0.0),
+                        name="box", polyfile=None, meshfile=None, genMesh=True)
+    n = SimpleNamespace(nnx=5, nny=5, nnz=None, nn=None, nLevels=1, hex=False, quad=False,
+                        triangleFlag=0, triangleOptions=None,
+                        parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.element,
+                        nLayersOfOverlapForParallel=0)
+    MeshTools.setDomainFromPhysics(p, n)
+    options = MeshTools.getMeshOptions(p.domain)
+    assert options.parallelPartitioningType == MeshTools.MeshParallelPartitioningTypes.element
+    assert options.nLayersOfOverlapForParallel == 0
+
+
 # --- regions that are not boxes: unstructured meshes of size h ----------------------
 
 L_SHAPE = '''    domain:
