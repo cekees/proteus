@@ -9,13 +9,18 @@
 #   SCHEMES="FCT" THETAS="1.0" ./run_hm_convergence.sh
 #   NNS="3 5 9" ./run_hm_convergence.sh        # coarse levels only
 #   TABLE_ONLY=1 ./run_hm_convergence.sh
+#   MESH=q1 ./run_hm_convergence.sh            # Q1 on squares (the JNMA element)
 #
-# Runs go to runs/theta<theta>/<scheme>/nn<nn>/; tables to convergence_theta<theta>.txt.
+# P1 (default): runs/theta<theta>/<scheme>/nn<nn>/, tables convergence_theta<theta>.txt.
+# Q1:           runs_q1/...,                       tables convergence_q1_theta<theta>.txt.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NNS="${NNS:-3 5 9 17 33 65}"
 THETAS="${THETAS:-1.0 0.5}"
 TABLE_ONLY="${TABLE_ONLY:-0}"
+MESH="${MESH:-p1}"
+if [ "$MESH" = "q1" ]; then RUNS="runs_q1"; TAG="convergence_q1"; MOPT="quad=True"
+else RUNS="runs"; TAG="convergence"; MOPT="quad=False"; fi
 T=0.05
 
 scheme_opts() {
@@ -36,14 +41,14 @@ for th in $THETAS; do
         [ "$s" = "LO" ] && [ "$th" != "1.0" ] && continue
         dirs=()
         for nn in $NNS; do
-            d="$HERE/runs/theta$th/$s/nn$nn"
+            d="$HERE/$RUNS/theta$th/$s/nn$nn"
             dirs+=("$d")
             [ "$TABLE_ONLY" = "1" ] && continue
             ndt=$(ndt_for "$th" "$nn")
-            ctx="$(scheme_opts "$s") nn=$nn nDT=$ndt T=$T theta_time=$th"
+            ctx="$(scheme_opts "$s") nn=$nn nDT=$ndt T=$T theta_time=$th $MOPT"
             mkdir -p "$d"
             cp "$HERE/hm_2d_p.py" "$HERE/hm_2d_n.py" "$d/"
-            echo "nn=$nn nDT=$ndt T=$T theta=$th scheme=$s" > "$d/context.txt"
+            echo "nn=$nn nDT=$ndt T=$T theta=$th scheme=$s mesh=$MESH" > "$d/context.txt"
             echo "=== theta=$th $s nn=$nn nDT=$ndt"
             ( cd "$d" && parun hm_2d_p.py hm_2d_n.py -l 3 -v -C "$ctx" > run.log 2>&1 ) \
                 || echo "!!! FAILED: $d/run.log" >&2
@@ -51,7 +56,7 @@ for th in $THETAS; do
         {
             echo "# theta=$th scheme=$s :  h  dt  ||e||_L2  order"
             python "$HERE/hm_l2_error.py" "${dirs[@]}"
-        } | tee -a "$HERE/convergence_theta$th.txt.new"
+        } | tee -a "$HERE/${TAG}_theta$th.txt.new"
     done
-    mv "$HERE/convergence_theta$th.txt.new" "$HERE/convergence_theta$th.txt"
+    mv "$HERE/${TAG}_theta$th.txt.new" "$HERE/${TAG}_theta$th.txt"
 done

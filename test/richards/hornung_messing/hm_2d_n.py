@@ -11,15 +11,21 @@ DT = T / ct.nDT
 tnList = [i * DT for i in range(ct.nDT + 1)]
 nDTout = ct.nDT
 
-femSpaces = {0: C0_AffineLinearOnSimplexWithNodalBasis}
-elementQuadrature = SimplexGaussQuadrature(nd, 4)
-elementBoundaryQuadrature = SimplexGaussQuadrature(nd - 1, 4)
-
-# structured right-triangle mesh, h = 1/(nn-1); all off-diagonal stiffness
-# entries are <= 0, so the edge-based low order needs no M-matrix clipping
 nnx = nny = ct.nn
 nLevels = 1
-triangleFlag = 0
+if ct.quad:
+    # Q1 on squares, h = 1/(nn-1), 2x2 Gauss points (the kernel's Q1 build)
+    quad = True
+    femSpaces = {0: C0_AffineLinearOnCubeWithNodalBasis}
+    elementQuadrature = CubeGaussQuadrature(nd, 2)
+    elementBoundaryQuadrature = CubeGaussQuadrature(nd - 1, 2)
+else:
+    # structured right-triangle P1 mesh; all off-diagonal stiffness entries
+    # are <= 0, so the edge-based low order needs no M-matrix clipping
+    femSpaces = {0: C0_AffineLinearOnSimplexWithNodalBasis}
+    elementQuadrature = SimplexGaussQuadrature(nd, 4)
+    elementBoundaryQuadrature = SimplexGaussQuadrature(nd - 1, 4)
+    triangleFlag = 0
 
 subgridError = None
 massLumping = False
