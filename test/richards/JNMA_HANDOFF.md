@@ -99,7 +99,7 @@ Hornung–Messing context: `fct_type='implicit'`; sweep scheme `IFCT`.
 - `Newton.solve` calls `FCTStep` → `ImplicitFCTStep` after the predictor converges. That evaluates the fluxes,
   runs the C++ `ImplicitFCTStep` (steps 2–5; three passes with ghost scatters in parallel), and sets
   `fct_resolve`. Newton then re-solves from pᴴ. `Coefficients.preStep` rearms the predictor each step.
-- Q1 errors match the JNMA tables to about 1% at θ = 1 and at θ = ½ for h ≤ 1/16 (see the
+- Q1 errors match the JNMA tables to about 1% at θ = 1 (all levels) and within 5% at θ = ½ for h ≤ 1/16 (see the
   hornung_messing README and `convergence_q1_theta*.txt`).
 - Finding: without the prelimiter, Q1 θ = 1 at h = 1/64 gives 1.01e-6 instead of 3.43e-6. The FCT error of the
   JNMA tables is therefore set mostly by the prelimiter, not by the Galerkin target (§7).
