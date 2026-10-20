@@ -2009,7 +2009,6 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
         //dt_times_fH_minus_fL.data()[ij] = dt * fA_CN;
         ij += 1;
       }
-      mDotLow.data()[i] = ith_flux_term/MLi;
       cflux[i] = ith_consistent_flux_term;
       evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_i, beta, gravity.data(),
                            alpha.data()[mat_i],
@@ -2017,6 +2016,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
       evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, rho_i, beta, gravity.data(),
                            alpha.data()[mat_i],
                            n.data()[mat_i], thetaR.data()[mat_i], thetaSR.data()[mat_i], &KWs.data()[mat_i * nnz], u_free_dof_old[i], mn.data()[i], dmn, fn, dfn, an, dan, asn, Krn, dKrn, thetaW_tmp);
+      // mDotLow enters the FCT mass antidiffusion MC_ij (mDotLow_i - mDotLow_j). At a strong-Dirichlet
+      // DOF the row is masked, so the flux divergence is not dm/dt there; use the time difference of the
+      // imposed data instead. (Without this the WRR FCT is only first order on Q1, Hornung-Messing.)
+      mDotLow.data()[i] = (bc_mask.data()[i] == 0.0) ? (m - mn.data()[i]) / dt : ith_flux_term / MLi;
       mLow.data()[i] = m;
       globalResidual.data()[i] += bc_mask.data()[i] * (MLi * (m - mn.data()[i]) / dt - ith_flux_term);
       globalJacobian.data()[ii] += bc_mask.data()[i] * (MLi * dm / dt + J_ii) + (1.0 - bc_mask.data()[i]);
