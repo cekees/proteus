@@ -31,12 +31,20 @@ order on the finest meshes:
 |---|---|---|
 | low order (`STABILIZATION_TYPE=2 FCT=False`) | 6.99e-5, 0.99 | — (always BE) |
 | Galerkin (`STABILIZATION_TYPE=0`) | 2.29e-7, ≈ 1.9–2.2 | 1.51e-7, ≈ 2.4–2.7 |
-| WRR FCT (`STABILIZATION_TYPE=2 FCT=True`) | 1.58e-6, ≈ 2.6–2.8 | 2.68e-3, ≈ 0.9 |
+| WRR FCT (`STABILIZATION_TYPE=2 FCT=True`) | 1.55e-6, ≈ 2.6–2.7 | 2.69e-3, ≈ 0.9 |
 
 The low order has the same non-monotone coarse-mesh regime (h = 1/2 → 1/4) as the JNMA Table 1.
 
+On Q1 (`MESH=q1`, tables `convergence_q1_theta*.txt`) at h = 1/64, θ = 1: low order 1.15e-4, Galerkin
+2.34e-7, WRR FCT 1.94e-6 (order ≈ 2.5). The JNMA MFEM values are 1.15e-4, 1.01e-6 and 3.44e-6 (implicit FCT).
+
 ### What the FCT needed
-The deck sets two `Coefficients` options explicitly. `forceStrongConditions` is off by default; `FCT_SATURATED_LOW_ORDER` has been on by default since it was added. Both leave the WRR 1-D results unchanged:
+The kernel sets ṁᴸ at strong-Dirichlet DOFs to (m(gⁿ⁺¹) − m(gⁿ))/Δt. ṁᴸ enters the mass antidiffusion
+M_C,ij(ṁᴸ_i − ṁᴸ_j), and at a masked row the low-order flux divergence is not a time derivative. Without this
+the FCT was first order on Q1 (1.61e-4 at h = 1/64). The error sat one cell from the boundary, on the
+unsaturated side of the interface, where s′(p) is small. P1 also improved slightly (1.58e-6 → 1.55e-6).
+
+The deck also sets two `Coefficients` options explicitly. `forceStrongConditions` is off by default; `FCT_SATURATED_LOW_ORDER` has been on by default since it was added. Both leave the WRR 1-D results unchanged:
 - `strong_bc` → `forceStrongConditions=True`. With weak (IIPG) Dirichlet the boundary DOFs are free, and the
   FCT correction moved them by up to 1.5e-3, which dominated the error. (`Coefficients` previously ignored
   this argument and always used weak enforcement.)

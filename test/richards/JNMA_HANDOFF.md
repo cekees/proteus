@@ -6,7 +6,7 @@ inside it. Everything needed to continue is in this repo on branch **`jnma-fct-1
 `https://github.com/cekees/proteus` (head `78b151c2` or later). This file is self-contained.
 
 ## Priorities for the next session
-1. **Fix the accuracy loss of the WRR semi-implicit FCT on Q1 meshes.** This is the top priority (§4).
+1. ~~Fix the accuracy loss of the WRR semi-implicit FCT on Q1 meshes~~ **Done** (§4).
 2. **Implement the fully implicit JNMA FCT** in proteus (§5).
 3. Smaller open items (§6).
 
@@ -48,7 +48,15 @@ This takes about 3 min serial and writes `convergence_q1_theta1.0.txt` / `conver
 Context options: `STABILIZATION_TYPE` (0 Galerkin, 2 edge-based low order), `FCT`, `nn`, `nDT`,
 `theta_time`, `quad`, `strong_bc`, `fct_sat_lo`.
 
-## 4. Priority 1: WRR FCT is only first order on Q1
+## 4. Priority 1 (RESOLVED): WRR FCT was only first order on Q1
+**Fix:** `calculateResidual_entropy_viscosity` now sets `mDotLow` at strong-Dirichlet DOFs (bc_mask = 0) to
+(m(gⁿ⁺¹) − m(gⁿ))/Δt instead of the masked row's flux divergence (candidate 1 below). Q1 FCT at θ = 1, h = 1/2 … 1/64:
+1.79e-4, 3.11e-4, 2.02e-4, 6.83e-5, 1.11e-5, **1.94e-6** (orders 2.6, 2.5), below the JNMA implicit FCT (3.44e-6).
+P1 is slightly better at every level (1.575e-6 → 1.546e-6 at h = 1/64). θ = ½ is unchanged (still first order).
+`test_richards.py`: 7 passed. A fully unlimited correction (no bounds, no saturated rule) is unusable on
+both meshes (6e-2 Q1, 4e-2 P1 at h = 1/32), so the limiter and the saturated-DOF rule are essential. The
+notes below are the original diagnosis.
+
 L² errors at h = 1/64, θ = 1, Δt = 0.2h² (the JNMA convergence setup):
 
 | | low order | Galerkin | WRR FCT |
