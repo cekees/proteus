@@ -9,6 +9,12 @@ allocation.
 
 It is never required: ``pro run`` meshes first whenever the mesh is
 missing or out of date.
+
+Given a YMF spec, ``pro msh SPEC.ymf`` makes the meshes ``pro run
+SPEC.ymf`` would solve on -- those of a region, which triangle or tetgen
+generate; a box is meshed in memory -- and takes the YMF runner's options
+(``--discretization``, ``--h``, ``--outdir``, ``--force``). See
+:mod:`proteus.cli.ymfmesh`.
 """
 import sys
 
@@ -25,7 +31,9 @@ def add_parser(subparsers):
                     "already up to date. pro run would do the same before "
                     "running; this does it as a job of its own.")
     p.add_argument("inputs", nargs="+", metavar="MODEL.py",
-                   help="so module, TwoPhaseFlow case module, or p and n modules")
+                   help="so module, TwoPhaseFlow case module, or p and n modules; "
+                        "or a YMF spec (SPEC.ymf), which takes pro run SPEC.ymf's "
+                        "options")
     p.add_argument("-C", "--context", metavar="'NAME=VALUE ...'",
                    help="context options, as for pro run")
     p.add_argument("-o", "--context-file", metavar="FILE",

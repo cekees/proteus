@@ -184,15 +184,22 @@ def _frontend_stub(name, absent):
 SPEC_NEEDS = ("ymf.symbolic", "sympy", "strictyaml")
 
 
-def _is_spec_run(argv):
-    """``pro run`` given a YMF spec or archive rather than Python modules."""
-    return argv[:1] == ["run"] and any(
-        a.endswith(".ymf") for a in argv[1:] if not a.startswith("-"))
+def _spec_command(argv):
+    """``"run"`` or ``"msh"`` when ``pro run`` or ``pro msh`` (by either of
+    its names) is given a YMF spec or archive rather than Python modules;
+    else None. Those go to the YMF runner, whose options are its own."""
+    names = {n: module for short, (module, long) in COMMANDS.items()
+             if module in ("run", "msh") for n in (short, long)}
+    if argv[:1] and argv[0] in names and any(
+            a.endswith(".ymf") for a in argv[1:] if not a.startswith("-")):
+        return names[argv[0]]
+    return None
 
 
-def run_spec(argv):
+def run_spec(argv, mesh_only=False):
     """``pro run SPEC.ymf ...``: the YMF runner (:mod:`proteus.cli.ymfrun`),
     which has options of its own (``--cells``, ``--check``, ``--emit-pn``...).
+    ``pro msh SPEC.ymf`` (``mesh_only``) makes the meshes it would need.
     """
     absent = missing(*SPEC_NEEDS)
     if absent:
@@ -208,14 +215,16 @@ def run_spec(argv):
     # importing ymfrun pins the BLAS/OpenMP threads; nothing numeric is
     # loaded yet at this point
     from . import ymfrun
-    return ymfrun.main(argv, prog="pro run")
+    return ymfrun.main(argv, prog=command("msh" if mesh_only else "run"),
+                       mesh_only=mesh_only)
 
 
 def main(argv=None):
     """Entry point for the ``pro`` console script; returns the exit status."""
     argv = sys.argv[1:] if argv is None else list(argv)
-    if _is_spec_run(argv):
-        return run_spec(argv[1:])
+    spec = _spec_command(argv)
+    if spec is not None:
+        return run_spec(argv[1:], mesh_only=spec == "msh")
     args = build_parser().parse_args(argv)
     return args.handler(args)
 
