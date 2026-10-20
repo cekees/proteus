@@ -7710,7 +7710,11 @@ class MultilevelProjectionOperators(object):
                         rbcSum[I] += abs(rbc[(I,J)])
                         if rbc[(I,J)] > 1.0-1.0e-8 and rbc[(I,J)] < 1.0 + 1.0e-8:
                             interp_bc[(I,J)] = 1.0
-                for I in range(offsetListList[l][cj],offsetListList[l][cj]+coarseDOFBoundaryConditions.nFreeDOF_global,strideListList[l][cj]):
+                #the stacked system interleaves components, so component cj's free dofs are
+                #offset, offset+stride, ...: nFreeDOF_global of them, which span stride times
+                #that many entries (the range stopped at nFreeDOF_global, so with two
+                #components the second half of rSum stayed zero and FAS divided by it)
+                for I in range(offsetListList[l][cj],offsetListList[l][cj]+strideListList[l][cj]*coarseDOFBoundaryConditions.nFreeDOF_global,strideListList[l][cj]):
                     for J in rColumnIndeces[I]:
                         rSum[I] += r[(I,J)]
                 for I in range(coarseSpace.dim):
