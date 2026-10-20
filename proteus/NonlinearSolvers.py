@@ -594,8 +594,12 @@ class Newton(NonlinearSolver):
     #                 while ( (norm_r_cur >= 0.99 * self.norm_r + self.atol_r) and
     #                         (ls_its < self.maxLSits) and
     #                         norm_r_cur/norm_r_last < 1.0):
-                if norm_r_cur > self.rtol_r*self.norm_r0 + self.atol_r:#make sure hasn't converged already
-                    while ( (norm_r_cur >= 0.9999 * self.norm_r) and
+                # A non-finite trial residual (e.g. a step that leaves the
+                # constitutive laws' domain) compares False against everything,
+                # so test it explicitly; otherwise the line search is skipped
+                # and Newton continues from a NaN iterate.
+                if not numpy.isfinite(norm_r_cur) or norm_r_cur > self.rtol_r*self.norm_r0 + self.atol_r:#make sure hasn't converged already
+                    while ( (not numpy.isfinite(norm_r_cur) or norm_r_cur >= 0.9999 * self.norm_r) and
                             (ls_its < self.maxLSits)):
                         self.convergingIts = 0
                         ls_its +=1
