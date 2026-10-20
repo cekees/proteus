@@ -7,7 +7,7 @@ inside it. Everything needed to continue is in this repo on branch **`jnma-fct-1
 
 ## Priorities for the next session
 1. ~~Fix the accuracy loss of the WRR semi-implicit FCT on Q1 meshes~~ **Done** (§4).
-2. **Implement the fully implicit JNMA FCT** in proteus (§5).
+2. ~~Implement the fully implicit JNMA FCT in proteus~~ **Done** (§5).
 3. Smaller open items (§6).
 
 ## 1. Background
@@ -90,7 +90,23 @@ What is known:
 - Done when: WRR FCT on Q1 converges at about second order at θ = 1; `test_richards.py` still passes;
   P1 results are unchanged or better.
 
-## 5. Priority 2: the fully implicit JNMA FCT (specification)
+## 5. Priority 2 (DONE): the fully implicit JNMA FCT
+**Implemented** as `Coefficients(FCT=True, STABILIZATION_TYPE=2, FCT_TYPE='implicit', FCT_PRELIMITER_POWER=3.0)`.
+Hornung–Messing context: `fct_type='implicit'`; sweep scheme `IFCT`.
+- `LevelModel.fct_phase` ∈ {predictor, flux, final} selects the kernel through `kernelStabilizationType()`:
+  Galerkin (0) for the predictor, the edge-based low order (2) to evaluate the fluxes at pᴴ, and Implicit_FCT (3)
+  for the final solve. Type 3 is the low order plus `fluxCorrection` = −(m_i/Δt)(s^{n,FCT}_i − sⁿ_i).
+- `Newton.solve` calls `FCTStep` → `ImplicitFCTStep` after the predictor converges. That evaluates the fluxes,
+  runs the C++ `ImplicitFCTStep` (steps 2–5; three passes with ghost scatters in parallel), and sets
+  `fct_resolve`. Newton then re-solves from pᴴ. `Coefficients.preStep` rearms the predictor each step.
+- Q1 errors match the JNMA tables to about 1% at θ = 1 and at θ = ½ for h ≤ 1/16 (see the
+  hornung_messing README and `convergence_q1_theta*.txt`).
+- Finding: without the prelimiter, Q1 θ = 1 at h = 1/64 gives 1.01e-6 instead of 3.43e-6. The FCT error of the
+  JNMA tables is therefore set mostly by the prelimiter, not by the Galerkin target (§7).
+- Not yet covered: parallel runs, β ≠ 0 (the bounds assume a constant density per DOF), and cases with gravity
+  or ponding. Newton is used, not the L-scheme.
+
+### Original specification
 Notation: p pressure head, u = p + z hydraulic head, s(p) water content, m_ij consistent mass, m_i lumped
 mass, a_ij Galerkin stiffness (∫ η(p_h)∇φ_j·∇φ_i), q_ij = (∇φ_j,∇φ_i), and the low-order upwind operator
 ã_ij = η_ij q_ij, with η_ij = η(p_i) if q_ij(u_i−u_j) < 0, η(p_j) if > 0, and the average if equal. The diagonal

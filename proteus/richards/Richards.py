@@ -263,6 +263,8 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  FCT=True,
                  num_fct_iter=1,
                  FCT_SATURATED_LOW_ORDER=True,
+                 FCT_TYPE='semi-implicit',
+                 FCT_PRELIMITER_POWER=3.0,
                  # FOR ENTROPY VISCOSITY
                  cE=1.0,
                  uL=0.0,
@@ -398,6 +400,18 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         # theta_S, so a limited mass below it cannot be inverted back to the
         # positive head and the theta -> psi recovery collapses to psi ~ 0-.
         self.FCT_SATURATED_LOW_ORDER = FCT_SATURATED_LOW_ORDER
+        # FCT_TYPE (with FCT=True and an edge-based STABILIZATION_TYPE):
+        #  'semi-implicit' -- Barua, Kees & Kuzmin (WRR): low-order solve, then an explicit
+        #                     correction of theta and a theta -> psi inversion (FCTStep).
+        #  'implicit'      -- Dielmann, Kuzmin & Kees (JNMA): Galerkin theta-scheme predictor p^H,
+        #                     fluxes at p^H, nodal-variation prelimiter (exponent
+        #                     FCT_PRELIMITER_POWER; <= 0 turns it off), Zalesak with the global bounds
+        #                     [theta_R, theta_S] relative to theta^n, then an implicit low-order solve
+        #                     from the corrected datum theta^{n,FCT}. No inversion.
+        if FCT_TYPE not in ('semi-implicit', 'implicit'):
+            raise ValueError("FCT_TYPE must be 'semi-implicit' or 'implicit', not %r" % (FCT_TYPE,))
+        self.FCT_TYPE = FCT_TYPE
+        self.FCT_PRELIMITER_POWER = FCT_PRELIMITER_POWER
         self.uL = uL
         self.uR = uR
         self.cK = cK
@@ -434,6 +448,9 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.densityModel = modelList[self.density_model]
 
     def preStep(self, t, firstStep=False):
+        # every step of the implicit FCT starts with the Galerkin predictor
+        if hasattr(self, 'model') and hasattr(self.model, 'fct_phase'):
+            self.model.fct_phase = 'predictor'
         # Refresh coupled density every step from the transport (TADR) model,
         # mirroring how TADR refreshes velocity / aliases moisture content.
         if self.density_model is None or not hasattr(self, 'densityModel'):
@@ -1033,6 +1050,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.Rpos = None
         self.Rneg = None
         self.FluxCorrectionMatrix = None
+        # FCT_TYPE='implicit': which of the three solves of a time step the residual is for
+        # ('predictor' Galerkin, 'flux' evaluation at p^H, 'final' low order); see ImplicitFCTStep.
+        self.fct_phase = 'predictor'
+        self.fct_resolve = False
+        self.alpha_nv = None
+        self.m_fct = None
         # Aux quantity at DOFs to be filled by optimized code (MQL)
         self.quantDOFs = np.zeros(self.u[0].dof.shape, 'd')
         self.mLow = np.zeros(self.u[0].dof.shape, 'd')
@@ -1192,7 +1215,79 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             a[:] = self.u[0].dof
         self.u[0].dof[:] = saved
 
+    def kernelStabilizationType(self):
+        """STABILIZATION_TYPE passed to the kernels. The implicit FCT changes it per phase:
+        Galerkin for the predictor, the edge-based low order for the flux evaluation, and
+        Implicit_FCT (the low order plus the limited correction) for the final solve."""
+        if self.coefficients.FCT and self.coefficients.FCT_TYPE == 'implicit':
+            return {'predictor': 0, 'flux': 2, 'final': 3}[self.fct_phase]
+        return self.coefficients.STABILIZATION_TYPE
+
+    def ImplicitFCTStep(self):
+        """Implicit FCT (JNMA), called by Newton after each converged solve.
+
+        After the Galerkin predictor: evaluate the fluxes at p^H, limit them, store the
+        correction in fluxCorrection and ask Newton (fct_resolve) for the final low-order
+        solve, M_L (m(p) - m^{n,FCT})/dt + A~(p) u(p) = 0, starting from p^H.
+        After the final solve: nothing to do but rearm the predictor.
+        """
+        if self.fct_phase == 'final':
+            self.fct_phase = 'predictor'
+            return
+        rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
+        nFree = len(rowptr) - 1
+        if self.alpha_nv is None:
+            self.alpha_nv = np.zeros(nFree, 'd')
+            self.m_fct = np.zeros(nFree, 'd')
+        # edge-based residual at p^H: fills mLow = m(p^H), mn = m(p^n) and dt (f^H - f^L)_ij at p^H
+        self.fct_phase = 'flux'
+        r_scratch = np.zeros(self.u[0].dof.shape, 'd')
+        self.getResidual(self.u[0].dof.copy(), r_scratch)
+        self.ghostScatter(self.mLow, self.mn)
+        argsDict = cArgumentsDict.ArgumentsDict()
+        argsDict["bc_mask"] = self.bc_mask
+        argsDict["numDOFs"] = nFree
+        argsDict["dt"] = self.timeIntegration.dt
+        argsDict["rho"] = self.coefficients.rho
+        argsDict["gravity"] = self.coefficients.gravity
+        argsDict["mesh_dof"] = self.mesh.nodeArray
+        argsDict["u_dof"] = self.u[0].dof
+        argsDict["ML"] = self.ML
+        argsDict["MC"] = MassMatrix
+        argsDict["mn"] = self.mn
+        argsDict["mLow"] = self.mLow
+        argsDict["dt_times_fH_minus_fL"] = self.dt_times_dC_minus_dL
+        argsDict["csrRowIndeces_DofLoops"] = rowptr
+        argsDict["csrColumnOffsets_DofLoops"] = colind
+        argsDict["thetaR"] = self.coefficients.thetaR_types
+        argsDict["thetaSR"] = self.coefficients.thetaSR_types
+        argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
+        argsDict["prelimiter_power"] = float(self.coefficients.FCT_PRELIMITER_POWER)
+        argsDict["alpha_nv"] = self.alpha_nv
+        argsDict["Rpos"] = self.Rpos
+        argsDict["Rneg"] = self.Rneg
+        argsDict["FluxCorrectionMatrix"] = self.FluxCorrectionMatrix
+        argsDict["fluxCorrection"] = self.fluxCorrection
+        argsDict["limited_solution"] = self.m_fct
+        if getattr(self.u[0], 'par_dof', None) is None:
+            argsDict["fct_pass"] = 0
+            self.richards.ImplicitFCTStep(argsDict)
+        else:
+            # alpha_ij reads alpha_nv_j and R_j at ghost columns: the owners' values cross the cut
+            argsDict["fct_pass"] = 1
+            self.richards.ImplicitFCTStep(argsDict)
+            self.ghostScatter(self.alpha_nv)
+            argsDict["fct_pass"] = 2
+            self.richards.ImplicitFCTStep(argsDict)
+            self.ghostScatter(self.Rpos, self.Rneg)
+            argsDict["fct_pass"] = 3
+            self.richards.ImplicitFCTStep(argsDict)
+        self.fct_phase = 'final'
+        self.fct_resolve = True
+
     def FCTStep(self):
+        if self.coefficients.FCT_TYPE == 'implicit':
+            return self.ImplicitFCTStep()
         rowptr, colind, MassMatrix = self.MC_global.getCSRrepresentation()
         limited_solution = np.zeros((len(rowptr) - 1),'d')
         # Ghost-sync everything the limiter reads at a column before it reads it.
@@ -1624,7 +1719,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # ThetaScheme.theta weights the high-order (Galerkin) fluxes; the low-order
         # edge-based operator is always backward Euler (Theta = 1).
         time_theta = getattr(self.timeIntegration, 'theta', 1.0)
-        argsDict["Theta"] = time_theta if self.coefficients.STABILIZATION_TYPE == 0 else 1.0
+        argsDict["Theta"] = time_theta if self.kernelStabilizationType() == 0 else 1.0
         argsDict["Theta_h"] = time_theta
         argsDict["mesh_trial_ref"] = self.u[0].femSpace.elementMaps.psi
         argsDict["mesh_grad_trial_ref"] = self.u[0].femSpace.elementMaps.grad_psi
@@ -1714,7 +1809,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["ebqe_u"] = self.ebqe[('u',0)]
         argsDict["ebqe_theta"] = self.ebqe[('theta',0)]
         argsDict["ebqe_flux"] = self.ebqe[('advectiveFlux',0)]
-        argsDict['STABILIZATION_TYPE'] = self.coefficients.STABILIZATION_TYPE
+        argsDict['STABILIZATION_TYPE'] = self.kernelStabilizationType()
         # ENTROPY VISCOSITY and ARTIFICIAL COMRPESSION
         argsDict["cE"] = self.coefficients.cE
         argsDict["cK"] = self.coefficients.cK
@@ -1745,7 +1840,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["MC"] = self.MC_a
         # PARAMETERS FOR 1st or 2nd ORDER MPP METHOD
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
-        argsDict["STABILIZATTION_TYPE"] = self.coefficients.STABILIZATION_TYPE
+        argsDict["STABILIZATTION_TYPE"] = self.kernelStabilizationType()
         argsDict["ENTROPY_TYPE"] = self.coefficients.ENTROPY_TYPE
         # FLUX CORRECTED TRANSPORT
         argsDict["dLow"] = self.dLow
@@ -1798,7 +1893,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         #     with open("seepage_flux_try.txt", "a") as f:
         #         f.write(f"Rank {rank}:, {self.timeIntegration.t:.6f}, {seepage_flux_value:.8f}\n")
 
-        if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
+        if (self.kernelStabilizationType() == 0):  # SUPG
             self.calculateResidual = self.richards.calculateResidual
             self.calculateJacobian = self.richards.calculateJacobian
         else:
@@ -1975,7 +2070,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.richards.invert(argsDict)
      
     def getJacobian(self,jacobian):
-        if (self.coefficients.STABILIZATION_TYPE == 0):  # SUPG
+        if (self.kernelStabilizationType() == 0):  # SUPG
             cfemIntegrals.zeroJacobian_CSR(self.nNonzerosInJacobian,
                                            jacobian)
         degree_polynomial = 1
@@ -2056,7 +2151,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0,0)]
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["VMS"] = self.coefficients.VMS
-        argsDict["Theta"] = getattr(self.timeIntegration, 'theta', 1.0) if self.coefficients.STABILIZATION_TYPE == 0 else 1.0
+        argsDict["Theta"] = getattr(self.timeIntegration, 'theta', 1.0) if self.kernelStabilizationType() == 0 else 1.0
         #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
 
         self.calculateJacobian(argsDict)

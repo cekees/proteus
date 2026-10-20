@@ -28,6 +28,7 @@ scheme_opts() {
         LO)       echo "STABILIZATION_TYPE=2 FCT=False" ;;
         Galerkin) echo "STABILIZATION_TYPE=0 FCT=False" ;;
         FCT)      echo "STABILIZATION_TYPE=2 FCT=True" ;;
+        IFCT)     echo "STABILIZATION_TYPE=2 FCT=True fct_type='implicit'" ;;
         *) echo "unknown scheme '$1'" >&2; return 1 ;;
     esac
 }
@@ -36,7 +37,7 @@ ndt_for() {  # $1 = theta, $2 = nn  ->  number of steps
 }
 
 for th in $THETAS; do
-    if [ "$th" = "1.0" ]; then dflt="LO Galerkin FCT"; else dflt="Galerkin FCT"; fi
+    if [ "$th" = "1.0" ]; then dflt="LO Galerkin FCT IFCT"; else dflt="Galerkin FCT IFCT"; fi
     for s in ${SCHEMES:-$dflt}; do
         [ "$s" = "LO" ] && [ "$th" != "1.0" ] && continue
         dirs=()
