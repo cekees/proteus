@@ -97,8 +97,11 @@ class RKEV(proteus.TimeIntegration.SSP):
         argsDict["debug"] = 0
         adjusted_maxCFL = self.transport.sw2d.calculateEdgeBasedCFL(argsDict)
 
-        maxCFL = max(maxCFL, max(adjusted_maxCFL,
-                                 globalMax(self.edge_based_cfl.max())))
+        # owned DOFs only: a ghost row sees a truncated stencil (and wall
+        # vector), so its CFL number is not the owner's
+        par_dof = getattr(self.transport.u[0], "par_dof", None)
+        n_owned = par_dof.dim_proc if par_dof is not None else self.edge_based_cfl.size
+        maxCFL = max(maxCFL, globalMax(self.edge_based_cfl[:n_owned].max()))
         self.dt = self.runCFL/maxCFL
 
         if self.dtLast is None:
@@ -991,6 +994,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["FCT_all"] = self.FCT_all
         argsDict["Rneg_dof"] = self.Rneg_dof
         argsDict["Rpos_dof"] = self.Rpos_dof
+        argsDict["num_neighbours"] = self.num_neighbours
         for limit_iter in range(n_limit_iter):
             argsDict["limit_iter"] = limit_iter
             argsDict["limit_stage"] = 0
@@ -1396,6 +1400,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.par_Rpos = LAT.ParVec_petsc4py(self.Rpos_dof, bs=1, n=n, N=N, nghosts=nghosts,
                                             subdomain2global=subdomain2global)
         self.FCT_all = None  # FCT matrices and l_ij kept between limiter calls
+        # neighbours per DOF (row length - 1); a ghost's local row is
+        # truncated, so take the owner's count
+        self.num_neighbours = (np.diff(self.rowptr_cMatrix) - 1).astype('d')
+        self.par_num_neighbours = LAT.ParVec_petsc4py(self.num_neighbours, bs=1, n=n, N=N, nghosts=nghosts,
+                                                      subdomain2global=subdomain2global)
+        self.par_num_neighbours.scatter_forward_insert()
         #
         self.par_extendedSourceTerm_hu = LAT.ParVec_petsc4py(self.extendedSourceTerm_hu,
                                                 bs=1,

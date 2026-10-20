@@ -287,6 +287,9 @@ public:
     xt::pyarray<double> &FCT_all = args.array<double>("FCT_all");
     xt::pyarray<double> &Rneg = args.array<double>("Rneg_dof");
     xt::pyarray<double> &Rpos = args.array<double>("Rpos_dof");
+    // number of neighbours of each DOF, exchanged with the ghosts: a ghost
+    // DOF's row in the local CSR pattern is truncated
+    xt::pyarray<double> &num_neighbours = args.array<double>("num_neighbours");
     const bool first_call = (limit_iter_arg == 0 && limit_stage == 0);
 
     // Create FCT component matrices in vector form
@@ -470,7 +473,7 @@ public:
             /*======================================================*/
             /*            Kinetic Energy limiting                   */
             double lambdaj =
-                csrRowIndeces_DofLoops[i + 1] - csrRowIndeces_DofLoops[i] - 1;
+                num_neighbours[i];
             double Ph_ij = FCT_h[ij] / mi / lambdaj;
             double Phu_ij = FCT_hu[ij] / mi / lambdaj;
             double Phv_ij = FCT_hv[ij] / mi / lambdaj;
@@ -509,7 +512,7 @@ public:
 
             // root of jth-DOF (To compute transpose component)
             double lambdai =
-                csrRowIndeces_DofLoops[j + 1] - csrRowIndeces_DofLoops[j] - 1;
+                num_neighbours[j];
             double mj = lumped_mass_matrix[j];
             double cj = kin_max[j] * hLow[j] -
                         0.5 * (huLow[j] * huLow[j] + hvLow[j] * hvLow[j]);
