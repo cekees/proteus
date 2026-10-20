@@ -234,6 +234,12 @@ parallelPartitioningType = MeshParallelPartitioningTypes.node
 #nodal partitioning does not need communication for C0P1 (has overlap 1) regardless
 nLayersOfOverlapForParallel = 1
 
+#'generated': a regular grid on a rectangular domain is generated in pieces,
+#every rank its own, with no global mesh or graph partitioner; 'global': the
+#global mesh, partitioned. Triangles other than triangleFlag 0, overlap other
+#than 1 and element partitioning take the global path either way.
+regularGrid = 'generated'
+
 parallelPeriodic=False#set this to true and use element,0 overlap to use periodic BC's in parallel
 
 nonlinearSolverConvergenceTest = 'r'

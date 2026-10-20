@@ -4,15 +4,14 @@ proteus's multigrid (MGM, Jacobi) for P1/Q1 Poisson on a regular grid of
 triangles (triangleFlag 0), quadrilaterals, tetrahedra or hexahedra, from the
 coarsest node count NN per axis and LEVELS levels. Prints a checksum of the
 globally assembled fine-level solution, and whether the hierarchy was generated
-in pieces (MeshTools.MultilevelMesh.generateRegularGrids, set from
-PROTEUS_GENERATE_REGULAR_GRIDS) and whether anything initialized PETSc, so runs
-can be compared across rank counts and across the two ways of building the
-hierarchy.
+in pieces (n.regularGrid: 'generated' by default, 'global' with the global
+argument) and whether anything initialized PETSc, so runs can be compared
+across rank counts and across the two ways of building the hierarchy.
 
 The 3D problem lives on [-3,3]^3, so a generated hierarchy's origin is
 exercised; the 2D one on the unit square, which its Dirichlet conditions need.
 
-Usage: regular_mg_mpi.py KIND NN LEVELS [scan]
+Usage: regular_mg_mpi.py KIND NN LEVELS [scan] [global]
 
 scan: after the solve, look through every numpy array this process holds (the
 C++ mesh arrays are wrapped as numpy views, so they are included) for any with
@@ -39,6 +38,7 @@ kind = sys.argv[1]
 nn = int(sys.argv[2])
 nLevels = int(sys.argv[3])
 scan = 'scan' in sys.argv[4:]
+regularGrid = 'global' if 'global' in sys.argv[4:] else 'generated'
 generated = []
 _generate = MeshTools.MultilevelMesh.generateCartesianHierarchy
 def _record(self, *args, **kwargs):
@@ -69,6 +69,7 @@ else:
         n.quad = False
         n.femSpaces[0] = default_n.C0_AffineLinearOnSimplexWithNodalBasis
 n.nLevels = nLevels
+n.regularGrid = regularGrid
 n.parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.node
 n.nLayersOfOverlapForParallel = 1
 n.multilevelLinearSolver = LinearSolvers.MGM

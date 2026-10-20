@@ -586,7 +586,27 @@ def cartesianSubdomain(kind, nn, L, rankGrid=None, nLayersOfOverlap=1, triangleF
     mesh.hMin = mpi.allreduce(sd.hMin if sd.nElements_global > 0 else np.inf, op=MPI.MIN)
     mesh.sigmaMax = mpi.allreduce(sd.sigmaMax, op=MPI.MAX)
     mesh.volume = float(np.prod(L[:3 if kind in ('hex', 'tet') else 2]))
+    if comm.size() == 1:
+        #On one rank the piece is the whole grid, in the global numbering, so the
+        #global mesh's arrays are the subdomain's (views, not copies) and code
+        #that reads the global mesh in serial -- the serial-only dof maps, say --
+        #sees a complete mesh.
+        for name in _cartesianSerialGlobalArrays:
+            setattr(mesh, name, getattr(sd, name))
     return mesh
+
+
+#the subdomain arrays a one-rank generated mesh shares as its global ones
+_cartesianSerialGlobalArrays = (
+    'nInteriorElementBoundaries_global', 'nExteriorElementBoundaries_global', 'max_nElements_node',
+    'elementNodesArray', 'nodeElementsArray', 'nodeElementOffsets', 'elementNeighborsArray',
+    'elementBoundariesArray', 'elementBoundaryNodesArray', 'elementBoundaryElementsArray',
+    'elementBoundaryLocalElementBoundariesArray', 'interiorElementBoundariesArray',
+    'exteriorElementBoundariesArray', 'edgeNodesArray', 'nodeStarArray', 'nodeStarOffsets',
+    'elementMaterialTypes', 'elementBoundaryMaterialTypes', 'nodeMaterialTypes', 'nodeArray',
+    'elementDiametersArray', 'elementInnerDiametersArray', 'elementBoundaryDiametersArray',
+    'elementBarycentersArray', 'elementBoundaryBarycentersArray', 'nodeDiametersArray',
+    'nodeSupportArray')
 
 def cartesianNodeOwners(nnx, nny, nnz, rankGrid=None, size=None, fastest='x', level=0):
     """The rank that owns each node of a regular nnx x nny x nnz node grid cut into bricks.
@@ -1889,27 +1909,43 @@ class MultilevelMesh(Mesh):
     #PETSc. Like the switch above it is read while the constructor partitions,
     #so set it on the class.
     coarsestLevelOwners = None
-    #Generate regular-grid hierarchies in pieces (cartesianSubdomain): no
-    #global mesh, no partitioner, and no global-sized array on any rank. Off by
-    #default until MeshOptions selects it (campaign Phase 5);
-    #PROTEUS_GENERATE_REGULAR_GRIDS=1 turns it on.
-    generateRegularGrids = os.environ.get('PROTEUS_GENERATE_REGULAR_GRIDS', '0') == '1'
+    #How a regular grid (and its hierarchy) is built: 'generated' -- every rank
+    #generates only its own pieces (cartesianSubdomain), with no global mesh,
+    #no graph partitioner and no global-sized array -- or 'global', the global
+    #mesh partitioned by the graph partitioner. MeshOptions.regularGrid selects
+    #it per run (and the constructors' regularGrid argument); this is the
+    #default for constructors called without one.
+    regularGrid = 'generated'
     generated = False
 
-    def generatesInPieces(self, kind, triangleFlag, nLayersOfOverlap, parallelPartitioningType):
-        """Whether this regular grid's hierarchy is generated in pieces."""
-        if not self.generateRegularGrids:
+    def generatesInPieces(self, kind, triangleFlag, nLayersOfOverlap, parallelPartitioningType,
+                          regularGrid=None):
+        """Whether this regular grid's hierarchy is generated in pieces.
+
+        The cases the generated path does not cover take the global path and
+        say so: union-jack and left-leaning triangles (they do not refine into
+        themselves), overlap other than one layer, and element partitioning
+        (which DG uses).
+        """
+        if regularGrid is None:
+            regularGrid = self.regularGrid
+        if regularGrid not in ('generated', 'global'):
+            raise ValueError("regularGrid is 'generated' or 'global', not %r" % (regularGrid,))
+        if regularGrid == 'global':
+            logEvent("regular grid: the global mesh, partitioned (regularGrid='global')", level=2)
             return False
         reasons = []
         if kind == 'tri' and triangleFlag != 0:
-            reasons.append("triangleFlag %d triangles do not refine into themselves" % triangleFlag)
+            reasons.append("triangleFlag %d (only right-leaning triangles, triangleFlag 0, are generated)"
+                           % triangleFlag)
         if nLayersOfOverlap != 1:
-            reasons.append("%d layers of overlap" % nLayersOfOverlap)
+            reasons.append("%d layers of overlap (only one is generated)" % nLayersOfOverlap)
         if parallelPartitioningType != MeshParallelPartitioningTypes.node:
-            reasons.append("element partitioning")
+            reasons.append("element partitioning (only node partitioning is generated)")
         if reasons:
-            logEvent("the hierarchy is built globally, not in pieces: " + "; ".join(reasons), level=2)
+            logEvent("regular grid: the global mesh, partitioned, because of " + "; ".join(reasons), level=1)
             return False
+        logEvent("regular grid: generated in pieces (regularGrid='generated')", level=2)
         return True
 
     def generateCartesianHierarchy(self, kind, counts, origin, L, nLevels, triangleFlag=0):
@@ -4692,7 +4728,7 @@ class Mesh3DM(Mesh):
                 elements = SubElement(topology,"DataItem",
                                       {"Format":ar.dataItemFormat,
                                        "DataType":"Int",
-                                       "Dimensions":"%i %i" % (self.globalMesh.nElements_owned,
+                                       "Dimensions":"%i %i" % (self.globalMesh.nElements_global,
                                                                self.nNodes_element)})
                 geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes    = SubElement(geometry,"DataItem",
@@ -4707,7 +4743,7 @@ class Mesh3DM(Mesh):
                 elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
                                                         {"Format":ar.dataItemFormat,
                                                          "DataType":"Int",
-                                                         "Dimensions":"%i" % (self.globalMesh.nElements_owned,)})
+                                                         "Dimensions":"%i" % (self.globalMesh.nElements_global,)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+name+str(tCount)
                     nodes.text = ar.hdfFilename+":/nodes"+name+str(tCount)
@@ -4777,7 +4813,8 @@ class MultilevelTetrahedralMesh(MultilevelMesh):
                  refinementLevels=1,
                  skipInit=False,
                  nLayersOfOverlap=1,
-                 parallelPartitioningType=MeshParallelPartitioningTypes.node):
+                 parallelPartitioningType=MeshParallelPartitioningTypes.node,
+                 regularGrid=None):
         from . import cmeshTools
         from . import Comm
         MultilevelMesh.__init__(self)
@@ -4785,7 +4822,7 @@ class MultilevelTetrahedralMesh(MultilevelMesh):
         self.nLayersOfOverlap = nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         logEvent("Generating tetrahedral mesh")
         if not skipInit:
-            if self.generatesInPieces('tet', 0, nLayersOfOverlap, parallelPartitioningType):
+            if self.generatesInPieces('tet', 0, nLayersOfOverlap, parallelPartitioningType, regularGrid):
                 self.generateCartesianHierarchy('tet', (nx,ny,nz), (x,y,z), (Lx,Ly,Lz), refinementLevels)
             elif self.useC:
                 self.meshList.append(TetrahedralMesh())
@@ -4901,7 +4938,8 @@ class MultilevelHexahedralMesh(MultilevelMesh):
                  refinementLevels=1,
                  skipInit=False,
                  nLayersOfOverlap=1,
-                 parallelPartitioningType=MeshParallelPartitioningTypes.node):
+                 parallelPartitioningType=MeshParallelPartitioningTypes.node,
+                 regularGrid=None):
         from . import cmeshTools
         from . import Comm
         MultilevelMesh.__init__(self)
@@ -4915,7 +4953,7 @@ class MultilevelHexahedralMesh(MultilevelMesh):
         self.nLayersOfOverlap = nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         logEvent("Generating hexahedral mesh")
         if not skipInit:
-            if self.generatesInPieces('hex', 0, nLayersOfOverlap, parallelPartitioningType):
+            if self.generatesInPieces('hex', 0, nLayersOfOverlap, parallelPartitioningType, regularGrid):
                 self.generateCartesianHierarchy('hex', (nx,ny,nz), (x,y,z), (Lx,Ly,Lz), refinementLevels)
             elif structured:
                 self._structuredLevels = refinementLevels
@@ -5978,14 +6016,16 @@ class MultilevelTriangularMesh(MultilevelMesh):
                  refinementLevels=1,
                  skipInit=False,
                  nLayersOfOverlap=1,
-                 parallelPartitioningType=MeshParallelPartitioningTypes.node,triangleFlag=0):
+                 parallelPartitioningType=MeshParallelPartitioningTypes.node,
+                 triangleFlag=0,
+                 regularGrid=None):
         from . import cmeshTools
         MultilevelMesh.__init__(self)
         self.useC = True
         self.nLayersOfOverlap=nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         #self.useC = False
         if not skipInit:
-            if self.generatesInPieces('tri', triangleFlag, nLayersOfOverlap, parallelPartitioningType):
+            if self.generatesInPieces('tri', triangleFlag, nLayersOfOverlap, parallelPartitioningType, regularGrid):
                 self.generateCartesianHierarchy('tri', (nx,ny), (x,y,z), (Lx,Ly,Lz), refinementLevels,
                                                 triangleFlag=triangleFlag)
             elif self.useC:
@@ -6125,8 +6165,10 @@ class MultilevelQuadrilateralMesh(MultilevelMesh):
                  refinementLevels=1,
                  skipInit=False,
                  nLayersOfOverlap=1,
-                 parallelPartitioningType=MeshParallelPartitioningTypes.node,triangleFlag=0,
-                 useC=True):
+                 parallelPartitioningType=MeshParallelPartitioningTypes.node,
+                 triangleFlag=0,
+                 useC=True,
+                 regularGrid=None):
         from .import cmeshTools
         MultilevelMesh.__init__(self)
         self.useC = useC  # Implementing with C will take a bit more work. Disabling for now.
@@ -6139,7 +6181,7 @@ class MultilevelQuadrilateralMesh(MultilevelMesh):
             self.useC = False  # Currently quad refinement is not supported in C routines.
         self.nLayersOfOverlap=nLayersOfOverlap ; self.parallelPartitioningType = parallelPartitioningType
         if not skipInit:
-            if self.generatesInPieces('quad', 0, nLayersOfOverlap, parallelPartitioningType):
+            if self.generatesInPieces('quad', 0, nLayersOfOverlap, parallelPartitioningType, regularGrid):
                 self.generateCartesianHierarchy('quad', (nx,ny), (x,y,z), (Lx,Ly,Lz), refinementLevels)
             elif structured:
                 self._structuredLevels = refinementLevels
@@ -7748,6 +7790,12 @@ class MeshOptions(object):
         self.nny = None
         self.nnz = None
         self.triangleFlag = 1
+        #'generated': a rectangular domain's regular grid is generated in
+        #pieces, every rank its own, with no global mesh or graph partitioner
+        #(MeshTools.cartesianSubdomain); 'global': the global mesh, partitioned.
+        #Cases the generated path does not cover take the global path either way
+        #(MultilevelMesh.generatesInPieces).
+        self.regularGrid = 'generated'
         self.nd = nd
         if nd is not None:
             if nd == 2:
@@ -8032,7 +8080,8 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                                                 domain.L[0], domain.L[1],1,
                                                                 refinementLevels=meshOptions.nLevels,
                                                                 nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
-                                                                parallelPartitioningType=meshOptions.parallelPartitioningType)
+                                                                parallelPartitioningType=meshOptions.parallelPartitioningType,
+                                                                regularGrid=getattr(meshOptions, 'regularGrid', None))
             else:
                 fileprefix = domain.polyfile
                 if fileprefix is None:
@@ -8079,7 +8128,8 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                                       refinementLevels=meshOptions.nLevels,
                                                       nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
                                                       parallelPartitioningType=meshOptions.parallelPartitioningType,
-                                                      triangleFlag=triangleFlag)
+                                                      triangleFlag=triangleFlag,
+                                                      regularGrid=getattr(meshOptions, 'regularGrid', None))
         elif domain.nd == 3:
             if (meshOptions.nnx == meshOptions.nny == meshOptions.nnz is None):
                 nnx = nny = nnz = meshOptions.nn
@@ -8113,7 +8163,8 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                                             domain.L[0], domain.L[1], domain.L[2],
                                                             refinementLevels=meshOptions.nLevels,
                                                             nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
-                                                            parallelPartitioningType=meshOptions.parallelPartitioningType)
+                                                            parallelPartitioningType=meshOptions.parallelPartitioningType,
+                                                            regularGrid=getattr(meshOptions, 'regularGrid', None))
             else:
                 fileprefix = domain.polyfile
                 if fileprefix is None:
@@ -8166,7 +8217,8 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                                                         domain.L[0], domain.L[1], domain.L[2],
                                                                         refinementLevels=meshOptions.nLevels,
                                                                         nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
-                                                                        parallelPartitioningType=meshOptions.parallelPartitioningType)
+                                                                        parallelPartitioningType=meshOptions.parallelPartitioningType,
+                                                                        regularGrid=getattr(meshOptions, 'regularGrid', None))
                 else:
                     mesh = TetrahedralMesh()
                     mlMesh = MultilevelTetrahedralMesh(0, 0,0,skipInit=True,

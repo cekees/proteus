@@ -1982,7 +1982,7 @@ class XdmfWriter(object):
         return self.arGrid
     #def
     def writeFunctionXdmf_P1Bubble(self,ar,u,tCount=0,init=True):
-        if ar.sync_global:
+        if ar.global_sync:
             #just write out nodal part right now
             Xdmf_NumberOfElements = u.femSpace.mesh.globalMesh.nElements_global
             Xdmf_NumberOfNodes    = u.femSpace.mesh.globalMesh.nNodes_global
@@ -2042,7 +2042,7 @@ class XdmfWriter(object):
                                        offsets = u.femSpace.dofMap.dof_offsets_subdomain_owned,
                                        data = u.dof[:(u.femSpace.dofMap.dof_offsets_subdomain_owned[ar.rank+1] - u.femSpace.dofMap.dof_offsets_subdomain_owned[ar.rank])])
             else:
-                assert Fasle, "global_sync not implemented for text heavy data"
+                assert False, "global_sync not implemented for text heavy data"
         else:
             values    = SubElement(attribute,"DataItem",
                                    {"Format":ar.dataItemFormat,

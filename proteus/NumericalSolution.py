@@ -245,6 +245,7 @@ class NS_base(object):  # (HasTraits):
                 p.domain.MeshOptions.genMesh=p.genMesh
                 p.domain.MeshOptions.parallelPartitioningType=n.parallelPartitioningType
                 p.domain.MeshOptions.nLayersOfOverlapForParallel=n.nLayersOfOverlapForParallel
+                p.domain.MeshOptions.regularGrid=getattr(n, 'regularGrid', 'generated')
         try:
             mlMesh = self.pList[0].domain.mesh
         except:

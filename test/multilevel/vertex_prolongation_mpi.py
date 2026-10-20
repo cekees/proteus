@@ -17,6 +17,8 @@ from mpi4py import MPI
 from proteus import Comm
 comm = Comm.init()
 from proteus import MeshTools
+#this tests the global hierarchy builder, not hierarchies generated in pieces
+MeshTools.MultilevelMesh.regularGrid = 'global'
 from proteus.LinearAlgebraTools import (ParTransferOperator, ParTransposeTransferOperator,
                                         ParVec_petsc4py, vertexProlongationMat)
 

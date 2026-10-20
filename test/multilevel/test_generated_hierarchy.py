@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Multigrid on hierarchies generated in pieces: no global mesh on any rank.
 
-MultilevelMesh.generateCartesianHierarchy (switched on by
-MultilevelMesh.generateRegularGrids, or PROTEUS_GENERATE_REGULAR_GRIDS=1) builds
+MultilevelMesh.generateCartesianHierarchy (the default, MeshOptions.regularGrid
+= 'generated'; 'global' selects the global mesh, partitioned) builds
 each level of a regular-grid hierarchy as every rank's own piece
 (MeshTools.cartesianSubdomain(level=l)), cut into the coarsest level's bricks
 scaled so that the partition is level-consistent by construction, and computes
@@ -52,8 +52,9 @@ def _launch(args, n_ranks, generate=True, blocked=False, timeout=600):
     # ranks than that. MPICH oversubscribes by default and ignores these.
     env.setdefault('OMPI_MCA_rmaps_base_oversubscribe', '1')
     env.setdefault('PRTE_MCA_rmaps_default_mapping_policy', ':oversubscribe')
-    env['PROTEUS_GENERATE_REGULAR_GRIDS'] = '1' if generate else '0'
     script = [os.path.join(HERE, 'without_petsc4py.py')] if blocked else []
+    if not generate:
+        args = list(args) + ['global']
     result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable] + script +
                             [os.path.join(HERE, args[0])] + [str(a) for a in args[1:]],
                             capture_output=True, text=True, env=env, timeout=timeout, cwd=HERE)
@@ -107,3 +108,28 @@ def test_a_generated_hierarchy_needs_no_petsc(kind):
     got, out = _launch(['regular_mg_mpi.py', kind, 3, 3], 3, blocked=True)
     assert got['generated'] == '1' and got['petsc'] == '0', out
     assert _close(reference['checksum'], got['checksum']), (reference, got)
+
+
+@pytest.mark.parametrize('kind,options', [
+    ('tri', dict(triangleFlag=1)),
+    ('tri', dict(triangleFlag=2)),
+    ('quad', dict(nLayersOfOverlap=2)),
+    ('hex', dict(parallelPartitioningType=1)),
+    ('tet', dict(regularGrid='global')),
+])
+def test_the_cases_it_does_not_cover_take_the_global_path(kind, options):
+    """Union-jack and left-leaning triangles, overlap other than one layer,
+    element partitioning and regularGrid='global' build the global mesh and
+    partition it; the default builds the same grid in pieces."""
+    from proteus import MeshTools
+    cls = {'tri': MeshTools.MultilevelTriangularMesh, 'quad': MeshTools.MultilevelQuadrilateralMesh,
+           'tet': MeshTools.MultilevelTetrahedralMesh, 'hex': MeshTools.MultilevelHexahedralMesh}[kind]
+    nz = 3 if kind in ('tet', 'hex') else 1
+    if 'parallelPartitioningType' in options:
+        options = dict(options, parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.element)
+    fallback = cls(3, 3, nz, refinementLevels=2, **options)
+    assert not fallback.generated
+    assert fallback.meshList[-1].nNodes_global == fallback.meshList[-1].subdomainMesh.nNodes_global
+    default = cls(3, 3, nz, refinementLevels=2, **(dict(triangleFlag=0) if kind == 'tri' else {}))
+    assert default.generated
+    assert default.meshList[-1].nNodes_global == fallback.meshList[-1].nNodes_global

@@ -25,6 +25,8 @@ from proteus import Comm
 comm = Comm.init()
 from mpi4py import MPI
 from proteus import MeshTools
+#this tests the global hierarchy builder, not hierarchies generated in pieces
+MeshTools.MultilevelMesh.regularGrid = 'global'
 
 rank, size = comm.rank(), comm.size()
 mpi = comm.comm.tompi4py()
