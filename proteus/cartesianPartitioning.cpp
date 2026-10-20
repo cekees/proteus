@@ -34,9 +34,9 @@
      element boundary belongs to the lowest rank that reaches it from an owned
      node through the node's element star -- an element through any of its
      nodes, an element boundary through the nodes partitionNodes selects (the
-     face's own nodes for hexahedra, every node of the element but the one with
-     the face's local number otherwise, which for a simplex is the face's own
-     nodes again) -- and an edge to the owner of its node with the lower new
+     face's own nodes for quadrilaterals and hexahedra, every node of the
+     element but the one with the face's local number otherwise, which for a
+     simplex is the face's own nodes again) -- and an edge to the owner of its node with the lower new
      number.
    - New numbers: each rank's owned entities in increasing old number, ranks in
      order. Nodes are bricks, so theirs are arithmetic, and so are elements'
@@ -287,7 +287,11 @@ public:
   //the nodes from which partitionNodes reaches local element boundary s
   std::vector<int> selectingNodes(int s) const
   {
-    if (kind == HEX)
+    //hexahedra and quadrilaterals: the boundary's own nodes. (partitionNodes used to
+    //apply the simplex rule -- every node but the one with the boundary's local
+    //number -- to quadrilaterals as well, which gave an edge to a rank holding
+    //neither of its end points.)
+    if (kind == HEX || kind == QUAD)
       return boundarySlots()[s];
     std::vector<int> nodes;
     for (int nN = 0; nN < nNodes_element; nN++)

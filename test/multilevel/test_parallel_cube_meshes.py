@@ -55,8 +55,11 @@ def _launch(helper, args, n_ranks):
 
 @pytest.mark.parametrize('kind,n', [('hex', 3), ('hex', 5), ('hex', 7), ('quad', 3), ('quad', 9)])
 @pytest.mark.parametrize('n_ranks', [2, 3, 4])
-def test_every_subdomain_element_is_a_cell_of_the_grid(kind, n, n_ranks):
-    out = _launch('cube_mesh_mpi.py', [kind, n], n_ranks)
+@pytest.mark.parametrize('how', ['generated', 'global'])
+def test_every_subdomain_element_is_a_cell_of_the_grid(kind, n, n_ranks, how):
+    # also checks every owned element boundary has all its elements on its owner;
+    # the quadrilateral partitioner used to hand edges to ranks without them
+    out = _launch('cube_mesh_mpi.py', [kind, n, how], n_ranks)
     assert 'CUBE_MESH_OK' in out, out
 
 

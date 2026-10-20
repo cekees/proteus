@@ -17,6 +17,11 @@ What is pinned here:
   rank, to what the mask-chain partitioner produced (2d21116f) for the same
   owners: triangles, tetrahedra, quadrilaterals and hexahedra, node and element
   partitioning, 1-8 ranks (partition_arrays_reference.json, recorded on Linux);
+  with ONE deliberate exception: quadrilateral *node* partitioning, whose element
+  boundaries are now owned through the boundary's own nodes (the mask chain applied the
+  simplex rule, which gave an edge to a rank holding neither end point and left Q2 rows
+  incomplete). Only the element-boundary arrays differ from the 2d21116f recording and
+  the six `quad node` digests were re-recorded; see MULTILEVEL_MG_CAMPAIGN.md 3.19;
 * the graph partitioner's own numbering is the prescribed-owner numbering of
   the partition it chose, so that path changed in nothing but the gather;
 * a rank that owns nothing works (the old partitioner crashed): every array is

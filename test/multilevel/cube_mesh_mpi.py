@@ -20,6 +20,10 @@ rank, size = comm.rank(), comm.size()
 mpi = comm.comm.tompi4py()
 kind = sys.argv[1]
 n = int(sys.argv[2])
+# 'global' builds the global mesh and partitions it (partitionNodes); the default
+# generates each rank's piece directly. Both must give a valid partition.
+if len(sys.argv) > 3 and sys.argv[3] == 'global':
+    MeshTools.MultilevelMesh.regularGrid = 'global'
 part = MeshTools.MeshParallelPartitioningTypes.node
 L = 2.0
 if kind == 'hex':
@@ -55,6 +59,26 @@ if np.abs(x[:, :dim] - grid * h).max() > 1e-12:
 offsets = np.asarray(mesh.nodeOffsets_subdomain_owned)
 if offsets[-1] != mesh.nNodes_global:
     problems.append("owned node counts sum to %d, not %d" % (offsets[-1], mesh.nNodes_global))
+
+# An owned element boundary must have every element that contains it on its owner:
+# the owner assembles that boundary's row of a space whose dofs sit on boundaries
+# (Q2's edge dofs, the non-conforming P1 dofs), and a row missing an element is
+# wrong. For quadrilaterals the partitioner used the simplex rule to choose an
+# element boundary's owner, which handed edges to ranks holding neither end point.
+gmesh = mesh.globalMesh if getattr(mesh, 'globalMesh', None) is not None else mesh
+ebOff = np.asarray(mesh.elementBoundaryOffsets_subdomain_owned)
+ebNumber = np.asarray(mesh.elementBoundaryNumbering_subdomain2global)
+sharedCount = {int(ebNumber[i]): int((np.asarray(sd.elementBoundaryElementsArray[i]) >= 0).sum())
+               for i in range(ebNumber.size)}
+bestCount = {}
+for view in mpi.allgather(sharedCount):
+    for key, c in view.items():
+        bestCount[key] = max(bestCount.get(key, 0), c)
+nOwnedEb = int(ebOff[rank + 1] - ebOff[rank])
+short = [int(ebNumber[i]) for i in range(nOwnedEb) if sharedCount[int(ebNumber[i])] < bestCount[int(ebNumber[i])]]
+if short:
+    problems.append("%d owned element boundaries lack an element that contains them on their owner (e.g. %s)"
+                    % (len(short), short[:3]))
 
 allproblems = mpi.allgather(problems)
 if rank == 0:

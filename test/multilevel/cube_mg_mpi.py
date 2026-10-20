@@ -5,7 +5,8 @@ pcmg_parallel_mpi.py offers for simplices: proteus's MGM, PETSc's PCMG over the
 same hierarchy, PCMG-preconditioned GMRES, and a direct solve to hold the
 converged modes to.
 
-Usage: cube_mg_mpi.py KIND NN LEVELS MODE   (KIND is quad or hex)
+Usage: cube_mg_mpi.py KIND NN LEVELS MODE [ORDER]   (KIND is quad or hex; ORDER 1 or 2, default 1;
+MODE ksplu is a direct solve that also runs in parallel)
 """
 import os
 import sys
@@ -25,12 +26,17 @@ kind = sys.argv[1]
 nn = int(sys.argv[2])
 nLevels = int(sys.argv[3])
 mode = sys.argv[4]
-assert mode in ('mgm', 'pcmg', 'pcmg_its', 'direct'), mode
+assert mode in ('mgm', 'pcmg', 'pcmg_its', 'direct', 'ksplu'), mode
+Q = int(sys.argv[5]) if len(sys.argv) > 5 else 1
 if kind == 'hex':
     TESTDIR = os.path.join(testroot, "ci")
     p = defaults.load_physics('poisson_3d_p', TESTDIR)
     n = defaults.load_numerics('poisson_3d_c0q1_n', TESTDIR)
     n.nnx = n.nny = n.nnz = nn
+    if Q == 2:
+        n.femSpaces[0] = default_n.C0_AffineQuadraticOnCubeWithNodalBasis
+        n.elementQuadrature = default_n.CubeGaussQuadrature(p.nd, 5)
+        n.elementBoundaryQuadrature = default_n.CubeGaussQuadrature(p.nd - 1, 5)
     n.linearSolverConvergenceTest = 'r'
 else:
     TESTDIR = os.path.join(testroot, "poisson_2d")
@@ -45,7 +51,8 @@ else:
     p.meshfile = None
     n.quad = True
     n.nn = nn
-    n.femSpaces[0] = default_n.C0_AffineLinearOnCubeWithNodalBasis
+    n.femSpaces[0] = (default_n.C0_AffineQuadraticOnCubeWithNodalBasis if Q == 2
+                      else default_n.C0_AffineLinearOnCubeWithNodalBasis)
     n.elementQuadrature = default_n.CubeGaussQuadrature(p.nd, 3)
     n.elementBoundaryQuadrature = default_n.CubeGaussQuadrature(p.nd - 1, 3)
 n.nLevels = nLevels
@@ -55,6 +62,11 @@ if mode == 'direct':
     n.multilevelLinearSolver = LinearSolvers.LU
     n.levelLinearSolver = LinearSolvers.LU
     n.linearSmoother = None
+elif mode == 'ksplu':
+    n.multilevelLinearSolver = LinearSolvers.KSP_petsc4py
+    n.levelLinearSolver = LinearSolvers.KSP_petsc4py
+    n.linearSmoother = None
+    n.petscOptions = {'ksp_type': 'preonly', 'pc_type': 'redundant', 'redundant_pc_type': 'lu'}
 elif mode == 'mgm':
     n.multilevelLinearSolver = LinearSolvers.MGM
     n.levelLinearSolver = LinearSolvers.MGM
@@ -74,7 +86,7 @@ else:
         options.update({'ksp_type': 'gmres', 'ksp_rtol': '1e-14', 'ksp_atol': '1e-14'})
     n.petscOptions = options
 so = default_so
-so.name = p.name = "cubemg_%s_%d_%d_%s_%d" % (kind, nn, nLevels, mode, size)
+so.name = p.name = "cubemg_%s_%d_%d_%s_%d_q%d" % (kind, nn, nLevels, mode, size, Q)
 so.sList = [default_s]
 runopts.logLevel = 1
 runopts.verbose = False

@@ -920,6 +920,33 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
         }
 
     }
+  else if (mesh.nNodes_element == 4 && mesh.nNodes_elementBoundary == 2)
+    {
+      //quadrilateral (a tetrahedron also has four nodes and four boundaries,
+      //but its boundaries have three nodes): edge j joins local nodes j and j+1. The simplex rule below
+      //(every face but the one across from the node) takes an edge to contain the
+      //node when it does not, which gave an edge to a rank that held neither of
+      //its end points -- and so not both of its cells, leaving its row of a
+      //quadratic space incomplete there.
+      for (int nN_global_old = 0; nN_global_old < mesh.nNodes_global; nN_global_old++)
+        {
+          const int nN_rank = nodeOwner[nN_global_old];
+          for (int offset_old = mesh.nodeElementOffsets[nN_global_old];
+               offset_old < mesh.nodeElementOffsets[nN_global_old+1]; offset_old++)
+            {
+              int eN_star_old = mesh.nodeElementsArray[offset_old];
+              for (int ebN=0; ebN<mesh.nElementBoundaries_element;ebN++)
+                {
+                  const int n0 = mesh.elementNodesArray[eN_star_old*mesh.nNodes_element + ebN];
+                  const int n1 = mesh.elementNodesArray[eN_star_old*mesh.nNodes_element + (ebN+1)%4];
+                  if (n0 == nN_global_old || n1 == nN_global_old)
+                    lowerOwner(elementBoundaryOwner,
+                               mesh.elementBoundariesArray[eN_star_old*mesh.nElementBoundaries_element+ebN],
+                               nN_rank);
+                }
+            }
+        }
+    }
   else
     {
       for (int nN_global_old = 0; nN_global_old < mesh.nNodes_global; nN_global_old++)

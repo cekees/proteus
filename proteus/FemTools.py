@@ -2404,7 +2404,9 @@ class QuadraticLagrangeCubeDOFMap(DOFMap):
         """
         from . import Comm
         mpi_comm = Comm.get().comm.tompi4py()
-        if self.nd==2:
+        if self.nd==2 and getattr(globalMesh,'nodeNumbering_subdomain2global',None) is not None:
+            self._buildPartitionedQuadraticQuad(globalMesh,mpi_comm)
+        elif self.nd==2:
             # start with the vertex DoFs
             for i,node in enumerate(globalMesh.nodeArray):
                 self.lagrangeNodesArray[i] = node
@@ -2474,6 +2476,79 @@ class QuadraticLagrangeCubeDOFMap(DOFMap):
                                                                                             self.subdomain2global,
                                                                                             self.lagrangeNodesArray)
             assert self.nDOF == self.nDOF_subdomain
+    def _buildPartitionedQuadraticQuad(self,globalMesh,mpi_comm):
+        """The 2D (quadrilateral Q2) dof numbering on a partitioned mesh.
+
+        A Q2 quad has a dof at each vertex, each edge and each cell centre. The
+        partitioner already numbers vertices, edges and cells globally with
+        every rank's owned ones contiguous (the *_subdomain_owned offsets and
+        *Numbering_subdomain2global), so the dof numbering follows from those
+        and the offsets alone, with no communication: rank r's block is its
+        owned vertices, then edges, then cells, and a dof's global number is its
+        owner's block start plus its place in the owner's block. Subdomain dofs
+        are ordered owned first (vertices, edges, cells), then ghosts in the
+        same order, as every other dof map's are.
+        """
+        sd = globalMesh.subdomainMesh
+        rank = mpi_comm.Get_rank()
+        nodeOff = numpy.asarray(globalMesh.nodeOffsets_subdomain_owned)
+        edgeOff = numpy.asarray(globalMesh.elementBoundaryOffsets_subdomain_owned)
+        cellOff = numpy.asarray(globalMesh.elementOffsets_subdomain_owned)
+        blockStart = nodeOff+edgeOff+cellOff
+        nNodesOwned = int(nodeOff[rank+1]-nodeOff[rank])
+        nEdgesOwned = int(edgeOff[rank+1]-edgeOff[rank])
+        nCellsOwned = int(cellOff[rank+1]-cellOff[rank])
+        nNodes,nEdges,nCells = sd.nNodes_global,sd.nElementBoundaries_global,sd.nElements_global
+        assert self.nDOF == nNodes+nEdges+nCells, (self.nDOF,nNodes,nEdges,nCells)
+        def globalNumber(local,numbering,offsets,within):
+            """New global dof number of subdomain entities given their partitioned numbers."""
+            g = numpy.asarray(numbering)[local]
+            owner = numpy.searchsorted(offsets[1:],g,side='right')
+            return blockStart[owner]+within[owner]+(g-offsets[owner])
+        # where, inside its owner's block, each kind starts
+        nodeWithin = numpy.zeros(len(nodeOff)-1,'i')
+        edgeWithin = nodeOff[1:]-nodeOff[:-1]
+        cellWithin = edgeWithin+(edgeOff[1:]-edgeOff[:-1])
+        nodeIds = globalNumber(numpy.arange(nNodes),globalMesh.nodeNumbering_subdomain2global,nodeOff,nodeWithin)
+        edgeIds = globalNumber(numpy.arange(nEdges),globalMesh.elementBoundaryNumbering_subdomain2global,edgeOff,edgeWithin)
+        cellIds = globalNumber(numpy.arange(nCells),globalMesh.elementNumbering_subdomain2global,cellOff,cellWithin)
+        # subdomain dof numbers: owned vertices, edges, cells, then the ghosts
+        localNode = numpy.where(numpy.arange(nNodes) < nNodesOwned,numpy.arange(nNodes),
+                                nNodesOwned+nEdgesOwned+nCellsOwned+numpy.arange(nNodes)-nNodesOwned)
+        ghostBase = nNodesOwned+nEdgesOwned+nCellsOwned+(nNodes-nNodesOwned)
+        localEdge = numpy.where(numpy.arange(nEdges) < nEdgesOwned,nNodesOwned+numpy.arange(nEdges),
+                                ghostBase+numpy.arange(nEdges)-nEdgesOwned)
+        ghostBase2 = ghostBase+(nEdges-nEdgesOwned)
+        localCell = numpy.where(numpy.arange(nCells) < nCellsOwned,nNodesOwned+nEdgesOwned+numpy.arange(nCells),
+                                ghostBase2+numpy.arange(nCells)-nCellsOwned)
+        self.subdomain2global = numpy.zeros((self.nDOF,),'i')
+        self.subdomain2global[localNode] = nodeIds
+        self.subdomain2global[localEdge] = edgeIds
+        self.subdomain2global[localCell] = cellIds
+        en = numpy.asarray(sd.elementNodesArray)
+        eb = numpy.asarray(sd.elementBoundariesArray)
+        # the reference element's local ordering, as the serial map has it
+        for k,v in enumerate((0,3,2,1)):
+            self.l2g[:,k] = localNode[en[:,v]]
+        for k,v in enumerate((3,2,1,0)):
+            self.l2g[:,4+k] = localEdge[eb[:,v]]
+        self.l2g[:,8] = localCell[numpy.arange(nCells)]
+        # where each dof sits
+        x = numpy.asarray(sd.nodeArray)
+        self.lagrangeNodesArray[localNode] = x
+        for j in range(4):
+            self.lagrangeNodesArray[localEdge[eb[:,j]]] = 0.5*(x[en[:,j]]+x[en[:,(j+1)%4]])
+        centre = numpy.zeros((nCells,3))
+        centre[:,0] = 0.5*(x[en[:,0],0]+x[en[:,-1],0])
+        centre[:,1] = 0.5*(x[en[:,0],1]+x[en[:,1],1])
+        self.lagrangeNodesArray[localCell] = centre
+        self.dof_offsets_subdomain_owned = numpy.zeros(nodeOff.shape,'i')
+        self.dof_offsets_subdomain_owned[:] = blockStart
+        self.nDOF_all_processes = int(blockStart[-1])
+        self.nDOF_subdomain = self.nDOF
+        #each dof couples to at most 25 others on a quadrilateral mesh (a vertex
+        #meets four cells of nine dofs)
+        self.max_dof_neighbors = 25
 #QuadraticDOFMap
 
 class QuadraticLagrangeDOFMap(DOFMap):
