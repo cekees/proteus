@@ -1,5 +1,15 @@
 """Fixtures for the multilevel tests."""
+import os
+
 import pytest
+
+# The MPI tests here launch 2-8 ranks, and CI runners have 2 cores. Open MPI 5
+# refuses to start more ranks than slots ("not enough slots available"), which
+# fails every such test there while passing on a workstation; MPICH always
+# oversubscribes and ignores these. Set once for the whole directory, before any
+# test builds the environment it hands to mpiexec.
+os.environ.setdefault('OMPI_MCA_rmaps_base_oversubscribe', '1')
+os.environ.setdefault('PRTE_MCA_rmaps_default_mapping_policy', ':oversubscribe')
 
 
 def pytest_configure(config):
