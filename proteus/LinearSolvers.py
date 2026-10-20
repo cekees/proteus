@@ -4451,8 +4451,10 @@ class ConstantComponentsNullSpace(SolverNullSpace):
     velocity: the continuity rows tested with q = 1 sum to the boundary
     flux of interior basis functions, which is zero.
 
-    Serial only for now: the vector is laid out with the model's
-    offset/stride over the free global degrees of freedom.
+    On several ranks only when every component is in it: the vector is then
+    the constant, which PETSc builds for any layout. Otherwise serial only
+    for now: the vector is laid out with the model's offset/stride over the
+    free global degrees of freedom.
     """
     def __init__(self, proteus_ksp):
         super(ConstantComponentsNullSpace, self).__init__(proteus_ksp)
@@ -4465,9 +4467,14 @@ class ConstantComponentsNullSpace(SolverNullSpace):
         try:
             self.components_null_space
         except AttributeError:
-            if p4pyPETSc.COMM_WORLD.size > 1:
-                raise NotImplementedError("ConstantComponentsNullSpace is serial only")
             model = self.get_global_ksp().par_L.pde
+            if p4pyPETSc.COMM_WORLD.size > 1:
+                if sorted(model.coefficients.nullSpaceComponents) != list(range(model.coefficients.nc)):
+                    raise NotImplementedError("ConstantComponentsNullSpace is serial only "
+                                              "unless every component is in it")
+                self.components_null_space = p4pyPETSc.NullSpace().create(
+                    constant=True, comm=p4pyPETSc.COMM_WORLD)
+                return self.apply_ns(par_b)
             vector = par_b.copy()
             values = vector.getArray()
             values.fill(0.0)

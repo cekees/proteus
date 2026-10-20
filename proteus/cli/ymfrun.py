@@ -32,6 +32,16 @@ bitwise. A match is noted under ``reproduced``. A difference is refused,
 with the differences listed, unless ``--keep-different`` keeps the rerun
 as a second output, ``<key>~2``.
 
+Under ``mpiexec`` every rank solves its part of each output; rank 0 makes
+the meshes of regions (:mod:`proteus.cli.ymfmesh`), reads what Proteus
+wrote, writes the archive and reports, and the other ranks print nothing.
+The archive records the number of ranks, and a rerun on another number is
+not expected to be bitwise the same: its partition sums in another order.
+Proteus's serial LU (``linear_solver: superlu``) and a constant fixed in
+some components but not others (a velocity-pressure system's pressure) are
+refused on more than one rank, before anything is solved; the default solver
+there is MUMPS.
+
 This is the front end, so it imports sympy through ymf.symbolic. Proteus
 itself (proteus.ADRProblem) never does: it is handed plain data.
 """
@@ -118,7 +128,12 @@ def software():
             "proteus": proteus.__version__, "proteus_git": commit(proteus),
             "sympy": sympy.__version__, "numpy": numpy.__version__,
             "python": platform.python_version(), "platform": platform.platform(),
-            "threads": {v: os.environ[v] for v in THREADS}}
+            "threads": {v: os.environ[v] for v in THREADS}, "ranks": _ranks()}
+
+
+def _ranks():
+    from proteus import Comm
+    return Comm.comm.size() if Comm.comm is not None else 1
 
 
 def now():
@@ -169,7 +184,7 @@ def solve(doc, problem, name, realization, outdir, files, inline, env, mesh=None
     from proteus import ADRProblem, Profiling, runtime
     from ymf.archive import inline_domain, read_ymf
     from ymf import closure
-    runtime.start()     # one log for the whole run, in the working directory
+    comm = runtime.start()     # one log for the whole run, in the working directory
     Profiling.logLevel = 1
     Profiling.verbose = False
     kwargs = run_arguments(doc, problem, name, realization)
@@ -187,12 +202,17 @@ def solve(doc, problem, name, realization, outdir, files, inline, env, mesh=None
         solved = ADRProblem.reorder(problem, [pressure] + velocity)
     discrete = dict(ADRProblem.describe(solved, ns.nList[0]), stabilization=stabilization)
 
+    # The record Proteus wrote beside its .h5, on rank 0 once every rank
+    # has finished writing: rank 0 reads it, and every rank gets the output.
+    comm.barrier()
+    if not comm.isMaster():
+        return _bcast(comm, None)
     domain, _ = read_ymf(os.path.join(outdir, files + ".ymf"))
     os.remove(os.path.join(outdir, files + ".ymf"))
     if inline:
         domain = inline_domain(domain, outdir)
         os.remove(os.path.join(outdir, files + ".h5"))
-    return {
+    return _bcast(comm, {
         "input": {"sha256": closure.input_digest(doc, name, realization)},
         "realization": realization,
         "transformations": {
@@ -206,7 +226,7 @@ def solve(doc, problem, name, realization, outdir, files, inline, env, mesh=None
             {"modulo_constants": list(problem["up_to_constant"])}
             if problem.get("up_to_constant") else {})),
         "approximation": domain,
-    }
+    })
 
 
 def differences(recorded, rerun, outdir):
@@ -234,6 +254,12 @@ def differences(recorded, rerun, outdir):
             diff = numpy.abs(x.astype(float) - y.astype(float))
             out.append("%s: %d of %d values differ, by up to %.3e"
                        % (where, int((diff > 0).sum()), diff.size, float(diff.max())))
+    ranks = [r["transformations"]["solve"]["by"].get("ranks", 1) for r in (recorded, rerun)]
+    if out and ranks[0] != ranks[1]:
+        # another partition sums in another order: equal to rounding, not bitwise
+        out.append("recorded on %d rank%s, rerun on %d: a different partition is not "
+                   "expected to reproduce bitwise" % (ranks[0], "" if ranks[0] == 1 else "s",
+                                                      ranks[1]))
     return out
 
 
@@ -375,6 +401,41 @@ def main(argv=None, prog="ymf_run", mesh_only=False):
     parser.add_argument("--force", action="store_true",
                         help="remake the meshes of regions even if they are up to date")
     args = parser.parse_args(argv)
+    if not os.path.isfile(args.input):
+        parser.error("%s: no such file" % (args.input,))
+    # MPI starts only now: --help and argument errors are answered without it
+    from proteus import runtime
+    comm = runtime.start()
+    if comm.isMaster():
+        return _run(args, prog, mesh_only, comm)
+    return _quietly(lambda: _run(args, prog, mesh_only, comm))
+
+
+def _quietly(run):
+    """``run()`` on a rank other than 0, which computes alongside rank 0 but
+    prints nothing: rank 0 reports. A failure still says where it was."""
+    import contextlib
+    import traceback
+    with open(os.devnull, "w") as devnull:
+        try:
+            with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+                return run()
+        except SystemExit as exc:              # rank 0 says why
+            raise SystemExit(exc.code if isinstance(exc.code, int) else 1)
+        except BaseException:
+            traceback.print_exc(file=sys.__stderr__)
+            raise
+
+
+def _bcast(comm, value):
+    """Rank 0's ``value`` on every rank."""
+    return value if comm.size() == 1 else comm.comm.tompi4py().bcast(value, root=0)
+
+
+def _run(args, prog, mesh_only, comm):
+    """The runner, on every rank. What reads or writes files, and every
+    decision made from them, is rank 0's, and broadcast."""
+    root = comm.isMaster()
 
     from ymf import closure
     from ymf.cli import archive2xmf
@@ -537,9 +598,10 @@ def main(argv=None, prog="ymf_run", mesh_only=False):
                 new.append(key)
                 rows.append((key, realization, output, "new"))
                 continue
-            found = differences(outputs[key], output, outdir)
+            found = _bcast(comm, differences(outputs[key], output, outdir) if root else None)
             if not found:
-                discard(output, outdir)
+                if root:
+                    discard(output, outdir)
                 outputs[key].setdefault("reproduced", []).append(
                     {"created": output["transformations"]["solve"]["created"], "by": env})
                 rows.append((key, realization, outputs[key], "reproduced, bitwise"))
@@ -548,11 +610,12 @@ def main(argv=None, prog="ymf_run", mesh_only=False):
                 new.append(slot)
                 rows.append((slot, realization, output, "DIFFERENT, kept"))
             else:
-                discard(output, outdir)
+                if root:
+                    discard(output, outdir)
                 refused.append((key, found))
                 rows.append((key, realization, outputs[key], "DIFFERENT, refused"))
         report(problem, rows)
-        if args.emit_pn:
+        if args.emit_pn and root:
             for key, realization, _, status in rows:
                 if "refused" in status:
                     continue
@@ -560,9 +623,11 @@ def main(argv=None, prog="ymf_run", mesh_only=False):
                              closure.file_stem(stem, key), key, archive)
                 print("  %s: %s" % (key.split("/")[-1], ", ".join(map(os.path.basename, paths))))
 
-    closure.write(archive, doc, outputs)
-    if new:
-        archive2xmf(archive, outdir, new)
+    if root:
+        closure.write(archive, doc, outputs)
+        if new:
+            archive2xmf(archive, outdir, new)
+    comm.barrier()
     from ymf.state import reached
     state, why = reached(dict(doc, outputs=outputs))
     print("\nwrote %s: %d outputs, %d new; ymf_state: %s" % (archive, len(outputs),
