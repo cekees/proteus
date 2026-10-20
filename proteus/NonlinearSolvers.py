@@ -680,6 +680,13 @@ class Newton(NonlinearSolver):
                     logEvent("FCT Step After Newton")
                     self.F.FCTStep()
                     u[:] = self.F.u[0].dof
+                    # Implicit FCT (Richards FCT_TYPE='implicit'): the FCT step limited the
+                    # fluxes of the predictor just computed and needs one more solve, the
+                    # low-order problem with the corrected datum, from the same initial guess.
+                    if getattr(self.F, 'fct_resolve', False):
+                        self.F.fct_resolve = False
+                        logEvent("Implicit FCT: final low-order solve")
+                        return self.solve(u, r, b, par_u, par_r)
             logEvent(memory("Exiting Newton.solve","NonlinearSolvers"),level=4)
             return self.failedFlag
         logEvent("  NumericalAnalytics NewtonIteration: %d, NewtonNorm: %12.5e"

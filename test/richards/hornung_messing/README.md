@@ -35,6 +35,20 @@ order on the finest meshes:
 
 The low order has the same non-monotone coarse-mesh regime (h = 1/2 → 1/4) as the JNMA Table 1.
 
+### Implicit (JNMA) FCT: `STABILIZATION_TYPE=2 FCT=True fct_type='implicit'` (scheme `IFCT`)
+`Coefficients(FCT_TYPE='implicit')`. Each step: Galerkin θ-scheme predictor pᴴ, raw fluxes at pᴴ, nodal-variation
+prelimiter (ψ(r) = r³, `FCT_PRELIMITER_POWER`), Zalesak with global bounds [θ_R, θ_S] relative to θⁿ, then an implicit
+low-order solve from the corrected datum θ^{n,FCT}. No θ → p inversion. Q1 L² errors, h = 1/2 … 1/64:
+
+| | proteus | JNMA MFEM |
+|---|---|---|
+| θ = 1 | 9.79e-4, 6.66e-4, 1.98e-4, 5.23e-5, 1.42e-5, 3.43e-6 | 9.78e-4, 6.74e-4, 1.99e-4, 5.23e-5, 1.42e-5, 3.44e-6 |
+| θ = ½ | 7.30e-4, 4.99e-4, 1.57e-4, 4.42e-5, 1.27e-5, 3.24e-6 | 9.86e-4, 5.66e-4, 1.71e-4, 4.63e-5, 1.31e-5, 3.28e-6 |
+
+On P1 at h = 1/64: 7.55e-7 (θ = 1) and 4.90e-7 (θ = ½). Without the prelimiter (`fct_prelimiter=0`), Q1 at θ = 1 gives
+1.82e-5, 5.20e-6 and 1.01e-6 at h = 1/16, 1/32 and 1/64. On this smooth problem the prelimiter, not the bounds,
+causes most of the gap to Galerkin (2.34e-7).
+
 On Q1 (`MESH=q1`, tables `convergence_q1_theta*.txt`) at h = 1/64, θ = 1: low order 1.15e-4, Galerkin
 2.34e-7, WRR FCT 1.94e-6 (order ≈ 2.5). The JNMA MFEM values are 1.15e-4, 1.01e-6 and 3.44e-6 (implicit FCT).
 
