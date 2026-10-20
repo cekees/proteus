@@ -25,6 +25,7 @@ ct = Context.Options([
     ("theta_time", 1.0, "ThetaScheme weight: 1 = backward Euler, 0.5 = Crank-Nicolson"),
     ("fct_sat_lo", True, "FCT: no correction at DOFs with a saturated low-order predictor"),
     ("strong_bc", True, "strong Dirichlet (bc_mask = 0 on the boundary), as in the JNMA formulation"),
+    ("quad", False, "Q1 on a uniform quadrilateral mesh (as in JNMA) instead of P1 on right triangles"),
 ], mutable=True)
 
 nd = 2
