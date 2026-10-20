@@ -22,14 +22,35 @@ Dielmann, Kuzmin & Kees (JNMA, in preparation), §7.1:
 ./run_hm_convergence.sh
 ```
 
-## Results (structured right-triangle P1 mesh, serial LU, Newton tolerance 1e-10)
+## Results (structured right-triangle P1 mesh, serial LU, Newton tolerance 1e-10, strong Dirichlet)
 
-`convergence_theta*.txt` holds the full tables. In summary:
-- Low order (`STABILIZATION_TYPE=2 FCT=False`): first order on the finer meshes (1.00 at h = 1/64). It has the
-  same non-monotone coarse-mesh regime (error rising from h = 1/2 to 1/4) as the JNMA Table 1.
-- Galerkin, θ = 1: about second order (1.9–2.2). Galerkin, θ = ½: about second order (1.8–2.5).
-- FCT (WRR scheme, `STABILIZATION_TYPE=2 FCT=True`): **does not converge reliably**. Its error is
-  concentrated in the saturated region ξ < 0 (p > 0). After limiting, the water content there sits at or
-  just below θ_S, and the θ → p recovery returns p ≈ 0⁻ instead of the positive head. This is the
-  non-invertibility of s at saturation that motivates the implicit formulation in the JNMA manuscript.
-  The 1-D infiltration benchmarks never enter p > 0, so they do not expose it.
+Full tables: `convergence_theta1.0.txt` and `convergence_theta0.5.txt`. L² error at h = 1/64 and observed
+order on the finest meshes:
+
+| scheme | θ = 1 (Δt = 0.2h²) | θ = ½ (Δt = 0.1h) |
+|---|---|---|
+| low order (`STABILIZATION_TYPE=2 FCT=False`) | 6.99e-5, 0.99 | — (always BE) |
+| Galerkin (`STABILIZATION_TYPE=0`) | 2.29e-7, ≈ 1.9–2.2 | 1.51e-7, ≈ 2.4–2.7 |
+| WRR FCT (`STABILIZATION_TYPE=2 FCT=True`) | 1.58e-6, ≈ 2.6–2.8 | 2.68e-3, ≈ 0.9 |
+
+The low order has the same non-monotone coarse-mesh regime (h = 1/2 → 1/4) as the JNMA Table 1.
+
+### What the FCT needed
+The deck turns on two options that are off by default (they leave the WRR 1-D results unchanged):
+- `strong_bc` → `forceStrongConditions=True`. With weak (IIPG) Dirichlet the boundary DOFs are free, and the
+  FCT correction moved them by up to 1.5e-3, which dominated the error. (`Coefficients` previously ignored
+  this argument and always used weak enforcement.)
+- `fct_sat_lo` → `FCT_SATURATED_LOW_ORDER=True`. In the saturated zone (p > 0) θ is pinned at θ_S. The local
+  bounds let the correction pull θ below θ_S, and the θ → p recovery then returned p ≈ 0⁻ instead of the
+  positive head (710 step/node cases at h = 1/16; max error 2.5e-2 vs 3.9e-5 for the low-order predictor).
+  The option sets Q_i^± = 0 where the predictor is saturated, so every flux touching such a DOF is limited
+  to zero. The correction stays conservative, and the DOF keeps the low-order head.
+
+Before these two options, FCT θ = 1 gave 4.9e-5 at h = 1/64 with erratic orders (7.5e-3 at h = 1/8).
+
+### WRR FCT with θ = ½ does not work
+The correction then contains the old-time half of the high-order flux evaluated about the low-order
+predictor. That correction is O(Δt), so the local low-order bounds clip it, giving first order. Unlimited,
+it does not converge (L² 2e-2–9e-2 at h = 1/16–1/64). This is the time-step restriction of semi-implicit
+FCT noted in the WRR text, and it contrasts with the JNMA implicit FCT, which corrects s^n and re-solves
+implicitly.

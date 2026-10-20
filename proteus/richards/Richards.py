@@ -262,6 +262,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  SC=0.0,
                  FCT=True,
                  num_fct_iter=1,
+                 FCT_SATURATED_LOW_ORDER=False,
                  # FOR ENTROPY VISCOSITY
                  cE=1.0,
                  uL=0.0,
@@ -391,10 +392,20 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.ENTROPY_TYPE = ENTROPY_TYPE
         self.FCT = FCT
         self.num_fct_iter=num_fct_iter
+        # When True, the FCT correction is switched off at DOFs whose low-order
+        # predictor is saturated (u >= 0) for retention laws with a saturated
+        # plateau (VG, BC, Hornung-Messing; not Gardner). There theta is pinned at
+        # theta_S, so a limited mass below it cannot be inverted back to the
+        # positive head and the theta -> psi recovery collapses to psi ~ 0-.
+        self.FCT_SATURATED_LOW_ORDER = FCT_SATURATED_LOW_ORDER
         self.uL = uL
         self.uR = uR
         self.cK = cK
-        self.forceStrongConditions = False
+        # Strong Dirichlet: Dirichlet DOFs are set from the BC each residual and
+        # masked out of the residual and the FCT correction (bc_mask = 0). With
+        # the default False they are enforced weakly through the boundary flux
+        # and remain free DOFs, so the FCT correction also moves them.
+        self.forceStrongConditions = forceStrongConditions
         self.cE = cE
         self.outputQuantDOFs = outputQuantDOFs
         #For seepage anb
@@ -1207,6 +1218,13 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["dt_times_fH_minus_fL"] = self.dt_times_dC_minus_dL
         argsDict["min_m_bc"] = self.min_m_bc
         argsDict["max_m_bc"] = self.max_m_bc
+        # 1 where the low-order predictor (still in u[0].dof here) is saturated
+        # and the correction must vanish; all zeros leaves the limiter unchanged.
+        if self.coefficients.FCT_SATURATED_LOW_ORDER and self.coefficients.PSK_type != 3:
+            satLow = (self.u[0].dof[:len(rowptr) - 1] >= 0.0).astype('d')
+        else:
+            satLow = np.zeros((len(rowptr) - 1,), 'd')
+        argsDict["satLow"] = satLow
         argsDict["Rpos"] = self.Rpos
         argsDict["Rneg"] = self.Rneg
         argsDict["FluxCorrectionMatrix"] = self.FluxCorrectionMatrix
@@ -1588,7 +1606,12 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             for cj in range(len(self.dirichletConditionsForceDOF)):
                 for dofN,g in list(self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.items()):
                     self.u[cj].dof[dofN] = g(self.dirichletConditionsForceDOF[cj].DOFBoundaryPointDict[dofN],self.timeIntegration.t)
-                    self.u_dof_old[dofN] = self.u[cj].dof[dofN]
+                    # The old-time value must be g(t^n): the Newton vector that
+                    # ThetaScheme copies into u_dof_old never sees the value set
+                    # above, and g(t^{n+1}) would corrupt the (1-theta) fluxes.
+                    dt = self.timeIntegration.dt
+                    t_old = self.timeIntegration.t - (dt if dt is not None else 0.0)
+                    self.u_dof_old[dofN] = g(self.dirichletConditionsForceDOF[cj].DOFBoundaryPointDict[dofN], t_old)
                     self.bc_mask[dofN] = 0.0
         degree_polynomial = 1
         try:
