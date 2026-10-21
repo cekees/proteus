@@ -266,6 +266,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  FCT_TYPE='semi-implicit',
                  FCT_PRELIMITER_POWER=3.0,
                  LSCHEME_L=0.0,
+                 FCT_PREDICTOR_FALLBACK=True,
                  # FOR ENTROPY VISCOSITY
                  cE=1.0,
                  uL=0.0,
@@ -413,11 +414,16 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             raise ValueError("FCT_TYPE must be 'semi-implicit' or 'implicit', not %r" % (FCT_TYPE,))
         self.FCT_TYPE = FCT_TYPE
         self.FCT_PRELIMITER_POWER = FCT_PRELIMITER_POWER
-        # LSCHEME_L > 0: the Galerkin Jacobian (STABILIZATION_TYPE=0, and the predictor of
-        # FCT_TYPE='implicit') uses the L-scheme matrix (L/dt) M + Theta A(u^k) instead of the
-        # Newton Jacobian; take L >= sup dm/dpsi. Linear but robust convergence; raise
-        # maxNonlinearIts accordingly. 0 (default) = Newton.
+        # LSCHEME_L > 0: the Galerkin systems (STABILIZATION_TYPE=0, and the predictor of
+        # FCT_TYPE='implicit') are solved by the JNMA defect correction p^{k+1} = p^k - J^{-1} R(p^k):
+        # Galerkin residual R, low-order L-scheme matrix J = (L/dt) M_L + A~(p^k). Take
+        # L >= sup dm/dpsi. Linear convergence: raise maxNonlinearIts, and set maxLineSearches = 0.
+        # 0 (default) = Newton on the Galerkin Jacobian.
         self.LSCHEME_L = LSCHEME_L
+        # FCT_TYPE='implicit': if the Galerkin predictor's nonlinear solve fails, redo the step's
+        # predictor with the low-order operator (fluxes then evaluated at p^L, as in the WRR scheme)
+        # instead of failing the step. Typical on dry-soil fronts (Szymkiewicz).
+        self.FCT_PREDICTOR_FALLBACK = FCT_PREDICTOR_FALLBACK
         self.uL = uL
         self.uR = uR
         self.cK = cK
@@ -1060,6 +1066,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         # ('predictor' Galerkin, 'flux' evaluation at p^H, 'final' low order); see ImplicitFCTStep.
         self.fct_phase = 'predictor'
         self.fct_resolve = False
+        self.fct_fallback_count = 0
         self.alpha_nv = None
         self.m_fct = None
         # Aux quantity at DOFs to be filled by optimized code (MQL)
@@ -1257,13 +1264,30 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             a[:] = self.u[0].dof
         self.u[0].dof[:] = saved
 
+    def defectCorrection(self):
+        """True when the current Galerkin solve uses the L-scheme defect correction (LSCHEME_L)."""
+        return self.kernelStabilizationType() == 0 and self.coefficients.LSCHEME_L > 0.0
+
     def kernelStabilizationType(self):
         """STABILIZATION_TYPE passed to the kernels. The implicit FCT changes it per phase:
         Galerkin for the predictor, the edge-based low order for the flux evaluation, and
         Implicit_FCT (the low order plus the limited correction) for the final solve."""
         if self.coefficients.FCT and self.coefficients.FCT_TYPE == 'implicit':
-            return {'predictor': 0, 'flux': 2, 'final': 3}[self.fct_phase]
+            return {'predictor': 0, 'low_predictor': 2, 'flux': 2, 'final': 3}[self.fct_phase]
         return self.coefficients.STABILIZATION_TYPE
+
+    def fctPredictorFallback(self):
+        """Called by Newton when the implicit FCT's Galerkin predictor failed. Switches this step's
+        predictor to the low-order operator and returns True, or returns False (no fallback)."""
+        c = self.coefficients
+        if not (c.FCT and c.FCT_TYPE == 'implicit' and c.FCT_PREDICTOR_FALLBACK
+                and self.fct_phase == 'predictor'):
+            return False
+        self.fct_phase = 'low_predictor'
+        self.fct_fallback_count += 1
+        logEvent("Implicit FCT: low-order predictor fallback #%d at t = %g"
+                 % (self.fct_fallback_count, self.timeIntegration.t), level=1)
+        return True
 
     def ImplicitFCTStep(self):
         """Implicit FCT (JNMA), called by Newton after each converged solve.
@@ -1944,6 +1968,27 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             self.calculateResidual = self.richards.calculateResidual_entropy_viscosity
             self.calculateJacobian = self.richards.calculateMassMatrix
         
+        if self.delta_x_ij is None:
+            self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
+        argsDict["LSCHEME_L"] = 0.0
+        if self.defectCorrection():
+            # Defect correction: assemble the low-order L-scheme matrix (L/dt) M_L + A~(p^k) into
+            # self.jacobian through the edge-based kernel (its residual is discarded); getJacobian
+            # then uses it as is, while r below is the Galerkin residual.
+            if not hasattr(self, '_dc_scratch') or self._dc_scratch.shape != r.shape:
+                self._dc_scratch = np.zeros(r.shape, 'd')
+            self._dc_scratch[:] = 0.0
+            argsDict["STABILIZATION_TYPE"] = 2
+            argsDict["STABILIZATTION_TYPE"] = 2
+            argsDict["Theta"] = 1.0
+            argsDict["globalResidual"] = self._dc_scratch
+            argsDict["LSCHEME_L"] = float(self.coefficients.LSCHEME_L)
+            self.richards.calculateResidual_entropy_viscosity(argsDict)
+            argsDict["STABILIZATION_TYPE"] = 0
+            argsDict["STABILIZATTION_TYPE"] = 0
+            argsDict["Theta"] = time_theta
+            argsDict["globalResidual"] = r
+            argsDict["LSCHEME_L"] = 0.0
         self.calculateResidual(argsDict)
         # if getattr(self, "_theta_log_count", 0) < 5:
         #     q_theta = self.q[('theta',0)]
@@ -2114,7 +2159,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.richards.invert(argsDict)
      
     def getJacobian(self,jacobian):
-        if (self.kernelStabilizationType() == 0):  # SUPG
+        if (self.kernelStabilizationType() == 0 and not self.defectCorrection()):  # SUPG
             cfemIntegrals.zeroJacobian_CSR(self.nNonzerosInJacobian,
                                            jacobian)
         degree_polynomial = 1
@@ -2196,10 +2241,11 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["VMS"] = self.coefficients.VMS
         argsDict["Theta"] = getattr(self.timeIntegration, 'theta', 1.0) if self.kernelStabilizationType() == 0 else 1.0
-        argsDict["LSCHEME_L"] = float(self.coefficients.LSCHEME_L)
         #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
 
-        self.calculateJacobian(argsDict)
+        if not self.defectCorrection():
+            self.calculateJacobian(argsDict)
+        # else: the L-scheme matrix was assembled with the residual (see getResidual)
         if self.coefficients.forceStrongConditions:
             for dofN in list(self.dirichletConditionsForceDOF[0].DOFBoundaryConditionsDict.keys()):
                 global_dofN = self.offset[0]+self.stride[0]*dofN

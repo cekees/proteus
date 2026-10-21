@@ -14,7 +14,8 @@ ct = Context.Options([
     ("fct_type", "semi-implicit", "FCT=True: 'semi-implicit' (WRR) or 'implicit' (JNMA)"),
     ("nn", 0, "nodes in the column; 0 = the benchmark grid"),
     ("nDT", 0, "fixed time steps on [0, T]; 0 = the benchmark's 1000"),
-    ("lscheme_L", 0.0, "> 0: L-scheme instead of Newton for the Galerkin (predictor) solve, L >= sup theta'"),
+    ("lscheme_L", 0.0, "> 0: Galerkin (predictor) solved by L-scheme defect correction, L >= sup theta'"),
+    ("fct_fallback", True, "implicit FCT: low-order predictor when the Galerkin predictor fails"),
 ], mutable=True)
 
 # Szymkiewicz (2009), Water Resour. Res. 45, W10403 -- Test Problem 1:
@@ -109,6 +110,7 @@ coefficients = Richards.Coefficients(nd,
                                      FCT=ct.FCT,
                                      FCT_TYPE=ct.fct_type,
                                      LSCHEME_L=ct.lscheme_L,
+                                     FCT_PREDICTOR_FALLBACK=ct.fct_fallback,
                                      MONOLITHIC=False,
                                      num_fct_iter=1,
                                          # FOR ENTROPY VISCOSITY
