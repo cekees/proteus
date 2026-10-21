@@ -242,3 +242,29 @@ implicit FCT 4.3e-5, 1.1e-5, 2.9e-6 at h = 1/16, 1/32, 1/64 (order ≈ 2); WRR F
 
 **Open:** Anderson acceleration or an L→Newton switch for the defect correction; whether JNMA's MFEM runs used a relative
 tolerance or larger Δt (it would explain their convergence on Szymkiewicz with the plain L-scheme).
+
+## 10. Nonlinear-solver study (21 Oct 2026)
+Full write-up: `~/Richards_JNMA/extended_notes.tex` (extended notes in §Nonlinear solver, Table "proteus nonlinear-solver
+study"), scripts and results in `~/Richards_JNMA/numerical_tests/solver_study/`.
+- `Coefficients(NONLINEAR_SOLVER='newton'|'lscheme'|'hybrid', LSCHEME_L, LSCHEME_RETRY_ITS, LSCHEME_TRIGGER, LSCHEME_THETA_MAX)`.
+  'lscheme' = JNMA defect correction for every solve. 'hybrid' = Newton in which a rejected step (no residual decrease, or
+  Deuflhard's Θ_k = ‖J_k⁻¹r(u_{k+1})‖/‖δu_k‖ > Θ_max) is undone and replaced by k L-scheme iterations (no line search).
+  Implemented in `Newton.lschemeRetry` (NonlinearSolvers.py) with `LevelModel.setLScheme/lschemeOn/nonlinearHybridOptions`.
+- 299 runs (3 problems: WRR Szymkiewicz 5 m, Celia 1 m, JNMA Szymkiewicz 0.2 m):
+  - Newton never fails on low-order-type solves (1.4·10⁵).
+  - All failures are Galerkin-type solves near start-up.
+  - Θ-hybrid with k = 2, Θ_max = ½: 21/26 Galerkin-type cases complete (Newton+line search: 9/26).
+  - Θ_max = ¼: 17/26.
+  - The hybrid with k = 1 broke 5 robust Celia runs.
+  - Best: Newton + low-order predictor fallback (the default). It completes all 13 implicit-FCT cases with ≤1% fallback
+    steps at 4–6 linear solves per step.
+- Kantorovich: h₀ ≤ ½ holds for only ~60% of converging solves (useless as a test). Θ₀ > 0.25 flags all 17 failing
+  Galerkin-type solves and only 0.24% of converging ones. Low-order/final-FCT solves have ~10× smaller Θ₀ than Galerkin solves.
+- Szymkiewicz overlays: `~/Richards_JNMA/numerical_tests/jnma_figures/` (I1/I05 implicit FCT, H1/H05 hybrid Galerkin).
+  The proteus implicit FCT matches the JNMA FCT front closely. proteus Galerkin undershoots to −8.0 m, while MFEM stays
+  at −7.5 m (open question).
+- Author query 5 (`~/Richards_JNMA/AUTHOR_QUERIES.md`) asks for the L-scheme tolerances, L, Δt, iteration counts and acceleration.
+- Next ideas:
+  - Θ₀-triggered remedy (fallback or warm-up) instead of waiting for Newton to fail.
+  - FAS / nested iteration (the initial guess from the coarse level keeps Θ₀ small).
+  - Anderson acceleration of the L-scheme.
