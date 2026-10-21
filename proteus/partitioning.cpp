@@ -680,7 +680,7 @@ int partitionElementsOriginal(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, in
 }
 
 int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_overlap,
-                   const int* nodeOwners)
+                   const int* nodeOwners, const int* nodeWeights)
 {
   using namespace std;
   int ierr,size,rank;
@@ -776,6 +776,18 @@ int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD,  Mesh& mesh, int nNodes_o
   MatPartitioningSetAdjacency(petscPartition,petscAdjacency);
   MatPartitioningSetFromOptions(petscPartition);
   warnIfNotRepartitioning(PROTEUS_COMM_WORLD, petscPartition);
+  if (nodeWeights != NULL)
+    {
+      /* The caller says what each node costs -- for the coarsest level of a hierarchy, the
+         work of everything below it that will inherit its owner -- so the cut balances
+         that instead of the node count. The array is this rank's slice of the default
+         chunks, and PETSc takes ownership of it. */
+      PetscInt *vertex_weights;
+      ierr = PetscMalloc(sizeof(PetscInt)*nNodes_subdomain,&vertex_weights);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+      for (int nN = 0; nN < nNodes_subdomain; nN++)
+        vertex_weights[nN] = nodeWeights[nodeOffsets_old[rank]+nN];
+      ierr = MatPartitioningSetVertexWeights(petscPartition,vertex_weights);CHKERRABORT(PROTEUS_COMM_WORLD, ierr);
+    }
 
   //get petsc index set that has the new subdomain number for each node
   MatPartitioningApply(petscPartition,&nodePartitioningIS_new);

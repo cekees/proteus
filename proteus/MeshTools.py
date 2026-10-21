@@ -512,6 +512,41 @@ def _cartesianBrickStarts(nn, p, level=0):
     cells = _cartesianChunkStarts(nn - 1, p)
     return np.append(cells[:-1] << level, ((nn - 1) << level) + 1)
 
+def weightedBisection(points, weights, nParts):
+    """Recursive coordinate bisection: the part (0..nParts-1) of each point, parts of equal weight.
+
+    Each step splits the points of a part along the longest side of their bounding box, at the
+    weighted quantile that gives each side the share of the weight that its share of the parts
+    asks for (nParts need not be a power of two: 7 parts split 3|4 and the cut falls at 3/7).
+    The parts are boxes, so their surface is as small as the point set allows -- which is what a
+    graph partitioner cutting a *coarse* level into ~30 nodes per rank does not deliver, and what
+    shows up eight times larger once the cut is scaled up to the finest level. Deterministic:
+    ties in a coordinate go by index. A part is empty only when there are more parts than points.
+    """
+    points = np.asarray(points, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    owner = np.zeros(len(points), dtype=np.intc)
+    def split(index, first, n):
+        if n == 1 or len(index) == 0:
+            owner[index] = first
+            return
+        pts = points[index]
+        extent = pts.max(axis=0) - pts.min(axis=0)
+        axis = int(np.argmax(extent))
+        order = index[np.lexsort((index, points[index, axis]))]
+        nLow = n // 2
+        cumulative = np.cumsum(weights[order])
+        target = cumulative[-1] * nLow / float(n)
+        k = int(np.searchsorted(cumulative, target))
+        # the cut falls on whichever side of the target is closer
+        if k > 0 and abs(cumulative[k - 1] - target) < abs(cumulative[min(k, len(order) - 1)] - target):
+            k -= 1
+        k = min(max(k + 1, 1 if len(order) > 1 else 0), len(order) - (1 if len(order) > 1 else 0))
+        split(order[:k], first, nLow)
+        split(order[k:], first + nLow, n - nLow)
+    split(np.arange(len(points)), 0, int(nParts))
+    return owner
+
 def cartesianRankGrid(nnx, nny, nnz, size):
     """The rank grid (px, py, pz), px*py*pz == size, with the least ghost surface.
 
@@ -757,7 +792,7 @@ class Mesh(object):
         self.arGrid=None
         self.nLayersOfOverlap = None
         self.parallelPartitioningType = MeshParallelPartitioningTypes.element
-    def partitionMesh(self,nLayersOfOverlap=1,parallelPartitioningType=MeshParallelPartitioningTypes.node,nodeOwners=None,elementOwners=None):
+    def partitionMesh(self,nLayersOfOverlap=1,parallelPartitioningType=MeshParallelPartitioningTypes.node,nodeOwners=None,elementOwners=None,nodeWeights=None):
         from . import cmeshTools
         from . import Comm
         from . import cpartitioning
@@ -790,9 +825,10 @@ class Mesh(object):
                                                                                  nLayersOfOverlap,
                                                                                  self.cmesh,
                                                                                  self.subdomainMesh.cmesh,
-                                                                                 nodeOwners)
+                                                                                 nodeOwners,
+                                                                                 nodeWeights)
         else:
-            assert nodeOwners is None, "a prescribed node partition needs node partitioning"
+            assert nodeOwners is None and nodeWeights is None, "prescribed owners and node weights need node partitioning"
             (self.elementOffsets_subdomain_owned,
              self.elementNumbering_subdomain2global,
              self.nodeOffsets_subdomain_owned,
@@ -1920,6 +1956,12 @@ class MultilevelMesh(Mesh):
     #Whether a finer level inherits the partition of the coarser one. Turn it
     #off to partition every level independently, as proteus always used to.
     levelConsistentPartitioning = True
+    #Whether the coarsest level's graph partition weighs each node by the work of everything
+    #below it that inherits its owner (descendantWeights) instead of counting nodes.
+    weightedCoarsePartition = True
+    #What cuts the coarsest level when it is not prescribed: 'graph' (the graph partitioner, PETSc's
+    #MatPartitioning) or 'rcb' (weightedBisection on the node coordinates: boxes, compact, no PETSc).
+    coarsePartitioner = 'graph'
     #A function f(mesh, parallelPartitioningType) of the coarsest level's mesh
     #returning the rank that owns each of its nodes (node partitioning) or
     #elements (element partitioning), in place of the graph partitioner -- for a
@@ -2053,16 +2095,49 @@ class MultilevelMesh(Mesh):
         coarsestLevelOwners = inspect.getattr_static(self,'coarsestLevelOwners')
         for l,mesh in enumerate(self.meshList):
             owners = None
+            weights = None
             if l == 0 and coarsestLevelOwners is not None:
                 owners = np.asarray(coarsestLevelOwners(mesh,parallelPartitioningType),dtype=np.intc)
+            elif l == 0 and consistent and byNodes and self.coarsePartitioner == 'rcb':
+                from . import Comm as _Comm
+                owners = weightedBisection(mesh.nodeArray,self.descendantWeights(),_Comm.get().size())
+            elif l == 0 and consistent and byNodes and self.weightedCoarsePartition:
+                #the graph partitioner cuts the coarsest level; weigh its nodes by what
+                #inherits from them
+                weights = self.descendantWeights()
             if consistent and l > 0:
                 owners = (self.inheritedNodeOwners(l-1) if byNodes
                           else self.inheritedElementOwners(l-1))
             mesh.partitionMesh(nLayersOfOverlap=nLayersOfOverlap,
                                parallelPartitioningType=parallelPartitioningType,
                                nodeOwners=owners if byNodes else None,
-                               elementOwners=None if byNodes else owners)
+                               elementOwners=None if byNodes else owners,
+                               nodeWeights=weights)
             mesh.levelConsistent = owners is not None
+
+    def descendantWeights(self):
+        """What each node of the coarsest level will cost its owner, over the whole hierarchy.
+
+        Every finer level inherits the coarsest level's partition (inheritedNodeOwners), so
+        the rank that owns a coarse node also owns -- and does the work for -- the fine nodes
+        that descend from it under the same parent rule. This counts them: for each level, the
+        number of its nodes whose chain of parents ends at each coarsest-level node, summed
+        over levels (a node is a node of every level from the one that creates it down to the
+        finest, and each level's smoothing and assembly touch it). Handing these to the graph
+        partitioner makes it balance the finest level's work, which dominates, instead of
+        counting coarse nodes: a coarse node on the boundary has about half the descendants
+        of an interior one, and with ~30 coarse nodes per rank that is not noise.
+
+        Returns an int array over the coarsest level's nodes, all >= 1.
+        """
+        n0 = self.meshList[0].nNodes_global
+        ancestor = np.arange(n0)
+        weights = np.ones(n0,dtype=np.int64)
+        for l in range(len(self.meshList)-1):
+            rowptr,colind,nzval = self.vertexInterpolation()[l+1]
+            ancestor = ancestor[self._parentPick(rowptr,colind)]
+            weights += np.bincount(ancestor,minlength=n0)
+        return weights.astype('i')
 
     def inheritedElementOwners(self,l):
         """The rank that owns each element of level l+1, in level l+1's own numbering:
@@ -2197,10 +2272,26 @@ class MultilevelMesh(Mesh):
         offsets = np.asarray(coarse.nodeOffsets_subdomain_owned)
         coarseOwner = np.searchsorted(offsets[1:],old2new,side='right')
         rowptr,colind,nzval = self.vertexInterpolation()[l+1]
+        return coarseOwner[self._parentPick(rowptr,colind)].astype('i')
+
+    #Which parent a new node takes its owner from: 'lowest' (the parent with the smallest node
+    #number: deterministic, independent of the partition, and on a numbered grid always the
+    #neighbour on the same side, so the cut stays a flat plane) or 'alternate' (the k-th row
+    #takes parent k mod (number of parents): splits the nodes on a cut between its two sides
+    #evenly, but at every refinement the interface becomes a checkerboard, and the ghost layer
+    #of a rank several times as large).
+    parentRule = 'lowest'
+
+    def _parentPick(self,rowptr,colind):
+        """For every fine node, the coarse node whose owner it takes: the column index into colind."""
         nFine = rowptr.shape[0]-1
         counts = np.diff(rowptr)
-        pick = rowptr[:-1]+(np.arange(nFine) % np.maximum(counts,1))
-        return coarseOwner[colind[pick]].astype('i')
+        if self.parentRule == 'alternate':
+            return colind[rowptr[:-1]+(np.arange(nFine) % np.maximum(counts,1))]
+        if self.parentRule != 'lowest':
+            raise ValueError("parentRule is 'lowest' or 'alternate', not %r" % (self.parentRule,))
+        lowest = np.minimum.reduceat(colind,rowptr[:-1])
+        return lowest
 
     def refine(self):
         pass

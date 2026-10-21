@@ -90,7 +90,7 @@ def _mpiexec():
     return shutil.which('mpiexec') or shutil.which('mpirun')
 
 
-def _balance(kind, nn, levels, n_ranks):
+def _balance(kind, nn, levels, n_ranks, how='generated', variant='weighted', rule='lowest'):
     mpiexec = _mpiexec()
     if mpiexec is None:
         pytest.skip('no MPI launcher available')
@@ -99,10 +99,10 @@ def _balance(kind, nn, levels, n_ranks):
     env['PYTHONPATH'] = os.pathsep.join(
         [p for p in sys.path if p] + [env.get('PYTHONPATH', '')]).strip(os.pathsep)
     result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable, helper, kind, str(nn), str(levels),
-                             'generated'], capture_output=True, text=True, env=env, timeout=600)
+                             how, variant, rule], capture_output=True, text=True, env=env, timeout=600)
     assert result.returncode == 0, result.stdout + result.stderr
     line = [l for l in result.stdout.splitlines() if l.startswith('RESULT')][0]
-    return dict((k, float(v)) for k, v in (item.split('=') for item in line.split()[6:]))
+    return dict((k, float(v)) for k, v in (item.split('=') for item in line.split()[7:]))
 
 
 @pytest.mark.parametrize('kind', ['hex', 'quad', 'tet', 'tri'])
@@ -114,3 +114,94 @@ def test_the_finest_level_of_a_generated_hierarchy_is_balanced(kind, n_ranks):
     assert got['L2.elements'] < 1.07, got
     # the surface cost of the cut is the one a brick has, not something worse
     assert got['L2.ghost'] < 0.2, got
+
+
+# ---- the graph path: what the coarsest level's cut is made of, and what the rest inherits ----
+
+def _globalHierarchy(kind='hex', nn=5, levels=3):
+    if kind == 'hex':
+        return MeshTools.MultilevelHexahedralMesh(nn, nn, nn, refinementLevels=levels, regularGrid='global')
+    return MeshTools.MultilevelTriangularMesh(nn, nn, 1, refinementLevels=levels, regularGrid='global')
+
+
+@pytest.mark.parametrize('kind', ['hex', 'tri'])
+def test_descendant_weights_count_every_node_of_every_level_once(kind):
+    ml = _globalHierarchy(kind)
+    weights = ml.descendantWeights()
+    assert weights.min() >= 1
+    assert weights.sum() == sum(m.nNodes_global for m in ml.meshList)
+    # by hand: follow every node of every level up to the coarsest through the parent rule
+    expected = np.zeros(ml.meshList[0].nNodes_global, dtype=int)
+    for level in range(len(ml.meshList)):
+        ancestor = np.arange(ml.meshList[level].nNodes_global)
+        for l in range(level, 0, -1):
+            rowptr, colind, _ = ml.vertexInterpolation()[l]
+            ancestor = np.array([min(colind[rowptr[i]:rowptr[i + 1]]) for i in ancestor])
+        expected += np.bincount(ancestor, minlength=len(expected))
+    assert np.array_equal(weights, expected)
+
+
+def test_the_lowest_parent_rule_takes_the_smallest_node_number():
+    ml = _globalHierarchy('hex')
+    rowptr, colind, _ = ml.vertexInterpolation()[1]
+    picked = ml._parentPick(rowptr, colind)
+    for i in range(0, len(rowptr) - 1, 7):
+        assert picked[i] == min(colind[rowptr[i]:rowptr[i + 1]])
+    ml.parentRule = 'nonsense'
+    with pytest.raises(ValueError, match='parentRule'):
+        ml._parentPick(rowptr, colind)
+
+
+@pytest.mark.parametrize('n_parts', [1, 2, 3, 7, 27, 64])
+def test_bisection_balances_to_one_heaviest_point(n_parts):
+    rng = np.random.default_rng(3)
+    points = rng.random((1500, 3))
+    weights = rng.integers(1, 10, 1500)
+    owner = MeshTools.weightedBisection(points, weights, n_parts)
+    totals = np.bincount(owner, weights=weights, minlength=n_parts)
+    assert len(np.unique(owner)) == n_parts
+    assert totals.max() - totals.mean() <= weights.max() * np.log2(n_parts + 1) + 1, totals
+    assert np.array_equal(owner, MeshTools.weightedBisection(points, weights, n_parts))
+
+
+def test_bisection_with_more_parts_than_points_still_assigns_every_point():
+    owner = MeshTools.weightedBisection(np.random.default_rng(0).random((4, 3)), np.ones(4), 7)
+    assert owner.min() >= 0 and owner.max() < 7 and len(owner) == 4
+
+
+def test_bisection_parts_are_boxes_on_a_grid():
+    # 4 x 4 x 4 grid of equal points into 8 parts: each part is a 2 x 2 x 2 block
+    g = np.array([[i, j, k] for i in range(4) for j in range(4) for k in range(4)], dtype=float)
+    owner = MeshTools.weightedBisection(g, np.ones(len(g)), 8)
+    for part in range(8):
+        block = g[owner == part]
+        assert len(block) == 8
+        assert (block.max(axis=0) - block.min(axis=0)).tolist() == [1.0, 1.0, 1.0]
+
+
+def test_the_lowest_parent_rule_keeps_the_ghost_layer_thin():
+    # the alternating rule splits the nodes on a cut between its sides evenly, and at every
+    # refinement turns the interface into a checkerboard: a rank's ghost layer is 2-3x as large
+    lowest = _balance('hex', 7, 3, 4, how='global', variant='weighted', rule='lowest')
+    alternate = _balance('hex', 7, 3, 4, how='global', variant='weighted', rule='alternate')
+    assert lowest['L2.ghost'] < 0.6 * alternate['L2.ghost'], (lowest, alternate)
+    assert lowest['L2.ghost'] < 0.27, lowest
+
+
+def test_node_weights_reach_the_graph_partitioner():
+    mpiexec = _mpiexec()
+    if mpiexec is None:
+        pytest.skip('no MPI launcher available')
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'weighted_partition_mpi.py')
+    env = dict(os.environ)
+    env['PYTHONPATH'] = os.pathsep.join(
+        [p for p in sys.path if p] + [env.get('PYTHONPATH', '')]).strip(os.pathsep)
+    result = subprocess.run([mpiexec, '-n', '2', sys.executable, helper, '20'],
+                            capture_output=True, text=True, env=env, timeout=600)
+    assert result.returncode == 0, result.stdout + result.stderr
+    line = [l for l in result.stdout.splitlines() if l.startswith('RESULT')][0]
+    got = dict((k, float(v)) for k, v in (item.split('=') for item in line.split()[1:]))
+    # unweighted, two ranks split the nodes evenly; with the left half 20 times as heavy the
+    # rank holding it takes about a quarter of the nodes (half the weight)
+    assert got['plain_min'] > 0.45, got
+    assert 0.15 < got['weighted_min'] < 0.33, got

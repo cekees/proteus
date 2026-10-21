@@ -69,6 +69,9 @@ def _measure(kind, consistent, by, n_ranks, levels=3):
 
 
 OFFPROC_BOUND = 0.25
+# the control: independent cuts are random, 0.24-0.99 over a few runs on a 4-rank quad mesh, so
+# only a bound well below the worst luck can be asserted of them
+INDEPENDENT_OFFPROC_FLOOR = 0.15
 
 
 @pytest.mark.parametrize('kind', ['tri', 'tet', 'quad', 'hex'])
@@ -91,9 +94,9 @@ def test_independent_partitions_do_not_have_this_property(kind, by):
     assert int(got['missing']) > 0, got
     if by == 'node':
         # independent cuts of the finer levels vary from run to run (hex on 4
-        # ranks: 0.40-0.99 over ten runs, against a fixed 0.16 inherited), so
-        # the control is only that they miss the bound inheritance is held to
-        assert float(got['offproc']) > OFFPROC_BOUND, got
+        # ranks: 0.40-0.99 over ten runs, quad 0.24-0.90, against a fixed ~0.12 inherited),
+        # so the control is only that they stay well above what inheritance gets
+        assert float(got['offproc']) > INDEPENDENT_OFFPROC_FLOOR, got
 
 
 @pytest.mark.parametrize('space,degree', [('p2', 2), ('ncp1', 1)])
