@@ -748,6 +748,10 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     // VMS
     double               VMS                                        = args.scalar<double>("VMS");
     const double         Theta                                      = args.scalar<double>("Theta"); // see calculateResidual
+    // L-scheme (Pop, Radu & Knabner; List & Radu): LSCHEME_L > 0 replaces dm/du by the constant L and
+    // drops the derivatives of the conductivity (da, df), so Newton becomes the L-scheme iteration
+    // J = (L/dt) M + Theta A(u^k). The residual, hence the converged solution, is unchanged. 0 = Newton.
+    const double         LSCHEME_L                                  = args.scalar<double>("LSCHEME_L");
     xt::pyarray<int>    &u_l2g                                      = args.array<int>("u_l2g");
     xt::pyarray<double> &elementDiameter                            = args.array<double>("elementDiameter");
     xt::pyarray<double> &u_dof                                      = args.array<double>("u_dof");
@@ -819,6 +823,11 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
 
         evaluateCoefficients(a_rowptr.data(), a_colind.data(), rho, q_rho.data()[eN_k], beta, gravity.data(), alpha.data()[elementMaterialTypes.data()[eN]], n.data()[elementMaterialTypes.data()[eN]], thetaR.data()[elementMaterialTypes.data()[eN]],
                              thetaSR.data()[elementMaterialTypes.data()[eN]], &KWs.data()[elementMaterialTypes.data()[eN] * nnz], u, m, dm, f, df, a, da, as, Kr, dKr, thetaW);
+        if (LSCHEME_L > 0.0) {
+          dm = LSCHEME_L;
+          for (int I = 0; I < nSpace; I++) df[I] = 0.0;
+          for (int ii = 0; ii < nnz; ii++) da[ii] = 0.0;
+        }
         //
         //calculate time derivatives
         //

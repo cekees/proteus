@@ -103,8 +103,7 @@ Hornung–Messing context: `fct_type='implicit'`; sweep scheme `IFCT`.
   hornung_messing README and `convergence_q1_theta*.txt`).
 - Finding: without the prelimiter, Q1 θ = 1 at h = 1/64 gives 1.01e-6 instead of 3.43e-6. The FCT error of the
   JNMA tables is therefore set mostly by the prelimiter, not by the Galerkin target (§7).
-- Not yet covered: parallel runs, β ≠ 0 (the bounds assume a constant density per DOF), and cases with gravity
-  or ponding. Newton is used, not the L-scheme.
+- Tested since (21 Oct 2026): parallel, β ≠ 0, and 1-D infiltration with gravity. See §9.
 
 ### Original specification
 Notation: p pressure head, u = p + z hydraulic head, s(p) water content, m_ij consistent mass, m_i lumped
@@ -192,3 +191,45 @@ Szymkiewicz figures are consistent.
 θ = ½ (Δt = 0.1h):
 - Galerkin: 5.05e-4, 1.22e-4, 5.72e-5, 1.33e-5, 4.15e-6, 7.54e-7
 - FCT: 9.86e-4, 5.66e-4, 1.71e-4, 4.63e-5, 1.31e-5, 3.28e-6
+
+## 9. Testing of the implicit FCT (21 Oct 2026)
+**Parallel.** Hornung–Messing (`par=True`, `par_part`, `par_overlap` context options) on 2 and 4 ranks matches serial to every
+printed digit for Galerkin, the low order, the WRR FCT and the implicit FCT, **provided owned DOFs see their full element
+star**: node partitioning (any overlap) or element partitioning with `nLayersOfOverlapForParallel >= 1`. With element
+partitioning and overlap 0, rows of ML, MC and the flux matrices are partial at nodes on the cut. That is harmless for the
+additive Galerkin/low-order residuals, but both limiters are nonlinear in those rows. Example: WRR FCT on 2 ranks gives 2.8e-3
+instead of 6.8e-5 (h = 1/16); implicit FCT gives 5.50e-5 instead of 5.23e-5.
+- **This affects the WRR `Tracy_convergence` runs**, which use element partitioning with overlap 0. Tracy ref_2
+  (nnx = 41, WRR FCT, 4 ranks): max |ψ − ψ_serial| = 0.40 m, rms 0.018 m. With node partitioning it is 5.5e-14. The parallel
+  WRR FCT results should be rerun with `parallelPartitioningType = MeshParallelPartitioningTypes.node`.
+- `LevelModel.checkFCTParallelLayout()` now raises a ValueError for such a layout when FCT is on.
+
+**β ≠ 0.** m = ρe^{βψ}θ(ψ) is increasing with range (0, ∞), so any non-negative corrected datum is admissible for the
+final solve. The global bounds ρ[θ_R, θ_S] only forbid moving further outside where sⁿ already lies outside them, which is
+continuous as β → 0. Hornung–Messing with β = 0.1 (Q1, θ = 1), nodal rms difference from Galerkin at h = 1/128:
+implicit FCT 4.3e-5, 1.1e-5, 2.9e-6 at h = 1/16, 1/32, 1/64 (order ≈ 2); WRR FCT 1.8e-5, 3.3e-6, 7.7e-7; Galerkin 3.2e-6,
+8.2e-7, 1.7e-7. β = 1e-10 reproduces β = 0 exactly. No change was needed.
+
+**1-D with gravity** (`WRR_input_files/test_1` and `test_3` now take `fct_type`, `nn`, `nDT`, `lscheme_L`; test_1 has
+`galerkin = False`). Untracked study scripts: `WRR_input_files/exp_ifct/`.
+- Celia (weak BCs, Δt ∝ h). L2 head difference from the WRR FCT at h = 1/640:
+  WRR FCT 0.90, 0.27, 0.10, 0.022; implicit FCT 1.10, 0.47, 0.16, 0.039 at h = 1/40, 1/80, 1/160, 1/320. Both converge to the
+  same solution (they differ by 5e-3 at h = 1/640). The WRR FCT, with local bounds, is somewhat more accurate on this front.
+  The implicit FCT, with global bounds only, undershoots the initial/boundary head slightly: ψ_min = −10.018, −10.009, −10.004,
+  −10.002, −10.0007 (no local maximum principle in ψ).
+- Szymkiewicz (dry sand, Brooks–Corey): **the implicit FCT fails**. The Galerkin predictor's Newton does not converge from the
+  dry initial state; runs abort after 21–34 steps at nn = 11, 41, 81, 161 (only nn = 21 completes). The WRR FCT and the low
+  order run without failures. Celia at h = 1/320 also needed one first-step retry.
+
+**L-scheme** (`Coefficients(LSCHEME_L=L)`). The Galerkin Jacobian becomes (L/Δt)M + θA(pᵏ): dm/dψ → L, conductivity
+derivatives dropped. The residual is unchanged. On Hornung–Messing (h = 1/16, L = 1.7) it reaches the Newton solution
+exactly (4.150e-6), but takes ~500 iterations per step against Newton's ~3. On Szymkiewicz (L = 3.5 ≥ sup θ′ = 3.17) and Celia
+(L = 0.4 ≥ 0.343) it contracts at ≈ 0.9994 per iteration and does not converge in 1000 iterations. In the dry zone
+s′ and k_r are tiny, and the rate tends to 1 − s′/L.
+
+**Open: a robust predictor for the implicit FCT on dry-soil fronts.** Options, cheapest first:
+(a) fall back to the low-order solution as predictor (fluxes at pᴸ) when the Galerkin solve fails;
+(b) L-scheme warm start followed by Newton (a few L iterations, then switch);
+(c) Anderson-accelerated L-scheme;
+(d) a Rannacher start-up (a few low-order or BE substeps from the initial jump).
+How JNMA's MFEM run of Szymkiewicz converged its Galerkin predictor is worth asking the authors.
