@@ -5,6 +5,7 @@ A class hierarchy for numerical flux (numerical trace) computations
    :parts: 1
 """
 from . import cfemIntegrals,cnumericalFlux
+from . import MeshTools
 import numpy
 from .Profiling import logEvent,memory
 from .EGeometry import enorm
@@ -17,6 +18,37 @@ class NF_base(object):
     useWeakDirichletConditions=True
     useStrongDirichletConstraints=False
     hasInterior=True
+
+    @property
+    def rankInterfaceExteriorMask(self):
+        """Which exterior faces of this rank's mesh are not domain boundary.
+
+        The faces shared with a neighbouring rank are exterior faces of the
+        subdomain although they are interior to the global mesh, so a boundary
+        flux applied there is applied to the inside of the domain. ``None`` in
+        serial. See :func:`proteus.MeshTools.rankInterfaceExteriorMask`, which
+        also says why the mask has to be applied after the kernel runs rather
+        than by passing it a shorter face list.
+        """
+        return MeshTools.rankInterfaceExteriorMask(self.mesh)
+
+    def zeroAdvectiveFluxOnRankInterfaces(self,ebqe,ci,cj):
+        """Undo the advective boundary flux on the faces shared with a neighbour.
+
+        Globally those faces are interior and carry no boundary term at all,
+        so zeroing reproduces the serial residual exactly. Zeroing
+        ``dadvectiveFlux_left`` is also what keeps the Jacobian consistent:
+        :c:func:`updateGlobalExteriorNumericalAdvectiveFluxJacobian` builds its
+        contribution from that array alone.
+        """
+        mask = self.rankInterfaceExteriorMask
+        if mask is None:
+            return
+        if ('advectiveFlux',ci) in ebqe:
+            ebqe[('advectiveFlux',ci)][mask] = 0.0
+        if ('dadvectiveFlux_left',ci,cj) in ebqe:
+            ebqe[('dadvectiveFlux_left',ci,cj)][mask] = 0.0
+
     def __init__(self,vt,
                  getPointwiseBoundaryConditions,
                  getAdvectiveFluxBoundaryConditions,
@@ -321,12 +353,15 @@ class StrongDirichlet(NF_base):
                                                                                 ebqe[('df',ci,cj)],
                                                                                 ebqe[('advectiveFlux',ci)],
                                                                                 ebqe[('dadvectiveFlux_left',ci,cj)])
+                    self.zeroAdvectiveFluxOnRankInterfaces(ebqe,ci,cj)
     def updateExteriorNumericalFluxJacobian(self,l2g,inflowFlag,q,ebqe,dphi,fluxJacobian_exterior,fluxJacobian_eb,fluxJacobian_hj):
         for ci,cjDict in self.vt.coefficients.advection.items():
             if ((self.fluxBoundaryConditions[ci] == 'outFlow' or
                  self.fluxBoundaryConditions[ci] == 'mixedFlow') and
                 self.vt.timeIntegration.advectionIsImplicit[ci]):
                 for cj in cjDict:
+                    # not an ordering assumption on calculateExteriorNumericalFlux
+                    self.zeroAdvectiveFluxOnRankInterfaces(ebqe,ci,cj)
                     cnumericalFlux.updateExteriorNumericalAdvectiveFluxJacobian(self.mesh.exteriorElementBoundariesArray,
                                                                                 self.mesh.elementBoundaryElementsArray,
                                                                                 self.mesh.elementBoundaryLocalElementBoundariesArray,
