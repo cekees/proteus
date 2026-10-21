@@ -3609,17 +3609,17 @@ class OneLevelTransport(NonlinearEquation):
                                                                                     self.ebqe[('advectiveFlux',ci)],
                                                                                     self.ebqe[('dadvectiveFlux_left',ci,cj)])
         for ci,fbcObject  in self.fluxBoundaryConditionsObjectsDict.items():
-            for t,g in fbcObject.advectiveFluxBoundaryConditionsDict.items():
-                if ci in self.coefficients.advection:
-                    self.ebqe[('advectiveFlux',ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
-                    for cj in list(self.coefficients.advection[ci].keys()):
-                        self.ebqe[('dadvectiveFlux_left',ci,cj)][t[0],t[1]] = 0.0
+            if ci in self.coefficients.advection:
+                i0,i1 = fbcObject.evaluate('advective',fbcObject.advectiveFluxBoundaryConditionsDict,
+                                           self.ebqe['x'],self.ebqe[('advectiveFlux',ci)],self.timeIntegration.t)
+                for cj in list(self.coefficients.advection[ci].keys()):
+                    self.ebqe[('dadvectiveFlux_left',ci,cj)][i0,i1] = 0.0
             for ck,diffusiveFluxBoundaryConditionsDict in fbcObject.diffusiveFluxBoundaryConditionsDictDict.items():
-                for t,g in diffusiveFluxBoundaryConditionsDict.items():
-                    self.ebqe[('diffusiveFlux',ck,ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
+                fbcObject.evaluate(('diffusive',ck),diffusiveFluxBoundaryConditionsDict,
+                                   self.ebqe['x'],self.ebqe[('diffusiveFlux',ck,ci)],self.timeIntegration.t)
         for ci,sbcObject  in self.stressFluxBoundaryConditionsObjectsDict.items():
-            for t,g in sbcObject.stressFluxBoundaryConditionsDict.items():
-                self.ebqe[('stressFlux',ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
+            sbcObject.evaluate('stress',sbcObject.stressFluxBoundaryConditionsDict,
+                               self.ebqe['x'],self.ebqe[('stressFlux',ci)],self.timeIntegration.t)
 
     def calculateQuadrature(self):
         logEvent(memory("ElementQuadrature","OneLevelTransport"),level=4)
@@ -5855,19 +5855,17 @@ class OneLevelTransport(NonlinearEquation):
                                                                                     self.ebqe[('advectiveFlux',ci)],
                                                                                     self.ebqe[('dadvectiveFlux_left',ci,cj)])
         for ci,fbcObject  in self.fluxBoundaryConditionsObjectsDict.items():
-            for t,g in fbcObject.advectiveFluxBoundaryConditionsDict.items():
-                if ci in self.coefficients.advection:
-                    self.ebqe[('advectiveFlux',ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
-                    for cj in list(self.coefficients.advection[ci].keys()):
-                        #
-                        self.ebqe[('dadvectiveFlux_left',ci,cj)][t[0],t[1]] = 0.0
+            if ci in self.coefficients.advection:
+                i0,i1 = fbcObject.evaluate('advective',fbcObject.advectiveFluxBoundaryConditionsDict,
+                                           self.ebqe['x'],self.ebqe[('advectiveFlux',ci)],self.timeIntegration.t)
+                for cj in list(self.coefficients.advection[ci].keys()):
+                    self.ebqe[('dadvectiveFlux_left',ci,cj)][i0,i1] = 0.0
             for ck,diffusiveFluxBoundaryConditionsDict in fbcObject.diffusiveFluxBoundaryConditionsDictDict.items():
-                for t,g in diffusiveFluxBoundaryConditionsDict.items():
-                    #
-                    self.ebqe[('diffusiveFlux',ck,ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
+                fbcObject.evaluate(('diffusive',ck),diffusiveFluxBoundaryConditionsDict,
+                                   self.ebqe['x'],self.ebqe[('diffusiveFlux',ck,ci)],self.timeIntegration.t)
         for ci,sbcObject  in self.stressFluxBoundaryConditionsObjectsDict.items():
-            for t,g in sbcObject.stressFluxBoundaryConditionsDict.items():
-                self.ebqe[('stressFlux',ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
+            sbcObject.evaluate('stress',sbcObject.stressFluxBoundaryConditionsDict,
+                               self.ebqe['x'],self.ebqe[('stressFlux',ci)],self.timeIntegration.t)
 
         #
         for key in list(ebqe_save.keys()):
