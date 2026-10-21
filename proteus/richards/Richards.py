@@ -265,6 +265,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  FCT_SATURATED_LOW_ORDER=True,
                  FCT_TYPE='semi-implicit',
                  FCT_PRELIMITER_POWER=3.0,
+                 LSCHEME_L=0.0,
                  # FOR ENTROPY VISCOSITY
                  cE=1.0,
                  uL=0.0,
@@ -412,6 +413,11 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             raise ValueError("FCT_TYPE must be 'semi-implicit' or 'implicit', not %r" % (FCT_TYPE,))
         self.FCT_TYPE = FCT_TYPE
         self.FCT_PRELIMITER_POWER = FCT_PRELIMITER_POWER
+        # LSCHEME_L > 0: the Galerkin Jacobian (STABILIZATION_TYPE=0, and the predictor of
+        # FCT_TYPE='implicit') uses the L-scheme matrix (L/dt) M + Theta A(u^k) instead of the
+        # Newton Jacobian; take L >= sup dm/dpsi. Linear but robust convergence; raise
+        # maxNonlinearIts accordingly. 0 (default) = Newton.
+        self.LSCHEME_L = LSCHEME_L
         self.uL = uL
         self.uR = uR
         self.cK = cK
@@ -1185,6 +1191,42 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             for cj in range(self.nc):
                 self.dirichletConditionsForceDOF[cj] = DOFBoundaryConditions(self.u[cj].femSpace,dofBoundaryConditionsSetterDict[cj],weakDirichletConditions=False)
    
+    def checkFCTParallelLayout(self):
+        """Refuse a partition on which an OWNED DOF misses part of its element star.
+
+        The FCT limiters (both FCT_TYPEs) are nonlinear in the assembled rows (ML, MC, the
+        flux matrices, P_i, Q_i), so a row must be complete at every owned DOF. An additive
+        residual does not need this, which is why Galerkin and the low order still agree with
+        serial on such partitions. Element partitioning with nLayersOfOverlapForParallel = 0
+        violates it: a node on the cut is owned by one rank but sees only that rank's elements
+        (Hornung-Messing h = 1/16, 2 ranks: WRR FCT 2.8e-3 vs 6.8e-5 serial). Element
+        partitioning with overlap >= 1 and node partitioning both pass.
+
+        Test: the number of local elements containing each owned DOF must equal its global
+        count, which is assembled by a reverse-add of the counts over the uniquely owned
+        elements (eN < nElements_owned).
+        """
+        par = getattr(self.u[0], 'par_dof', None)
+        if par is None or self.comm.size() == 1:
+            return
+        l2g = np.asarray(self.l2g[0]['freeGlobal'])
+        ndof = self.u[0].dof.shape[0]
+        n_local = np.bincount(l2g.ravel(), minlength=ndof).astype('d')[:ndof]
+        n_owned_elements = getattr(self.mesh, 'nElements_owned', self.mesh.nElements_global)
+        saved = self.u[0].dof.copy()
+        self.u[0].dof[:] = np.bincount(l2g[:n_owned_elements].ravel(), minlength=ndof).astype('d')[:ndof]
+        par.scatter_reverse_add()
+        n_global = self.u[0].dof.copy()
+        self.u[0].dof[:] = saved
+        n_owned = par.dim_proc
+        bad_local = int(np.count_nonzero(n_local[:n_owned] != n_global[:n_owned]))
+        bad = int(self.comm.globalSum(float(bad_local)))
+        if bad > 0:
+            raise ValueError("Richards FCT in parallel: %d owned DOFs miss part of their element star, so the "
+                             "limiter would act on partial rows. Use parallelPartitioningType = "
+                             "MeshParallelPartitioningTypes.node, or element partitioning with "
+                             "nLayersOfOverlapForParallel >= 1." % bad)
+
     def ghostScatter(self, *arrays):
         """Forward-insert (owner -> ghost copy) each free-DOF array.  No-op in serial.
 
@@ -1663,6 +1705,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             if getattr(self.u[0], 'par_dof', None) is not None or self.comm.size() == 1:
                 self.ghostScatter(self.freeDOFMaterialTypes)
                 self._freeDOFMaterialTypes_synced = True
+                if self.coefficients.FCT:
+                    self.checkFCTParallelLayout()
         #
         # cek end computationa of cterm_global
         #
@@ -2152,6 +2196,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["LUMPED_MASS_MATRIX"] = self.coefficients.LUMPED_MASS_MATRIX
         argsDict["VMS"] = self.coefficients.VMS
         argsDict["Theta"] = getattr(self.timeIntegration, 'theta', 1.0) if self.kernelStabilizationType() == 0 else 1.0
+        argsDict["LSCHEME_L"] = float(self.coefficients.LSCHEME_L)
         #argsDict["anb_seepage_flux"] = self.coefficients.anb_seepage_flux
 
         self.calculateJacobian(argsDict)
