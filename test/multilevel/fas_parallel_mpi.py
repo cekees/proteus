@@ -9,11 +9,12 @@ Usage: fas_parallel_mpi.py MODE SMOOTHER LEVELS [R] [CYCLES] [SMOOTHS] [NN] [TOL
             which is what a stacked system's transfer operator has to deliver
   TOLFAC    the relative tolerance each level's solve stops at; a loose one (0.3) leaves
             the solution unconverged, so it measures the cycles taken, not the answer
-  MODE      newton | fas
+  MODE      newton | fas | newton_pcmg (Newton with PETSc PCMG-preconditioned GMRES, for comparison)
   SMOOTHER  NLJacobi | NLGaussSeidel | NLStarILU (ignored for newton)
 """
 import os
 import sys
+import time
 
 import numpy as np
 from proteus import Comm
@@ -69,7 +70,17 @@ if tolFac is not None:
     n.tolFac = tolFac
     n.nl_atol_res = 1.0e-12
 n.multilevelNonlinearSolver = NonlinearSolvers.NLNI
-if mode == 'newton':
+if mode == 'newton_pcmg':
+    from proteus import Transport
+    Transport.MultilevelTransport.distributedTransfers = True   # PCMG needs PETSc transfer matrices
+    n.levelNonlinearSolver = NonlinearSolvers.Newton
+    n.multilevelLinearSolver = LinearSolvers.KSP_petsc4py
+    n.levelLinearSolver = LinearSolvers.KSP_petsc4py
+    n.linearSmoother = LinearSolvers.petsc_MG
+    n.petscOptions = {'ksp_type': 'gmres', 'pc_type': 'mg', 'pc_mg_cycle_type': 'v',
+                      'mg_levels_ksp_type': 'chebyshev', 'mg_levels_ksp_max_it': '2',
+                      'mg_levels_pc_type': 'jacobi', 'ksp_rtol': '1e-8'}
+elif mode == 'newton':
     n.levelNonlinearSolver = NonlinearSolvers.Newton
     n.multilevelLinearSolver = LinearSolvers.KSP_petsc4py
     n.levelLinearSolver = LinearSolvers.KSP_petsc4py
@@ -96,8 +107,16 @@ so.name = p.name = "fasp_%s_%s_%d_%d" % (mode, smootherName, nLevels, size)
 so.sList = [default_s]
 runopts.logLevel = 1
 runopts.verbose = False
+mpi.Barrier()
+t0 = time.time()
 ns = NumericalSolution.NS_base(so, [p], [n], so.sList, runopts)
+mpi.Barrier()
+t_build = time.time() - t0
+t0 = time.time()
 ns.calculateSolution(p.name)
+mpi.Barrier()
+t_solve = time.time() - t0
+solverIts = ','.join(str(sl.its) for sl in ns.nlsList[0].solverList)
 lm = ns.modelList[0].levelModelList[-1]
 x = np.asarray(lm.mesh.nodeArray)
 exact = p.analyticalSolution[0]
@@ -118,7 +137,10 @@ for cj in range(NC):
     mpi.Allreduce(g, G, op=MPI.SUM)
     sums.append(G.sum())
     errs.append(mpi.allreduce(err, op=MPI.MAX))
+t_build = mpi.allreduce(t_build, op=MPI.MAX)
+t_solve = mpi.allreduce(t_solve, op=MPI.MAX)
 if rank == 0:
-    print("RESULT mode=%s smoother=%s levels=%d ranks=%d N=%d checksum=%.12e maxerr=%.6e checksums=%s"
-          % (mode, smootherName, nLevels, size, N, sums[0], max(errs), ','.join('%.12e' % c for c in sums)))
+    print("RESULT mode=%s smoother=%s levels=%d ranks=%d N=%d checksum=%.12e maxerr=%.6e checksums=%s t_build=%.3f t_solve=%.3f its=%s"
+          % (mode, smootherName, nLevels, size, N, sums[0], max(errs), ','.join('%.12e' % c for c in sums),
+             t_build, t_solve, solverIts))
     sys.stdout.flush()
