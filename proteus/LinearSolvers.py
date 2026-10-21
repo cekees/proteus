@@ -1422,18 +1422,18 @@ def coarseSolverOptions(kind):
     The coarsest level of a multigrid cycle has to be solved, not smoothed, and in parallel
     that is a choice with a scaling consequence.
 
-    ``redundant`` (the default) gathers the coarse matrix onto every rank, factors it there
-    in full, and applies it with no iteration. It is exact, needs no external package, and
-    is cheap while the coarse level is small. It is *replicated*: every rank does the same
-    work, so with weak scaling -- a coarse level that grows with the rank count -- the cost
-    grows with it. Measured on a 3-level hexahedral hierarchy at 64 ranks it was 91% of all
-    flops and took 8.7 s of a 12.6 s run; a deeper hierarchy (coarsest level of a few
-    thousand dofs) made it 0.18 s.
+    ``direct`` (the default) is a parallel sparse direct solver (MUMPS, else SuperLU_DIST):
+    exact, so a cycle is the same cycle to roundoff whatever the rank count, with the factors
+    distributed. Serious parallel builds have one of the two, and at a small coarse level it
+    costs the same as ``redundant`` (measured: 0.16 vs 0.19 s at 64 ranks, 4 levels).
 
-    ``direct`` is a parallel sparse direct solver (MUMPS, else SuperLU_DIST): exact, like
-    ``redundant``, so a cycle is the same cycle to roundoff, but the factors are distributed.
-    It pays off when the coarse level is too large to replicate and still large enough to
-    split; for very small coarse levels the parallel overhead can exceed the replicated cost.
+    ``redundant`` gathers the coarse matrix onto every rank, factors it there in full, and
+    applies it with no iteration. It is exact and needs no external package, but it is
+    *replicated*: every rank does the same work, so with weak scaling -- a coarse level that
+    grows with the rank count -- the cost grows with it. Measured on a 3-level hexahedral
+    hierarchy at 64 ranks it was 91% of all flops and took 8.7 s of a 12.6 s run (``direct``:
+    0.15 s); a deeper hierarchy made it cheap. Keep it for builds with no parallel direct
+    solver.
 
     ``amg`` is one algebraic multigrid V-cycle (hypre BoomerAMG, else PETSc's GAMG): scalable
     and cheap, but *not* exact -- the coarse correction is approximate, so a proteus MGM cycle
@@ -1479,7 +1479,7 @@ class MGHierarchy(object):
     is the coarsest, as everywhere in proteus. ``interpolations[0]`` is unused
     and kept None so the lists index like prolongList does.
     """
-    def __init__(self,operators,interpolations,coarseSolver='redundant'):
+    def __init__(self,operators,interpolations,coarseSolver='direct'):
         assert len(interpolations) == len(operators) + 1, (len(operators),len(interpolations))
         self.operators = operators
         self.interpolations = interpolations
@@ -3415,7 +3415,7 @@ class NI(MultilevelLinearSolver):
         """NI sets solverList to [self]*nLevels, so the inherited failed()
         would recurse; ask the finest level solver instead."""
         return self.levelSolverList[-1].failed()
-def petscMGHierarchy(par_linearOperatorList,prolongList,level,coarseSolver='redundant'):
+def petscMGHierarchy(par_linearOperatorList,prolongList,level,coarseSolver='direct'):
     """The MGHierarchy for the KSP on ``level``: levels 0..level-1 and the
     transfers between 0..level.
 
@@ -3457,7 +3457,7 @@ def starILURelaxation():
     return 1.0 if Comm.get().size() == 1 else 0.5
 
 
-def mgmCoarseSolver(L,par_L,prefix='mgm_coarse_',kind='redundant'):
+def mgmCoarseSolver(L,par_L,prefix='mgm_coarse_',kind='direct'):
     """The solver for the coarsest level of a multigrid cycle.
 
     In serial that is a sparse LU factorization of the level's matrix. In
@@ -3528,7 +3528,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                   solver_options_prefix=None,
                                   linearSolverLocalBlockSize=1,
                                   linearSmootherOptions=(),
-                                  coarseSolver='redundant'):
+                                  coarseSolver='direct'):
     logEvent("multilevelLinearSolverChooser type= %s" % multilevelLinearSolverType)
     if coarseSolver not in COARSE_SOLVERS:
         raise ValueError("coarseSolver must be one of %s, not %r" % (COARSE_SOLVERS,coarseSolver))

@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 """How the coarsest level of a parallel multigrid cycle is solved.
 
-The default gathers the coarse matrix onto every rank and factors it there ('redundant'):
+The default is a parallel sparse direct solver ('direct': MUMPS, else SuperLU_DIST). The
+alternative is to gather the coarse matrix onto every rank and factor it there ('redundant'):
 exact, and cheap while the coarse level is small -- but replicated, so with weak scaling it
 grows with the rank count (measured: 91% of the flops and 8.7 of 12.6 seconds at 64 ranks on
-a 3-level hexahedral hierarchy; MULTILEVEL_MG_CAMPAIGN.md 3.21). ``n.linearCoarseSolver``
-chooses a distributed alternative:
+a 3-level hexahedral hierarchy; MULTILEVEL_MG_CAMPAIGN.md 3.21). ``n.linearCoarseSolver``:
 
-* 'direct' -- a parallel sparse direct solver (MUMPS, else SuperLU_DIST). Exact, so a cycle is
-  the same cycle as with 'redundant' to roundoff, for proteus's MGM and for PETSc's PCMG.
+* 'direct' -- exact and distributed, so a cycle is the same cycle as with 'redundant' to
+  roundoff, for proteus's MGM and for PETSc's PCMG.
 * 'amg' -- one algebraic multigrid V-cycle. Scalable but *not* exact, so a single cycle is
   different (the control below), and what is left to check is that it is still a good
   enough coarse solver for the Krylov iteration around it to reach the direct solution.
@@ -32,7 +32,7 @@ def _mpiexec():
     return shutil.which('mpiexec') or shutil.which('mpirun')
 
 
-def _checksum(kind, mode, n_ranks, coarse='redundant', levels=3):
+def _checksum(kind, mode, n_ranks, coarse='direct', levels=3):
     mpiexec = _mpiexec()
     if mpiexec is None:
         pytest.skip('no MPI launcher available')
@@ -55,16 +55,16 @@ def _checksum(kind, mode, n_ranks, coarse='redundant', levels=3):
 @pytest.mark.parametrize('n_ranks', [2, 3])
 def test_a_distributed_direct_coarse_solve_is_the_redundant_one(kind, mode, n_ranks):
     redundant = _checksum(kind, mode, n_ranks, 'redundant')
-    direct = _checksum(kind, mode, n_ranks, 'direct')
+    direct = _checksum(kind, mode, n_ranks)      # the default
     assert abs(direct - redundant) < 1.0e-11 * abs(redundant), (kind, mode, n_ranks, direct, redundant)
 
 
 @pytest.mark.parametrize('kind', ['quad', 'hex'])
 def test_an_amg_coarse_solve_is_not_exact(kind):
     # the control for the next test: with one cycle the answer does differ
-    redundant = _checksum(kind, 'mgm', 3, 'redundant')
+    exact = _checksum(kind, 'mgm', 3)
     amg = _checksum(kind, 'mgm', 3, 'amg')
-    assert abs(amg - redundant) > 1.0e-6 * abs(redundant), (kind, amg, redundant)
+    assert abs(amg - exact) > 1.0e-6 * abs(exact), (kind, amg, exact)
 
 
 @pytest.mark.parametrize('kind', ['quad', 'hex'])

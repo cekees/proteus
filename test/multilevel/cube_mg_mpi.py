@@ -28,7 +28,7 @@ nLevels = int(sys.argv[3])
 mode = sys.argv[4]
 assert mode in ('mgm', 'pcmg', 'pcmg_its', 'direct', 'ksplu'), mode
 Q = int(sys.argv[5]) if len(sys.argv) > 5 else 1
-coarse = sys.argv[6] if len(sys.argv) > 6 else 'redundant'
+coarse = sys.argv[6] if len(sys.argv) > 6 else 'direct'
 if kind == 'hex':
     TESTDIR = os.path.join(testroot, "ci")
     p = defaults.load_physics('poisson_3d_p', TESTDIR)

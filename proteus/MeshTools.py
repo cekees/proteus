@@ -491,6 +491,27 @@ def _cartesianChunkStarts(nn, p):
     nn % p chunks are one longer, as in the partitioners' default partition."""
     return np.cumsum([0] + [nn // p + (nn % p > a) for a in range(p)])
 
+def _cartesianBrickStarts(nn, p, level=0):
+    """Where each of p bricks along an axis of nn coarsest-level nodes starts, as a node index on the
+    grid refined `level` times, plus the node count.
+
+    The bricks are cut on coarse *cells*: the nn-1 cells are split among the p ranks as evenly
+    as the partitioners' default chunks, a node belongs to the brick of the cell it starts, and
+    the last node to the last brick. Each rank then owns whole coarse cells' worth of fine nodes
+    -- nodes 0..19 and 20..40 for 10 cells over 2 ranks at 3 levels, where cutting on coarse
+    *nodes* gave 24 and 17 (the 6 and 5 coarse nodes, scaled up, with the trailing fine layers
+    going to the lower brick), a factor 2.8 in 3D. It is exactly balanced when the cells divide
+    evenly and off by at most one coarse cell otherwise. Every parent of a fine node is a
+    node of the coarse cell the fine node lies in, so it is the owner's or its neighbour's.
+    An axis with fewer cells than ranks cannot be cut that way and keeps the node chunks.
+    """
+    if nn == 1:
+        return _cartesianChunkStarts(nn, p)
+    if nn - 1 < p:
+        return np.minimum(_cartesianChunkStarts(nn, p) << level, ((nn - 1) << level) + 1)
+    cells = _cartesianChunkStarts(nn - 1, p)
+    return np.append(cells[:-1] << level, ((nn - 1) << level) + 1)
+
 def cartesianRankGrid(nnx, nny, nnz, size):
     """The rank grid (px, py, pz), px*py*pz == size, with the least ghost surface.
 
@@ -636,9 +657,7 @@ def cartesianNodeOwners(nnx, nny, nnz, rankGrid=None, size=None, fastest='x', le
         rankGrid = cartesianRankGrid(nnx, nny, nnz, size)
     px, py, pz = rankGrid
     def starts(nn, p):
-        if nn == 1:
-            return _cartesianChunkStarts(nn, p)
-        return np.minimum(_cartesianChunkStarts(nn, p) << level, ((nn - 1) << level) + 1)
+        return _cartesianBrickStarts(nn, p, level)
     a, b, c = (np.repeat(np.arange(p), np.diff(starts(nn, p)))
                for nn, p in ((nnx, px), (nny, py), (nnz, pz)))
     if fastest == 'x':
@@ -2136,6 +2155,35 @@ class MultilevelMesh(Mesh):
             hierarchy.elementChildrenArrayList.append(order)
             hierarchy.elementChildrenOffsetsList.append(offsets)
         return hierarchy
+
+    def partitionBalance(self):
+        """How evenly each level's partition spreads the work, one dict per level.
+
+        Collective. For every level it reports, as max over ranks / mean over ranks (1.0 is
+        perfect): ``nodes`` (owned nodes), ``elements`` (subdomain elements, owned and ghost --
+        an element loop assembles all of them, so this is the assembly work) and ``nodesSubdomain``
+        (owned plus ghost nodes, i.e. memory and the vector length); plus ``ghostFraction``
+        (the largest ghost-to-owned node ratio on any rank, the surface-to-volume cost of the cut).
+        Meant for asserting that a partitioner has not traded balance for locality and for
+        reading off where the cost of a hierarchy is going.
+        """
+        from . import Comm
+        from mpi4py import MPI
+        comm = Comm.get().comm.tompi4py()
+        out = []
+        for mesh in self.meshList:
+            sd = mesh.subdomainMesh
+            off = np.asarray(mesh.nodeOffsets_subdomain_owned)
+            owned = int(off[comm.rank+1]-off[comm.rank])
+            local = np.array([owned,sd.nElements_global,sd.nNodes_global],dtype='d')
+            allv = np.array(comm.allgather(local))
+            mean = np.maximum(allv.mean(axis=0),1.0e-300)
+            ghosts = (allv[:,2]-allv[:,0])/np.maximum(allv[:,0],1.0)
+            out.append({'nodes':float(allv[:,0].max()/mean[0]),
+                        'elements':float(allv[:,1].max()/mean[1]),
+                        'nodesSubdomain':float(allv[:,2].max()/mean[2]),
+                        'ghostFraction':float(ghosts.max())})
+        return out
 
     def inheritedNodeOwners(self,l):
         """The rank that owns each node of level l+1, in level l+1's own numbering.
