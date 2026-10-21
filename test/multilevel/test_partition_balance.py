@@ -90,7 +90,7 @@ def _mpiexec():
     return shutil.which('mpiexec') or shutil.which('mpirun')
 
 
-def _balance(kind, nn, levels, n_ranks, how='generated', variant='weighted', rule='lowest'):
+def _balance(kind, nn, levels, n_ranks, how='generated', variant='weighted', rule='lowest', by='node'):
     mpiexec = _mpiexec()
     if mpiexec is None:
         pytest.skip('no MPI launcher available')
@@ -99,7 +99,7 @@ def _balance(kind, nn, levels, n_ranks, how='generated', variant='weighted', rul
     env['PYTHONPATH'] = os.pathsep.join(
         [p for p in sys.path if p] + [env.get('PYTHONPATH', '')]).strip(os.pathsep)
     result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable, helper, kind, str(nn), str(levels),
-                             how, variant, rule], capture_output=True, text=True, env=env, timeout=600)
+                             how, variant, rule] + ([by] if by == 'element' else []), capture_output=True, text=True, env=env, timeout=600)
     assert result.returncode == 0, result.stdout + result.stderr
     line = [l for l in result.stdout.splitlines() if l.startswith('RESULT')][0]
     return dict((k, float(v)) for k, v in (item.split('=') for item in line.split()[7:]))
@@ -205,3 +205,18 @@ def test_node_weights_reach_the_graph_partitioner():
     # rank holding it takes about a quarter of the nodes (half the weight)
     assert got['plain_min'] > 0.45, got
     assert 0.15 < got['weighted_min'] < 0.33, got
+
+
+# ---- element partitioning (discontinuous and non-conforming spaces) ----
+
+@pytest.mark.parametrize('kind', ['tet', 'hex'])
+@pytest.mark.parametrize('n_ranks', [2, 4])
+def test_an_element_partition_inherits_flat_and_balanced(kind, n_ranks):
+    # A fine element goes to the owner of its parent, which is exact: no parent rule to choose,
+    # no weights to compute (uniform refinement gives every coarse element the same number of
+    # descendants), and the interfaces stay as flat as the coarse cut made them.
+    got = _balance(kind, 7, 3, n_ranks, how='global', by='element')
+    # in element mode L<l>.nodes is the owned elements and L<l>.ghost the ghost-element fraction
+    assert got['L2.nodes'] < 1.1, got
+    assert got['L2.elements'] < 1.12, got
+    assert got['L2.ghost'] < 0.5, got

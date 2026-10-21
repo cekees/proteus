@@ -2239,6 +2239,8 @@ class MultilevelMesh(Mesh):
         an element loop assembles all of them, so this is the assembly work) and ``nodesSubdomain``
         (owned plus ghost nodes, i.e. memory and the vector length); plus ``ghostFraction``
         (the largest ghost-to-owned node ratio on any rank, the surface-to-volume cost of the cut).
+        For an element-partitioned hierarchy the same for elements: ``ownedElements`` (max/mean of
+        the elements a rank owns) and ``ghostElementFraction``.
         Meant for asserting that a partitioner has not traded balance for locality and for
         reading off where the cost of a hierarchy is going.
         """
@@ -2250,14 +2252,19 @@ class MultilevelMesh(Mesh):
             sd = mesh.subdomainMesh
             off = np.asarray(mesh.nodeOffsets_subdomain_owned)
             owned = int(off[comm.rank+1]-off[comm.rank])
-            local = np.array([owned,sd.nElements_global,sd.nNodes_global],dtype='d')
+            eoff = np.asarray(mesh.elementOffsets_subdomain_owned)
+            ownedElements = int(eoff[comm.rank+1]-eoff[comm.rank])
+            local = np.array([owned,sd.nElements_global,sd.nNodes_global,ownedElements],dtype='d')
             allv = np.array(comm.allgather(local))
             mean = np.maximum(allv.mean(axis=0),1.0e-300)
             ghosts = (allv[:,2]-allv[:,0])/np.maximum(allv[:,0],1.0)
+            ghostElements = (allv[:,1]-allv[:,3])/np.maximum(allv[:,3],1.0)
             out.append({'nodes':float(allv[:,0].max()/mean[0]),
                         'elements':float(allv[:,1].max()/mean[1]),
                         'nodesSubdomain':float(allv[:,2].max()/mean[2]),
-                        'ghostFraction':float(ghosts.max())})
+                        'ghostFraction':float(ghosts.max()),
+                        'ownedElements':float(allv[:,3].max()/mean[3]),
+                        'ghostElementFraction':float(ghostElements.max())})
         return out
 
     def inheritedNodeOwners(self,l):

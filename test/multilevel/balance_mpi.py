@@ -5,7 +5,10 @@ Builds a regular multilevel mesh -- generated in pieces, or the global hierarchy
 every level: max/mean over ranks of owned nodes and of subdomain elements, the surface cost
 (largest ghost/owned node ratio) and the subdomain size.
 
-Usage: balance_mpi.py KIND NN LEVELS [global|generated] [unweighted|rcb|independent]
+Usage: balance_mpi.py KIND NN LEVELS [global|generated] [unweighted|rcb|independent] [alternate] [element]
+
+With element partitioning L<l>.nodes is the owned *elements* and L<l>.ghost the ghost-element
+fraction.
 
 unweighted   the graph partitioner cuts the coarsest level counting nodes (before the weighting)
 rcb          recursive coordinate bisection of the coarsest level, weighted by descendants
@@ -36,7 +39,9 @@ elif variant == 'rcb':
     MeshTools.MultilevelMesh.coarsePartitioner = 'rcb'
 elif variant == 'independent':
     MeshTools.MultilevelMesh.levelConsistentPartitioning = False
-part = MeshTools.MeshParallelPartitioningTypes.node
+by = 'element' if 'element' in sys.argv[6:] else 'node'
+part = (MeshTools.MeshParallelPartitioningTypes.element if by == 'element'
+        else MeshTools.MeshParallelPartitioningTypes.node)
 common = dict(refinementLevels=levels, nLayersOfOverlap=1, parallelPartitioningType=part,
               regularGrid=how)
 if kind == 'hex':
@@ -52,6 +57,7 @@ if comm.rank() == 0:
     print("RESULT kind=%s nn=%d levels=%d ranks=%d how=%s variant=%s %s"
           % (kind, nn, levels, comm.size(), how, variant,
              ' '.join("L%d.nodes=%.4f L%d.elements=%.4f L%d.ghost=%.4f"
-                      % (l, b['nodes'], l, b['elements'], l, b['ghostFraction'])
+                      % (l, b['ownedElements'] if by == 'element' else b['nodes'], l, b['elements'],
+                         l, b['ghostElementFraction'] if by == 'element' else b['ghostFraction'])
                       for l, b in enumerate(balance))))
     sys.stdout.flush()

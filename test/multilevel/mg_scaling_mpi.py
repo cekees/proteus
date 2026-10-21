@@ -5,7 +5,10 @@ by PETSc PCMG-preconditioned CG, or -- as the single-level baseline whose iterat
 count grows with the mesh -- by ASM-preconditioned CG. Reports the wall-clock time of
 each phase (maximum over ranks), the iteration count, and peak resident memory.
 
-Usage: mg_scaling_mpi.py KIND NN LEVELS MODE [independent] [global] [coarse=redundant|direct|amg]
+Usage: mg_scaling_mpi.py KIND NN LEVELS MODE [independent] [global] [coarse=redundant|direct|amg] [space=p1|dg|nc]
+
+space=dg or nc (tetrahedra only) solves discontinuous P1 (SIPG) or non-conforming P1 instead of C0 P1,
+partitioned by elements: their dofs are not vertices, so they take the general transfer route.
 
 KIND     hex or tet
 NN       nodes per axis of the coarsest level (the finest has (NN-1)*2**(LEVELS-1)+1)
@@ -122,11 +125,23 @@ n = defaults.load_numerics('poisson_3d_c0q1_n' if kind == 'hex' else 'poisson_3d
 n.nnx = n.nny = n.nnz = nn
 n.linearSolverConvergenceTest = 'r'
 n.nLevels = nLevels
+space = 'p1'
 for flag in flags:
     if flag.startswith('coarse='):
         n.linearCoarseSolver = flag.split('=', 1)[1]
+    elif flag.startswith('space='):
+        space = flag.split('=', 1)[1]
+if space != 'p1':
+    assert kind == 'tet', "dg and nc are simplex spaces"
+    n.femSpaces[0] = (default_n.DG_AffineLinearOnSimplexWithNodalBasis if space == 'dg'
+                      else default_n.NC_AffineLinearOnSimplexWithNodalBasis)
+    # a discontinuous space has no coupling between elements unless the flux supplies it on the
+    # interior faces; each rank must own whole elements for those fluxes to be complete
+    n.numericalFluxType = (default_n.Advection_DiagonalUpwind_Diffusion_SIPG if space == 'dg'
+                           else default_n.Advection_DiagonalUpwind_Diffusion_SIPG_exterior)
 n.regularGrid = 'global' if 'global' in flags else 'generated'
-n.parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.node
+n.parallelPartitioningType = (MeshTools.MeshParallelPartitioningTypes.element if 'space=dg' in flags or 'space=nc' in flags
+                              else MeshTools.MeshParallelPartitioningTypes.node)
 n.nLayersOfOverlapForParallel = 1
 n.l_atol_res = 1.0e-30
 n.linTolFac = 1.0e-8          # relative residual reduction asked of the linear solve
