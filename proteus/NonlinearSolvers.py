@@ -494,6 +494,9 @@ class Newton(NonlinearSolver):
             else:
                 #no overlap or overlap (until we compute norms over only owned dof)
                 par_r.scatter_forward_insert()
+        # Implicit FCT (Richards FCT_TYPE='implicit'): keep the predictor's initial guess so a
+        # failed Galerkin predictor can be redone with the low-order operator (fctPredictorFallback).
+        fct_u0 = numpy.copy(u) if getattr(self.F, 'fct_phase', None) == 'predictor' else None
         r=self.solveInitialize(u,r,b)
         self.norm_r_hist = []
         self.norm_du_hist = []
@@ -675,6 +678,11 @@ class Newton(NonlinearSolver):
                 % (self.its,self.norm_r,(self.norm_r/(self.rtol_r*self.norm_r0+self.atol_r))),level=1)
             if hasattr(self.F.coefficients,'FCT') and self.F.coefficients.FCT==True:
                 if self.failedFlag:
+                    if fct_u0 is not None and getattr(self.F, 'fctPredictorFallback', None) is not None \
+                       and self.F.fctPredictorFallback():
+                        logEvent("Implicit FCT: Galerkin predictor failed, using the low-order predictor")
+                        u[:] = fct_u0
+                        return self.solve(u, r, b, par_u, par_r)
                     logEvent("Skipping FCT Step After Newton due to nonlinear solver failure")
                 else:
                     logEvent("FCT Step After Newton")

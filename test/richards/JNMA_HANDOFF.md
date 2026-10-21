@@ -221,15 +221,24 @@ implicit FCT 4.3e-5, 1.1e-5, 2.9e-6 at h = 1/16, 1/32, 1/64 (order ≈ 2); WRR F
   dry initial state; runs abort after 21–34 steps at nn = 11, 41, 81, 161 (only nn = 21 completes). The WRR FCT and the low
   order run without failures. Celia at h = 1/320 also needed one first-step retry.
 
-**L-scheme** (`Coefficients(LSCHEME_L=L)`). The Galerkin Jacobian becomes (L/Δt)M + θA(pᵏ): dm/dψ → L, conductivity
-derivatives dropped. The residual is unchanged. On Hornung–Messing (h = 1/16, L = 1.7) it reaches the Newton solution
-exactly (4.150e-6), but takes ~500 iterations per step against Newton's ~3. On Szymkiewicz (L = 3.5 ≥ sup θ′ = 3.17) and Celia
-(L = 0.4 ≥ 0.343) it contracts at ≈ 0.9994 per iteration and does not converge in 1000 iterations. In the dry zone
-s′ and k_r are tiny, and the rate tends to 1 − s′/L.
+**Robust predictor (added 21 Oct 2026).**
+- `Coefficients(FCT_PREDICTOR_FALLBACK=True)` (the default). When Newton fails on the Galerkin predictor, `Newton.solve` restores
+  the step's initial guess and calls `LevelModel.fctPredictorFallback()`. That switches the step to a low-order predictor
+  (`fct_phase='low_predictor'`), so the fluxes are evaluated at pᴸ as in the WRR scheme. The limiter and the final implicit
+  solve are unchanged. Szymkiewicz now completes on every grid with 1, 0, 2 and 3 fallback steps at nn = 11, 21, 41, 81. L2
+  head differences from the nn = 161 WRR FCT: 2.34, 2.03, 1.13, 0.78 (WRR FCT 2.29, 1.79, 1.08, 0.64). The global bounds let ψ
+  undershoot the initial −7.5 m (ψ_min −8.0, −7.61, −7.77, −7.68); θ stays within [θ_R, θ_S]. Hornung–Messing (no fallbacks
+  triggered) and `test_richards.py` are unchanged.
+- **What JNMA actually does** (manuscript §solver): the predictor *is* the Galerkin system, but every nonlinear system is
+  solved by defect correction p^{k+1} = p^k − J⁻¹R_*(p^k) with the *low-order* matrix J = (L/Δt)M_L + Ã(p^k), L ≥ sup|s′|.
+  `Coefficients(LSCHEME_L=L)` now implements exactly this for Galerkin solves (STABILIZATION_TYPE=0 and the implicit-FCT
+  predictor). The edge-based kernel assembles J with dm/dψ → L and without dk_r terms; the Galerkin residual is unchanged.
+  - Hornung–Messing h = 1/16: same solution as Newton (4.150e-6) in ~500 iterations per step, vs ~3 for Newton.
+  - Szymkiewicz (L = 3.5): the residual decreases monotonically but at ≈ 0.9996 per iteration (134 → 9.2 in 1000), so with
+    `nl_atol_res = 1e-8` it would need ~5·10⁴ iterations per step. Not practical without acceleration (Anderson, as the
+    manuscript suggests), a looser or relative tolerance, or an L/Newton switch (MitraPop2019).
+  - The final low-order FCT solve still uses Newton (exact Jacobian, 2–3 iterations).
+- An earlier variant (consistent-mass Galerkin L-scheme matrix) was replaced by this one.
 
-**Open: a robust predictor for the implicit FCT on dry-soil fronts.** Options, cheapest first:
-(a) fall back to the low-order solution as predictor (fluxes at pᴸ) when the Galerkin solve fails;
-(b) L-scheme warm start followed by Newton (a few L iterations, then switch);
-(c) Anderson-accelerated L-scheme;
-(d) a Rannacher start-up (a few low-order or BE substeps from the initial jump).
-How JNMA's MFEM run of Szymkiewicz converged its Galerkin predictor is worth asking the authors.
+**Open:** Anderson acceleration or an L→Newton switch for the defect correction; whether JNMA's MFEM runs used a relative
+tolerance or larger Δt (it would explain their convergence on Szymkiewicz with the plain L-scheme).
