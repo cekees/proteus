@@ -11,6 +11,10 @@ from proteus import Context
 ct = Context.Options([
     ("STABILIZATION_TYPE", 2, "0: Galerkin (no stabilization), 2: entropy viscosity"),
     ("FCT", True, "apply the flux-corrected-transport limiter"),
+    ("fct_type", "semi-implicit", "FCT=True: 'semi-implicit' (WRR) or 'implicit' (JNMA)"),
+    ("nn", 0, "nodes in the column; 0 = the benchmark grid"),
+    ("nDT", 0, "fixed time steps on [0, T]; 0 = the benchmark's 1000"),
+    ("lscheme_L", 0.0, "> 0: L-scheme instead of Newton for the Galerkin (predictor) solve, L >= sup theta'"),
 ], mutable=True)
 
 # Szymkiewicz (2009), Water Resour. Res. 45, W10403 -- Test Problem 1:
@@ -103,6 +107,8 @@ coefficients = Richards.Coefficients(nd,
                                      ENTROPY_TYPE=1,
                                      LUMPED_MASS_MATRIX=False,
                                      FCT=ct.FCT,
+                                     FCT_TYPE=ct.fct_type,
+                                     LSCHEME_L=ct.lscheme_L,
                                      MONOLITHIC=False,
                                      num_fct_iter=1,
                                          # FOR ENTROPY VISCOSITY

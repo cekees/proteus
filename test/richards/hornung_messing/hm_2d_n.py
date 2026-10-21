@@ -47,3 +47,10 @@ levelLinearSolver = LU
 linearSmoother = None
 linTolFac = 0.001
 conservativeFlux = None
+if ct.par:
+    # e.g. mpiexec -n 4 parun -p hm_2d_p.py hm_2d_n.py -C "par=True ..." \
+    #        -P "-ksp_type preonly -pc_type lu -pc_factor_mat_solver_type superlu_dist"
+    multilevelLinearSolver = KSP_petsc4py
+    levelLinearSolver = KSP_petsc4py
+    parallelPartitioningType = getattr(MeshParallelPartitioningTypes, ct.par_part)
+    nLayersOfOverlapForParallel = ct.par_overlap
