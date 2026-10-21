@@ -76,6 +76,9 @@ class OneLevelTransport(NonlinearEquation):
         a discontinous velocity field.
 
     """
+    #share the storage of weighted shape arrays whose quadrature weights are equal
+    #(see makeAliasForEqualWeights in __init__); a class attribute so it can be turned off
+    shareWeightedArrays = True
     def __init__(self,
                  uDict,
                  phiDict,
@@ -1027,6 +1030,29 @@ class OneLevelTransport(NonlinearEquation):
                     sd[kw] = sd[kv]
                     aliased=True
             return aliased
+        def makeAliasForEqualWeights(sd,k):
+            """Share storage with an array already allocated for the same shape
+            function (same test component) under another integral (m, f, a, r,
+            ...) when both are weighted by the same quadrature weights: the
+            values are then identical, and each is a full (elements, points,
+            dofs[, space]) array."""
+            name = k[0]
+            if not self.shareWeightedArrays or 'dV_' not in name:
+                return False
+            base, I = name.rsplit('dV_',1)
+            w = self.elementQuadratureWeights.get((I,)+tuple(reversed(k[1:])))
+            if w is None:
+                return False
+            for kk in sd:
+                if (kk == k or not isinstance(kk,tuple) or kk[-1] != k[-1]
+                    or not kk[0].startswith(base+'dV_')):
+                    continue
+                wJ = self.elementQuadratureWeights.get((kk[0][len(base)+3:],)+tuple(reversed(kk[1:])))
+                if wJ is not None and numpy.array_equal(w,wJ):
+                    logEvent("Shallow copy of %s is being used for %s " % (kk,k),level=4)
+                    sd[k] = sd[kk]
+                    return True
+            return False
         def makeAliasForComponent1(sd,k,entryStrings,refi=0):
             aliased=False
             #need to add combinatorial options
@@ -1074,8 +1100,8 @@ class OneLevelTransport(NonlinearEquation):
                     'd')
         logEvent(memory("element quadrature, test/trial functions phi_trial_shape","OneLevelTransport"),level=4)
         #allocate test shape functions
-        for k in self.test_shape_quadrature:
-            if not makeAlias(self.q,k):
+        for k in sorted(self.test_shape_quadrature):
+            if not makeAlias(self.q,k) and not makeAliasForEqualWeights(self.q,k):
                 self.q[k]=numpy.zeros(
                     (self.mesh.nElements_global,
                      self.nQuadraturePoints_element,
@@ -1103,8 +1129,8 @@ class OneLevelTransport(NonlinearEquation):
                     'd')
         logEvent(memory("element quadrature, test/trial functions phi_trial_shapeGradient","OneLevelTransport"),level=4)
         #allocate test shape function gradients
-        for k in self.test_shapeGradient_quadrature:
-            if not makeAlias(self.q,k):
+        for k in sorted(self.test_shapeGradient_quadrature):
+            if not makeAlias(self.q,k) and not makeAliasForEqualWeights(self.q,k):
                 self.q[k]=numpy.zeros(
                     (self.mesh.nElements_global,
                      self.nQuadraturePoints_element,
