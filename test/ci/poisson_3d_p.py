@@ -100,6 +100,18 @@ def getDiffFluxBC5(x,flag):
         return lambda x,t: numpy.dot(velEx(u5Ex(),a5).uOfXT(x,t),n)
     elif not onDirichletBoundary(x):
         return lambda x,t: 0.0
+#the same a and f for all of a quadrature array's points at once (X is (N,3)): one Python call
+#per array instead of one per point. a5 and f5 stay for the analytical Darcy velocity above.
+@TransportCoefficients.batched
+def a5_batched(X):
+    a = numpy.zeros((X.shape[0],3,3),'d')
+    a[:,0,0] = X[:,0] + 5.0
+    a[:,1,1] = X[:,1] + 5.0
+    a[:,2,2] = X[:,2] + 10.0
+    return a
+@TransportCoefficients.batched
+def f5_batched(X):
+    return -2.0*X[:,0] -2*(5.+X[:,0]) -2.*X[:,1]-2.*(5.+X[:,1]) -2.*X[:,2]-2.*(10+X[:,2])
 #store a,f in dictionaries since coefficients class allows for one entry per component
 aOfX = {0:a5}; fOfX = {0:f5}
 
@@ -114,6 +126,6 @@ advectiveFluxBoundaryConditions =  {0:getAdvFluxBC5}
 diffusiveFluxBoundaryConditions = {0:{0:getDiffFluxBC5}}
 
 #equation coefficient names
-coefficients = TransportCoefficients.PoissonEquationCoefficients(aOfX,fOfX,nc,nd)
+coefficients = TransportCoefficients.PoissonEquationCoefficients({0:a5_batched},{0:f5_batched},nc,nd)
 #
 coefficients.variableNames=['u0']

@@ -6251,6 +6251,46 @@ class ConservativeHead2PMualemVanGenuchten(TC_base):
 
 from proteus.ctransportCoefficients import L2projectEvaluate
 
+def batched(func):
+    """Mark a coefficient function as taking all its points at once.
+
+    The coefficient classes that evaluate user functions of position
+    (PoissonEquationCoefficients) call an ordinary function once per
+    quadrature point, with the point as a length-3 array, which costs a
+    Python call (and usually a numpy allocation) per point. A function
+    decorated with ``@batched`` is called once, with an (N,3) array of
+    points, and returns N values: an (N,) array for a scalar, or an array
+    with N leading entries for a tensor (e.g. (N,nd,nd)). Undecorated
+    functions keep working as before.
+    """
+    func.batched = True
+    return func
+
+
+def evaluateAtPoints(func, x, out, scale=1.0):
+    """Set ``out`` to ``scale*func`` at every point of ``x``.
+
+    ``x`` holds three coordinates per point (a quadrature array with last
+    dimension 3), ``out`` one entry per point, or the entries of a tensor.
+    A function marked with :func:`batched` is called once with the (N,3)
+    array of points; any other is called once per point.
+    """
+    X = numpy.ascontiguousarray(x).reshape(-1, 3)
+    n = X.shape[0]
+    if n == 0:
+        return
+    if getattr(func, 'batched', False):
+        values = numpy.asarray(func(X), dtype='d')
+        if values.size != out.size:
+            raise ValueError("batched coefficient function returned %d values for %d points, "
+                             "which need %d" % (values.size, n, out.size))
+        out.flat[:] = scale * values.ravel()
+    else:
+        m = out.size // n
+        for i in range(n):
+            out.flat[m * i:m * (i + 1)] = scale * numpy.asarray(func(X[i])).ravel()
+
+
 class PoissonEquationCoefficients(TC_base):
     def __init__(self,aOfX,fOfX,nc=1,nd=2,l2proj=None,
                  timeVaryingCoefficients=False):
@@ -6284,9 +6324,8 @@ class PoissonEquationCoefficients(TC_base):
         nd = self.nd
         for ci in range(self.nc):
             cq[('f',ci)].flat[:] = 0.0
-            for i in range(len(cq[('r',ci)].flat)):
-                cq[('r',ci)].flat[i] = -self.fOfX[ci](cq['x'].flat[3*i:3*(i+1)])
-                cq[('a',ci,ci)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[ci](cq['x'].flat[3*i:3*(i+1)]).flat
+            evaluateAtPoints(self.fOfX[ci], cq['x'], cq[('r',ci)], -1.0)
+            evaluateAtPoints(self.aOfX[ci], cq['x'], cq[('a',ci,ci)])
 
             if self.l2proj is not None and self.l2proj[ci] == True:
                 if ('dV_u',ci) in cq:
@@ -6301,9 +6340,8 @@ class PoissonEquationCoefficients(TC_base):
             for ci in range(self.nc):
                 if ('f',ci) in c: c[('f',ci)].flat[:] = 0.0
                 if ('r',ci) in c and ('a',ci,ci) in c:
-                    for i in range(len(c[('u',ci)].flat)):
-                        c[('r',ci)].flat[i] = -self.fOfX[ci](c['x'].flat[3*i:3*(i+1)])
-                        c[('a',ci,ci)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[ci](c['x'].flat[3*i:3*(i+1)]).flat
+                    evaluateAtPoints(self.fOfX[ci], c['x'], c[('r',ci)], -1.0)
+                    evaluateAtPoints(self.aOfX[ci], c['x'], c[('a',ci,ci)])
                     if self.l2proj is not None and self.l2proj[ci] == True:
                         assert c[('r',ci)].shape == c[('dS_u',ci)].shape, "wrong scalar shape"
                         L2projectEvaluate(0,c[('dS_u',ci)],c[('r',ci)])
@@ -6315,9 +6353,8 @@ class PoissonEquationCoefficients(TC_base):
             for ci in range(self.nc):
                 if ('f',ci) in c: c[('f',ci)].flat[:] = 0.0
                 if ('r',ci) in c and ('a',ci,ci) in c:
-                    for i in range(len(c[('u',ci)].flat)):
-                        c[('r',ci)].flat[i] = -self.fOfX[ci](c['x'].flat[3*i:3*(i+1)])
-                        c[('a',ci,ci)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[ci](c['x'].flat[3*i:3*(i+1)]).flat
+                    evaluateAtPoints(self.fOfX[ci], c['x'], c[('r',ci)], -1.0)
+                    evaluateAtPoints(self.aOfX[ci], c['x'], c[('a',ci,ci)])
                     if self.l2proj is not None and self.l2proj[ci] == True:
                         assert c[('r',ci)].shape == c[('dS_u',ci)].shape, "wrong scalar shape"
                         L2projectEvaluate(0,c[('dS_u',ci)],c[('r',ci)])
@@ -6329,9 +6366,8 @@ class PoissonEquationCoefficients(TC_base):
             nd = self.nd
             for ci in range(self.nc):
                 c[('f',ci)].flat[:] = 0.0
-                for i in range(len(c[('r',ci)].flat)):
-                    c[('r',ci)].flat[i] = -self.fOfX[ci](c['x'].flat[3*i:3*(i+1)])
-                    c[('a',ci,ci)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[ci](c['x'].flat[3*i:3*(i+1)]).flat
+                evaluateAtPoints(self.fOfX[ci], c['x'], c[('r',ci)], -1.0)
+                evaluateAtPoints(self.aOfX[ci], c['x'], c[('a',ci,ci)])
                 #end i
                 if self.l2proj is not None and self.l2proj[ci] == True:
                     if ('dV_u',ci) in c:
