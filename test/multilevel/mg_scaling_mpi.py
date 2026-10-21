@@ -5,7 +5,7 @@ by PETSc PCMG-preconditioned CG, or -- as the single-level baseline whose iterat
 count grows with the mesh -- by ASM-preconditioned CG. Reports the wall-clock time of
 each phase (maximum over ranks), the iteration count, and peak resident memory.
 
-Usage: mg_scaling_mpi.py KIND NN LEVELS MODE [independent] [pieces|global]
+Usage: mg_scaling_mpi.py KIND NN LEVELS MODE [independent] [global] [coarse=redundant|direct|amg]
 
 KIND     hex or tet
 NN       nodes per axis of the coarsest level (the finest has (NN-1)*2**(LEVELS-1)+1)
@@ -13,6 +13,7 @@ MODE     mgm | pcmg_cg | asm_cg
 independent  partition every level on its own instead of inheriting the coarser one's
          (MultilevelMesh.levelConsistentPartitioning = False), to measure what
          level-consistency buys at scale
+coarse=  how the coarsest level is solved in parallel (n.linearCoarseSolver; default redundant)
 global   build the global mesh and partition it (regularGrid='global') instead of
          generating each rank's piece
 
@@ -121,6 +122,9 @@ n = defaults.load_numerics('poisson_3d_c0q1_n' if kind == 'hex' else 'poisson_3d
 n.nnx = n.nny = n.nnz = nn
 n.linearSolverConvergenceTest = 'r'
 n.nLevels = nLevels
+for flag in flags:
+    if flag.startswith('coarse='):
+        n.linearCoarseSolver = flag.split('=', 1)[1]
 n.regularGrid = 'global' if 'global' in flags else 'generated'
 n.parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.node
 n.nLayersOfOverlapForParallel = 1

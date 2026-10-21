@@ -438,6 +438,7 @@ class NS_base(object):  # (HasTraits):
                 parallelUsesFullOverlap=(n.nLayersOfOverlapForParallel > 0 or n.parallelPartitioningType == MeshTools.MeshParallelPartitioningTypes.node),
                 par_duList=model.par_duList,
                 solver_options_prefix=linear_solver_options_prefix,
+                coarseSolver=n.linearCoarseSolver,
                 computeEigenvalues = n.computeEigenvalues,
                 linearSmootherOptions = n.linearSmootherOptions)
             self.lsList.append(multilevelLinearSolver)
