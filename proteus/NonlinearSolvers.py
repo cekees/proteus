@@ -412,6 +412,65 @@ class Newton(NonlinearSolver):
             self.dJLsolver=LU(self.dJ_t_dJ,computeEigenvalues=True)
             self.u0 = numpy.zeros(self.F.dim,'d')
 
+    def _scatterResidual(self, r, par_r):
+        if par_r is not None:
+            if not self.par_fullOverlap:
+                par_r.scatter_reverse_add()
+            else:
+                par_r.scatter_forward_insert()
+
+    def lschemeRetry(self, hybrid, u, r, b, par_u, par_r):
+        """Hybrid Newton/L-scheme step test, called after the Newton update u -= du and r = F(u).
+
+        Trigger 'residual': the Newton step did not reduce ||r|| (where a line search would start).
+        Trigger 'theta': also when Deuflhard's affine-covariant contraction estimate
+        Theta_k = ||J_k^{-1} F(u_{k+1})|| / ||du_k|| exceeds hybrid['theta_max'] (Theta ~ h_k/2 in
+        the Newton-Kantorovich ball test; one extra back-solve with the current factorization).
+        On a trigger the Newton step is undone and replaced by hybrid['its'] L-scheme iterations
+        (F.setLScheme), after which Newton resumes. Returns True if the line search is to be skipped.
+        """
+        norm_r_cur = self.norm(r)
+        if numpy.isfinite(norm_r_cur) and norm_r_cur <= self.rtol_r*self.norm_r0 + self.atol_r:
+            return True
+        trigger = (not numpy.isfinite(norm_r_cur)) or norm_r_cur >= 0.9999*self.norm_r
+        theta = None
+        if not trigger and hybrid['trigger'] == 'theta':
+            du_k = numpy.copy(self.du)
+            self.du[:] = 0.0
+            self.linearSolver.solve(u=self.du, b=r, par_u=self.par_du, par_b=par_r)
+            theta = self.norm(self.du)/max(self.norm(du_k), 1.0e-300)
+            self.du[:] = du_k
+            self.theta_hist.append(theta)
+            trigger = theta > hybrid['theta_max']
+        if not trigger:
+            return True
+        logEvent("   Newton it %d: %s, replacing the step by %d L-scheme iteration(s)"
+                 % (self.its, ("Theta = %.3g" % theta) if theta is not None else "no residual decrease",
+                    hybrid['its']), level=1)
+        u += self.du
+        if par_u is not None:
+            par_u.scatter_forward_insert()
+        self.lscheme_retries += 1
+        self.F.setLScheme(True)
+        try:
+            for k in range(hybrid['its']):
+                self.computeResidual(u, r, b)          # assembles the L-scheme matrix too
+                self._scatterResidual(r, par_r)
+                self.F.getJacobian(self.J)
+                self.linearSolver.prepare(b=r, newton_its=self.its-1)
+                self.du[:] = 0.0
+                self.linearSolver.solve(u=self.du, b=r, par_u=self.par_du, par_b=par_r)
+                u -= self.du
+                if par_u is not None:
+                    par_u.scatter_forward_insert()
+                self.lscheme_its += 1
+        finally:
+            self.F.setLScheme(False)
+        self.computeResidual(u, r, b)                  # back to Newton (re-assembles its Jacobian)
+        self._scatterResidual(r, par_r)
+        self.updateJacobian = True
+        return True
+
     def setLinearSolverTolerance(self,r):
         """
         This function dynamically sets the relative tolerance
@@ -497,6 +556,11 @@ class Newton(NonlinearSolver):
         # Implicit FCT (Richards FCT_TYPE='implicit'): keep the predictor's initial guess so a
         # failed Galerkin predictor can be redone with the low-order operator (fctPredictorFallback).
         fct_u0 = numpy.copy(u) if getattr(self.F, 'fct_phase', None) == 'predictor' else None
+        # Hybrid Newton/L-scheme (e.g. Richards NONLINEAR_SOLVER='hybrid'): see lschemeRetry.
+        hybrid = self.F.nonlinearHybridOptions() if hasattr(self.F, 'nonlinearHybridOptions') else None
+        self.lscheme_its = 0
+        self.lscheme_retries = 0
+        self.theta_hist = []
         r=self.solveInitialize(u,r,b)
         self.norm_r_hist = []
         self.norm_du_hist = []
@@ -550,6 +614,9 @@ class Newton(NonlinearSolver):
                     par_r.scatter_forward_insert()
 
             #print "global r",r
+            skipLineSearch = False
+            if hybrid is not None and not linear:
+                skipLineSearch = self.lschemeRetry(hybrid, u, r, b, par_u, par_r)
             if self.linearSolver.computeEigenvalues:
                 #approximate Lipschitz constant of J
                 logEvent("Calculating eigenvalues of dJ^t dJ")
@@ -590,7 +657,7 @@ class Newton(NonlinearSolver):
                 print("norm_J",self.norm_2_J_current)
                 print("lambda_min",min(self.linearSolver.eigenvalues_r))
                 print("lambda_i_min",min(self.linearSolver.eigenvalues_i))
-            if self.lineSearch:
+            if self.lineSearch and not skipLineSearch:
                 norm_r_cur = self.norm(r)
                 ls_its = 0
                     #print norm_r_cur,self.atol_r,self.rtol_r

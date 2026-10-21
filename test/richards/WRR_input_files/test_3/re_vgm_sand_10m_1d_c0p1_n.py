@@ -131,11 +131,11 @@ tolFac = 0.0
 nl_atol_res = 1.0e-8
 
 maxNonlinearIts = 100#1001
-if ct.lscheme_L > 0.0:
+if ct.nl_solver == 'lscheme':
     maxNonlinearIts = 1000  # linear convergence
 maxLineSearches =100
-if ct.lscheme_L > 0.0:
-    maxLineSearches = 0  # the L-scheme contracts in energy, not monotonically in the residual
+if ct.nl_solver != 'newton':
+    maxLineSearches = 0  # lscheme: contracts in energy, not monotonically in r; hybrid: replaces it
 
 matrix = SparseMatrix
 #matrix = Numeric.array

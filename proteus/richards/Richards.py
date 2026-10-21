@@ -264,6 +264,10 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  FCT_TYPE='semi-implicit',
                  FCT_PRELIMITER_POWER=3.0,
                  LSCHEME_L=0.0,
+                 NONLINEAR_SOLVER=None,
+                 LSCHEME_RETRY_ITS=1,
+                 LSCHEME_TRIGGER='residual',
+                 LSCHEME_THETA_MAX=0.5,
                  FCT_PREDICTOR_FALLBACK=True,
                  # FOR ENTROPY VISCOSITY
                  cE=1.0,
@@ -412,12 +416,32 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             raise ValueError("FCT_TYPE must be 'semi-implicit' or 'implicit', not %r" % (FCT_TYPE,))
         self.FCT_TYPE = FCT_TYPE
         self.FCT_PRELIMITER_POWER = FCT_PRELIMITER_POWER
-        # LSCHEME_L > 0: the Galerkin systems (STABILIZATION_TYPE=0, and the predictor of
-        # FCT_TYPE='implicit') are solved by the JNMA defect correction p^{k+1} = p^k - J^{-1} R(p^k):
-        # Galerkin residual R, low-order L-scheme matrix J = (L/dt) M_L + A~(p^k). Take
-        # L >= sup dm/dpsi. Linear convergence: raise maxNonlinearIts, and set maxLineSearches = 0.
-        # 0 (default) = Newton on the Galerkin Jacobian.
+        # Nonlinear iteration matrix. LSCHEME_L = L >= sup dm/dpsi defines the L-scheme matrix
+        # J = (L/dt) M_L + A~(p^k) (low order, upwind k_r frozen), used for every residual (Galerkin,
+        # low order, implicit-FCT final) as in the JNMA defect correction p^{k+1} = p^k - J^{-1} R(p^k).
+        # NONLINEAR_SOLVER:
+        #   'newton'  -- exact Jacobians (default when LSCHEME_L = 0)
+        #   'lscheme' -- L-scheme matrix in every iteration (default when LSCHEME_L > 0); linear
+        #                convergence, so raise maxNonlinearIts and set maxLineSearches = 0
+        #   'hybrid'  -- Newton, but a step that fails the trigger is undone and replaced by
+        #                LSCHEME_RETRY_ITS L-scheme iterations (instead of a line search), then Newton
+        #                resumes. LSCHEME_TRIGGER: 'residual' (the Newton step did not reduce ||r||) or
+        #                'theta' (also when Deuflhard's contraction estimate
+        #                Theta_k = ||J_k^{-1} r(u_{k+1})|| / ||du_k|| exceeds LSCHEME_THETA_MAX;
+        #                Theta ~ h_k/2 of the Kantorovich ball test, one extra back-solve per iteration).
         self.LSCHEME_L = LSCHEME_L
+        if NONLINEAR_SOLVER is None:
+            NONLINEAR_SOLVER = 'lscheme' if LSCHEME_L > 0.0 else 'newton'
+        if NONLINEAR_SOLVER not in ('newton', 'lscheme', 'hybrid'):
+            raise ValueError("NONLINEAR_SOLVER must be 'newton', 'lscheme' or 'hybrid'")
+        if NONLINEAR_SOLVER != 'newton' and not LSCHEME_L > 0.0:
+            raise ValueError("NONLINEAR_SOLVER=%r needs LSCHEME_L > 0" % (NONLINEAR_SOLVER,))
+        if LSCHEME_TRIGGER not in ('residual', 'theta'):
+            raise ValueError("LSCHEME_TRIGGER must be 'residual' or 'theta'")
+        self.NONLINEAR_SOLVER = NONLINEAR_SOLVER
+        self.LSCHEME_RETRY_ITS = int(LSCHEME_RETRY_ITS)
+        self.LSCHEME_TRIGGER = LSCHEME_TRIGGER
+        self.LSCHEME_THETA_MAX = float(LSCHEME_THETA_MAX)
         # FCT_TYPE='implicit': if the Galerkin predictor's nonlinear solve fails, redo the step's
         # predictor with the low-order operator (fluxes then evaluated at p^L, as in the WRR scheme)
         # instead of failing the step. Typical on dry-soil fronts (Szymkiewicz).
@@ -1065,6 +1089,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.fct_phase = 'predictor'
         self.fct_resolve = False
         self.fct_fallback_count = 0
+        self.lscheme_active = False  # set by Newton in NONLINEAR_SOLVER='hybrid'
         self.alpha_nv = None
         self.m_fct = None
         # Aux quantity at DOFs to be filled by optimized code (MQL)
@@ -1262,9 +1287,25 @@ class LevelModel(proteus.Transport.OneLevelTransport):
             a[:] = self.u[0].dof
         self.u[0].dof[:] = saved
 
+    def lschemeOn(self):
+        """True when the next residual should assemble the L-scheme matrix instead of the Jacobian."""
+        c = self.coefficients
+        return c.LSCHEME_L > 0.0 and (c.NONLINEAR_SOLVER == 'lscheme' or self.lscheme_active)
+
+    def setLScheme(self, on):
+        """Newton's switch for NONLINEAR_SOLVER='hybrid' (takes effect at the next residual)."""
+        self.lscheme_active = bool(on)
+
+    def nonlinearHybridOptions(self):
+        """Options Newton reads for NONLINEAR_SOLVER='hybrid', else None."""
+        c = self.coefficients
+        if c.NONLINEAR_SOLVER != 'hybrid':
+            return None
+        return {'its': c.LSCHEME_RETRY_ITS, 'trigger': c.LSCHEME_TRIGGER, 'theta_max': c.LSCHEME_THETA_MAX}
+
     def defectCorrection(self):
-        """True when the current Galerkin solve uses the L-scheme defect correction (LSCHEME_L)."""
-        return self.kernelStabilizationType() == 0 and self.coefficients.LSCHEME_L > 0.0
+        """True when the current Galerkin solve uses the L-scheme matrix (assembled by the edge kernel)."""
+        return self.kernelStabilizationType() == 0 and self.lschemeOn()
 
     def kernelStabilizationType(self):
         """STABILIZATION_TYPE passed to the kernels. The implicit FCT changes it per phase:
@@ -1968,7 +2009,8 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         
         if self.delta_x_ij is None:
             self.delta_x_ij = -np.ones((self.nNonzerosInJacobian*3,),'d')
-        argsDict["LSCHEME_L"] = 0.0
+        # edge-based kernels assemble their own (Newton or L-scheme) matrix with the residual
+        argsDict["LSCHEME_L"] = float(self.coefficients.LSCHEME_L) if self.lschemeOn() else 0.0
         if self.defectCorrection():
             # Defect correction: assemble the low-order L-scheme matrix (L/dt) M_L + A~(p^k) into
             # self.jacobian through the edge-based kernel (its residual is discarded); getJacobian
