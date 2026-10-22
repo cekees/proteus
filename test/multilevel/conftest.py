@@ -1,5 +1,7 @@
 """Fixtures for the multilevel tests."""
 import os
+import subprocess
+import time
 
 import pytest
 
@@ -33,6 +35,29 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if str(getattr(item, 'path', item.fspath)).startswith(here + os.sep):
             item.add_marker(pytest.mark.xdist_group('multilevel-mpi'))
+
+
+# mpiexec itself sometimes fails to start on a CI runner: PMIx cannot find a network interface for a
+# moment ("ptl_tool: problems getting address for index 0 (kernel index -1)", exit status 213), and
+# every launch in that second fails, whatever it was testing. Nothing of the job has run when that
+# happens, so launching it again is safe; any other failure is left alone.
+_LAUNCH_FAILURE = 'ptl_tool: problems getting address'
+
+
+@pytest.fixture(autouse=True)
+def _retry_a_launch_that_never_started(monkeypatch):
+    run = subprocess.run
+
+    def run_with_retry(cmd, *args, **kwargs):
+        for attempt in range(3):
+            result = run(cmd, *args, **kwargs)
+            err = getattr(result, 'stderr', None)
+            if (result.returncode == 0 or not isinstance(err, str) or _LAUNCH_FAILURE not in err
+                    or attempt == 2):
+                return result
+            time.sleep(3.0 * (attempt + 1))
+    monkeypatch.setattr(subprocess, 'run', run_with_retry)
+    yield
 
 
 def pytest_configure(config):
