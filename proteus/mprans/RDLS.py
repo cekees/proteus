@@ -7,8 +7,6 @@ from proteus.Transport import OneLevelTransport, memory
 from proteus.Transport import TC_base, NonlinearEquation, Quadrature, logEvent
 from proteus.Transport import cfemIntegrals
 from . import cArgumentsDict
-# proteus.X below is attribute access: X has to be imported here,
-# not by whatever happened to import it first
 import proteus.FemTools
 import proteus.NonlinearSolvers
 import proteus.ShockCapturing

@@ -12,6 +12,8 @@ from proteus.mprans import cArgumentsDict
 from proteus.LinearAlgebraTools import SparseMat
 from proteus import TimeIntegration
 from proteus.NonlinearSolvers import ExplicitLumpedMassMatrixForRichards
+import proteus.Transport
+import proteus.TransportCoefficients
 #from proteus.NonlinearSolvers import Newton
 
 

@@ -15,6 +15,8 @@ from proteus.SubgridError import SGE_base
 from proteus.ShockCapturing import ShockCapturing_base
 from . import cPres
 from . import cArgumentsDict
+import proteus.NumericalFlux
+import proteus.Transport
 
 
 class NumericalFlux(proteus.NumericalFlux.ConstantAdvection_exterior):

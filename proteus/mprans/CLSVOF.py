@@ -6,6 +6,12 @@ from proteus.Transport import TC_base, NonlinearEquation, Quadrature
 from proteus.Transport import logEvent, memory, FluxBoundaryConditions, Comm
 from proteus.Transport import cfemIntegrals
 from . import cArgumentsDict
+import proteus.LinearAlgebraTools
+import proteus.NonlinearSolvers
+import proteus.NumericalFlux
+import proteus.TimeIntegration
+import proteus.Transport
+import proteus.TransportCoefficients
 
 class NumericalFlux(proteus.NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG_exterior):
     def __init__(self,vt,getPointwiseBoundaryConditions,

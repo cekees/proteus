@@ -4,6 +4,8 @@ import numpy
 from proteus.Profiling import logEvent
 from proteus import MeshTools
 from proteus import SimTools
+import proteus.Domain
+import proteus.mprans
 
 #try making a class that's build on top of NS_base for these functions 
 class PUMI_helper:

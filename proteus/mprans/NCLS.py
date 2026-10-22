@@ -7,8 +7,6 @@ from proteus.Transport import memory, FluxBoundaryConditions, ExplicitLumpedMass
 from proteus.Transport import globalMax, SSP, ExplicitConsistentMassMatrixWithRedistancing
 from proteus import Norms
 from . import cArgumentsDict
-# proteus.X below is attribute access: X has to be imported here,
-# not by whatever happened to import it first
 import proteus.NumericalFlux
 import proteus.ShockCapturing
 import proteus.SubgridError

@@ -5,8 +5,6 @@ import numpy as np
 from proteus import Profiling as prof
 from proteus import cfemIntegrals
 from . import cArgumentsDict
-# proteus.X below is attribute access: X has to be imported here,
-# not by whatever happened to import it first
 import proteus.Comm
 import proteus.FemTools
 import proteus.NonlinearSolvers

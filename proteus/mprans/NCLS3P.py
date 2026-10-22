@@ -16,6 +16,12 @@ from proteus.SubgridError import SGE_base
 from proteus.ShockCapturing import ShockCapturing_base
 from . import cNCLS3P
 from . import cArgumentsDict
+import proteus.NonlinearSolvers
+import proteus.NumericalFlux
+import proteus.ShockCapturing
+import proteus.SubgridError
+import proteus.TimeIntegration
+import proteus.TransportCoefficients
 
 
 class SubgridError(proteus.SubgridError.SGE_base):

@@ -19,6 +19,8 @@ from proteus.SubgridError import SGE_base
 from proteus.ShockCapturing import  ShockCapturing_base
 from proteus.cADR import *
 from proteus.mprans import cArgumentsDict
+import proteus.NumericalFlux
+import proteus.Transport
 
 class SubgridError(SGE_base):
     """
