@@ -6957,6 +6957,32 @@ class DOFBoundaryConditions_alt(object):
 
 
 
+class BatchedBC(object):
+    """A boundary-condition value function that can also be evaluated for many points at once.
+
+    Flux boundary condition setters return, for each boundary quadrature point,
+    a function ``g(x,t)``; the residual calls every one of them at every
+    evaluation. If a setter returns the *same* ``BatchedBC`` object for all the
+    points it applies to, the points are grouped by object and each group is
+    evaluated with one call, ``f(X,t)``, where X is an (M,3) array of points and
+    the result holds M values. Called with a single point it behaves like an
+    ordinary ``g(x,t)``. Use it as a decorator::
+
+        @batchedBC
+        def zeroFlux(X,t):
+            return numpy.zeros(len(X))
+
+        def getDiffusiveFluxBC(x,flag):
+            return zeroFlux
+
+    Setters that return ordinary functions are unaffected.
+    """
+    def __init__(self,f):
+        self.batched = f
+        self.__doc__ = f.__doc__
+    def __call__(self,x,t):
+        return self.batched(numpy.reshape(x,(1,3)),t)[0]
+batchedBC = BatchedBC
 class FluxBoundaryConditions(object):
     """Generating class for the fluxBoundaryConditions dictionaries.
 
@@ -7015,6 +7041,38 @@ class FluxBoundaryConditions(object):
                             self.diffusiveFluxBoundaryConditionsDictDict[ck][(ebNE,k)] = g
             #k
         #ebNE
+    def _groups(self,name,conditions):
+        """The conditions split into one-point-at-a-time ones and BatchedBC groups, kept until
+        the dictionary changes size."""
+        cache = self.__dict__.setdefault('_groupCache',{})
+        entry = cache.get(name)
+        if entry is not None and entry[0] == len(conditions):
+            return entry
+        plain,groups = [],{}
+        for key,g in conditions.items():
+            if getattr(g,'batched',None) is not None:
+                groups.setdefault(id(g),(g,[]))[1].append(key)
+            else:
+                plain.append((key,g))
+        batched = []
+        for g,keys in groups.values():
+            idx = numpy.array(keys,dtype='i')
+            batched.append((g,idx[:,0],idx[:,1]))
+        keys = numpy.array(list(conditions.keys()),dtype='i').reshape(-1,2)
+        entry = cache[name] = (len(conditions),plain,batched,keys[:,0],keys[:,1])
+        return entry
+    def evaluate(self,name,conditions,x,out,t):
+        """Set out[ebNE,k] = g(x[ebNE,k],t) for every (ebNE,k): g in conditions, which is one of
+        this object's dictionaries (name is how it is cached); returns the (ebNE,k) index arrays."""
+        n,plain,batched,i0,i1 = self._groups(name,conditions)
+        for (ebNE,k),g in plain:
+            out[ebNE,k] = g(x[ebNE,k],t)
+        for g,b0,b1 in batched:
+            values = numpy.asarray(g.batched(x[b0,b1],t),dtype='d')
+            if values.size != len(b0):
+                raise ValueError("batched boundary condition returned %d values for %d points" % (values.size,len(b0)))
+            out[b0,b1] = values.reshape(len(b0))
+        return i0,i1
 class FluxBoundaryConditionsGlobalElementBoundaries(object):
     """
     mwf original version that sets indeces based on all element boundaries

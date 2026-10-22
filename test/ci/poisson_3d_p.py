@@ -92,14 +92,20 @@ def getDBC5(x,flag):
 def getAdvFluxBC5(x,flag):
     return None
 
-#specify flux on (x=1,y,z)
+#specify flux on (x=1,y,z). The setter returns one of two batched functions (FemTools.batchedBC),
+#so the residual evaluates each group of boundary points with one call instead of one per point.
+@FemTools.batchedBC
+def outwardFlux5(X,t):
+    #velEx . n with n = (1,0,0): -a_00 du/dx = -(x+5)*2x
+    return -(X[:,0] + 5.0)*2.0*X[:,0]
+@FemTools.batchedBC
+def noFlux5(X,t):
+    return numpy.zeros(len(X))
 def getDiffFluxBC5(x,flag):
     if x[0] >= x0[0] + L[0] - eps:
-        n = numpy.zeros((nd,),'d');
-        n[0]=1.0
-        return lambda x,t: numpy.dot(velEx(u5Ex(),a5).uOfXT(x,t),n)
+        return outwardFlux5
     elif not onDirichletBoundary(x):
-        return lambda x,t: 0.0
+        return noFlux5
 #the same a and f for all of a quadrature array's points at once (X is (N,3)): one Python call
 #per array instead of one per point. a5 and f5 stay for the analytical Darcy velocity above.
 @TransportCoefficients.batched
@@ -112,6 +118,7 @@ def a5_batched(X):
 @TransportCoefficients.batched
 def f5_batched(X):
     return -2.0*X[:,0] -2*(5.+X[:,0]) -2.*X[:,1]-2.*(5.+X[:,1]) -2.*X[:,2]-2.*(10+X[:,2])
+
 #store a,f in dictionaries since coefficients class allows for one entry per component
 aOfX = {0:a5}; fOfX = {0:f5}
 
