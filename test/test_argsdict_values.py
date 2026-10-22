@@ -2,13 +2,11 @@
 
 ``argsDict["k"] = arr,`` -- note the trailing comma -- stores the 1-tuple
 ``(arr,)``, not ``arr``. ArgumentsDict.__setitem__ only has overloads for
-int/double arrays and int/double scalars. The xtensor-based caster (1.9.x)
-coerced the tuple into a copy, and a tuple of a double array matched the
-int overload first, so the kernel's ``args.array<double>("k")`` then found
-no such key. proteus::pyarray (main) rejects the tuple with a TypeError.
-Either way the mistake only surfaces when that model's residual or Jacobian
-is first evaluated, and several of the models involved have no test that
-does so. This scan catches it in every module without running any of them.
+int/double arrays and int/double scalars, so proteus::pyarray rejects the
+tuple with a TypeError. The mistake only surfaces when that model's residual
+or Jacobian is first evaluated, and several of the models involved have no
+test that does so. This scan catches it in every module without running any
+of them.
 """
 import ast
 import os
