@@ -15,6 +15,5 @@ dependencies:
   - pybind11
   - swig
   - pybind11
-  - ncurses
   - memory_profiler
   - pytest
