@@ -218,9 +218,7 @@ def get_pybind_include_dirs():
     """Include path for the pybind11 extensions.
 
     These need pybind11, numpy and proteus's own headers (`proteus/pyarray.h`
-    in particular, via the `proteus` entry). They used to also need
-    xtl/xtensor/xtensor-python; proteus::pyarray replaced xt::pyarray, so
-    those are gone.
+    in particular, via the `proteus` entry).
     """
     return [str(get_pybind_include()),
             str(get_pybind_include(user=True)),
