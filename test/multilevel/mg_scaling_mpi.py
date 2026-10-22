@@ -34,6 +34,7 @@ t_setup=.. t_solve=.. its=.. rss_max_mb=.. rss_mean_mb=.. residual=..``.
 import os
 import resource
 import sys
+import zlib
 import time
 
 import numpy as np
@@ -183,7 +184,8 @@ else:
                           'sub_ksp_type': 'preonly', 'sub_pc_type': 'ilu',
                           'ksp_rtol': '1e-8', 'ksp_atol': '1e-30', 'ksp_max_it': '5000'}
 so = default_so
-so.name = p.name = "mgscale_%s_%d_%d_%s_%d" % (kind, nn, nLevels, mode, size)
+#the archive is named after every argument (a checksum of them), see fas_parallel_mpi.py
+so.name = p.name = "mgscale_%s_%d_%d_%s_%08x_%d" % (kind, nn, nLevels, mode, zlib.crc32(" ".join(sys.argv[1:]).encode()), size)
 so.sList = [default_s]
 runopts.logLevel = 1
 runopts.verbose = False

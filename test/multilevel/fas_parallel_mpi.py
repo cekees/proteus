@@ -14,6 +14,7 @@ Usage: fas_parallel_mpi.py MODE SMOOTHER LEVELS [R] [CYCLES] [SMOOTHS] [NN] [TOL
 """
 import os
 import sys
+import zlib
 import time
 
 import numpy as np
@@ -103,7 +104,9 @@ if os.environ.get('FAS_RELAX'):
         relaxationFactor=float(os.environ['FAS_RELAX']))
     NumericalSolution.NonlinearSolvers.multilevelNonlinearSolverChooser = NonlinearSolvers.multilevelNonlinearSolverChooser
 so = default_so
-so.name = p.name = "fasp_%s_%s_%d_%d" % (mode, smootherName, nLevels, size)
+#the archive is named after every argument (a checksum of them): tests that differ in any of
+#them run side by side (pytest-xdist) in this directory, and two jobs opening one HDF5 file hang
+so.name = p.name = "fasp_%s_%s_%d_%08x_%d" % (mode, smootherName, nLevels, zlib.crc32(" ".join(sys.argv[1:]).encode()), size)
 so.sList = [default_s]
 runopts.logLevel = 1
 runopts.verbose = False
