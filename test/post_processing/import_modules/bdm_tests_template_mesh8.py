@@ -1,4 +1,5 @@
-from proteus import iproteus as ip
+from proteus import runtime
+runtime.start()
 from proteus import default_p as p
 from proteus import default_n as n
 from proteus import default_s,default_so
@@ -124,4 +125,4 @@ so.sList=[default_s]
 ########################################################################
 from proteus import *
 opts = None
-ns = NumericalSolution.NS_base(so,[p],[n],so.sList,ip.opts)
+ns = NumericalSolution.NS_base(so,[p],[n],so.sList,runtime.RunOptions())

@@ -24,6 +24,12 @@
 # own caveat: OpenMPI is not fork()-safe, so whole-suite `pytest --forked` runs
 # can show unrelated SIGSEGV crashes that don't occur when running test files
 # individually).
+#
+# macOS: export FI_PROVIDER=tcp. MPICH runs over libfabric, whose default
+# provider there ("sockets") busy-polls two threads at 100% CPU in every
+# process from MPI_Init on, about three cores per rank. `import proteus` sets
+# it on macOS unless it is already set; see README.md, "Choosing between
+# OpenMPI and MPICH".
 name: proteus-dev-mpich
 channels:
   - conda-forge
@@ -76,3 +82,28 @@ dependencies:
   - pycparser =2.22
   - cffi =1.17.1
   - sympy =1.13.2
+  - strictyaml =1.7.3
+  # proteus.Archiver now builds its XDMF/YMF metadata through ymf.archive,
+  # so pyyaml is a runtime requirement rather than an incidental one. It must
+  # be a build with the libyaml C extension: ymf.archive.require_libyaml()
+  # errors without it, because the pure-Python dumper is ~3.2x slower and the
+  # archive is written every timestep. conda-forge's pyyaml is built with it.
+  - pyyaml =6.0.2
+  # ymf itself has no conda-forge feedstock yet, so it is installed from git
+  # until one exists. Replace this pip entry with a plain "- ymf" dependency
+  # once the feedstock lands.
+  #
+  # proteus at runtime needs only the ymf core, whose one dependency is the
+  # pyyaml above: Archiver writes the archive of record through ymf.archive.
+  # But proteus also ships scripts/ymf_run, which composes and validates a
+  # specification (ymf.closure -> ymf.compose, strictyaml) and turns it into
+  # a Proteus problem (ymf.symbolic, sympy). So the front end is a *test*
+  # dependency even though it is not a runtime one, which is why sympy and
+  # strictyaml are pinned above rather than left to ymf[symbolic] -- pip
+  # resolving that extra would pull its own sympy over conda's.
+  #
+  # Without them test_adr_problem's eight end-to-end cases skip, and
+  # scripts/ymf_run is never exercised. pint (ymf[units]) stays out: nothing
+  # proteus ships imports ymf.units.
+  - pip:
+    - git+https://github.com/cekees/ymf.git@main

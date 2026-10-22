@@ -62,6 +62,18 @@ wildcard on every MPI-linked package: `hdf5`, `h5py`, `scorec`, `zoltan`).
   `environment-mpich-dev.yml` for the reproduction and verification details.
   If you hit this, switch to `environment-openmpi-dev.yml`.
 
+  **On macOS, set `FI_PROVIDER=tcp` with MPICH.** conda-forge's MPICH runs
+  over libfabric, which on macOS picks its `sockets` provider. That provider
+  starts two connection threads that busy-poll at 100% CPU each from
+  `MPI_Init` on, in every process, so each MPI rank holds about three cores,
+  half of it system time. Its `tcp` provider has no such threads and runs
+  multi-rank jobs just as well. `import proteus` sets `FI_PROVIDER=tcp` on
+  macOS unless it is already set, which covers `parun` and anything that
+  imports proteus before MPI starts. Set it yourself (`export FI_PROVIDER=tcp`)
+  for `mpiexec` runs of other programs, or when your own script imports
+  `mpi4py.MPI` or `petsc4py.PETSc` before `proteus`. Seen with MPICH 4.3.2,
+  5.0.1 and 5.0.2 and libfabric 2.2.0 and 2.6.0; Open MPI is not affected.
+
 On macOS/arm64 (Apple Silicon), `environment-openmpi-dev.yml` requires
 `scorec >=4.2.1` and will not solve with anything older. conda-forge's `scorec`
 had mpich-only builds on that platform until 4.2.1 build 1

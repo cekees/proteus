@@ -1,117 +1,92 @@
 #!/usr/bin/env python
-import numpy
+"""Rebuild an archive's document from the HDF5 file it belongs to.
+
+For when a run's ``.ymf``/``.xmf`` is missing, truncated, or was never
+written because the job died before the archive closed. The heavy data is
+already in the ``.h5``, and so is the per-step grid metadata, so the
+document can be regenerated without re-running anything.
+
+The ``.h5`` is self-describing: it records the metadata format version, the
+time-collection names, and whether the run wrote global arrays or one grid
+per subdomain. So this needs no ``.xmf`` to seed from and no flags telling
+it which layout to expect -- the previous version required both, opening
+``<name>.xmf`` for its Domain skeleton and taking ``--no-global-sync`` on
+trust.
+
+Writes ``<name><addname>.ymf`` (the archive of record) and a matching
+``.xmf`` for viewers. ``ymf2xmf`` does the second step alone if that is
+all that is wanted.
+"""
 import os
-from xml.etree.ElementTree import *
-from proteus import Comm
-comm = Comm.init()
-#rather than import proteus
-def indentXML(elem, level=0):
-    i = "\n" + level*"  "
-    if len(elem):
-        if not elem.text or not elem.text.strip():
-            elem.text = i + "  "
-        for e in elem:
-            indentXML(e, level+1)
-            if not e.tail or not e.tail.strip():
-                e.tail = i + "  "
-        if not e.tail or not e.tail.strip():
-            e.tail = i
-    else:
-        if level and (not elem.tail or not elem.tail.strip()):
-            elem.tail = i
 
-def countFrames(h5File, collectionName):
-    """Number of consecutive frames <collectionName>_0, _1, ... stored in the .h5"""
-    prefix = collectionName.replace(" ","_")+"_"
-    n = 0
-    while prefix+repr(n) in h5File:
-        n += 1
-    return n
 
-def frameNames(TemporalGridCollection):
-    """The frame Names already present in a temporal collection, in order"""
-    names = []
-    for child in TemporalGridCollection:
-        t = child.find("Time")
-        names.append(None if t is None else t.attrib.get('Name'))
-    return names
+def gatherTimes(filename, dataDir='.', addname="_complete", tCount=None,
+                global_sync=True):
+    """Regenerate the document for ``<dataDir>/<filename>.h5``.
 
-def gatherTimes(filename,dataDir='.',addname="_complete", tCount=None, global_sync=True):
+    Every collection is rebuilt from scratch, so the result never repeats
+    a step, whatever the existing sidecars hold. ``tCount`` (None or < 0
+    for all) keeps the first ``tCount`` steps, and is refused if the
+    ``.h5`` holds fewer. The layout is read from the attribute the writer
+    records; ``global_sync`` is accepted for command-line compatibility.
     """
-    Rebuild the temporal collections of filename.xmf from the per-frame grids
-    stored in filename.h5, writing filename+addname.xmf.
+    from proteus.Archiver import readArchiveDomain
+    from ymf.archive import write_ymf
+    from ymf.xdmf import write_xdmf
 
-    This is for archives whose .xmf lost frames, e.g. a run killed at walltime,
-    which leaves only the newest frame in the .xmf; the .h5 always holds all of
-    them. The frame count comes from the .h5, not from the .xmf. A collection
-    that already holds frames 0..n-1 is left untouched, so running this on a
-    complete .xmf is a no-op apart from writing the copy. tCount (None or <0
-    for all frames) limits the rebuild to the first tCount frames.
-    """
-    import h5py
-    xmlFile = open(filename+".xmf","rb")
-    h5File = h5py.File(filename+".h5","r")
-    tree = ElementTree(file=xmlFile)
-    xmlFile.close()
-    XDMF = tree.getroot()
-    Domain = XDMF[0]
-    for TemporalGridCollection in Domain:
-        name = TemporalGridCollection.attrib['Name']
-        available = countFrames(h5File, name)
-        if available == 0:
-            raise ValueError("no {0}_<i> frame datasets in {1}.h5".format(name.replace(" ","_"), filename))
+    domain = readArchiveDomain(filename, dataDir=dataDir)
+    if not domain:
+        raise SystemExit(
+            "gatherTimes: %s holds no grid metadata to rebuild from"
+            % (os.path.join(dataDir, filename + ".h5"),))
+
+    for collection in domain.get("time_collections", []):
+        steps = collection["data"]
         if tCount is None or tCount < 0:
-            nFrames = available
-        elif tCount > available:
-            raise ValueError("asked for {0} frames of {1} but {2}.h5 holds {3}".format(tCount, name, filename, available))
+            print("%s: %d step(s)" % (collection["name"], len(steps)))
+        elif tCount > len(steps):
+            # Asking for steps the run never wrote is a mistake to report,
+            # not a request to quietly write fewer.
+            raise ValueError(
+                "asked for %d steps of %s but %s.h5 holds %d"
+                % (tCount, collection["name"],
+                   os.path.join(dataDir, filename), len(steps)))
         else:
-            nFrames = tCount
-        if frameNames(TemporalGridCollection) == [str(i) for i in range(nFrames)]:
-            print("{0}: {1} already holds frames 0-{2}; left as is".format(filename+".xmf", name, nFrames-1))
-            continue
-        #rebuild from scratch: never append to the frames already in the .xmf
-        del TemporalGridCollection[:]
-        for i in range(nFrames):
-            dataset_name = name+"_"+repr(i)
-            dataset_name = dataset_name.replace(" ","_")
-            grid_array = h5File["/"+dataset_name]
-            if global_sync:
-                Grid = fromstring(grid_array[0])
-                TemporalGridCollection.append(Grid)
-            else:
-                size = grid_array.shape[0]
-                SpatialCollection=SubElement(TemporalGridCollection,"Grid",{"GridType":"Collection",
-                                                                            "CollectionType":"Spatial"})
-                time = SubElement(SpatialCollection,"Time",{"Value":grid_array.attrs['Time'],"Name":str(i)})
-                for j in range(size):
-                    Grid = fromstring(grid_array[j])
-                    SpatialCollection.append(Grid)
-        print("{0}: rebuilt {1} with {2} frames from {3}.h5".format(filename+addname+".xmf", name, nFrames, filename))
-    h5File.close()
-    xmlFile = open(filename+addname+".xmf","wb")
-    indentXML(tree.getroot())
-    tree.write(xmlFile)
-    xmlFile.close()
+            print("%s: keeping %d of %d step(s)"
+                  % (collection["name"], tCount, len(steps)))
+            collection["data"] = steps[:tCount]
+
+    out_base = os.path.join(dataDir, filename + addname)
+    write_ymf(domain, out_base + ".ymf")
+    print("wrote %s.ymf" % (out_base,))
+    write_xdmf(domain, out_base + ".xmf")
+    print("wrote %s.xmf" % (out_base,))
+
 
 if __name__ == '__main__':
     from optparse import OptionParser
     usage = "usage: %prog [options] filename"
     parser = OptionParser(usage=usage)
     parser.add_option("-t","--tCount",
-                      help="number of frames to keep (default: all frames in the .h5)",
+                      help="keep only this many time steps (default: all)",
                       action="store",
                       type="int",
                       dest="tCount",
                       default="-1")
     parser.add_option("-n","--no-global-sync",
-                      help="assume hdf5 has partitioned mesh",
+                      help="accepted for compatibility; the archive records "
+                           "its own layout",
                       action="store_true",
                       dest="not_global_sync",
                       default=False)
 
     (opts,args) = parser.parse_args()
-    if args[0][-3:] == 'xmf':
-        filebase = args[0][:-4]
-    else:
-        filebase = args[0]
-    gatherTimes(filebase,tCount = opts.tCount, global_sync = not opts.not_global_sync)
+    if not args:
+        parser.error("give the archive's base name (or its .xmf/.ymf/.h5)")
+    filebase = args[0]
+    for suffix in (".xmf", ".ymf", ".h5"):
+        if filebase.endswith(suffix):
+            filebase = filebase[:-len(suffix)]
+            break
+    gatherTimes(filebase, tCount=opts.tCount,
+                global_sync=not opts.not_global_sync)

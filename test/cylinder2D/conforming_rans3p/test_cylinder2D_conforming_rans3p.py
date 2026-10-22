@@ -1,5 +1,9 @@
 """Tests for 2d flow around a cylinder with a conforming mesh and rans3p"""
-from proteus.iproteus import *
+import os
+import proteus
+import sys
+from importlib import reload
+from proteus import Profiling, default_s
 from proteus import Comm
 from proteus import Context
 import h5py
@@ -33,17 +37,15 @@ class Test_rans3p(object):
 #         self.compare_name = "T8P2"
 #         self.example_setting("T=8.0 vspaceOrder=2 onlySaveFinalSolution=True")
 
-    def test_ex2(self):
+    def test_ex2(self, opts):
         self.compare_name = "T1P1"
-        self.example_setting("T=0.1 vspaceOrder=1 onlySaveFinalSolution=True")
+        self.example_setting(opts, "T=0.1 vspaceOrder=1 onlySaveFinalSolution=True")
 
 
-    def example_setting(self, pre_setting):
+    def example_setting(self, opts, pre_setting):
         Context.contextOptionsString = pre_setting
         from . import cylinder_so as my_so
         reload(my_so)
-        # defined in iproteus
-        opts.profile = False
         opts.gatherArchive = True
         
         pList=[]

@@ -1,16 +1,36 @@
-"""scripts/gatherTimes must rebuild a partial .xmf from the .h5 and leave a complete one alone."""
-import os
+"""scripts/gatherTimes must rebuild a complete document from the .h5.
+
+The case it exists for (#32): a run killed at walltime, whose .xmf holds
+only the newest step while its .h5 holds them all. These archives come from
+proteus <= 1.9.x, so the fixture is a version 1 archive; current-format
+archives are covered in test_archive_parallel_metadata.py.
+"""
 import importlib.machinery
 import importlib.util
+import os
 import xml.etree.ElementTree as ET
-import numpy as np
+
 import pytest
 
 h5py = pytest.importorskip("h5py")
+pytest.importorskip("ymf")
 
-SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "gatherTimes")
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCRIPT = os.path.join(HERE, "..", "scripts", "gatherTimes")
+
+
+def _load_sibling(name):
+    # CI runs pytest with --import-mode=importlib, which does not put test/
+    # on sys.path, so `from test_archive_v1_compat import ...` only works
+    # locally. Load the helper module from its file instead.
+    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+write_v1_archive = _load_sibling("test_archive_v1_compat").write_v1_archive
 NFRAMES = 5
-COLLECTION = "Mesh Spatial_Domain"
 
 
 def load_gatherTimes():
@@ -21,74 +41,80 @@ def load_gatherTimes():
     return module.gatherTimes
 
 
-def grid_xml(i):
-    return ('<Grid GridType="Uniform"><Time Value="{0:e}" Name="{1}" />'
-            '<Attribute Name="u" Center="Node"><DataItem>archive.h5:/u_t{1}</DataItem></Attribute>'
-            '</Grid>').format(0.01 * i, i)
-
-
-def write_archive(base, frames_in_xmf):
-    """An .h5 holding NFRAMES grids, as the archiver stores them, and an .xmf holding frames_in_xmf"""
-    with h5py.File(base + ".h5", "w") as f:
-        for i in range(NFRAMES):
-            f.create_dataset("Mesh_Spatial_Domain_{0}".format(i), data=np.array([grid_xml(i).encode()]))
-    grids = "".join(grid_xml(i) for i in frames_in_xmf)
-    with open(base + ".xmf", "w") as f:
-        f.write('<Xdmf Version="2.0"><Domain>'
-                '<Grid Name="{0}" GridType="Collection" CollectionType="Temporal">{1}</Grid>'
-                '</Domain></Xdmf>'.format(COLLECTION, grids))
-
-
 def frames(path):
-    collection = ET.parse(path).getroot()[0][0]
-    return [(g.find("Time").attrib["Name"], g.find("Time").attrib["Value"]) for g in collection]
+    """(Name, time) of each step in the first temporal collection."""
+    collection = ET.parse(path).getroot().find("Domain").find("Grid")
+    return [(g.find("Time").attrib["Name"], float(g.find("Time").attrib["Value"]))
+            for g in collection.findall("Grid")]
 
 
 def expected(n):
-    return [(str(i), "{0:e}".format(0.01 * i)) for i in range(n)]
+    # write_v1_archive stores step i at time 0.1 i
+    return [(str(i), pytest.approx(0.1 * i)) for i in range(n)]
+
+
+def write_xmf(path, steps):
+    """The .xmf a run leaves behind: complete, or only its newest step."""
+    grids = "".join('<Grid GridType="Uniform"><Time Value="%e" Name="%d"/></Grid>'
+                    % (0.1 * i, i) for i in steps)
+    with open(path, "w") as f:
+        f.write('<Xdmf Version="2.0"><Domain><Grid Name="Mesh Spatial_Domain" '
+                'GridType="Collection" CollectionType="Temporal">%s</Grid>'
+                '</Domain></Xdmf>' % grids)
 
 
 @pytest.fixture
 def base(tmp_path):
+    write_v1_archive(str(tmp_path / "archive.h5"), n_steps=NFRAMES)
     return str(tmp_path / "archive")
+
+
+def run(base, **kwargs):
+    load_gatherTimes()(os.path.basename(base), dataDir=os.path.dirname(base), **kwargs)
 
 
 def test_partial_xmf_is_rebuilt(base):
     # a run killed at walltime leaves only the newest frame in the .xmf
-    write_archive(base, [NFRAMES - 1])
-    load_gatherTimes()(base, tCount=-1)
+    write_xmf(base + ".xmf", [NFRAMES - 1])
+    run(base, tCount=-1)
     assert frames(base + "_complete.xmf") == expected(NFRAMES)
 
 
 def test_complete_xmf_is_left_alone(base):
     # the old code read the count from the FIRST grid's Name ("0") and cut this to one frame
-    write_archive(base, range(NFRAMES))
-    before = frames(base + ".xmf")
-    load_gatherTimes()(base, tCount=-1)
-    assert frames(base + "_complete.xmf") == before == expected(NFRAMES)
+    write_xmf(base + ".xmf", range(NFRAMES))
+    with open(base + ".xmf", "rb") as f:
+        before = f.read()
+    run(base, tCount=-1)
+    assert frames(base + "_complete.xmf") == expected(NFRAMES)
+    with open(base + ".xmf", "rb") as f:
+        assert f.read() == before
 
 
 def test_explicit_count_does_not_duplicate(base):
     # the old code kept the existing grids when -t was given and appended them all again
     for present in ([NFRAMES - 1], range(NFRAMES)):
-        write_archive(base, present)
-        load_gatherTimes()(base, tCount=NFRAMES)
+        write_xmf(base + ".xmf", present)
+        run(base, tCount=NFRAMES)
         assert frames(base + "_complete.xmf") == expected(NFRAMES)
 
 
 def test_default_tCount_is_all_frames(base):
-    write_archive(base, [NFRAMES - 1])
-    load_gatherTimes()(base)
+    write_xmf(base + ".xmf", [NFRAMES - 1])
+    run(base)
+    assert frames(base + "_complete.xmf") == expected(NFRAMES)
+
+
+def test_no_xmf_is_needed_at_all(base):
+    run(base)
     assert frames(base + "_complete.xmf") == expected(NFRAMES)
 
 
 def test_fewer_frames(base):
-    write_archive(base, range(NFRAMES))
-    load_gatherTimes()(base, tCount=2)
+    run(base, tCount=2)
     assert frames(base + "_complete.xmf") == expected(2)
 
 
 def test_more_frames_than_stored(base):
-    write_archive(base, [NFRAMES - 1])
     with pytest.raises(ValueError, match="holds"):
-        load_gatherTimes()(base, tCount=NFRAMES + 1)
+        run(base, tCount=NFRAMES + 1)

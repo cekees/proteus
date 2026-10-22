@@ -2,7 +2,9 @@
 """
 Test module for clsvof with rans2p
 """
-from proteus.iproteus import *
+import proteus
+from importlib import reload
+from proteus import Profiling, default_s
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=1
@@ -58,7 +60,7 @@ class TestCLSVOFWithRans2p(object):
     # comparison_files/multiphase_2D_falling_bubble.h5 was simply missing
     # from this checkout; baseline was regenerated from this simulation's
     # own output rather than independently validated.
-    def test_2D_multiphase(self):
+    def test_2D_multiphase(self, opts):
         # RELOAD MODULES
         self.reload_modules()
         pnList = [(twp_navier_stokes_p, twp_navier_stokes_n),

@@ -52,15 +52,16 @@ class TwoPhaseFlowProblem(Parameters.FreezableClass):
         # ***** SET OF ASSERTS ***** #
         assert self.domain.nd in [2,3], "nd={2,3}"
         assert self.SystemNumerics.cfl <= 1, "Choose cfl <= 1"
-        assert type(self.domain.MeshOptions.he)==float , "Provide (float) he (characteristic mesh size)"
+        meshOptions = mt.getMeshOptions(self.domain)
+        assert type(meshOptions.he)==float , "Provide (float) he (characteristic mesh size)"
         assert self.domain is not None, "Provide a domain"
-        if self.domain.MeshOptions.structured:
-            assert type(self.domain.MeshOptions.nnx)==int and type(self.domain.MeshOptions.nny)==int, "Provide (int) nnx and nny"
+        if meshOptions.structured:
+            assert type(meshOptions.nnx)==int and type(meshOptions.nny)==int, "Provide (int) nnx and nny"
             if self.domain.nd==3:
-                assert type(self.domain.MeshOptions.nnz)==int, "Provide (int) nnz"
+                assert type(meshOptions.nnz)==int, "Provide (int) nnz"
         else:
-            assert self.domain.MeshOptions.triangleOptions != 'q30DenA', "Set domain.MeshOptions.triangleOptions"
-        assert self.domain.MeshOptions.triangleFlag in [0,1,2], "triangleFlag must be 1, 2 or 3"
+            assert meshOptions.triangleOptions != 'q30DenA', "Set the mesh options' triangleOptions"
+        assert meshOptions.triangleFlag in [0,1,2], "triangleFlag must be 1, 2 or 3"
         if self.SystemPhysics.initialConditions is not None:
             assert type(self.SystemPhysics.initialConditions)==dict, "Provide dict of initial conditions"
             # assertion now done in TwoPhaseFlow_so.py
@@ -148,7 +149,7 @@ class TwoPhaseFlowProblem(Parameters.FreezableClass):
         #self.Parameters = Parameters.ParametersHolder(ProblemInstance=self)
         
         #preparing to extricate the mesh generation process from the workflow
-        self.Parameters.mesh = self.domain.MeshOptions
+        self.Parameters.mesh = mt.getMeshOptions(self.domain)
 
         #model organization
         self.SystemPhysics.attachModels()

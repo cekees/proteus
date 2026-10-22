@@ -2,7 +2,10 @@
 """
 Test module for VOF with EV
 """
-from proteus.iproteus import *
+import os
+import proteus
+from importlib import reload
+from proteus import Profiling, default_n, default_s, default_so
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=2
@@ -39,7 +42,7 @@ class TestVOF(object):
     def teardown_method(self,method):
         pass
 
-    def test_supg(self):
+    def test_supg(self, opts):
         ########
         # SUPG #
         ########
@@ -66,7 +69,7 @@ class TestVOF(object):
 
         actual.close()
 
-    def test_TaylorGalerkin(self):
+    def test_TaylorGalerkin(self, opts):
         ##################
         # TaylorGalerkin #
         ##################
@@ -95,7 +98,7 @@ class TestVOF(object):
 
         actual.close()
 
-    def test_EV1(self):
+    def test_EV1(self, opts):
         #######################
         # ENTROPY VISCOSITY 1 # Polynomial entropy
         #######################
@@ -124,7 +127,7 @@ class TestVOF(object):
 
         actual.close()
 
-    def test_EV2(self):
+    def test_EV2(self, opts):
         thelper_vof.ct.STABILIZATION_TYPE = 2 # EV
         thelper_vof.ct.ENTROPY_TYPE = 1 #logarithmic
         thelper_vof.ct.cE = 0.1
@@ -150,7 +153,7 @@ class TestVOF(object):
 
         actual.close()
 
-    def test_SmoothnessBased(self):
+    def test_SmoothnessBased(self, opts):
         thelper_vof.ct.STABILIZATION_TYPE = 3 # Smoothness based
         thelper_vof.ct.FCT = True
         reload(default_n)
@@ -176,7 +179,7 @@ class TestVOF(object):
 
         actual.close()
 
-    def test_stab4(self):
+    def test_stab4(self, opts):
         thelper_vof.ct.STABILIZATION_TYPE = 4 # Proposed by D.Kuzmin
         thelper_vof.ct.FCT = True
         reload(default_n)

@@ -10,7 +10,7 @@ This module solves equations of the form
 
 """
 import os, pytest
-from proteus.iproteus import *
+from proteus import NumericalSolution, Profiling, default_n, default_s
 from proteus import Comm, defaults
 comm = Comm.get()
 modulepath = os.path.dirname(os.path.abspath(__file__))
@@ -38,16 +38,16 @@ class TestPoissonTetgen(object):
                     'meshNoVessel.face',
                     'meshNoVessel.node',
                     'meshNoVessel.poly',
-                    'poisson_3d_tetgen_c0p1pe1.xmf',
+                    'poisson_3d_tetgen_c0p1pe1.xmf', 'poisson_3d_tetgen_c0p1pe1.ymf',
                     'poisson_3d_tetgen_c0p1pe1.h5',
-                    'poisson_3d_tetgen_c0p2pe1.xmf',
+                    'poisson_3d_tetgen_c0p2pe1.xmf', 'poisson_3d_tetgen_c0p2pe1.ymf',
                     'poisson_3d_tetgen_c0p2pe1.h5' ]
         for file in FileList:
             if os.path.isfile(file):
                 os.remove(file)
 
     @pytest.mark.slowTest
-    def test_c0p1(genMesh=True):
+    def test_c0p1(self, opts, genMesh=True):
         pList = [defaults.load_physics('poisson_3d_tetgen_p',
                                        modulepath)]
         nList = [defaults.load_numerics('poisson_3d_tetgen_c0p1_n',
@@ -67,7 +67,7 @@ class TestPoissonTetgen(object):
         assert(True)
 
     @pytest.mark.slowTest
-    def test_c0p2(genMesh=True):
+    def test_c0p2(self, opts, genMesh=True):
         pList = [defaults.load_physics('poisson_3d_tetgen_p',
                                        modulepath)]
         nList = [defaults.load_numerics('poisson_3d_tetgen_c0p2_n',

@@ -2,7 +2,8 @@
 """
 Test module for level set transport
 """
-from proteus.iproteus import *
+from importlib import reload
+from proteus import NumericalSolution
 import os
 import numpy as np
 import h5py
@@ -25,7 +26,7 @@ class TestRotation2D(object):
     def teardown_method(self,method):
         filenames = []
         for aux_name in self.aux_names:
-            filenames.extend([aux_name+'.'+ext for ext in ['h5','xmf']])
+            filenames.extend([aux_name+'.'+ext for ext in ['h5','xmf','ymf']])
         filenames.append('proteus.log')
         for f in filenames:
             if os.path.exists(f):
@@ -36,7 +37,7 @@ class TestRotation2D(object):
             else:
                 pass
             
-    def test_rotation2D(self,use_strong_constraints=False):
+    def test_rotation2D(self,opts,use_strong_constraints=False):
         from proteus import default_s, default_so, default_p, default_n
         reload(default_s)
         reload(default_so)
@@ -51,9 +52,6 @@ class TestRotation2D(object):
                        vof_rotation_2d_n,
                        ls_consrv_rotation_2d_n,
                        ls_rotation_2d_so)
-        opts.logLevel=7
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         sList=[]
         if ls_rotation_2d_so.sList == []:

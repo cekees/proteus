@@ -2,7 +2,8 @@
 """
 Test module for level set transport
 """
-from proteus.iproteus import *
+from importlib import reload
+from proteus import NumericalSolution
 import os
 import numpy as np
 import h5py
@@ -36,7 +37,7 @@ class TestVortex2D(object):
         #pass
          filenames = []
          for aux_name in self.aux_names:
-             filenames.extend([aux_name+'.'+ext for ext in ['h5','xmf']])
+             filenames.extend([aux_name+'.'+ext for ext in ['h5','xmf','ymf']])
          filenames.append('proteus.log')
          for f in filenames:
              if os.path.exists(f):
@@ -47,12 +48,9 @@ class TestVortex2D(object):
              else:
                  pass
             
-    def test_vortex2D(self,use_strong_constraints=False):
+    def test_vortex2D(self,opts,use_strong_constraints=False):
         from proteus import default_s
         reload(default_s)
-        opts.logLevel=7
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         sList=[]
         if ls_vortex_2d_so.sList == []:
@@ -95,15 +93,12 @@ class TestVortex2D(object):
         actual.close()
         del ns
         
-    def test_vortex2D_exactHeaviside(self,use_strong_constraints=False):
+    def test_vortex2D_exactHeaviside(self,opts,use_strong_constraints=False):
         from proteus import default_s
         reload(default_s)
         reload(vortex2D)
         vortex2D.useExact=True
         reload(ls_consrv_vortex_2d_p)
-        opts.logLevel=7
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         sList=[]
         if ls_vortex_2d_so.sList == []:
