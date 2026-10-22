@@ -10,6 +10,12 @@ import pytest
 # test builds the environment it hands to mpiexec.
 os.environ.setdefault('OMPI_MCA_rmaps_base_oversubscribe', '1')
 os.environ.setdefault('PRTE_MCA_rmaps_default_mapping_policy', ':oversubscribe')
+# Open MPI 5 picks UCX for point-to-point when it can, and on some CI runners (the ones
+# whose network card is a MANA verbs device) UCX fails to open it ("uct_iface_open(ud_verbs/
+# mana_0:1) failed: Address not valid"), which fails or hangs the launched ranks even for
+# single-node jobs. The plain ob1 layer (self, shared memory, tcp) needs none of that.
+# MPICH ignores these.
+os.environ.setdefault('OMPI_MCA_pml', 'ob1')
 
 
 def pytest_configure(config):
