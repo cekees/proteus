@@ -1,5 +1,9 @@
 """Tests for 2d flow around a cylinder with a conforming mesh and rans2p"""
-from proteus.iproteus import *
+import os
+import proteus
+import sys
+from importlib import reload
+from proteus import Profiling, default_s
 from proteus import Comm
 from proteus import Context
 import h5py
@@ -28,7 +32,7 @@ class Test_rans2p(object):
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = [ "cylinder_rans2p_T1_rans2p.h5","cylinder_rans2p_T1_rans2p.xmf"
+        FileList = [ "cylinder_rans2p_T1_rans2p.h5","cylinder_rans2p_T1_rans2p.xmf", "cylinder_rans2p_T1_rans2p.ymf"
                     ]
         for file in FileList:
             if os.path.isfile(file):
@@ -40,17 +44,15 @@ class Test_rans2p(object):
 #         self.compare_name = "T8P2"
 #         self.example_setting("T=8.0 vspaceOrder=2 onlySaveFinalSolution=True")
 
-    def test_ex2(self):
+    def test_ex2(self, opts):
         self.compare_name = "T1_rans2p"
-        self.example_setting("T=0.01 onlySaveFinalSolution=True")
+        self.example_setting(opts, "T=0.01 onlySaveFinalSolution=True")
 
-    def example_setting(self, pre_setting):
+    def example_setting(self, opts, pre_setting):
         Context.contextOptionsString = pre_setting
 
         from . import cylinder_so as my_so
         reload(my_so)
-        # defined in iproteus
-        opts.profile = False
         opts.gatherArchive = True
         
         pList=[]

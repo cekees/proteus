@@ -46,7 +46,7 @@ import numpy as np
 import pytest
 
 from proteus import Context, defaults
-from proteus.iproteus import NumericalSolution, default_s, opts
+from proteus import NumericalSolution, default_s
 
 
 HERE = Path(__file__).resolve().parent
@@ -242,7 +242,7 @@ def _archive(output_dir, name):
     )
 
 
-def _run_case(case, scheme, output_dir, monkeypatch):
+def _run_case(opts, case, scheme, output_dir, monkeypatch):
     """Run one benchmark at one scheme and return the path to its archive."""
     monkeypatch.chdir(output_dir)
     physics, numerics = _load_case(case, scheme)
@@ -252,9 +252,6 @@ def _run_case(case, scheme, output_dir, monkeypatch):
     system.sList = [default_s]
     system.tnList = numerics.tnList
 
-    opts.logLevel = 1
-    opts.verbose = False
-    opts.profile = False
     opts.gatherArchive = True
 
     numerical_solution = NumericalSolution.NS_base(
@@ -306,16 +303,16 @@ def _compare(case, scheme, archive):
 
 class TestRichards:
     @pytest.mark.parametrize("scheme", CASE_SCHEMES["test_1"])
-    def test_1(self, scheme, tmp_path, monkeypatch):
-        archive = _run_case("test_1", scheme, tmp_path, monkeypatch)
+    def test_1(self, opts, scheme, tmp_path, monkeypatch):
+        archive = _run_case(opts, "test_1", scheme, tmp_path, monkeypatch)
         _compare("test_1", scheme, archive)
 
     @pytest.mark.parametrize("scheme", CASE_SCHEMES["test_2_HYDRUS"])
-    def test_2_HYDRUS(self, scheme, tmp_path, monkeypatch):
-        archive = _run_case("test_2_HYDRUS", scheme, tmp_path, monkeypatch)
+    def test_2_HYDRUS(self, opts, scheme, tmp_path, monkeypatch):
+        archive = _run_case(opts, "test_2_HYDRUS", scheme, tmp_path, monkeypatch)
         _compare("test_2_HYDRUS", scheme, archive)
 
     @pytest.mark.parametrize("scheme", CASE_SCHEMES["test_3"])
-    def test_3(self, scheme, tmp_path, monkeypatch):
-        archive = _run_case("test_3", scheme, tmp_path, monkeypatch)
+    def test_3(self, opts, scheme, tmp_path, monkeypatch):
+        archive = _run_case(opts, "test_3", scheme, tmp_path, monkeypatch)
         _compare("test_3", scheme, archive)

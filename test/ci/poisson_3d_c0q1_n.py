@@ -13,8 +13,14 @@ nDTout = 1
 #finite element spaces
 femSpaces = {0:C0_AffineLinearOnCubeWithNodalBasis}
 #numerical quadrature choices
-elementQuadrature = CubeGaussQuadrature(nd,4)
-elementBoundaryQuadrature = CubeGaussQuadrature(nd-1,4)
+# CubeGaussQuadrature's order is the number of Gauss points per axis, so the
+# point count is order**nd. On this problem (trilinear basis on a regular grid,
+# coefficients linear in x) every integrand has degree <= 3 per axis, which two
+# Gauss points integrate exactly: 8 points per hexahedron, not the 64 that order
+# 4 asks for. The solutions agree to the linear solver's tolerance, and build time
+# and memory are proportional to the point count.
+elementQuadrature = CubeGaussQuadrature(nd,2)
+elementBoundaryQuadrature = CubeGaussQuadrature(nd-1,2)
 
 #number of nodes in x,y,z
 nnx = 11

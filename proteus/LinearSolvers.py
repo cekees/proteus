@@ -4438,6 +4438,71 @@ class NavierStokesConstantPressure(SolverNullSpace):
         null_space_vector.assemblyEnd()
         self.global_null_space = [null_space_vector]
 
+class ConstantComponentsNullSpace(SolverNullSpace):
+    """Constants in some components only: e.g. the pressure of an
+    incompressible flow whose velocity is given on the whole boundary.
+
+    The components are ``coefficients.nullSpaceComponents`` (indices).
+    The vector is 1 on every free degree of freedom of those components,
+    0 elsewhere, normalized; it is set as both the null space and the
+    transpose null space of the operator, so KSP also removes it from the
+    right-hand side. That is right when the constant is in the left null
+    space too, as it is for a velocity-pressure system with Dirichlet
+    velocity: the continuity rows tested with q = 1 sum to the boundary
+    flux of interior basis functions, which is zero.
+
+    In serial and in parallel alike: each rank sets the entries it owns.
+    Which component an owned entry belongs to comes from the model's own
+    layout -- ``owned_local`` maps a rank's owned PETSc entries to its
+    local degrees of freedom, and ``offset``/``stride`` map those to
+    components -- so it holds for interleaved (equal-order, block size nc)
+    and component-blocked (mixed spaces) layouts. In serial ``owned_local``
+    is the identity.
+    """
+    def __init__(self, proteus_ksp):
+        super(ConstantComponentsNullSpace, self).__init__(proteus_ksp)
+
+    @staticmethod
+    def get_name():
+        return 'constant_components'
+
+    @staticmethod
+    def components_of_owned(model):
+        """The component of each degree of freedom this rank owns, in the
+        order of its part of the PETSc vector."""
+        local = sum(model.nFreeDOF_global)
+        component = np.full(local, -1, dtype='i')
+        for ci in range(model.coefficients.nc):
+            component[model.offset[ci] +
+                      model.stride[ci] * np.arange(model.nFreeDOF_global[ci])] = ci
+        return component[np.asarray(model.owned_local)]
+
+    def apply_ns(self, par_b):
+        try:
+            self.components_null_space
+        except AttributeError:
+            model = self.get_global_ksp().par_L.pde
+            vector = par_b.copy()
+            values = vector.getArray()
+            owned = self.components_of_owned(model)
+            if owned.shape[0] != values.shape[0]:
+                raise RuntimeError("ConstantComponentsNullSpace: %d owned degrees of "
+                                   "freedom, but the vector holds %d on this rank"
+                                   % (owned.shape[0], values.shape[0]))
+            mask = np.isin(owned, list(model.coefficients.nullSpaceComponents))
+            n = p4pyPETSc.COMM_WORLD.tompi4py().allreduce(int(mask.sum()))
+            values.fill(0.0)
+            values[mask] = 1.0
+            values /= sqrt(n)
+            vector.assemblyBegin()
+            vector.assemblyEnd()
+            self.components_null_space = p4pyPETSc.NullSpace().create(
+                constant=False, vectors=[vector], comm=p4pyPETSc.COMM_WORLD)
+        operator = self.get_global_ksp().ksp.getOperators()[0]
+        operator.setNullSpace(self.components_null_space)
+        operator.setTransposeNullSpace(self.components_null_space)
+
+
 class ConstantNullSpace(SolverNullSpace):
     def __init__(self,
                  proteus_ksp):

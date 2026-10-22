@@ -1,0 +1,12 @@
+#!/usr/bin/env python
+"""Solve a YMF problem with Proteus; see proteus.cli.ymfrun.
+
+The same runner is ``pro run SPEC.ymf``. Importing proteus.cli.ymfrun pins
+the BLAS/OpenMP threads before anything numeric loads, so keep this the
+first import.
+"""
+import sys
+
+from proteus.cli.ymfrun import main
+
+sys.exit(main())

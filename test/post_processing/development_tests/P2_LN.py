@@ -4,7 +4,7 @@
 Test module for BDM2 Elements
 
 """
-from proteus.iproteus import *
+from proteus import Profiling
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=7

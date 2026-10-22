@@ -6046,6 +6046,21 @@ class MultilevelSimplicialMesh(MultilevelMesh):
 
 ###utility functions for reading meshes from Xdmf
 
+def _dataitem_dataset(node, label):
+    """The HDF5 dataset name a node's DataItem refers to.
+
+    Replaces ``node[0].text.split(':')[-1]``, which reached into the first
+    child by position and split the reference on any colon. A DataItem
+    reference is ``<file>:/<dataset>``, so splitting on ``:/`` keeps a
+    dataset path containing a colon intact.
+    """
+    item = node.find('DataItem')
+    assert item is not None, "no <DataItem> under <%s>" % (label,)
+    text = (item.text or "").strip()
+    assert text, "<DataItem> under <%s> has no reference" % (label,)
+    return text.split(':/')[-1]
+
+
 def findXMLgridElement(xmf,MeshTag='Spatial_Domain',id_in_collection=-1,verbose=0):
     """Try to find the element of the xml tree xmf that holds a uniform
     grid with the name given in MeshTag by searching through Temporal
@@ -6053,18 +6068,37 @@ def findXMLgridElement(xmf,MeshTag='Spatial_Domain',id_in_collection=-1,verbose=
 
     If MeshTag isn't found, uses the first entry in the Domain
     """
-    Domain = xmf.getroot()[-1]
+    #Find the Domain by tag rather than as the root's last child: an
+    #<Information> element is legal ahead of it, and a positional read
+    #silently picks up whatever happens to sit last.
+    Domain = xmf.getroot().find('Domain')
+    assert Domain is not None, "no <Domain> in the XDMF document"
+
     GridCollection = None
-    Grid = None
-    for collection in Domain:
-        if 'Name' in collection.attrib and MeshTag in collection.attrib['Name']:
+    for collection in Domain.findall('Grid'):
+        if MeshTag in collection.attrib.get('Name', ''):
             GridCollection = collection
             break
     if GridCollection is None:
-        GridCollection = Domain[0]
+        candidates = Domain.findall('Grid')
+        assert candidates, "no <Grid> under <Domain>"
+        GridCollection = candidates[0]
+        logEvent("No grid collection named %r; using %r"
+                 % (MeshTag, GridCollection.attrib.get('Name', '<unnamed>')), 3)
     logEvent("Trying GridCollection.tag= %s" % (GridCollection.tag),4)
+
     if GridCollection.attrib['GridType'] == 'Collection':
-        Grid = GridCollection[-1]
+        #id_in_collection selects the step; -1 is the last one written
+        steps = GridCollection.findall('Grid')
+        assert steps, ("grid collection %r holds no grids"
+                       % (GridCollection.attrib.get('Name', '<unnamed>'),))
+        Grid = steps[id_in_collection]
+        if Grid.attrib.get('GridType') == 'Collection':
+            #a spatial collection of subdomain grids: take the first, which
+            #is what a serial reader can use
+            subdomains = Grid.findall('Grid')
+            assert subdomains, "spatial collection holds no subdomain grids"
+            Grid = subdomains[0]
     elif GridCollection.attrib['GridType'] == 'Uniform':
         Grid = GridCollection
     assert Grid.tag == 'Grid'
@@ -6076,22 +6110,22 @@ def extractPropertiesFromXdmfGridNode(Grid):
     """unpack the Topology, Geometry, NodeMaterials, and ElementMaterials
     nodes from xdmf node for a uniform grid
     """
-    #Geometry first
-    Topology = None; Geometry  = None; NodeMaterials= None; ElementMaterials = None
-    for i,leaf in enumerate(Grid):
-        logEvent("Grid leaf %d tag= %s " % (i,leaf.tag),4)
-        if leaf.tag == 'Topology':
-            Topology = Grid[i]
-            logEvent("Topology found in leaf %d " % i,4)
-        elif leaf.tag == 'Geometry':
-            Geometry = Grid[i]
-            logEvent("Geometry found in leaf %d " % i,4)
-        elif leaf.tag == 'Attribute' and leaf.attrib['Name'] == 'nodeMaterialTypes':
-            NodeMaterials = Grid[i]
-            logEvent("NodeMaterials found in leaf %d " % i,4)
-        elif leaf.tag == 'Attribute' and leaf.attrib['Name'] == 'elementMaterialTypes':
-            ElementMaterials = Grid[i]
-            logEvent("ElementMaterials found in leaf %d " % i,4)
+    #Look these up by tag and name. The previous version iterated with
+    #enumerate and then re-indexed Grid[i] to get the very leaf it was
+    #already holding.
+    Topology = Grid.find('Topology')
+    Geometry = Grid.find('Geometry')
+    NodeMaterials = ElementMaterials = None
+    for attribute in Grid.findall('Attribute'):
+        name = attribute.attrib.get('Name')
+        if name == 'nodeMaterialTypes':
+            NodeMaterials = attribute
+        elif name == 'elementMaterialTypes':
+            ElementMaterials = attribute
+    for label, node in (("Topology", Topology), ("Geometry", Geometry),
+                        ("NodeMaterials", NodeMaterials),
+                        ("ElementMaterials", ElementMaterials)):
+        logEvent("%s %s" % (label, "found" if node is not None else "absent"), 4)
 
     return Topology,Geometry,NodeMaterials,ElementMaterials
 
@@ -6113,7 +6147,7 @@ def readUniformElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topolog
     """
 
     nNodes_element = topology2nodes[elementTopologyName]
-    entry = Topology[0].text.split(':')[-1]
+    entry = _dataitem_dataset(Topology, "Topology")
     logEvent("Reading  elementNodesArray from %s " % entry,3)
 
     elementNodesArray = hdf5["/"+entry][:]
@@ -6143,7 +6177,7 @@ def readMixedElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topologyi
     """
     assert elementTopologyName == 'Mixed'
 
-    entry = Topology[0].text.split(':')[-1]
+    entry = _dataitem_dataset(Topology, "Topology")
     logEvent("Reading xdmf_topology from %s " % entry,3)
 
     xdmf_topology = hdf5["/"+entry][:]
@@ -6235,14 +6269,14 @@ def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHD
     Topology,Geometry,NodeMaterials,ElementMaterials = extractPropertiesFromXdmfGridNode(Grid)
 
     assert Geometry is not None
-    entry = Geometry[0].text.split(':')[-1]
+    entry = _dataitem_dataset(Geometry, "Geometry")
     logEvent("Reading nodeArray from %s " % entry,3)
 
     MeshInfo.nodeArray = hdf5["/"+entry][:]
     MeshInfo.nNodes_global = MeshInfo.nodeArray.shape[0]
 
     if NodeMaterials is not None:
-        entry = NodeMaterials[0].text.split(':')[-1]
+        entry = _dataitem_dataset(NodeMaterials, "nodeMaterialTypes")
         logEvent("Reading nodeMaterialTypes from %s " % entry,4)
         MeshInfo.nodeMaterialTypes = hdf5["/"+entry][:]
     else:
@@ -6269,7 +6303,7 @@ def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHD
 
     #
     if ElementMaterials is not None:
-        entry = ElementMaterials[0].text.split(':')[-1]
+        entry = _dataitem_dataset(ElementMaterials, "elementMaterialTypes")
         logEvent("Reading elementMaterialTypes from %s " % entry,3)
         MeshInfo.elementMaterialTypes = hdf5["/"+entry][:]
 
@@ -6812,7 +6846,10 @@ class MeshOptions(object):
         self.nd = nd
         self.he = 1.
         self.use_gmsh = False
+        self.use_plex = False
         self.genMesh = True
+        # max area/volume per region, parallel to domain.regions
+        self.regionConstraints = []
         self.outputFiles_name = 'mesh'
         self.outputFiles = {'poly': True,     
                             'ply': False,        
@@ -6931,6 +6968,105 @@ class MeshOptions(object):
         self.outputFiles['ply'] = ply
         self.outputFiles['asymptote'] = asymptote
         self.outputFiles['geo'] = geo
+
+
+def rankInterfaceExteriorMask(mesh):
+    """Which of ``mesh.exteriorElementBoundariesArray`` are rank interfaces.
+
+    On a partitioned mesh the faces between ranks are exterior faces of each
+    rank's subdomain even though they are interior to the global mesh. A
+    boundary term applied there is applied to the inside of the domain.
+
+    The partitioner already marks them: it copies the domain's flags onto the
+    real boundary and leaves ``elementBoundaryMaterialTypes`` at 0 on the
+    interfaces. Measured on a 16x16 unit square over 2 ranks, element
+    partition, no overlap: the real boundary came back as material types
+    1/2/3/4, 64 faces in all, which is the whole boundary, and every one of
+    the 16 interface faces on each rank as 0.
+
+    That mark is why Dirichlet conditions are already safe -- ``getDBC(x,
+    flag)`` returns None for flag 0 -- and why the diffusive flux is safe,
+    since it is driven by ``isDOFBoundary``. The advective flux consults
+    neither, so it needs this.
+
+    The result is a boolean array **indexed the way the ``ebqe`` arrays are**,
+    by position in ``exteriorElementBoundariesArray``, not by element boundary
+    number. Mask with it after the flux kernel has run; do not hand a shortened
+    face list to the kernel instead. The kernels index ``n``, ``f``, ``df``,
+    ``flux`` and ``inflowFlag`` by the loop counter, so a shorter face list
+    silently pairs each face with another face's quadrature data and leaves
+    the skipped entries holding the previous evaluation's values.
+
+    ``None`` means there is nothing to mask. Serial runs always get ``None``,
+    deliberately: there are no interfaces to remove, and material type 0 is
+    not reserved -- a
+    :class:`proteus.Domain.PlanarStraightLineGraphDomain` built without
+    segment flags numbers them ``[0, 1, 2, ...]``, so flag 0 is a real side of
+    the domain there, and masking it in serial would silently drop its
+    outflow. The same ambiguity remains for a *parallel* run on a mesh whose
+    real boundary is unflagged; there is no way to tell the two apart from the
+    material type alone, and the fix for that is to flag the boundary.
+    """
+    comm = Comm.get()
+    if comm is None or comm.size() == 1:
+        return None
+    exterior = mesh.exteriorElementBoundariesArray
+    mask = mesh.__dict__.get('_rankInterfaceExteriorMask')
+    if mask is not None and len(mask) != len(exterior):
+        mask = None             # adapted since: the cached mask is the old mesh's
+    if mask is None:
+        mask = np.asarray(mesh.elementBoundaryMaterialTypes)[exterior] == 0
+        mesh.__dict__['_rankInterfaceExteriorMask'] = mask
+        masked = int(mask.sum())
+        if masked:
+            logEvent("Advective boundary flux: masking %d of %d exterior faces "
+                     "on rank %d; they are rank interfaces (material type 0), "
+                     "interior to the global mesh"
+                     % (masked, len(mask), comm.rank()), level=2)
+    return mask
+
+
+def getMeshOptions(domain):
+    """
+    The MeshOptions governing how a domain gets discretized.
+
+    Meshing policy is not part of what a domain *is*, so a domain does not
+    carry it as description; it is attached here, on first use, and owned by
+    this module.  Everything that decides how a region becomes a mesh --
+    element size, generator choice, partitioning, refinement levels, region
+    size constraints -- belongs on the object this returns.
+
+    Parameters
+    ----------
+    domain: proteus.Domain.D_base
+        the domain to be meshed
+
+    Returns
+    -------
+    MeshOptions
+        the options for this domain, created with the domain's dimension if
+        none have been attached yet
+    """
+    meshOptions = domain.__dict__.get('_meshOptions')
+    if meshOptions is None:
+        meshOptions = MeshOptions(domain.nd)
+        domain.__dict__['_meshOptions'] = meshOptions
+    return meshOptions
+
+
+def setMeshOptions(domain, meshOptions):
+    """
+    Attach mesh options to a domain, replacing any already attached.
+
+    Parameters
+    ----------
+    domain: proteus.Domain.D_base
+        the domain to be meshed
+    meshOptions: MeshOptions
+        the options to use for it
+    """
+    domain.__dict__['_meshOptions'] = meshOptions
+    return meshOptions
 
 
 def msh2simplex(fileprefix, nd):
@@ -7065,7 +7201,7 @@ def msh2simplex(fileprefix, nd):
 
 def generateMesh(physics,numerics,generatePartitionedMeshFromFiles=False):
     try:
-        meshOptions = physics.domain.MeshOptions
+        meshOptions = getMeshOptions(physics.domain)
         assert(not (meshOptions.genMesh == True and
                     meshOptions.nn == None and 
                     meshOptions.nnx  == None and
@@ -7080,10 +7216,203 @@ def generateMesh(physics,numerics,generatePartitionedMeshFromFiles=False):
         mlMesh = _generateMesh(physics.domain, meshOptions, generatePartitionedMeshFromFiles, numerics)
     return mlMesh
 
+def chooseMeshOptions(physics, numerics):
+    """The options :func:`generateMesh` meshes with.
+
+    The domain's :func:`getMeshOptions`, unless they say nothing about
+    element size or count; then the n module, with the p module's genMesh
+    (old-style input). This is generateMesh's choice, without generating.
+    """
+    try:
+        meshOptions = getMeshOptions(physics.domain)
+        assert(not (meshOptions.genMesh == True and
+                    meshOptions.nn == None and
+                    meshOptions.nnx  == None and
+                    meshOptions.nny == None and
+                    meshOptions.nnz == None and
+                    meshOptions.triangleOptions == None and
+                    meshOptions.use_plex == False))
+        return meshOptions
+    except:
+        numerics.genMesh = physics.genMesh
+        return numerics
+
+def setDomainFromPhysics(p, n):
+    """Give an old-style p module (no ``domain``) a domain built from its
+    ``nd``, ``L``, ``x0``, ``polyfile`` or ``meshfile``, with mesh options
+    from the n module. A p module that has a domain is left alone, so
+    calling this twice is the same as calling it once."""
+    if p.domain is not None:
+        return
+    if p.nd == 1:
+        p.domain = Domain.RectangularDomain(L=p.L[:1],
+                                            x=p.x0[:1],
+                                            name=p.name)
+    elif p.nd == 2:
+        if p.polyfile is not None:
+            p.domain = Domain.PlanarStraightLineGraphDomain(fileprefix=p.polyfile,name=p.polyfile)
+        elif p.meshfile != None:
+            p.domain = Domain.Mesh2DMDomain(p.meshfile)
+        else:
+            p.domain = Domain.RectangularDomain(L=p.L[:2],
+                                                x=p.x0[:2],
+                                                name=p.name)
+    elif p.nd == 3:
+        if p.polyfile is not None:
+            p.domain = Domain.PiecewiseLinearComplexDomain(fileprefix=p.polyfile,name=p.polyfile)
+        elif p.meshfile is not None:
+            p.domain = Domain.Mesh3DMDomain(p.meshfile)
+        else:
+            p.domain = Domain.RectangularDomain(L=p.L[:3],
+                                                x=p.x0[:3],
+                                                name=p.name)
+    else:
+        raise RuntimeError("No support for domains in more than three dimensions")
+
+    #Ensuring backwards compatibility with isolated mesh generation routines
+    meshOptions = getMeshOptions(p.domain)
+    meshOptions.nnx, meshOptions.nny, meshOptions.nnz = n.nnx,n.nny,n.nnz
+    meshOptions.nn = n.nn
+    meshOptions.nLevels = n.nLevels
+    meshOptions.hex = n.hex
+    meshOptions.quad = n.quad
+    meshOptions.triangleFlag=n.triangleFlag
+    meshOptions.triangleOptions=n.triangleOptions
+    meshOptions.genMesh=p.genMesh
+    # The solvers read the partition from n (parallelUsesFullOverlap), so
+    # the mesh must be partitioned the same way. Without these two lines an
+    # element partition without overlap asked for in n was meshed as the
+    # default node partition with one layer, and assembled as if it had
+    # none: every overlapping element counted twice.
+    meshOptions.parallelPartitioningType = getattr(
+        n, 'parallelPartitioningType', meshOptions.parallelPartitioningType)
+    meshOptions.nLayersOfOverlapForParallel = getattr(
+        n, 'nLayersOfOverlapForParallel', meshOptions.nLayersOfOverlapForParallel)
+
+def meshFiles(domain, meshOptions):
+    """What :func:`writeMeshFiles` would do for this domain, or None.
+
+    A dict: ``generator`` ('triangle', 'tetgen' or 'gmsh'), ``prefix``,
+    ``command`` (what runs, including the generator's options),
+    ``inputs`` (files whose contents determine the mesh), ``outputs``
+    (files it must write) and ``optional`` (files it may write). None for
+    domains whose mesh is built in memory or read from files they name.
+    """
+    domainMeshOptions = getMeshOptions(domain)
+    if isinstance(domain, Domain.PlanarStraightLineGraphDomain):
+        if domainMeshOptions.use_gmsh is True:
+            prefix = domain.geofile
+            return {"generator": "gmsh", "prefix": prefix,
+                    "command": "gmsh {0}.geo -2 -format msh2; msh2simplex nd=2".format(prefix),
+                    "inputs": [prefix + ".geo"],
+                    "outputs": [prefix + e for e in (".msh", ".ele", ".node", ".edge")],
+                    "optional": []}
+        prefix = domain.polyfile
+        return {"generator": "triangle", "prefix": prefix,
+                "command": "triangle -{0} -e {1}.poly".format(meshOptions.triangleOptions, prefix),
+                "inputs": [prefix + ".poly"],
+                "outputs": [prefix + e for e in (".ele", ".node", ".edge")],
+                "optional": []}
+    if isinstance(domain, Domain.PiecewiseLinearComplexDomain):
+        if domainMeshOptions.use_gmsh is True:
+            prefix = domain.geofile
+            return {"generator": "gmsh", "prefix": prefix,
+                    "command": "gmsh {0}.geo -3 -format msh2; msh2simplex nd=3; tetgen -Vfeen {0}.ele".format(prefix),
+                    "inputs": [prefix + ".geo"],
+                    "outputs": [prefix + e for e in (".msh", ".ele", ".node", ".face")],
+                    "optional": [prefix + e for e in (".neigh", ".edge")]}
+        prefix = domain.polyfile
+        return {"generator": "tetgen", "prefix": prefix,
+                "command": "tetgen -{0} {1}.poly".format(meshOptions.triangleOptions, prefix),
+                "inputs": [prefix + ".poly"],
+                "outputs": [prefix + e for e in (".ele", ".node", ".face")],
+                "optional": [prefix + e for e in (".neigh", ".edge")]}
+    return None
+
+def writeMeshFiles(domain, meshOptions):
+    """Run the mesh generator for a PSLG or PLC domain.
+
+    The serial step of :func:`_generateMesh`, which runs it on rank 0 and
+    then reads the files collectively. Writes the files
+    :func:`meshFiles` lists.
+    """
+    name = domain.name
+    domainMeshOptions = getMeshOptions(domain)
+    if isinstance(domain, Domain.PlanarStraightLineGraphDomain):
+        if domainMeshOptions.use_gmsh is True:
+            fileprefix = domain.geofile
+            if not os.path.exists(fileprefix+".msh"):
+                logEvent("Running gmsh to generate 2D mesh for "+name, level=1)
+                gmsh_cmd = "time gmsh {0:s} -v 10 -2 -o {1:s} -format msh2".format(fileprefix+".geo", fileprefix+".msh")
+                logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
+                run(gmsh_cmd, shell=True)
+                logEvent("Done running gmsh; converting to triangle")
+            else:
+                logEvent("Using "+fileprefix+".msh to convert to triangle")
+            # convert gmsh to triangle format
+            msh2simplex(fileprefix=fileprefix, nd=2)
+        else:
+            fileprefix = domain.polyfile
+            logEvent("Calling Triangle to generate 2D mesh for "+name)
+            tricmd = "triangle -{0} -e {1}.poly".format(meshOptions.triangleOptions, fileprefix)
+            logEvent("Calling triangle on rank 0 with command %s" % (tricmd,))
+            logEvent(run(tricmd, shell=True,capture_output=True, encoding='utf-8').stdout)
+            logEvent("Done running triangle")
+            run("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
+            run("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
+            run("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
+    elif isinstance(domain, Domain.PiecewiseLinearComplexDomain):
+        if domainMeshOptions.use_gmsh is True:
+            fileprefix = domain.geofile
+        else:
+            fileprefix = domain.polyfile
+        if domainMeshOptions.use_gmsh is True:
+            if not os.path.exists(fileprefix+".msh"):
+                logEvent("Running gmsh to generate 3D mesh for "+name, level=1)
+                gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s} -format msh2".format(fileprefix+'.geo', domain.geofile+'.msh')
+                logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
+                run(gmsh_cmd, shell=True)
+                logEvent("Done running gmsh; converting to tetgen")
+            else:
+                logEvent("Using "+domain.geofile+".msh to convert to tetgen")
+            msh2simplex(fileprefix=fileprefix, nd=3)
+            logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
+        else:
+            logEvent("Running tetgen to generate 3D mesh for "+name, level=1)
+            run("rm -f {0:s}.ele".format(fileprefix), shell=True)
+            run("rm -f {0:s}.node".format(fileprefix), shell=True)
+            run("rm -f {0:s}.face".format(fileprefix), shell=True)
+            run("rm -f {0:s}.neigh".format(fileprefix), shell=True)
+            run("rm -f {0:s}.edge".format(fileprefix), shell=True)
+            tetcmd = "tetgen -{0} {1}.poly".format(meshOptions.triangleOptions, fileprefix)
+            logEvent("Calling tetgen on rank 0 with command %s" % (tetcmd,))
+            logEvent(run(tetcmd, shell=True,capture_output=True, encoding='utf-8').stdout)
+            logEvent("Done running tetgen")
+        run("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
+        run("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
+        run("mv {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
+        try:
+            run("mv {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
+        except:
+            logEvent("Warning: couldn't move {0:s}.1.neigh".format(fileprefix))
+            pass
+        try:
+            run("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
+        except:
+            logEvent("Warning: couldn't move {0:s}.1.edge".format(fileprefix))
+            pass
+    else:
+        raise TypeError("writeMeshFiles: no mesh generator for a " + type(domain).__name__)
+
 def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,numerics=None):
     # convenience function to generate a mesh using triangle/tetgen/gmsh
     comm = Comm.get()
     name = domain.name
+    # meshOptions may be an old-style numerics module rather than a
+    # MeshOptions (see the fallback in generateMesh).  The generator choice
+    # and the characteristic length have only ever come from the options
+    # attached to the domain, so read those two from there.
+    domainMeshOptions = getMeshOptions(domain)
     # this is the perfect place to create a factory function which takes in an instance and outputs a corresponding mesh
     # support for old-style domain input
 
@@ -7360,7 +7689,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                                    os.path.exists(domain.polyfile+".node") and
                                                    os.path.exists(domain.polyfile+".face"))):
             logEvent("Running gmsh to generate 3D mesh for "+name, level=1)
-            gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s}  -format mesh  -clmax {2:f}".format(domain.geofile, domain.name+".mesh", 0.5*domain.he)
+            gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s}  -format mesh  -clmax {2:f}".format(domain.geofile, domain.name+".mesh", 0.5*domainMeshOptions.he)
 
             logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
 
@@ -7431,32 +7760,16 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
     elif isinstance(domain, Domain.PlanarStraightLineGraphDomain):
         fileprefix = None
         # run mesher
-        if domain.use_gmsh is True:
+        if domainMeshOptions.use_gmsh is True:
             fileprefix = domain.geofile
             if comm.isMaster() and (not (os.path.exists(fileprefix+".ele") and
                                          os.path.exists(fileprefix+".node") and
                                          os.path.exists(fileprefix+".edge"))):
-                if not os.path.exists(fileprefix+".msh"):
-                    logEvent("Running gmsh to generate 2D mesh for "+name, level=1)
-                    gmsh_cmd = "time gmsh {0:s} -v 10 -2 -o {1:s} -format msh2".format(fileprefix+".geo", fileprefix+".msh")
-                    logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
-                    run(gmsh_cmd, shell=True)
-                    logEvent("Done running gmsh; converting to triangle")
-                else:
-                    logEvent("Using "+fileprefix+".msh to convert to triangle")
-                # convert gmsh to triangle format
-                msh2simplex(fileprefix=fileprefix, nd=2)
+                writeMeshFiles(domain, meshOptions)
         else:
             fileprefix = domain.polyfile
             if comm.isMaster() and meshOptions.genMesh:
-                logEvent("Calling Triangle to generate 2D mesh for "+name)
-                tricmd = "triangle -{0} -e {1}.poly".format(meshOptions.triangleOptions, fileprefix)
-                logEvent("Calling triangle on rank 0 with command %s" % (tricmd,))
-                logEvent(run(tricmd, shell=True,capture_output=True, encoding='utf-8').stdout)
-                logEvent("Done running triangle")
-                run("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
-                run("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
-                run("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
+                writeMeshFiles(domain, meshOptions)
         comm.barrier()
         assert fileprefix is not None, 'did not find mesh file name'
         # convert mesh to proteus format
@@ -7479,7 +7792,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                               parallelPartitioningType=meshOptions.parallelPartitioningType)
     elif isinstance(domain, Domain.PiecewiseLinearComplexDomain):
         import sys
-        if domain.use_gmsh is True:
+        if domainMeshOptions.use_gmsh is True:
             fileprefix = domain.geofile
         else:
             fileprefix = domain.polyfile
@@ -7487,41 +7800,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                 not (os.path.exists(fileprefix+".ele") and
                      os.path.exists(fileprefix+".node") and
                      os.path.exists(fileprefix+".face")))):
-            if domain.use_gmsh is True:
-                if not os.path.exists(fileprefix+".msh"):
-                    logEvent("Running gmsh to generate 3D mesh for "+name, level=1)
-                    gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s} -format msh2".format(fileprefix+'.geo', domain.geofile+'.msh')
-                    logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
-                    run(gmsh_cmd, shell=True)
-                    logEvent("Done running gmsh; converting to tetgen")
-                else:
-                    logEvent("Using "+domain.geofile+".msh to convert to tetgen")
-                msh2simplex(fileprefix=fileprefix, nd=3)
-                logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
-            else:
-                logEvent("Running tetgen to generate 3D mesh for "+name, level=1)
-                run("rm -f {0:s}.ele".format(fileprefix), shell=True)
-                run("rm -f {0:s}.node".format(fileprefix), shell=True)
-                run("rm -f {0:s}.face".format(fileprefix), shell=True)
-                run("rm -f {0:s}.neigh".format(fileprefix), shell=True)
-                run("rm -f {0:s}.edge".format(fileprefix), shell=True)
-                tetcmd = "tetgen -{0} {1}.poly".format(meshOptions.triangleOptions, fileprefix)
-                logEvent("Calling tetgen on rank 0 with command %s" % (tetcmd,))
-                logEvent(run(tetcmd, shell=True,capture_output=True, encoding='utf-8').stdout)
-                logEvent("Done running tetgen")
-            run("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
-            run("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
-            run("mv {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
-            try:
-                run("mv {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
-            except:
-                logEvent("Warning: couldn't move {0:s}.1.neigh".format(fileprefix))
-                pass
-            try:
-                run("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
-            except:
-                logEvent("Warning: couldn't move {0:s}.1.edge".format(fileprefix))
-                pass
+            writeMeshFiles(domain, meshOptions)
         comm.barrier()
         logEvent("Initializing mesh and MultilevelMesh")
         nbase = 1

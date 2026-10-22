@@ -11,7 +11,8 @@ import inspect
 
 proteus.test_utils.TestTools.addSubFolders( inspect.currentframe() )
 
-from proteus.iproteus import *
+from importlib import reload
+from proteus import Profiling
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=7
@@ -42,7 +43,7 @@ class TestElementwiseFlux2D(object):
         self.scriptdir = os.path.dirname(__file__)
 
     def teardown_method(self,method):
-        filenames = ['poisson_bdm1_test.h5', 'poisson_bdm1_test.xmf','reference_triangle.ele',
+        filenames = ['poisson_bdm1_test.h5', 'poisson_bdm1_test.xmf', 'poisson_bdm1_test.ymf','reference_triangle.ele',
                      'reference_triangle.node', 'reference_triangle.poly','proteus.log']
         for file in filenames:
             if os.path.exists(file):

@@ -1,5 +1,10 @@
 #!/usr/bin/env python
-import tables
+# Converted from PyTables to h5py. This script used tables.open_file,
+# createArray and createGroup: the camelCase names were removed in PyTables
+# 3.0, so every write raised AttributeError, and PyTables is not declared in
+# any of proteus's environment files, so the import was an undeclared
+# dependency besides. h5py is what the rest of proteus uses.
+import h5py
 import os
 import sys
 
@@ -23,10 +28,10 @@ def splitH5single(basename1,basename2,proc,start,finaltime,stride):
 # Loop over entries and put in appropriate file
     filename=basename1+str(proc)+".h5"
     print(" Open:",filename)
-    f1 = tables.open_file(filename)
+    f1 = h5py.File(filename, "r")
     filename=basename2+str(proc)+".h5"
     print(" Open:",filename)
-    f2 = tables.open_file(filename)
+    f2 = h5py.File(filename, "r")
 
     print("   Step:", end=' ')
 
@@ -35,31 +40,29 @@ def splitH5single(basename1,basename2,proc,start,finaltime,stride):
         sys.stdout.flush()
 
         filename="sol.p"+str(proc)+"."+str(step)+".h5"
-        hdfFile=  tables.open_file(filename,
-                            mode = "w",
-                            title = filename+" Data")
+        hdfFile = h5py.File(filename, "w")
 
 
         name =  "elementsSpatial_Domain"+str(step)
-        hdfFile.createArray("/","elements",f1.get_node("/",name)[:])
+        hdfFile.create_dataset("elements", data=f1[name][:])
 
         name =  "nodesSpatial_Domain"+str(step)
-        hdfFile.createArray("/","nodes",f1.get_node("/",name)[:])
+        hdfFile.create_dataset("nodes", data=f1[name][:])
 
         name =  "u"+str(step)
-        hdfFile.createArray("/","u",f1.get_node("/",name)[:])
+        hdfFile.create_dataset("u", data=f1[name][:])
 
         name =  "v"+str(step)
-        hdfFile.createArray("/","v",f1.get_node("/",name)[:])
+        hdfFile.create_dataset("v", data=f1[name][:])
 
         name =  "w"+str(step)
-        hdfFile.createArray("/","w",f1.get_node("/",name)[:])
+        hdfFile.create_dataset("w", data=f1[name][:])
 
         name =  "p"+str(step)
-        hdfFile.createArray("/","p",f1.get_node("/",name)[:])
+        hdfFile.create_dataset("p", data=f1[name][:])
 
         name =  "phid"+str(step)
-        hdfFile.createArray("/","phid",f2.get_node("/",name)[:])
+        hdfFile.create_dataset("phid", data=f2[name][:])
 
         hdfFile.close()
 
@@ -92,9 +95,7 @@ def H5toXMF(basename,size,start,finaltime,stride):
         sys.stdout.flush()
 
         filename = basename+"."+str(step)+".h5"
-        hdfFile=  tables.open_file(filename,
-                            mode = "w",
-                            title = filename+" Data")
+        hdfFile = h5py.File(filename, "w")
 
         XMFfile2 = open(basename+"."+str(step)+".xmf","w")
         XMFfile2.write('<?xml version="1.0" ?>'+"\n")
@@ -106,15 +107,15 @@ def H5toXMF(basename,size,start,finaltime,stride):
         string = string + t3 + '<Time Value="'+str(step)+'" />'+"\n"
 
         for proc in range(0,size):
-            group = hdfFile.createGroup(hdfFile.root, 'p'+str(proc))
+            group = hdfFile.create_group('p'+str(proc))
 
             solname="sol.p"+str(proc)+"."+str(step)+".h5"
-            f1 = tables.open_file(solname)
+            f1 = h5py.File(solname, "r")
 
             string = string + t3+'<Grid GridType="Uniform">'+"\n"
 
-            data=f1.get_node("/","elements")[:]
-            hdfFile.createArray(group,"elements",data)
+            data=f1["elements"][:]
+            group.create_dataset("elements", data=data)
 
             string = string + t4 + '<Topology NumberOfElements="' +str(len(data))+ '" Type="Tetrahedron">'+"\n"
             string = string + t5 + '<DataItem DataType="Int" Dimensions="' +str(len(data))+ ' 4" Format="HDF">'+"\n"
@@ -122,8 +123,8 @@ def H5toXMF(basename,size,start,finaltime,stride):
             string = string + t5 +'</DataItem>'+"\n"
             string = string + t4 + '</Topology>'+"\n"
 
-            data=f1.get_node("/","nodes")[:]
-            hdfFile.createArray(group,"nodes",data)
+            data=f1["nodes"][:]
+            group.create_dataset("nodes", data=data)
 
             string = string + t4 + '<Geometry Type="XYZ">'+"\n"
             string = string + t5 + '<DataItem DataType="Float" Dimensions="' +str(len(data))+ ' 3" Format="HDF" Precision="8">' + "\n"
@@ -131,8 +132,8 @@ def H5toXMF(basename,size,start,finaltime,stride):
             string = string + t5 + '</DataItem>'+"\n"
             string = string + t4 + '</Geometry>'+"\n"
 
-            data=f1.get_node("/","u")[:]
-            hdfFile.createArray(group,"u",data)
+            data=f1["u"][:]
+            group.create_dataset("u", data=data)
 
             string = string + t4 + '<Attribute AttributeType="Scalar" Center="Node" Name="u">'+"\n"
             string = string + t5 + '<DataItem DataType="Float" Dimensions="' +str(len(data))+ '" Format="HDF" Precision="8">' + "\n"
@@ -140,8 +141,8 @@ def H5toXMF(basename,size,start,finaltime,stride):
             string = string + t5 + '</DataItem>'+"\n"
             string = string + t4 + '</Attribute>'+"\n"
 
-            data=f1.get_node("/","v")[:]
-            hdfFile.createArray(group,"v",data)
+            data=f1["v"][:]
+            group.create_dataset("v", data=data)
 
             string = string + t4 + '<Attribute AttributeType="Scalar" Center="Node" Name="v">'+"\n"
             string = string + t5 +'<DataItem DataType="Float" Dimensions="' +str(len(data))+ '" Format="HDF" Precision="8">' + "\n"
@@ -149,8 +150,8 @@ def H5toXMF(basename,size,start,finaltime,stride):
             string = string + t5 + '</DataItem>'+"\n"
             string = string + t4 + '</Attribute>'+"\n"
 
-            data=f1.get_node("/","w")[:]
-            hdfFile.createArray(group,"w",data)
+            data=f1["w"][:]
+            group.create_dataset("w", data=data)
 
             string = string + t4 + '<Attribute AttributeType="Scalar" Center="Node" Name="w">'+"\n"
             string = string + t5 + '<DataItem DataType="Float" Dimensions="' +str(len(data))+ '" Format="HDF" Precision="8">' + "\n"
@@ -158,8 +159,8 @@ def H5toXMF(basename,size,start,finaltime,stride):
             string = string + t5 + '</DataItem>'+"\n"
             string = string + t4 + '</Attribute>'+"\n"
 
-            data=f1.get_node("/","p")[:]
-            hdfFile.createArray(group,"p",data)
+            data=f1["p"][:]
+            group.create_dataset("p", data=data)
 
             string = string + t4 + '<Attribute AttributeType="Scalar" Center="Node" Name="p">'+"\n"
             string = string + t5 + '<DataItem DataType="Float" Dimensions="' +str(len(data))+ '" Format="HDF" Precision="8">' + "\n"
@@ -167,8 +168,8 @@ def H5toXMF(basename,size,start,finaltime,stride):
             string = string + t5 + '</DataItem>'+"\n"
             string = string + t4 + '</Attribute>'+"\n"
 
-            data=f1.get_node("/","phid")[:]
-            hdfFile.createArray(group,"phid",data)
+            data=f1["phid"][:]
+            group.create_dataset("phid", data=data)
 
             string = string + t4 + '<Attribute AttributeType="Scalar" Center="Node" Name="phid">'+"\n"
             string = string + t5 + '<DataItem DataType="Float" Dimensions="' +str(len(data))+ '" Format="HDF" Precision="8">' + "\n"

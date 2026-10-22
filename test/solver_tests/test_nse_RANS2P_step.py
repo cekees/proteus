@@ -6,8 +6,7 @@ from proteus import LinearAlgebraTools as LAT
 from proteus import LinearSolvers as LS
 from proteus import Profiling
 from proteus import NumericalSolution
-from proteus import iproteus
-#from proteus.iproteus import *
+from proteus import runtime
 
 import os
 import sys
@@ -19,11 +18,13 @@ import petsc4py
 from petsc4py import PETSc
 import pytest
 
+# One xdist worker runs this file, in order: the AMG tests load the matrix
+# dumps (dump_test_*) that the two FullRun tests write.
+pytestmark = pytest.mark.xdist_group("nse_RANS2P_step_dumps")
+
 proteus.test_utils.TestTools.addSubFolders( inspect.currentframe() )
-from proteus import iproteus
 from proteus import (defaults, default_p, default_n)
 from importlib import reload
-opts=iproteus.opts
 import_modules = os.path.join(os.path.dirname(__file__),'import_modules')
 def load_simulation(context_options_str=None):
     """
@@ -40,7 +41,9 @@ def load_simulation(context_options_str=None):
     from proteus import Context
     from proteus import default_s
     reload(PETSc)
-    reload(iproteus)
+    # what reload(iproteus) did: start PETSc again (which sets options_left,
+    # after a test cleared it) and set the procID openLog needs
+    Profiling.procID = runtime.init().rank()
     reload(default_p)
     reload(default_n)
     reload(default_s)
@@ -65,7 +68,7 @@ def load_simulation(context_options_str=None):
                                    pList,
                                    nList,
                                    so.sList,
-                                   opts)
+                                   runtime.RunOptions())
     return ns
 
 def initialize_petsc_options():

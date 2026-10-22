@@ -183,6 +183,45 @@ class BoundaryForce(AV_base):
 #         Viewers.newPlot()
 #         Viewers.newWindow()
 
+def _write_profile(ar, name, values):
+    """Write a 1-D diagnostic profile into the archive's HDF5 file.
+
+    Replaces ``ar.hdfFile.createArray("/", name, values)``. ``createArray``
+    is a PyTables method; ``h5py.File`` has no such attribute, so every
+    call raised ``AttributeError`` from the PyTables-to-h5py migration
+    onwards.
+
+    Serial only, and deliberately explicit about it. These profiles hold
+    one value per boundary node *this rank owns*, so their length differs
+    per rank, while ``create_dataset`` on an MPI-opened file is collective
+    and requires every rank to agree on name and shape. Writing them in
+    parallel therefore needs either per-rank dataset names agreed
+    collectively or a gather -- a decision about what the diagnostic should
+    mean across subdomains, not a mechanical fix. Until that is made, a
+    parallel run logs and skips rather than deadlocking.
+    """
+    if ar.hdfFile is None:
+        return
+    from . import Comm
+
+    comm = Comm.get()
+    if comm.size() > 1:
+        logEvent(
+            "Not writing the %r profile: it is one value per owned boundary "
+            "node, so its length differs per rank, and creating an HDF5 "
+            "dataset on an MPI-opened file is collective. Run serially to "
+            "record it." % (name,), level=1)
+        return
+    data = numpy.asarray(values, dtype="d")
+    if data.size == 0:
+        logEvent("Not writing the %r profile: no nodes matched the flag"
+                 % (name,), level=2)
+        return
+    if name in ar.hdfFile:
+        del ar.hdfFile[name]
+    ar.hdfFile.create_dataset(name, data=data)
+
+
 class PressureProfile(AV_base):
     def __init__(self,flag=0,center=(0.0,0.0),radius=1.0):
         self.flag=flag
@@ -211,8 +250,10 @@ class PressureProfile(AV_base):
                 pass
             self.levelPlist.append(p)
             self.levelThetalist.append(theta)
-        if self.ar.hdfFile is not None:
-            self.ar.hdfFile.createArray("/",'theta',theta)
+        # levelThetalist[-1] is the same list the loop above left in `theta`,
+        # named explicitly rather than relying on the loop variable leaking.
+        if self.levelThetalist:
+            _write_profile(self.ar, 'theta', self.levelThetalist[-1])
         #self.historyP=[]
         #self.historyP.append(copy.deepcopy(self.levelPlist))
 #         try:
@@ -236,8 +277,9 @@ class PressureProfile(AV_base):
                     if m.mesh.nodeMaterialTypes[nN] == self.flag:
                         p.append(m.u[0].dof[nN])
             self.levelPlist.append(p)
-        if self.ar.hdfFile is not None:
-            self.ar.hdfFile.createArray("/","pressure"+str(self.tCount),p)
+        if self.levelPlist:
+            _write_profile(self.ar, "pressure"+str(self.tCount),
+                           self.levelPlist[-1])
         self.tCount+=1
 #         if self.dataStorage is not None:
 #             tmp = self.dataStorage['PressureHistory']

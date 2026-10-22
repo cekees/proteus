@@ -157,16 +157,24 @@ def get_petsc_blaslapack(petsc_lib_dir):
     return lib_names[-1], lib_names[0], lib_dir
 
 PROTEUS_PETSC_INCLUDE_DIR, PROTEUS_PETSC_LIB_DIR = get_petsc_flags()
-_petsc_blaslapack = get_petsc_blaslapack(PROTEUS_PETSC_LIB_DIR) if sys.platform.startswith('linux') else None
+_petsc_blaslapack = get_petsc_blaslapack(PROTEUS_PETSC_LIB_DIR) if sys.platform == 'darwin' or sys.platform.startswith('linux') else None
 
 PROTEUS_BLAS_INCLUDE_DIR, PROTEUS_BLAS_LIB_DIR = get_flags('blas')
 PROTEUS_EXTRA_LINK_ARGS=[]
 
 if sys.platform == 'darwin':
-    PROTEUS_BLAS_LIB ='m'
-    PROTEUS_BLAS_LIB_DIR = PROTEUS_LIB_DIR
     PROTEUS_BLAS_INCLUDE_DIR = PROTEUS_INCLUDE_DIR
     PROTEUS_EXTRA_LINK_ARGS=platform_extra_link_args
+    # Link what the extensions use. With 'm' here (left over from when the
+    # Mac build used Accelerate) the BLAS/LAPACK calls stay undefined under
+    # Python's '-undefined dynamic_lookup', and an extension like
+    # cfemIntegrals only imports if an earlier import already put LAPACK
+    # into the flat namespace.
+    if _petsc_blaslapack:
+        PROTEUS_BLAS_LIB, _, PROTEUS_BLAS_LIB_DIR = _petsc_blaslapack
+    else:
+        PROTEUS_BLAS_LIB ='m'
+        PROTEUS_BLAS_LIB_DIR = PROTEUS_LIB_DIR
 elif sys.platform.startswith('linux'):
     if _petsc_blaslapack:
         PROTEUS_BLAS_LIB, _, PROTEUS_BLAS_LIB_DIR = _petsc_blaslapack
@@ -228,10 +236,10 @@ if platform_lapack_h:
 else:
     PROTEUS_LAPACK_H   = r'"proteus_lapack.h"'
 
-if sys.platform == 'darwin':
-    PROTEUS_LAPACK_LIB ='m'
-elif _petsc_blaslapack:
+if _petsc_blaslapack:
     _, PROTEUS_LAPACK_LIB, PROTEUS_LAPACK_LIB_DIR = _petsc_blaslapack
+elif sys.platform == 'darwin':
+    PROTEUS_LAPACK_LIB ='m'
 else:
     PROTEUS_LAPACK_LIB = 'openblas'
 
