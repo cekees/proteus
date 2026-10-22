@@ -7,11 +7,10 @@ from proteus.Transport import OneLevelTransport, logEvent, memory, fabs
 from proteus.Transport import TC_base, l2Norm, NonlinearEquation
 from proteus.LinearAlgebraTools import SparseMat
 from . import cArgumentsDict
-# proteus.X below is attribute access: X has to be imported here,
-# not by whatever happened to import it first
 import proteus.NonlinearSolvers
 import proteus.StepControl
 import proteus.TransportCoefficients
+import proteus.Transport
 
 class Coefficients(proteus.TransportCoefficients.TC_base):
     from proteus.ctransportCoefficients import levelSetConservationCoefficientsEvaluate

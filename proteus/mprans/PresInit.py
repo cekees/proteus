@@ -16,6 +16,7 @@ from proteus.SubgridError import SGE_base
 from proteus.ShockCapturing import ShockCapturing_base
 from . import cPresInit
 from . import cArgumentsDict
+import proteus.Transport
 
 
 class Coefficients(TC_base):

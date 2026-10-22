@@ -8,6 +8,8 @@ from proteus import Quadrature, FemTools, Comm, Archiver, cfemIntegrals
 from proteus.Profiling import logEvent, memory
 from proteus import cmeshTools
 from . import cArgumentsDict
+import proteus.Transport
+import proteus.TransportCoefficients
 
 class Coefficients(proteus.TransportCoefficients.TC_base):
     def __init__(self,

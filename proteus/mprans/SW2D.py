@@ -4,8 +4,6 @@ from proteus.Comm import globalMax
 import numpy as np
 from proteus.Transport import OneLevelTransport
 from . import cArgumentsDict
-# proteus.X below is attribute access: X has to be imported here,
-# not by whatever happened to import it first
 import proteus.NumericalFlux
 import proteus.ShockCapturing
 import proteus.SubgridError

@@ -10,6 +10,8 @@ from proteus.Transport import DOFBoundaryConditions, Quadrature
 from proteus.mprans import cArgumentsDict
 from proteus.LinearAlgebraTools import SparseMat
 from proteus import TimeIntegration
+import proteus.Transport
+import proteus.TransportCoefficients
 #from proteus.NonlinearSolvers import ExplicitLumpedMassMatrixForRichards
 
 class ThetaScheme(TimeIntegration.BackwardEuler):

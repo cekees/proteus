@@ -21,6 +21,12 @@ from proteus.ShockCapturing import ShockCapturing_base
 from . import cRANS3PF
 from . import cRANS3PF2D
 from . import cArgumentsDict
+import proteus.NumericalFlux
+import proteus.Profiling
+import proteus.ShockCapturing
+import proteus.SubgridError
+import proteus.Transport
+import proteus.TransportCoefficients
 
 class SubgridError(proteus.SubgridError.SGE_base):
 

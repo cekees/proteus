@@ -9,6 +9,10 @@ from proteus.Transport import Quadrature, logEvent, memory, BackwardEuler
 from proteus.Transport import FluxBoundaryConditions, Comm, DOFBoundaryConditions
 from proteus.Transport import cfemIntegrals, globalMax, SparseMat
 from . import cArgumentsDict
+import proteus.NumericalFlux
+import proteus.TimeIntegration
+import proteus.Transport
+import proteus.TransportCoefficients
 
 class NumericalFlux(proteus.NumericalFlux.ShallowWater_2D):
     hasInterior = False

@@ -16,6 +16,8 @@ from proteus.SubgridError import SGE_base
 from proteus.ShockCapturing import ShockCapturing_base
 from . import cAddedMass, cArgumentsDict
 from mpi4py import MPI
+import proteus.NumericalFlux
+import proteus.Transport
 
 class NumericalFlux(proteus.NumericalFlux.ConstantAdvection_Diffusion_SIPG_exterior):
     def __init__(self,

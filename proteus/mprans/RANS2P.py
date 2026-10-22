@@ -15,6 +15,12 @@ from proteus import *
 from proteus.Transport import *
 from proteus.Transport import OneLevelTransport
 from . import cArgumentsDict
+import proteus.NumericalFlux
+import proteus.Profiling
+import proteus.ShockCapturing
+import proteus.SubgridError
+import proteus.Transport
+import proteus.TransportCoefficients
 
 class SubgridError(proteus.SubgridError.SGE_base):
     """
