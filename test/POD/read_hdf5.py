@@ -8,7 +8,10 @@ def read_from_hdf5(hdfFile,label,dof_map=None):
     If dof_map is not none, this determines shape of the output array
     """
     assert hdfFile is not None, "requires hdf5 for heavy data"
-    vals = hdfFile.get_node(label).read()
+    # h5py, not PyTables: every caller passes archive.hdfFile, which is an
+    # h5py.File. get_node().read() is the PyTables spelling and raised
+    # AttributeError here from the PyTables-to-h5py migration onwards.
+    vals = hdfFile[label][:]
     if dof_map is not None:
         dof = vals[dof_map]
     else:

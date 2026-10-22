@@ -2,7 +2,9 @@
 """
 Test module for Elliptic Re-distancing
 """
-from proteus.iproteus import *
+import proteus
+from importlib import reload
+from proteus import Profiling, default_p, default_s, default_so
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=7
@@ -33,7 +35,7 @@ class TestEllipticRedistancing(object):
     def teardown_method(self,method):
         pass
 
-    def test_ELLIPTIC_REDISTANCING_0(self):
+    def test_ELLIPTIC_REDISTANCING_0(self, opts):
         # Set parameters for test #
         vortex2D.ct.ELLIPTIC_REDISTANCING = 0
         reload(rdls_p)
@@ -70,7 +72,7 @@ class TestEllipticRedistancing(object):
         assert np.isclose(np.amax(actual['u_t1']),0.13600213609175285,atol=1e-10)
         actual.close()
 
-    def test_ELLIPTIC_REDISTANCING_1(self):
+    def test_ELLIPTIC_REDISTANCING_1(self, opts):
         # Set parameters for test #
         vortex2D.ct.ELLIPTIC_REDISTANCING = 1
         reload(rdls_p)
@@ -107,7 +109,7 @@ class TestEllipticRedistancing(object):
         assert np.isclose(np.amax(actual['u_t1']),0.13084321505201912,atol=1e-10)
         actual.close()
 
-    def test_ELLIPTIC_REDISTANCING_2(self):
+    def test_ELLIPTIC_REDISTANCING_2(self, opts):
         # Set parameters for test #
         vortex2D.ct.ELLIPTIC_REDISTANCING = 2
         reload(default_p)
@@ -147,7 +149,7 @@ class TestEllipticRedistancing(object):
         assert np.isclose(np.amax(actual['u_t1']),0.1060107277952287,atol=1e-10)
         actual.close()
 
-    def test_ELLIPTIC_REDISTANCING_3(self):
+    def test_ELLIPTIC_REDISTANCING_3(self, opts):
         # Set parameters for test #
         vortex2D.ct.ELLIPTIC_REDISTANCING = 3
         reload(rdls_p)

@@ -82,7 +82,7 @@ else:
         options.update({'ksp_type': 'gmres', 'ksp_rtol': '1e-14', 'ksp_atol': '1e-14'})
     n.petscOptions = options
 so = default_so
-so.name = p.name = "spacemg_%s_%d_%s_%d" % (spaceName, nLevels, mode, size)
+so.name = p.name = "spacemg_%s_%d_%s_%dc_%d" % (spaceName, nLevels, mode, NC, size)
 so.sList = [default_s]
 runopts.logLevel = 1
 runopts.verbose = False

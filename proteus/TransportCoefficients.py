@@ -357,6 +357,51 @@ class TC_base(object):
                     linePlot(ctemp[('u',cj)],ctemp[('H',ci)],'H_%i vs. u_%i' % (ci,cj) )
                     linePlot(ctemp[('u',cj)],ctemp[('dH',ci,cj)],'dH/dgrad_u_%i vs. u_%i' % (ci,cj))
 
+    def archiveFields(self, lm):
+        """Declare extra fields to write into the archive. Override to add some.
+
+        Yields :class:`proteus.ArchiveFields.ArchiveField` objects. Called
+        once per archive write, so a declaration that computes its value
+        stays current::
+
+            def archiveFields(self, lm):
+                yield ArchiveField("bathymetry", self.b.dof)
+                if self.outputQuantDOFs:
+                    yield ArchiveField("quantDOFs_for_{model}", lm.quantDOFs)
+
+        Declaring a field here rather than in ``NumericalSolution.py`` is
+        what keeps the generic driver free of model-specific archiving, and
+        what lets "this model doesn't have that field" be an ordinary
+        ``if`` instead of a bare ``except:``. See
+        :mod:`proteus.ArchiveFields`.
+
+        The base implementation covers the one field that is genuinely
+        generic: ``quantDOFs``, which many models compute and gate behind a
+        ``coefficients.outputQuantDOFs`` flag.
+        """
+        from .ArchiveFields import ArchiveField
+
+        if getattr(self, "outputQuantDOFs", False):
+            quant_dofs = getattr(lm, "quantDOFs", None)
+            if quant_dofs is not None:
+                yield ArchiveField("quantDOFs_for_{model}", quant_dofs)
+
+        # Derived nodal scalars a model computes for visualization and hangs
+        # off its coefficients as {name: array} -- m_comp_co2's flash fields
+        # Sg/X/c_brine are the first users. They are sized to u[0].dof and
+        # written through component 0's node space, deliberately: under
+        # m_comp_co2's node split the component 1 DOFs are renumbered, so a
+        # split-sized array archived against the mesh nodes comes out
+        # speckled.
+        #
+        # This arrived on main as a loop in NumericalSolution.py calling
+        # archiveFiniteElementResiduals inside a bare try/except -- the same
+        # shape as the eight blocks this hook replaced. Supported here
+        # instead, so the driver stays free of it and a broken declaration
+        # is reported rather than silently skipped.
+        for name, values in (getattr(self, "archive_scalar_dofs", None) or {}).items():
+            yield ArchiveField(name, values)
+
 ##\brief Linear advection-diffusion-reaction (single-component or uncoupled multi-component systems)
 #
 #The system of equations is formulated as

@@ -90,7 +90,7 @@ class PUMI_helper:
         nLayersOfOverlapForParallel = n0.nLayersOfOverlapForParallel
         parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.element
         domain = p0.domain
-        domain.MeshOptions.setParallelPartitioningType('element')
+        MeshTools.getMeshOptions(domain).setParallelPartitioningType('element')
 
         logEvent("Generating %i-level mesh from PUMI mesh" % (nLevels,))
         if domain.nd == 3:

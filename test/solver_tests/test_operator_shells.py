@@ -5,7 +5,6 @@ Test module for solver shell operator.
 
 """
 import proteus.test_utils.TestTools
-from proteus.iproteus import *
 from proteus import Comm
 from proteus import LinearAlgebraTools as LAT
 

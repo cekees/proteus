@@ -42,7 +42,6 @@ import warnings
 import numpy as np
 import pytest
 
-from proteus.iproteus import opts
 from proteus import Comm, Context, NumericalSolution, Profiling, default_s, defaults
 
 comm = Comm.get()
@@ -104,7 +103,7 @@ def case_id(test, order, scifem):
     return "test{0}_p{1}{2}".format(test, order, "_scifem" if scifem else "")
 
 
-def run_case(test, order, scifem):
+def run_case(opts, test, order, scifem):
     """Solve one case on the coarsest mesh; return array([L2, Linfty])."""
     Context.contextOptionsString = (
         "test={0} unstructured=False refinement={1} "
@@ -139,9 +138,9 @@ PARAMS = ([(t, o, False) for t in ALL_TESTS for o in ORDERS] +
 
 @pytest.mark.parametrize("test,order,scifem", PARAMS,
                          ids=[case_id(*p) for p in PARAMS])
-def test_ifem(test, order, scifem):
+def test_ifem(opts, test, order, scifem):
     """Coarsest-mesh L2/Linfty errors must match the saved reference."""
-    actual = run_case(test, order, scifem)
+    actual = run_case(opts, test, order, scifem)
 
     assert np.all(np.isfinite(actual)), \
         "{0}: non-finite error {1}".format(case_id(test, order, scifem), actual)

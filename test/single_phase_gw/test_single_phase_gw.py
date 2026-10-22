@@ -14,7 +14,8 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from proteus.iproteus import *
+from importlib import reload
+from proteus import Comm, NumericalSolution, default_n, default_s, default_so
 
 from . import sp_gw_p
 from . import sp_gw_c0p1_n
@@ -36,7 +37,7 @@ class TestSinglePhaseGW(object):
     def teardown_method(self,method):
         filenames = []
         for aux_name in self.aux_names:
-            filenames.extend([aux_name+'.'+ext for ext in ['h5','xmf']])
+            filenames.extend([aux_name+'.'+ext for ext in ['h5','xmf','ymf']])
         filenames.append('proteus.log')
         for f in filenames:
             if os.path.exists(f):
@@ -47,18 +48,15 @@ class TestSinglePhaseGW(object):
             else:
                 pass
 
-    def test_c0p1(self):
+    def test_c0p1(self, opts):
         reload(sp_gw_p)
         reload(sp_gw_c0p1_n)
         pList = [sp_gw_p]
         nList = [sp_gw_c0p1_n]
         so = default_so
         sim_name = "single_phase_gw_c0p1"
-        so.name = pList[0].name = sim_name +"pe"+repr(comm.size())
+        so.name = pList[0].name = sim_name +"pe"+repr(Comm.get().size())
         so.sList=[default_s]
-        opts.logLevel=7
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         nList[0].femSpaces[0]  = default_n.C0_AffineLinearOnSimplexWithNodalBasis
         nList[0].numericalFluxType = default_n.Advection_DiagonalUpwind_Diffusion_SIPG_exterior
@@ -70,18 +68,15 @@ class TestSinglePhaseGW(object):
         assert (not failed)
 
     @pytest.mark.skipif(os.getenv('TEST_PROFILE')=="proteus-conda-osx", reason="need to fix locally on osx")
-    def test_ncp1(self):
+    def test_ncp1(self, opts):
         reload(sp_gw_p)
         reload(sp_gw_ncp1_n)
         pList = [sp_gw_p]
         nList = [sp_gw_ncp1_n]
         so = default_so
         sim_name = "single_phase_gw_ncp1"
-        so.name = pList[0].name = sim_name +"pe"+repr(comm.size())
+        so.name = pList[0].name = sim_name +"pe"+repr(Comm.get().size())
         so.sList=[default_s]
-        opts.logLevel=7
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         nList[0].linearSolver=default_n.KSP_petsc4py
         nList[0].multilevelLinearSolver=default_n.KSP_petsc4py
@@ -99,7 +94,7 @@ class TestSinglePhaseGW(object):
         self.aux_names.append(pList[0].name)
         assert (not failed)
 
-    def test_mass_and_stiff_jacobians(self):
+    def test_mass_and_stiff_jacobians(self, opts):
         ###setup fine grid problem
         reload(sp_gw_p)
         reload(sp_gw_c0p1_n)
@@ -109,12 +104,9 @@ class TestSinglePhaseGW(object):
         pList[0].nDTout=1
         so = default_so
         sim_name = "single_phase_gw_c0p1"
-        so.name = pList[0].name = sim_name +"pe"+repr(comm.size())
+        so.name = pList[0].name = sim_name +"pe"+repr(Comm.get().size())
         self.aux_names.append(pList[0].name)
         so.sList=[default_s]
-        opts.logLevel=7
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         nList[0].femSpaces[0]  = default_n.C0_AffineLinearOnSimplexWithNodalBasis
         nList[0].linearSolver=default_n.KSP_petsc4py

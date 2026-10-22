@@ -8,6 +8,7 @@
 *.petsc_mat
 *.petsc_vec
 *.xmf
+*.ymf
 *.h5
 *.egg-info
 *~

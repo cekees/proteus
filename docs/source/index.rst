@@ -78,8 +78,13 @@ If you have successfully compiled and tested Proteus then you should be able to 
    % cd $PROTEUS/tests/ci
    % $PROTEUS_PREFIX/bin/parun poisson_3d_p.py poisson_3d_c0p1_n.py
 
-The solution will be saved in a file ending in .xmf, which can be
-opened with ParaView or Ensight.
+The solution will be saved in an HDF5 file ending in .h5, described by
+a YMF document ending in .ymf. To open it in ParaView or VisIt, write an
+XDMF view of it first::
+
+   % ymf2xmf poisson_3d_c0p1pe1.ymf
+
+and open the resulting .xmf.
 
 .. _capabilities-sec:
 
