@@ -18,7 +18,27 @@ os.environ.setdefault('PRTE_MCA_rmaps_default_mapping_policy', ':oversubscribe')
 os.environ.setdefault('OMPI_MCA_pml', 'ob1')
 
 
+@pytest.hookimpl(tryfirst=True)  # before xdist turns the group marks into the '@group' part of the test id
+def pytest_collection_modifyitems(config, items):
+    """Keep the multilevel tests on one pytest-xdist worker (CI runs ``-n auto --dist loadgroup``).
+
+    Most of them launch 2-4 MPI ranks. One worker per core each launching its own
+    4-rank job puts several times more busy-polling processes on the runner than it
+    has cores: on the 4-core macOS Intel runner 4-rank tests that take seconds
+    elsewhere took up to 17 minutes and four timed out at their 300 s limit, while
+    the same directory run sequentially (as it was before the suite went to xdist)
+    took minutes. One group means one worker, so at most one of these MPI jobs runs
+    at a time, next to the single-process tests on the other workers."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for item in items:
+        if str(getattr(item, 'path', item.fspath)).startswith(here + os.sep):
+            item.add_marker(pytest.mark.xdist_group('multilevel-mpi'))
+
+
 def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "xdist_group(name): run the tests with this name on one pytest-xdist worker (--dist loadgroup)")
     config.addinivalue_line(
         "markers",
         "global_hierarchy: tests the global hierarchy builder itself (refinement, "
