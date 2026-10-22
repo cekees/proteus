@@ -13,6 +13,7 @@ from proteus.Comm import globalMax, globalSum
 from proteus.Profiling import  memory
 from proteus.Profiling import  logEvent as log
 from proteus.Transport import OneLevelTransport
+from proteus.TransportCoefficients import evaluateAtPoints
 from proteus.TransportCoefficients import TC_base
 from proteus.SubgridError import SGE_base
 from proteus.ShockCapturing import  ShockCapturing_base
@@ -223,9 +224,8 @@ class Coefficients(TC_base):
                     cq[('df',ci,ci)][...,:] = self.velocity
                 else:
                     cq[('df',ci,ci)].flat[:] = 0.0
-            for i in range(len(cq[('r',ci)].flat)):
-                cq[('r',ci)].flat[i] = -self.fOfX[ci](cq['x'].flat[3*i:3*(i+1)])
-                cq[('a',ci,ci)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[ci](cq['x'].flat[3*i:3*(i+1)]).flat
+            evaluateAtPoints(self.fOfX[ci], cq['x'], cq[('r',ci)], -1.0)
+            evaluateAtPoints(self.aOfX[ci], cq['x'], cq[('a',ci,ci)])
         cq['embeddedBoundary_sdf'] = 100*np.ones_like(cq[('u',0)])
         cq['embeddedBoundary_normal'] = np.ones_like(cq['x'])
         cq['embeddedBoundary_u'] = np.ones_like(cq[('u',0)])
@@ -282,9 +282,8 @@ class Coefficients(TC_base):
                     else:
                         c[('df',ci,ci)].flat[:] = 0.0
                 if ('r',ci) in c and ('a',ci,ci)in c:
-                    for i in range(len(c[('u',ci)].flat)):
-                        c[('r',ci)].flat[i] = -self.fOfX[ci](c['x'].flat[3*i:3*(i+1)])
-                        c[('a',ci,ci)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[ci](c['x'].flat[3*i:3*(i+1)]).flat
+                    evaluateAtPoints(self.fOfX[ci], c['x'], c[('r',ci)], -1.0)
+                    evaluateAtPoints(self.aOfX[ci], c['x'], c[('a',ci,ci)])
 
     def initializeGlobalExteriorElementBoundaryQuadrature(self,t,cebqe):
         nd = self.nd
@@ -296,9 +295,8 @@ class Coefficients(TC_base):
                     else:
                         c[('df',ci,ci)].flat[:] = 0.0
                 if ('r',ci) in c and ('a',ci,ci) in c:
-                    for i in range(len(c[('u',ci)].flat)):
-                        c[('r',ci)].flat[i] = -self.fOfX[ci](c['x'].flat[3*i:3*(i+1)])
-                        c[('a',ci,ci)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[ci](c['x'].flat[3*i:3*(i+1)]).flat
+                    evaluateAtPoints(self.fOfX[ci], c['x'], c[('r',ci)], -1.0)
+                    evaluateAtPoints(self.aOfX[ci], c['x'], c[('a',ci,ci)])
 
     def evaluate(self,t,c):
         if self.timeVaryingCoefficients:
@@ -308,9 +306,8 @@ class Coefficients(TC_base):
                     c[('df',ci,ci)][...,:] = self.velocity
                 else:
                     c[('df',ci,ci)].flat[:] = 0.0
-                for i in range(len(c[('r',ci)].flat)):
-                    c[('r',ci)].flat[i] = -self.fOfX[ci](c['x'].flat[3*i:3*(i+1)])
-                    c[('a',ci,ci)].flat[nd*nd*i:nd*nd*(i+1)] = self.aOfX[ci](c['x'].flat[3*i:3*(i+1)]).flat
+                evaluateAtPoints(self.fOfX[ci], c['x'], c[('r',ci)], -1.0)
+                evaluateAtPoints(self.aOfX[ci], c['x'], c[('a',ci,ci)])
 
 class LevelModel(proteus.Transport.OneLevelTransport):
     """
