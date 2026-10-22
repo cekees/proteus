@@ -998,6 +998,77 @@ def test_what_the_parallel_periodic_path_cannot_solve_is_refused(tmp_path):
     assert not list(tmp_path.glob("*.h5"))                    # nothing was solved
 
 
+# --- advection across a rank interface -----------------------------------------------
+
+
+ADV_PARTITION_HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "adr_advection_partition_mpi.py")
+
+
+def _adv_partition_run(ranks, cwd, **overrides):
+    """One run of adr_advection_partition_mpi.py, with the partition pinned.
+
+    PETSc's default partitioner is not reproducible: the same case came back as
+    2.3e-02, 2.9e-02 and 3.1e-02 on three runs, so a regression could not be
+    told from the noise. MATPARTITIONINGCURRENT keeps the initial contiguous
+    partition, which is the same every time and is in every PETSc build.
+    """
+    env = dict(os.environ, OMP_NUM_THREADS="1",
+               PETSC_OPTIONS="-mat_partitioning_type current",
+               PART_TYPE="element", NLAYERS="0", BDIR="y", CELLS="16")
+    env.setdefault("FI_PROVIDER", "tcp")
+    env.setdefault("OMPI_MCA_rmaps_base_oversubscribe", "1")
+    env.setdefault("PRTE_MCA_rmaps_default_mapping_policy", ":oversubscribe")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [p for p in sys.path if p] + [env.get("PYTHONPATH", "")]).strip(os.pathsep)
+    env.update({k: str(v) for k, v in overrides.items()})
+    argv = [sys.executable, ADV_PARTITION_HELPER] if ranks == 1 else \
+        [MPIEXEC, "-n", str(ranks), sys.executable, ADV_PARTITION_HELPER]
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=600, env=env,
+                         cwd=str(cwd))
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    line = [l for l in out.stdout.splitlines() if l.startswith("RESULT")][0]
+    result = dict(item.split("=") for item in line.split()[1:])
+    result["interfaces"] = sum(
+        int(dict(i.split("=") for i in l.split()[1:])["interfaces"])
+        for l in out.stdout.splitlines() if l.startswith("RANK"))
+    return result
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("ranks", [2, 3])
+def test_advection_is_not_applied_on_the_faces_between_ranks(ranks, tmp_path):
+    """An element partition with no overlap gives the serial answer.
+
+    Every face this rank shares with a neighbour is an exterior face of its
+    subdomain, so the advective boundary flux was applied there -- to the
+    inside of the domain. Diffusion was already safe (it is driven by
+    isDOFBoundary) and so were the Dirichlet conditions (getDBC returns None
+    for material type 0), which is why only advection moved. On 16x16 cells
+    over 2 ranks the L2 error went from 1.4e-03 to 3.1e-02.
+    """
+    serial = _adv_partition_run(1, tmp_path)
+    assert serial["interfaces"] == 0                       # nothing masked in serial
+    parallel = _adv_partition_run(ranks, tmp_path)
+    assert parallel["interfaces"] > 0, parallel            # the case really has interfaces
+    numpy.testing.assert_allclose(float(parallel["L2_u"]), float(serial["L2_u"]),
+                                  rtol=1e-8)
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+def test_advection_along_a_rank_interface_is_untouched(tmp_path):
+    """The guard does not fire where it must not.
+
+    With b = (1, 0) the pinned cut runs along the flow, so b.n is zero on every
+    interface face and there is nothing to remove. This is why the test above
+    advects across the cut: it would pass either way.
+    """
+    serial = _adv_partition_run(1, tmp_path, BDIR="x")
+    parallel = _adv_partition_run(2, tmp_path, BDIR="x")
+    numpy.testing.assert_allclose(float(parallel["L2_u"]), float(serial["L2_u"]),
+                                  rtol=1e-8)
+
+
 def test_parallel_periodic_is_chosen_by_rank_count_space_and_advection():
     problem = {"periodic": [{"component": "u"}],
                "adr": {"equations": [{"component": "u", "diffusion": {}}]}}

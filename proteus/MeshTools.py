@@ -6970,6 +6970,62 @@ class MeshOptions(object):
         self.outputFiles['geo'] = geo
 
 
+def rankInterfaceExteriorMask(mesh):
+    """Which of ``mesh.exteriorElementBoundariesArray`` are rank interfaces.
+
+    On a partitioned mesh the faces between ranks are exterior faces of each
+    rank's subdomain even though they are interior to the global mesh. A
+    boundary term applied there is applied to the inside of the domain.
+
+    The partitioner already marks them: it copies the domain's flags onto the
+    real boundary and leaves ``elementBoundaryMaterialTypes`` at 0 on the
+    interfaces. Measured on a 16x16 unit square over 2 ranks, element
+    partition, no overlap: the real boundary came back as material types
+    1/2/3/4, 64 faces in all, which is the whole boundary, and every one of
+    the 16 interface faces on each rank as 0.
+
+    That mark is why Dirichlet conditions are already safe -- ``getDBC(x,
+    flag)`` returns None for flag 0 -- and why the diffusive flux is safe,
+    since it is driven by ``isDOFBoundary``. The advective flux consults
+    neither, so it needs this.
+
+    The result is a boolean array **indexed the way the ``ebqe`` arrays are**,
+    by position in ``exteriorElementBoundariesArray``, not by element boundary
+    number. Mask with it after the flux kernel has run; do not hand a shortened
+    face list to the kernel instead. The kernels index ``n``, ``f``, ``df``,
+    ``flux`` and ``inflowFlag`` by the loop counter, so a shorter face list
+    silently pairs each face with another face's quadrature data and leaves
+    the skipped entries holding the previous evaluation's values.
+
+    ``None`` means there is nothing to mask. Serial runs always get ``None``,
+    deliberately: there are no interfaces to remove, and material type 0 is
+    not reserved -- a
+    :class:`proteus.Domain.PlanarStraightLineGraphDomain` built without
+    segment flags numbers them ``[0, 1, 2, ...]``, so flag 0 is a real side of
+    the domain there, and masking it in serial would silently drop its
+    outflow. The same ambiguity remains for a *parallel* run on a mesh whose
+    real boundary is unflagged; there is no way to tell the two apart from the
+    material type alone, and the fix for that is to flag the boundary.
+    """
+    comm = Comm.get()
+    if comm is None or comm.size() == 1:
+        return None
+    exterior = mesh.exteriorElementBoundariesArray
+    mask = mesh.__dict__.get('_rankInterfaceExteriorMask')
+    if mask is not None and len(mask) != len(exterior):
+        mask = None             # adapted since: the cached mask is the old mesh's
+    if mask is None:
+        mask = np.asarray(mesh.elementBoundaryMaterialTypes)[exterior] == 0
+        mesh.__dict__['_rankInterfaceExteriorMask'] = mask
+        masked = int(mask.sum())
+        if masked:
+            logEvent("Advective boundary flux: masking %d of %d exterior faces "
+                     "on rank %d; they are rank interfaces (material type 0), "
+                     "interior to the global mesh"
+                     % (masked, len(mask), comm.rank()), level=2)
+    return mask
+
+
 def getMeshOptions(domain):
     """
     The MeshOptions governing how a domain gets discretized.

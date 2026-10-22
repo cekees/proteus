@@ -14,6 +14,7 @@ from .EGeometry import *
 from .LinearAlgebraTools import *
 from .LinearSolvers import *
 from .MeshTools import *
+from . import MeshTools
 from .FemTools import *
 from . import Quadrature
 from .TimeIntegration import *
@@ -3650,6 +3651,16 @@ class OneLevelTransport(NonlinearEquation):
                                                                                     self.ebqe[('df',ci,cj)],
                                                                                     self.ebqe[('advectiveFlux',ci)],
                                                                                     self.ebqe[('dadvectiveFlux_left',ci,cj)])
+                        # The faces shared with another rank are exterior
+                        # faces of this subdomain and interior to the global
+                        # mesh, so the flux just computed on them is applied
+                        # to the inside of the domain. Mask it off afterwards:
+                        # the kernel indexes every ebqe array by its own loop
+                        # counter, so it cannot be given a shorter face list.
+                        _mask = MeshTools.rankInterfaceExteriorMask(self.mesh)
+                        if _mask is not None:
+                            self.ebqe[('advectiveFlux',ci)][_mask] = 0.0
+                            self.ebqe[('dadvectiveFlux_left',ci,cj)][_mask] = 0.0
         for ci,fbcObject  in self.fluxBoundaryConditionsObjectsDict.items():
             for t,g in fbcObject.advectiveFluxBoundaryConditionsDict.items():
                 if ci in self.coefficients.advection:
@@ -5957,6 +5968,16 @@ class OneLevelTransport(NonlinearEquation):
                                                                                     self.ebqe[('df',ci,cj)],
                                                                                     self.ebqe[('advectiveFlux',ci)],
                                                                                     self.ebqe[('dadvectiveFlux_left',ci,cj)])
+                        # The faces shared with another rank are exterior
+                        # faces of this subdomain and interior to the global
+                        # mesh, so the flux just computed on them is applied
+                        # to the inside of the domain. Mask it off afterwards:
+                        # the kernel indexes every ebqe array by its own loop
+                        # counter, so it cannot be given a shorter face list.
+                        _mask = MeshTools.rankInterfaceExteriorMask(self.mesh)
+                        if _mask is not None:
+                            self.ebqe[('advectiveFlux',ci)][_mask] = 0.0
+                            self.ebqe[('dadvectiveFlux_left',ci,cj)][_mask] = 0.0
         for ci,fbcObject  in self.fluxBoundaryConditionsObjectsDict.items():
             for t,g in fbcObject.advectiveFluxBoundaryConditionsDict.items():
                 if ci in self.coefficients.advection:
