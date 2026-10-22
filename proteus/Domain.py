@@ -70,46 +70,87 @@ class D_base(object):
     # options attached to any particular domain.
     #
     # The properties below are the spellings the rest of Proteus has always
-    # used, kept working and forwarding to that one owner.  New code should
-    # ask MeshTools.getMeshOptions(domain) directly.
+    # used, kept working and forwarding to that one owner.
+    #
+    # .. deprecated:: 2.0
+    #    They are kept for compatibility and **will be removed in 2.1**. New
+    #    code asks :func:`proteus.MeshTools.getMeshOptions` for the options
+    #    object and goes through that.
+    #
+    # They do not warn by default: proteus itself still uses these spellings
+    # in 347 places, so a warning today would mostly be proteus shouting at
+    # proteus. Set ``MeshTools.warnOnDomainMeshForwarding = True`` to find
+    # them -- that switch is how the 2.1 removal gets done by sweeping rather
+    # than by hoping.
     # ------------------------------------------------------------------
     @property
     def MeshOptions(self):
-        """The MeshTools.MeshOptions governing how this domain is meshed."""
+        """The MeshTools.MeshOptions governing how this domain is meshed.
+
+        .. deprecated:: 2.0
+           Removed in 2.1; use ``MeshTools.getMeshOptions(domain)``.
+        """
         from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("MeshOptions")
         return MeshTools.getMeshOptions(self)
 
     @MeshOptions.setter
     def MeshOptions(self, meshOptions):
         from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("MeshOptions")
         MeshTools.setMeshOptions(self, meshOptions)
 
     @property
     def use_gmsh(self):
-        """True to mesh with gmsh rather than triangle/tetgen."""
-        return self.MeshOptions.use_gmsh
+        """True to mesh with gmsh rather than triangle/tetgen.
+
+        .. deprecated:: 2.0
+           Removed in 2.1; use ``MeshTools.getMeshOptions(domain).use_gmsh``.
+        """
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("use_gmsh")
+        return MeshTools.getMeshOptions(self).use_gmsh
 
     @use_gmsh.setter
     def use_gmsh(self, flag):
-        self.MeshOptions.use_gmsh = flag
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("use_gmsh")
+        MeshTools.getMeshOptions(self).use_gmsh = flag
 
     @property
     def use_plex(self):
-        """True to build the mesh from a PETSc DMPlex."""
-        return self.MeshOptions.use_plex
+        """True to build the mesh from a PETSc DMPlex.
+
+        .. deprecated:: 2.0
+           Removed in 2.1; use ``MeshTools.getMeshOptions(domain).use_plex``.
+        """
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("use_plex")
+        return MeshTools.getMeshOptions(self).use_plex
 
     @use_plex.setter
     def use_plex(self, flag):
-        self.MeshOptions.use_plex = flag
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("use_plex")
+        MeshTools.getMeshOptions(self).use_plex = flag
 
     @property
     def regionConstraints(self):
-        """Maximum element area/volume per region, parallel to self.regions."""
-        return self.MeshOptions.regionConstraints
+        """Maximum element area/volume per region, parallel to self.regions.
+
+        .. deprecated:: 2.0
+           Removed in 2.1; use
+           ``MeshTools.getMeshOptions(domain).regionConstraints``.
+        """
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("regionConstraints")
+        return MeshTools.getMeshOptions(self).regionConstraints
 
     @regionConstraints.setter
     def regionConstraints(self, constraints):
-        self.MeshOptions.regionConstraints = constraints
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("regionConstraints")
+        MeshTools.getMeshOptions(self).regionConstraints = constraints
 
     #Get the mesh entity to model entity classification for every entity
     def isOnLine(self,pointA,pointB,testPoint):

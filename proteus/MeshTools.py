@@ -7026,6 +7026,36 @@ def rankInterfaceExteriorMask(mesh):
     return mask
 
 
+#: Whether :class:`proteus.Domain.D_base`'s forwarding properties --
+#: ``domain.MeshOptions``, ``use_gmsh``, ``use_plex``, ``regionConstraints`` --
+#: warn when they are used. **Off by default, deliberately.** They are
+#: deprecated in 2.0 and go away in 2.1, but proteus still reaches for them in
+#: 347 places of its own (62 in ``proteus/``, 285 in ``test/``), so warning
+#: unconditionally today would mean warning at ourselves a few hundred times a
+#: test run and would make ``-W error`` unusable for everyone else.
+#:
+#: Turn it on to find the call sites that still need moving::
+#:
+#:     MeshTools.warnOnDomainMeshForwarding = True
+#:
+#: and turn it on in CI once ``proteus/`` is clean, which is what makes the
+#: 2.1 removal safe to do rather than hopeful.
+warnOnDomainMeshForwarding = False
+
+
+def _warnDomainMeshForwarding(name):
+    """Warn that a Domain meshing property is forwarded, if asked to."""
+    if warnOnDomainMeshForwarding:
+        import warnings
+        use = ("MeshTools.getMeshOptions(domain)" if name == "MeshOptions"
+               else "MeshTools.getMeshOptions(domain).%s" % name)
+        warnings.warn(
+            "Domain.%s is deprecated since 2.0 and will be removed in 2.1; "
+            "meshing policy belongs to MeshTools, so use %s instead"
+            % (name, use),
+            DeprecationWarning, stacklevel=3)
+
+
 def getMeshOptions(domain):
     """
     The MeshOptions governing how a domain gets discretized.

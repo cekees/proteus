@@ -15,6 +15,8 @@ import pickle
 import pytest
 
 from proteus import Domain, MeshTools
+import contextlib
+import warnings
 
 
 class TestMeshOptionsOwnership(object):
@@ -119,3 +121,71 @@ class TestMeshOptionsOwnership(object):
         assert MeshTools.getMeshOptions(copy.deepcopy(domain)).he == 0.03125
         assert MeshTools.getMeshOptions(
             pickle.loads(pickle.dumps(domain))).he == 0.03125
+
+
+class TestForwardingIsDeprecated:
+    """Domain's meshing properties forward to MeshTools and go away in 2.1.
+
+    The warning is off by default on purpose. Proteus still uses these
+    spellings in 347 of its own places, so warning unconditionally would mean
+    warning at ourselves a few hundred times a test run, and would make
+    ``-W error`` unusable for anyone downstream. The switch exists so the
+    sweep that makes the 2.1 removal safe can find every call site, including
+    Domain.py's own.
+    """
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _warnings_on():
+        MeshTools.warnOnDomainMeshForwarding = True
+        try:
+            yield
+        finally:
+            MeshTools.warnOnDomainMeshForwarding = False
+
+    def test_silent_by_default(self):
+        domain = Domain.RectangularDomain(L=[1.0, 1.0])
+        assert MeshTools.warnOnDomainMeshForwarding is False
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")      # any warning fails the test
+            domain.MeshOptions
+            domain.use_gmsh
+            domain.use_plex
+            domain.regionConstraints
+            domain.use_gmsh = False
+
+    @pytest.mark.parametrize("name", ["MeshOptions", "use_gmsh", "use_plex",
+                                      "regionConstraints"])
+    def test_reading_warns_when_asked(self, name):
+        domain = Domain.RectangularDomain(L=[1.0, 1.0])
+        with self._warnings_on(), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            getattr(domain, name)
+        assert len(caught) == 1, [str(w.message) for w in caught]
+        assert issubclass(caught[0].category, DeprecationWarning)
+        message = str(caught[0].message)
+        assert "Domain.%s" % name in message
+        assert "removed in 2.1" in message
+        # the message has to name the replacement, and name it correctly
+        expected = ("MeshTools.getMeshOptions(domain)" if name == "MeshOptions"
+                    else "MeshTools.getMeshOptions(domain).%s" % name)
+        assert expected + " instead" in message
+
+    @pytest.mark.parametrize("name,value", [("use_gmsh", True),
+                                            ("use_plex", True),
+                                            ("regionConstraints", [0.5])])
+    def test_writing_warns_and_still_works(self, name, value):
+        domain = Domain.RectangularDomain(L=[1.0, 1.0])
+        with self._warnings_on(), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            setattr(domain, name, value)
+        assert len(caught) == 1, [str(w.message) for w in caught]
+        # deprecated, not broken: it still reaches the one owner
+        assert getattr(MeshTools.getMeshOptions(domain), name) == value
+
+    def test_the_switch_is_restored_even_if_the_body_raises(self):
+        """A test that flips it must not leak the flag into the next test."""
+        with pytest.raises(ZeroDivisionError):
+            with self._warnings_on():
+                1 / 0
+        assert MeshTools.warnOnDomainMeshForwarding is False
