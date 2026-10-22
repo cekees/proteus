@@ -1066,25 +1066,26 @@ def Mat(m,n):
 def SparseMatFromDict(nr,nc,aDict):
     """
     Build a nr x nc sparse matrix from a dictionary representation
+
+    Rows with no entries are fine, anywhere -- first, last or between others. (The row pointer was
+    built by stepping one row at a time, so a gap in the row numbers shifted every later row up and
+    left the trailing pointers at zero. A global operator has no empty rows; a rank's piece of one does:
+    its ghost rows whose coarse parents are not on the rank.)
     """
     from . import superluWrappers
     indeces = list(aDict.keys())
     indeces.sort()
     nnz     = len(indeces)
     nzval   = numpy.zeros((nnz,),'d')
-    rowptr  = numpy.zeros((nr+1,),'i')
     colind  = numpy.zeros((nnz,),'i')
-    i=0
-    k=0
-    rowptr[i]=0
-    for ij in indeces:
+    rows    = numpy.zeros((nnz,),'i')
+    for k,ij in enumerate(indeces):
         nzval[k] = aDict[ij]
+        rows[k] = ij[0]
         colind[k] = ij[1]
-        if ij[0] > i:
-            i += 1
-            rowptr[i]=k
-        k+=1
-    rowptr[i+1] = k
+    assert nnz == 0 or (rows.min() >= 0 and rows.max() < nr), "an entry lies outside the %d rows" % nr
+    rowptr  = numpy.zeros((nr+1,),'i')
+    rowptr[1:] = numpy.cumsum(numpy.bincount(rows,minlength=nr))
     return (SparseMat(nr,nc,nnz,nzval,colind,rowptr),nzval)
 
 

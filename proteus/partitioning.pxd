@@ -29,7 +29,8 @@ cdef extern from "partitioning.h" namespace "proteus":
     extern int c_partitionNodes "proteus::partitionNodes" (const MPI_Comm& PROTEUS_COMM_WORLD,
                                                            mesh.Mesh& mesh,
                                                            int nNodes_overlap,
-                                                           const int* nodeOwners);
+                                                           const int* nodeOwners,
+                                                           const int* nodeWeights);
     extern int c_partitionNodesFromTetgenFiles "proteus::partitionNodesFromTetgenFiles" (const MPI_Comm& PROTEUS_COMM_WORLD,
                                                                                          const char* filebase,
                                                                                          int indexBase, mesh.Mesh& newMesh,

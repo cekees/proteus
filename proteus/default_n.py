@@ -162,6 +162,12 @@ computeEigenvectors = None#'left','right'
 linearSmoother = None
 
 linearSmootherOptions = ()
+#How the coarsest level of a linear multigrid cycle is solved in parallel: 'direct' (a
+#parallel sparse direct solver, MUMPS or SuperLU_DIST: exact, distributed; the default),
+#'redundant' (gathered and factored on every rank: exact, replicated, needs no package) or
+#'amg' (one algebraic multigrid V-cycle: distributed, inexact). See
+#LinearSolvers.coarseSolverOptions.
+linearCoarseSolver = 'direct'
 
 linTolFac = 0.001
 

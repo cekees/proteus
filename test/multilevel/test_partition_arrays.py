@@ -166,11 +166,23 @@ def test_multigrid_on_cartesian_bricks_without_petsc(case, n_ranks):
 
 
 def _grid_owners(points, h, nn, grid):
+    """The brick owner of every node, worked out from its coordinates.
+
+    The rule, stated independently of MeshTools._cartesianBrickStarts: the nn-1 cells along an
+    axis are split into near-equal chunks (the partitioners' default partition), a node belongs
+    to the chunk of the cell it starts -- the last node to the last cell's -- and an axis with
+    fewer cells than ranks splits its nodes into chunks instead.
+    """
     from proteus import MeshTools
     index = [np.rint(points[:, d] / h[d]).astype(int) if nn[d] > 1 else np.zeros(len(points), int)
              for d in range(3)]
-    chunk = [np.searchsorted(MeshTools._cartesianChunkStarts(nn[d], grid[d])[1:], index[d], side='right')
-             for d in range(3)]
+    def chunkOf(d):
+        n, p = nn[d], grid[d]
+        if n > 1 and n - 1 >= p:
+            return np.searchsorted(MeshTools._cartesianChunkStarts(n - 1, p)[1:],
+                                   np.minimum(index[d], n - 2), side='right')
+        return np.searchsorted(MeshTools._cartesianChunkStarts(n, p)[1:], index[d], side='right')
+    chunk = [chunkOf(d) for d in range(3)]
     return chunk[0] + grid[0] * (chunk[1] + grid[1] * chunk[2])
 
 
@@ -197,8 +209,9 @@ def test_cartesian_owners_follow_each_generators_numbering(kind, nn, grid):
     owners = MeshTools.cartesianNodeOwners(*nn, rankGrid=grid, fastest='y' if kind == 'quad' else 'x')
     assert owners.dtype == np.intc and owners.shape == (mesh.nNodes_global,)
     assert np.array_equal(owners, _grid_owners(np.asarray(mesh.nodeArray), h, nn, grid))
-    # bricks are the default partition's near-equal chunks, so a 5-rank cut of
-    # 3 nodes leaves two ranks empty instead of failing
+    # bricks are the default partition's near-equal chunks of the coarse cells (of the
+    # nodes where there are fewer cells than ranks), so a 5-rank cut of 3 nodes leaves
+    # two ranks empty instead of failing
     counts = np.bincount(owners, minlength=int(np.prod(grid)))
     assert counts.sum() == mesh.nNodes_global
 

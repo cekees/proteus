@@ -103,10 +103,23 @@ public:
         x0[d] = origin ? origin[d] : 0.0;
         starts[d].resize(p[d]+1);
         starts[d][0] = 0;
+        /* Bricks are cut on coarse cells (see MeshTools._cartesianBrickStarts): the
+           nn0-1 cells are split as evenly as the default chunks, a node belongs to
+           the brick of the cell it starts, and the last node to the last brick. An
+           axis with fewer cells than ranks keeps the node chunks. */
+        const bool byCells = d < dim && nn0 - 1 >= p[d];
+        const int count = byCells ? nn0 - 1 : nn0;
         for (int a = 0; a < p[d]; a++)
-          starts[d][a+1] = starts[d][a] + nn0/p[d] + (nn0%p[d] > a);
-        for (int a = 0; a <= p[d]; a++)
-          starts[d][a] = d < dim ? std::min(starts[d][a] << level, nn[d]) : starts[d][a];
+          starts[d][a+1] = starts[d][a] + count/p[d] + (count%p[d] > a);
+        if (byCells)
+          {
+            for (int a = 0; a < p[d]; a++)
+              starts[d][a] = starts[d][a] << level;
+            starts[d][p[d]] = nn[d];
+          }
+        else
+          for (int a = 0; a <= p[d]; a++)
+            starts[d][a] = d < dim ? std::min(starts[d][a] << level, nn[d]) : starts[d][a];
       }
     size = p[0]*p[1]*p[2];
     if (kind == QUAD)

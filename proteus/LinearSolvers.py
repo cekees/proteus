@@ -1413,6 +1413,63 @@ class petsc_ASM(KSP_Preconditioner):
               newton_its=None):
         self.pc.setUp()
 
+COARSE_SOLVERS = ('redundant','direct','amg')
+
+
+def coarseSolverOptions(kind):
+    """PETSc options (names without a prefix) that make a coarse level be solved as ``kind``.
+
+    The coarsest level of a multigrid cycle has to be solved, not smoothed, and in parallel
+    that is a choice with a scaling consequence.
+
+    ``direct`` (the default) is a parallel sparse direct solver (MUMPS, else SuperLU_DIST):
+    exact, so a cycle is the same cycle to roundoff whatever the rank count, with the factors
+    distributed. Serious parallel builds have one of the two, and at a small coarse level it
+    costs the same as ``redundant`` (measured: 0.16 vs 0.19 s at 64 ranks, 4 levels).
+
+    ``redundant`` gathers the coarse matrix onto every rank, factors it there in full, and
+    applies it with no iteration. It is exact and needs no external package, but it is
+    *replicated*: every rank does the same work, so with weak scaling -- a coarse level that
+    grows with the rank count -- the cost grows with it. Measured on a 3-level hexahedral
+    hierarchy at 64 ranks it was 91% of all flops and took 8.7 s of a 12.6 s run (``direct``:
+    0.15 s); a deeper hierarchy made it cheap. Keep it for builds with no parallel direct
+    solver.
+
+    ``amg`` is one algebraic multigrid V-cycle (hypre BoomerAMG, else PETSc's GAMG): scalable
+    and cheap, but *not* exact -- the coarse correction is approximate, so a proteus MGM cycle
+    stops being the serial cycle and agrees with it only through convergence. It suits
+    elliptic coarse operators; it is a poor bet for strongly nonsymmetric ones.
+
+    Any ``-<prefix>`` option the user sets takes precedence over these.
+    """
+    if kind == 'redundant':
+        return (('ksp_type','preonly'),('pc_type','redundant'),('redundant_pc_type','lu'))
+    if kind == 'direct':
+        for package in ('mumps','superlu_dist'):
+            if p4pyPETSc.Sys.hasExternalPackage(package):
+                return (('ksp_type','preonly'),('pc_type','lu'),
+                        ('pc_factor_mat_solver_type',package))
+        raise ValueError("coarseSolver='direct' needs PETSc built with MUMPS or SuperLU_DIST")
+    if kind == 'amg':
+        if p4pyPETSc.Sys.hasExternalPackage('hypre'):
+            return (('ksp_type','preonly'),('pc_type','hypre'),('pc_hypre_type','boomeramg'))
+        return (('ksp_type','preonly'),('pc_type','gamg'))
+    raise ValueError("coarseSolver must be one of %s, not %r" % (COARSE_SOLVERS,kind))
+
+
+def applyCoarseSolverDefaults(options,coarsePrefix,kind):
+    """Fill in the options for ``kind`` under ``coarsePrefix`` that the user has not set.
+
+    "Not set" is an exact-key test: PETSc's lookup falls back from a numbered prefix to the
+    unnumbered one, so hasName('mg_levels_0_ksp_type') is true whenever mg_levels_ksp_type
+    is, and a hasName guard would never fill in the option that has to override it.
+    """
+    given = options.getAll()
+    for name,value in coarseSolverOptions(kind):
+        if coarsePrefix+name not in given:
+            options[coarsePrefix+name] = value
+
+
 class MGHierarchy(object):
     """The levels a petsc_MG preconditioner is assembled over.
 
@@ -1422,10 +1479,11 @@ class MGHierarchy(object):
     is the coarsest, as everywhere in proteus. ``interpolations[0]`` is unused
     and kept None so the lists index like prolongList does.
     """
-    def __init__(self,operators,interpolations):
+    def __init__(self,operators,interpolations,coarseSolver='direct'):
         assert len(interpolations) == len(operators) + 1, (len(operators),len(interpolations))
         self.operators = operators
         self.interpolations = interpolations
+        self.coarseSolver = coarseSolver
 
     @property
     def nLevels(self):
@@ -1490,13 +1548,7 @@ class petsc_MG(KSP_Preconditioner):
         #and a hasName guard would never fill in the very option that has to
         #override it.
         coarse = 'mg_levels_0_' if hierarchy.nLevels == 1 else 'mg_coarse_'
-        options = p4pyPETSc.Options(prefix)
-        given = options.getAll()
-        for name,value in ((coarse+'ksp_type','preonly'),
-                           (coarse+'pc_type','redundant'),
-                           (coarse+'redundant_pc_type','lu')):
-            if name not in given:
-                options[name] = value
+        applyCoarseSolverDefaults(p4pyPETSc.Options(prefix),coarse,hierarchy.coarseSolver)
         self.pc.setFromOptions()
 
     def setUp(self,
@@ -3363,7 +3415,7 @@ class NI(MultilevelLinearSolver):
         """NI sets solverList to [self]*nLevels, so the inherited failed()
         would recurse; ask the finest level solver instead."""
         return self.levelSolverList[-1].failed()
-def petscMGHierarchy(par_linearOperatorList,prolongList,level):
+def petscMGHierarchy(par_linearOperatorList,prolongList,level,coarseSolver='direct'):
     """The MGHierarchy for the KSP on ``level``: levels 0..level-1 and the
     transfers between 0..level.
 
@@ -3382,7 +3434,7 @@ def petscMGHierarchy(par_linearOperatorList,prolongList,level):
                 "qualify (see Transport.useParallelTransfers)."
                 % (k,type(prolongList[k]).__name__))
         interpolations.append(mat)
-    return MGHierarchy(list(par_linearOperatorList[:level]),interpolations)
+    return MGHierarchy(list(par_linearOperatorList[:level]),interpolations,coarseSolver)
 
 
 def starILURelaxation():
@@ -3405,7 +3457,7 @@ def starILURelaxation():
     return 1.0 if Comm.get().size() == 1 else 0.5
 
 
-def mgmCoarseSolver(L,par_L,prefix='mgm_coarse_'):
+def mgmCoarseSolver(L,par_L,prefix='mgm_coarse_',kind='direct'):
     """The solver for the coarsest level of a multigrid cycle.
 
     In serial that is a sparse LU factorization of the level's matrix. In
@@ -3416,28 +3468,24 @@ def mgmCoarseSolver(L,par_L,prefix='mgm_coarse_'):
     block-Jacobi coarse correction in place of the exact one -- and loses the
     property that makes multigrid's rate independent of the mesh.
 
-    The coarse level is small by construction, so the natural parallel solve is
+    The coarse level is small by construction, so the default parallel solve is
     PETSc's redundant preconditioner: gather the coarse matrix, factor it in
     full, and apply it with no iteration (KSP preonly). Every rank holds a copy,
     which is cheap exactly because the level is coarse, and needs no external
-    direct-solver package.
+    direct-solver package. It is replicated, though, and stops being cheap when the
+    coarse level grows with the rank count; ``kind`` ('redundant', 'direct', 'amg';
+    see coarseSolverOptions) chooses a distributed alternative.
 
-    The solver reads PETSc options under ``prefix``, so a run can replace it --
-    ``-mgm_coarse_pc_type gamg``, or ``-mgm_coarse_pc_type lu`` with
-    ``-mgm_coarse_pc_factor_mat_solver_type mumps`` -- when the coarse level is
-    not small. The defaults below only fill options the user has not set.
+    The solver reads PETSc options under ``prefix``, so a run can replace any of it --
+    ``-mgm_coarse_pc_type gamg``, say. The defaults only fill options the user has
+    not set.
     """
     from . import Comm
     if par_L is None or Comm.get().size() == 1:
         return LU(L=L)
     if not HAVE_PETSC4PY:
         return RedundantLU(L,par_L)
-    options = p4pyPETSc.Options(prefix)
-    for name,value in (('ksp_type','preonly'),
-                       ('pc_type','redundant'),
-                       ('redundant_pc_type','lu')):
-        if not options.hasName(name):
-            options[name] = value
+    applyCoarseSolverDefaults(p4pyPETSc.Options(prefix),'',kind)
     #maxIts is left generous on purpose: preonly reports one iteration, and a
     #solver whose iteration count equals maxIts is reported as having failed,
     #which Newton acts on when this solver is the level-0 solver of a nested
@@ -3479,8 +3527,11 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                   par_duList=None,
                                   solver_options_prefix=None,
                                   linearSolverLocalBlockSize=1,
-                                  linearSmootherOptions=()):
+                                  linearSmootherOptions=(),
+                                  coarseSolver='direct'):
     logEvent("multilevelLinearSolverChooser type= %s" % multilevelLinearSolverType)
+    if coarseSolver not in COARSE_SOLVERS:
+        raise ValueError("coarseSolver must be one of %s, not %r" % (COARSE_SOLVERS,coarseSolver))
     if (multilevelLinearSolverType == KSP_petsc4py or
         multilevelLinearSolverType == LU or
         multilevelLinearSolverType == Jacobi or
@@ -3581,16 +3632,17 @@ def multilevelLinearSolverChooser(linearOperatorList,
             else:
                 preSmootherList.append([])
                 postSmootherList.append([])
-                coarseSolver = mgmCoarseSolver(linearOperatorList[l],
-                                               par_linearOperatorList[l]
-                                               if par_linearOperatorList is not None
-                                               else None)
+                coarseSolver_ = mgmCoarseSolver(linearOperatorList[l],
+                                                par_linearOperatorList[l]
+                                                if par_linearOperatorList is not None
+                                                else None,
+                                                kind=coarseSolver)
         levelLinearSolver = MGM(prolongList = prolongList,
                                 restrictList = restrictList,
                                 LList = linearOperatorList,
                                 preSmootherList = preSmootherList,
                                 postSmootherList = postSmootherList,
-                                coarseSolver = coarseSolver,
+                                coarseSolver = coarseSolver_,
                                 mgItsList = mgItsList,
                                 printInfo = printLevelSolverInfo,
                                 computeRates = computeLevelSolverRates,
@@ -3604,7 +3656,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
         for l in range(nLevels):
             preconditionerOptions = linearSmootherOptions
             if smootherType == petsc_MG:
-                preconditionerOptions = petscMGHierarchy(par_linearOperatorList,prolongList,l)
+                preconditionerOptions = petscMGHierarchy(par_linearOperatorList,prolongList,l,coarseSolver)
             levelLinearSolverList.append(KSP_petsc4py(linearOperatorList[l],par_linearOperatorList[l],
                                                       maxIts = solverMaxIts,
                                                       convergenceTest = solverConvergenceTest,

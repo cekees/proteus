@@ -5,8 +5,8 @@ pcmg_parallel_mpi.py offers for simplices: proteus's MGM, PETSc's PCMG over the
 same hierarchy, PCMG-preconditioned GMRES, and a direct solve to hold the
 converged modes to.
 
-Usage: cube_mg_mpi.py KIND NN LEVELS MODE [ORDER]   (KIND is quad or hex; ORDER 1 or 2, default 1;
-MODE ksplu is a direct solve that also runs in parallel)
+Usage: cube_mg_mpi.py KIND NN LEVELS MODE [ORDER [COARSE]]   (KIND is quad or hex; ORDER 1 or 2, default 1;
+MODE ksplu is a direct solve that also runs in parallel; COARSE is redundant, direct or amg)
 """
 import os
 import sys
@@ -28,6 +28,7 @@ nLevels = int(sys.argv[3])
 mode = sys.argv[4]
 assert mode in ('mgm', 'pcmg', 'pcmg_its', 'direct', 'ksplu'), mode
 Q = int(sys.argv[5]) if len(sys.argv) > 5 else 1
+coarse = sys.argv[6] if len(sys.argv) > 6 else 'direct'
 if kind == 'hex':
     TESTDIR = os.path.join(testroot, "ci")
     p = defaults.load_physics('poisson_3d_p', TESTDIR)
@@ -56,6 +57,7 @@ else:
     n.elementQuadrature = default_n.CubeGaussQuadrature(p.nd, 3)
     n.elementBoundaryQuadrature = default_n.CubeGaussQuadrature(p.nd - 1, 3)
 n.nLevels = nLevels
+n.linearCoarseSolver = coarse
 n.parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.node
 n.nLayersOfOverlapForParallel = 1
 if mode == 'direct':

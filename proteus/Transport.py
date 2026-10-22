@@ -6299,6 +6299,8 @@ class OneLevelTransport(NonlinearEquation):
 #end Transport definition
 class MultilevelTransport(object):
     """Nonlinear ADR on a multilevel mesh"""
+    #None or False: distributed transfer operators only when there is more than one rank
+    distributedTransfers = False
     def __init__(self,problem,numerics,mlMesh,OneLevelTransportType=OneLevelTransport):
         self.name = problem.name
         #cek temporary fix to get everything weaned off the old BC's
@@ -6403,7 +6405,12 @@ class MultilevelTransport(object):
         # transfers at all.
         from . import Comm
         _comm = Comm.get()
-        self.parallelTransfers = _comm.size() > 1 and len(mlMesh.meshList) > 1
+        #Distributed (PETSc Mat) transfers are what parallel runs need. A serial run
+        #uses the global SparseMatrix ones unless distributedTransfers is True, which
+        #lets a one-rank run use exactly the code a many-rank run does -- PETSc's PCMG
+        #needs it, and so does a scaling study with a one-rank baseline.
+        self.parallelTransfers = ((_comm.size() > 1 or self.distributedTransfers)
+                                  and len(mlMesh.meshList) > 1)
         for mesh in mlMesh.meshList:
             
             sdmesh = mesh.subdomainMesh # Linoj: mesh.subdomainMesh.nodeArray[:,2]=all zeros
@@ -7154,6 +7161,7 @@ class MultilevelTransport(object):
         mt = self.meshTransfers
         prolongList = [[]]
         restrictList = [[]]
+        restrictSumList = [[]]
         prolong_bc = dict((cj,[[]]) for cj in range(nc))
         restrict_bc = dict((cj,[[]]) for cj in range(nc))
         scaled_restrict_bc = dict((cj,[[]]) for cj in range(nc))
@@ -7166,6 +7174,13 @@ class MultilevelTransport(object):
                     stackedP,self.par_uList[l],self.par_uList[l+1]))
                 restrictList.append(ParTransposeTransferOperator(
                     stackedP,self.par_uList[l],self.par_uList[l+1]))
+                #FAS divides a restricted *solution* by these row sums (the paper's
+                #I-tilde); ghosts included, since the next residual reads them
+                coarseU = self.par_uList[l]
+                rowSums = np.zeros(coarseU.proteus_array.size)
+                rowSums[:coarseU.dim_proc] = nodalRestrictionScaling(stackedP).getArray()
+                coarseU.duplicate_with_array(rowSums).scatter_forward_insert()
+                restrictSumList.append(rowSums)
             for cj in range(nc):
                 prolongMat,injectionMat,rowSums = mats(l,cj)
                 coarse = self.uDictList[l][cj].par_dof
@@ -7185,6 +7200,7 @@ class MultilevelTransport(object):
         if stacked:
             mt.prolongList = prolongList
             mt.restrictList = restrictList
+            mt.restrictSumList = restrictSumList
         mt.prolong_bcListDict = prolong_bc
         mt.restrict_bcListDict = restrict_bc
         mt.scaled_restrict_bcListDict = scaled_restrict_bc

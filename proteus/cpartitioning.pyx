@@ -80,7 +80,7 @@ def partitionElements(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, c
     )
 
 def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmeshTools.CMesh subdomain_cmesh,
-                   object nodeOwners=None):
+                   object nodeOwners=None, object nodeWeights=None):
     """Partition by nodes. nodeOwners, if given, is an int array with the rank
     that owns each node (in the mesh's current numbering) and replaces the
     graph partitioner -- see MultilevelMesh.partitionLevels."""
@@ -95,10 +95,18 @@ def partitionNodes(Comm comm, int nLayersOfOverlap, cmeshTools.CMesh cmesh, cmes
         owners = np.ascontiguousarray(nodeOwners, dtype=np.intc)
         assert owners.shape[0] == cmesh.mesh.nNodes_global, (owners.shape[0], cmesh.mesh.nNodes_global)
         ownersp = &owners[0]
+    cdef int[::1] weights
+    cdef const int* weightsp = NULL
+    if nodeWeights is not None:
+        assert nodeOwners is None, "node weights steer the graph partitioner; prescribed owners replace it"
+        weights = np.ascontiguousarray(nodeWeights, dtype=np.intc)
+        assert weights.shape[0] == cmesh.mesh.nNodes_global, (weights.shape[0], cmesh.mesh.nNodes_global)
+        weightsp = &weights[0]
     c_partitionNodes(comm.ob_mpi,
                      cmesh.mesh,
                      nLayersOfOverlap,
-                     ownersp)
+                     ownersp,
+                     weightsp)
     return (
         _intArray(cmesh.mesh.elementOffsets_subdomain_owned, comm.size+1),
         _intArray(cmesh.mesh.elementNumbering_subdomain2global, cmesh.mesh.subdomainp.nElements_global),

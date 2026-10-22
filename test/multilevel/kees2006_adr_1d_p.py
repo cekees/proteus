@@ -34,22 +34,25 @@ opts = Context.Options([
     ("b", 1.0, "advection coefficient"),
     ("r", 2, "exponent on the potential u^r; r=1 is linear, r=2 is degenerate"),
     ("nn", 21, "nodes in the coarsest mesh"),
+    ("nd", 1, "space dimension: 1 is the paper's problem; 2 extends it to the unit square "
+              "(Dirichlet at x=0,1, no flow at y=0,1), so the solution is still the 1D one"),
 ])
 
-name = "kees2006_adr_1d_r%d" % opts.r
-nd = 1
+name = "kees2006_adr_%dd_r%d" % (opts.nd, opts.r)
+nd = opts.nd
 L = (1.0, 1.0, 1.0)
-domain = Domain.RectangularDomain(L=L[:1], x=(0.0,), name=name)
+domain = Domain.RectangularDomain(L=L[:nd], x=(0.0,)*nd, name=name)
 
 a, b, r = opts.a, opts.b, opts.r
 q = 1  # the paper fixes q=1 for both analytical cases
 
 # A is the diffusion tensor and B the advection vector, so in 1D they are
-# a 1x1 and a length-1 array respectively -- not scalars.
+# a 1x1 and a length-1 array respectively -- not scalars. In 2D the flow is
+# still along x.
 coefficients = NonlinearVADR_pqrst(nc=1,
                                    M={0: 0.0},          # steady state
-                                   A={0: np.array([[a]])},
-                                   B={0: np.array([b])},
+                                   A={0: a*np.eye(nd)},
+                                   B={0: np.array([b] + [0.0]*(nd-1))},
                                    C={0: 0.0},          # no reaction
                                    p={0: 1.0},
                                    q={0: float(q)},
@@ -85,4 +88,4 @@ class ConstantIC(object):
 
 initialConditions = {0: ConstantIC()}
 T = 1.0
-sd = True  # in 1D the sparse and dense diffusion layouts coincide (nd*nd == 1)
+sd = True  # the diffusion tensor is diagonal, so the sparse layout is the one in use
