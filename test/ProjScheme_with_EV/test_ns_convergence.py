@@ -2,7 +2,9 @@
 """
 Test module for projection scheme
 """
-from proteus.iproteus import *
+import proteus
+from importlib import reload
+from proteus import Profiling, default_s
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=1
@@ -51,7 +53,7 @@ class TestProjScheme(object):
     def teardown_method(self,method):
         pass
 
-    def test_no_stab(self):
+    def test_no_stab(self, opts):
         # Set parameters for this test
         parameters.ct.USE_SUPG_NS=0
         parameters.ct.ARTIFICIAL_VISCOSITY_NS=0
@@ -98,7 +100,7 @@ class TestProjScheme(object):
                           atol=0.1)
         actual.close()
 
-    def test_supg_with_shock_capturing(self):
+    def test_supg_with_shock_capturing(self, opts):
         # Set parameters for this test
         parameters.ct.USE_SUPG_NS=1
         parameters.ct.ARTIFICIAL_VISCOSITY_NS=1
@@ -145,7 +147,7 @@ class TestProjScheme(object):
                           atol=0.1)
         actual.close()
 
-    def test_ev(self):
+    def test_ev(self, opts):
         # Set parameters for this test
         parameters.ct.USE_SUPG_NS=0
         parameters.ct.ARTIFICIAL_VISCOSITY_NS=2
@@ -192,7 +194,7 @@ class TestProjScheme(object):
                           atol=0.1)
         actual.close()
 
-    def test_edge_based_visc_1(self):
+    def test_edge_based_visc_1(self, opts):
         # Set parameters for this test
         parameters.ct.USE_SUPG_NS=0
         parameters.ct.ARTIFICIAL_VISCOSITY_NS=3 # via smoothness indicator
@@ -239,7 +241,7 @@ class TestProjScheme(object):
                           atol=0.1)
         actual.close()
 
-    def test_edge_based_visc_2(self):
+    def test_edge_based_visc_2(self, opts):
         # Set parameters for this test
         parameters.ct.USE_SUPG_NS=0
         parameters.ct.ARTIFICIAL_VISCOSITY_NS=4 # via entropy viscosity

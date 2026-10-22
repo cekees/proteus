@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import os
-from proteus.iproteus import *
+from proteus import NumericalSolution, Profiling, default_s
+from proteus import runtime
 import unittest
 import numpy as np
 import numpy.testing as npt
@@ -15,9 +16,9 @@ class TestAddedMass3D(unittest.TestCase):
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = ['addedmass2D.xmf',
+        FileList = ['addedmass2D.xmf', 'addedmass2D.ymf',
                     'addedmass2D.h5',
-                    'addedmass3D.xmf',
+                    'addedmass3D.xmf', 'addedmass3D.ymf',
                     'addedmass3D.h5',
                     'record_rectangle1.csv',
                     'record_rectangle1_Aij.csv',
@@ -38,6 +39,9 @@ class TestAddedMass3D(unittest.TestCase):
                 pass
 
     def test_AddedMass_3D(self):
+        # a unittest.TestCase method: pytest hands it no fixtures
+        runtime.start()
+        opts = runtime.RunOptions()
         from proteus import defaults
         defaults.reset_default_p()
         defaults.reset_default_n()

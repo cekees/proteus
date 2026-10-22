@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 import os
 import pytest
-from proteus.iproteus import opts, default_s
+from proteus import default_s
+from proteus import runtime
 from proteus import Profiling, NumericalSolution, Comm
 import unittest
 import numpy as np
@@ -18,9 +19,9 @@ class TestIBM(unittest.TestCase):
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = ['addedmass2D.xmf',
+        FileList = ['addedmass2D.xmf', 'addedmass2D.ymf',
                     'addedmass2D.h5',
-                    'addedmass3D.xmf',
+                    'addedmass3D.xmf', 'addedmass3D.ymf',
                     'addedmass3D.h5',
                     'record_rectangle1.csv',
                     'record_rectangle1_Aij.csv',
@@ -56,7 +57,14 @@ class TestIBM(unittest.TestCase):
     # domain entirely). Needs real physics/numerics investigation before
     # trusting.
     def test_fallingCylinderIBM_ball(self):
+        # a unittest.TestCase method: pytest hands it no fixtures
+        runtime.start()
+        opts = runtime.RunOptions()
         from . import fallingCylinder
+        # a fresh case, as test_fallingCylinderIBM_sdf takes: the module keeps
+        # the body and the problem of whichever test ran it last in this
+        # process, and after _sdf's run the body started 3.4 m lower
+        importlib.reload(fallingCylinder)
         from proteus import defaults
         case = fallingCylinder
         case.m['flow'].p.coefficients.use_ball_as_particle = 1.
@@ -116,6 +124,9 @@ class TestIBM(unittest.TestCase):
     # unphysical result (cylinder exits the tank domain entirely). Needs
     # real physics/numerics investigation before trusting.
     def test_fallingCylinderIBM_sdf(self):
+        # a unittest.TestCase method: pytest hands it no fixtures
+        runtime.start()
+        opts = runtime.RunOptions()
         from proteus import defaults
         from . import fallingCylinder
         importlib.reload(fallingCylinder)
@@ -173,6 +184,9 @@ class TestIBM(unittest.TestCase):
         #self.teardown_method(self)
 
     def test_floatingCylinderALE(self):
+        # a unittest.TestCase method: pytest hands it no fixtures
+        runtime.start()
+        opts = runtime.RunOptions()
         from proteus import defaults
         from . import floatingCylinder
         case = floatingCylinder
@@ -218,6 +232,9 @@ class TestIBM(unittest.TestCase):
         #self.teardown_method(self)
 
     def test_floatingCubeALE(self):
+        # a unittest.TestCase method: pytest hands it no fixtures
+        runtime.start()
+        opts = runtime.RunOptions()
         from proteus import defaults
         from . import floatingCube
         case = floatingCube

@@ -2,7 +2,10 @@
 """
 Test module for the conservative LS with EV
 """
-from proteus.iproteus import *
+import os
+import proteus
+from importlib import reload
+from proteus import Profiling, default_n, default_s
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=2
@@ -39,7 +42,7 @@ class TestMCorr(object):
     def teardown_method(self,method):
         pass
 
-    def test_supg(self):
+    def test_supg(self, opts):
         thelper_cons_ls.ct.STABILIZATION_TYPE_ncls=0
         thelper_cons_ls.ct.DO_REDISTANCING=False
         thelper_cons_ls.ct.STABILIZATION_TYPE_vof=0
@@ -95,7 +98,7 @@ class TestMCorr(object):
     # PyTables-style `.root.` attribute that doesn't exist on h5py.File).
     # Baseline was regenerated from this simulation's own output rather
     # than independently validated.
-    def test_edge_based_EV(self):
+    def test_edge_based_EV(self, opts):
         thelper_cons_ls.ct.STABILIZATION_TYPE_ncls=1
         thelper_cons_ls.ct.DO_REDISTANCING=True
         thelper_cons_ls.ct.STABILIZATION_TYPE_vof=2

@@ -8,9 +8,13 @@ import numpy as np
 import proteus.defaults
 from proteus import Context
 from proteus import default_so
-from proteus.iproteus import *
+from proteus import Profiling
 import os
 import sys
+
+# One xdist worker runs this file, in order: test_damBreak_runPUMI reads the
+# mesh the --genPUMI run writes.
+pytestmark = pytest.mark.xdist_group("TwoPhaseFlow_PUMI")
 Profiling.logLevel=1
 Profiling.verbose=True
 
@@ -22,11 +26,11 @@ class TestTwoPhaseFlow(object):
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = ['marin.h5','marin.xmf'
-                    'moses.h5','moses.xmf'
-                    'damBreak.h5','damBreak.xmf'
-                    'TwoDimBucklingFlow.h5','TwoDimBucklingFlow.xmf'
-                    'filling.h5','filling.xmf'
+        FileList = ['marin.h5','marin.xmf', 'marin.ymf',
+                    'moses.h5','moses.xmf', 'moses.ymf',
+                    'damBreak.h5','damBreak.xmf', 'damBreak.ymf',
+                    'TwoDimBucklingFlow.h5','TwoDimBucklingFlow.xmf', 'TwoDimBucklingFlow.ymf',
+                    'filling.h5','filling.xmf', 'filling.ymf',
                     ]
         for file in FileList:
             if os.path.isfile(file):

@@ -9,7 +9,8 @@ This module solves equations of the form
   \nabla \cdot \left( a(x) \nabla u \right) = f(x)
 
 """
-from proteus.iproteus import *
+from importlib import reload
+from proteus import NumericalSolution, default_s, default_so
 import os
 import numpy as np
 import h5py
@@ -40,7 +41,7 @@ class TestRichards(object):
     def teardown_method(self,method):
         filenames = []
         for aux_name in self.aux_names:
-            filenames.extend([aux_name+'.'+ext for ext in ['h5','xmf']])
+            filenames.extend([aux_name+'.'+ext for ext in ['h5','xmf','ymf']])
         filenames.append('proteus.log')
         for f in filenames:
             if os.path.exists(f):
@@ -51,7 +52,7 @@ class TestRichards(object):
             else:
                 pass
             
-    def test_richards(self,use_strong_constraints=False):
+    def test_richards(self,opts,use_strong_constraints=False):
         pList = [re_gl_6_3d_p]
         nList = [re_gl_6_3d_n]
         reload(default_so)
@@ -59,9 +60,6 @@ class TestRichards(object):
         so.name = pList[0].name = "richards"
         reload(default_s)
         so.sList=[default_s]
-        opts.logLevel=7
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         ns = NumericalSolution.NS_base(so,pList,nList,so.sList,opts)
         ns.calculateSolution(so.name)
@@ -78,7 +76,7 @@ class TestRichards(object):
 
         del ns
         
-    def test_elastoplastic(self,use_strong_constraints=False):
+    def test_elastoplastic(self,opts,use_strong_constraints=False):
         pList = [sm_gl_6_3d_p]
         nList = [sm_gl_6_3d_n]
         reload(default_so)
@@ -86,9 +84,6 @@ class TestRichards(object):
         so.name = pList[0].name = "elastoplastic"
         reload(default_s)
         so.sList=[default_s]
-        opts.logLevel=7
-        opts.verbose=True
-        opts.profile=True
         opts.gatherArchive=True
         try:
             ns = NumericalSolution.NS_base(so,pList,nList,so.sList,opts)

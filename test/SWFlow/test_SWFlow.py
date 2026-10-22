@@ -8,7 +8,7 @@ import numpy as np
 import proteus.defaults
 from proteus import Context
 from proteus import default_so
-from proteus.iproteus import *
+from proteus import Profiling
 import os
 import sys
 Profiling.logLevel=1

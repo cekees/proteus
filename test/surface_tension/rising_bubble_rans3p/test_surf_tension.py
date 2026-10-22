@@ -2,7 +2,9 @@
 """
 Test module for surface tension
 """
-from proteus.iproteus import *
+import proteus
+from importlib import reload
+from proteus import Profiling, default_s
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=1
@@ -87,7 +89,7 @@ class TestSurfaceTension(object):
         actual.close()
 
 
-    def test_2D_with_supg(self):
+    def test_2D_with_supg(self, opts):
         # Set parameters for this test
         parameters.ct.USE_SUPG_NS=1
         parameters.ct.ARTIFICIAL_VISCOSITY_NS=1
@@ -124,7 +126,7 @@ class TestSurfaceTension(object):
         # COMPARE VS SAVED FILES #
         self.compare_files('comparison_files',self.so.name)        
 
-    def test_2D_with_EV(self):
+    def test_2D_with_EV(self, opts):
         # Set parameters for this test
         parameters.ct.USE_SUPG_NS=0
         parameters.ct.ARTIFICIAL_VISCOSITY_NS=2
@@ -161,7 +163,7 @@ class TestSurfaceTension(object):
         # COMPARE VS SAVED FILES #
         self.compare_files('comparison_files',self.so.name)        
 
-    def test_3D_with_SUPG(self):
+    def test_3D_with_SUPG(self, opts):
         # Set parameters for this test
         parameters.ct.USE_SUPG_NS=1
         parameters.ct.ARTIFICIAL_VISCOSITY_NS=1
@@ -198,7 +200,7 @@ class TestSurfaceTension(object):
         # COMPARE VS SAVED FILES #
         self.compare_files('comparison_files',self.so.name)        
 
-    def test_3D_with_EV(self):
+    def test_3D_with_EV(self, opts):
         # Set parameters for this test
         parameters.ct.USE_SUPG_NS=0
         parameters.ct.ARTIFICIAL_VISCOSITY_NS=2

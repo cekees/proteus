@@ -1,5 +1,6 @@
 """Tests for 2d flow around a cylinder with shifted boundary method on a 3D mesh"""
-from proteus.iproteus import *
+import proteus
+from proteus import Profiling, default_s
 from proteus import Comm, defaults
 from proteus import Context
 import h5py
@@ -27,7 +28,7 @@ class Test_sbm_cylinder2D_on_mesh3D(object):
 
     def teardown_method(self, method):
         """ Tear down function """
-        FileList = ['cylinder_sbm_mesh3D_T001_P1_sbm_3Dmesh.h5', 'cylinder_sbm_mesh3D_T001_P1_sbm_3Dmesh.xmf',
+        FileList = ['cylinder_sbm_mesh3D_T001_P1_sbm_3Dmesh.h5', 'cylinder_sbm_mesh3D_T001_P1_sbm_3Dmesh.xmf', 'cylinder_sbm_mesh3D_T001_P1_sbm_3Dmesh.ymf',
                    ]
         for file in FileList:
             if os.path.isfile(file):
@@ -37,9 +38,9 @@ class Test_sbm_cylinder2D_on_mesh3D(object):
 
 
 
-    def test_ex1(self):
+    def test_ex1(self, opts):
         self.compare_name = "T001_P1_sbm_3Dmesh"
-        self.example_setting("T=0.01 spaceOrder=1 onlySaveFinalSolution=True")
+        self.example_setting(opts, "T=0.01 spaceOrder=1 onlySaveFinalSolution=True")
         self.teardown_method(self)
 
     # really slow
@@ -48,7 +49,7 @@ class Test_sbm_cylinder2D_on_mesh3D(object):
 #         self.example_setting("T=0.01 spaceOrder=2 onlySaveFinalSolution=True")
 
 
-    def example_setting(self, pre_setting):
+    def example_setting(self, opts, pre_setting):
         from petsc4py import PETSc
         import sys
         OptDB = PETSc.Options()
@@ -58,7 +59,6 @@ class Test_sbm_cylinder2D_on_mesh3D(object):
 
         my_so = defaults.load_system("cylinder_so",modulepath)
 
-        opts.profile = False
         opts.gatherArchive = True
         
         pList=[]
