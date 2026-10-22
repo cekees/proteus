@@ -48,7 +48,10 @@ n.linearPreSmooths = n.linearPostSmooths = smooths
 n.parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.node
 n.nLayersOfOverlapForParallel = 1
 so = default_so
-so.name = p.name = "mgm_%d_%s_%d" % (nLevels, smoother, size)
+#every argument is in the name: the archive file is named after it, and tests that differ
+#only in cycles, smooths or components run side by side (pytest-xdist) in this directory,
+#where two jobs opening the same HDF5 file hang each other
+so.name = p.name = "mgm_%d_%s_%d_%d_%dc_%d" % (nLevels, smoother, cycles, smooths, NC, size)
 so.sList = [default_s]
 runopts.logLevel = 1
 runopts.verbose = False

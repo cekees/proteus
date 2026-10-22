@@ -78,7 +78,7 @@ n.linearSmoother = LinearSolvers.Jacobi
 n.linearWCycles = 1
 n.linearPreSmooths = n.linearPostSmooths = 3
 so = default_so
-so.name = p.name = "regularmg_%s_%d_%d_%d" % (kind, nn, nLevels, size)
+so.name = p.name = "regularmg_%s_%d_%d_%s%s_%d" % (kind, nn, nLevels, regularGrid, "_scan" if scan else "", size)
 so.sList = [default_s]
 runopts.logLevel = 1
 runopts.verbose = False
