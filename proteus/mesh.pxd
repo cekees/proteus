@@ -1,32 +1,35 @@
 from libcpp cimport bool
 
+cdef extern from "index_type.h":
+    ctypedef int proteus_index_t
+
 cdef extern from "mesh.h":
     cdef struct Mesh:
-      int nElements_global
-      int nNodes_global
-      int nNodes_element
-      int nNodes_elementBoundary
-      int nElementBoundaries_element
-      int nElementBoundaries_global
-      int nInteriorElementBoundaries_global
-      int nExteriorElementBoundaries_global
-      int max_nElements_node
-      int nEdges_global
-      int max_nNodeNeighbors_node
+      proteus_index_t nElements_global
+      proteus_index_t nNodes_global
+      proteus_index_t nNodes_element
+      proteus_index_t nNodes_elementBoundary
+      proteus_index_t nElementBoundaries_element
+      proteus_index_t nElementBoundaries_global
+      proteus_index_t nInteriorElementBoundaries_global
+      proteus_index_t nExteriorElementBoundaries_global
+      proteus_index_t max_nElements_node
+      proteus_index_t nEdges_global
+      proteus_index_t max_nNodeNeighbors_node
 
-      int *elementNodesArray
-      int *nodeElementsArray
-      int *nodeElementOffsets
-      int *elementNeighborsArray
-      int *elementBoundariesArray
-      int *elementBoundaryNodesArray
-      int *elementBoundaryElementsArray
+      proteus_index_t *elementNodesArray
+      proteus_index_t *nodeElementsArray
+      proteus_index_t *nodeElementOffsets
+      proteus_index_t *elementNeighborsArray
+      proteus_index_t *elementBoundariesArray
+      proteus_index_t *elementBoundaryNodesArray
+      proteus_index_t *elementBoundaryElementsArray
       int *elementBoundaryLocalElementBoundariesArray
-      int *interiorElementBoundariesArray
-      int *exteriorElementBoundariesArray
-      int *edgeNodesArray
-      int *nodeStarArray
-      int *nodeStarOffsets
+      proteus_index_t *interiorElementBoundariesArray
+      proteus_index_t *exteriorElementBoundariesArray
+      proteus_index_t *edgeNodesArray
+      proteus_index_t *nodeStarArray
+      proteus_index_t *nodeStarOffsets
       int *elementMaterialTypes
       int *elementBoundaryMaterialTypes
       int *nodeMaterialTypes
@@ -50,16 +53,16 @@ cdef extern from "mesh.h":
       double h,hMin,sigmaMax,volume
       int * newestNodeBases
 
-      int *elementOffsets_subdomain_owned
-      int *elementNumbering_subdomain2global
-      int *nodeOffsets_subdomain_owned
-      int *nodeNumbering_subdomain2global
-      int *nodeNumbering_global_old2new
-      int *elementNumbering_global_old2new
-      int *elementBoundaryOffsets_subdomain_owned
-      int *elementBoundaryNumbering_subdomain2global
-      int *edgeOffsets_subdomain_owned
-      int *edgeNumbering_subdomain2global
+      proteus_index_t *elementOffsets_subdomain_owned
+      proteus_index_t *elementNumbering_subdomain2global
+      proteus_index_t *nodeOffsets_subdomain_owned
+      proteus_index_t *nodeNumbering_subdomain2global
+      proteus_index_t *nodeNumbering_global_old2new
+      proteus_index_t *elementNumbering_global_old2new
+      proteus_index_t *elementBoundaryOffsets_subdomain_owned
+      proteus_index_t *elementBoundaryNumbering_subdomain2global
+      proteus_index_t *edgeOffsets_subdomain_owned
+      proteus_index_t *edgeNumbering_subdomain2global
       Mesh* subdomainp
 
     cdef void initializeMesh(Mesh& mesh)

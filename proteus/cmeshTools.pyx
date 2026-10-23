@@ -10,6 +10,18 @@ from mpi4py import MPI
 cimport mesh as cppm
 from proteus import Comm
 
+#: the dtype of every mesh entity number, count and offset array, read from
+#: proteus_index_t in index_type.h so the two cannot disagree
+INDEX_DTYPE = np.dtype('i%d' % sizeof(cppm.proteus_index_t))
+
+cdef object _indexArray(cppm.proteus_index_t* p, cppm.proteus_index_t n0, cppm.proteus_index_t n1=-1):
+    """A numpy view of the n0 (x n1) mesh indices at p, as _intArray."""
+    if n0 == 0 or n1 == 0:
+        return np.empty([n0] if n1 < 0 else [n0, n1], dtype=INDEX_DTYPE)
+    if n1 < 0:
+        return np.asarray(<cppm.proteus_index_t[:n0]> p)
+    return np.asarray(<cppm.proteus_index_t[:n0, :n1]> p)
+
 cdef object _intArray(int* p, int n0, int n1=-1):
     """A numpy view of the n0 (x n1) ints at p. A subdomain mesh is empty on a
     rank that owns nothing, and a typed memoryview cannot describe an empty
@@ -49,30 +61,30 @@ cdef class CMesh:
         self.max_nElements_node = self.mesh.max_nElements_node
         self.nEdges_global = self.mesh.nEdges_global
         self.max_nNodeNeighbors_node = self.mesh.max_nNodeNeighbors_node
-        self.elementNodesArray = _intArray(self.mesh.elementNodesArray, self.mesh.nElements_global, self.mesh.nNodes_element)
+        self.elementNodesArray = _indexArray(self.mesh.elementNodesArray, self.mesh.nElements_global, self.mesh.nNodes_element)
         if self.mesh.nodeElementOffsets != NULL:
-            self.nodeElementsArray = _intArray(self.mesh.nodeElementsArray, self.mesh.nodeElementOffsets[self.mesh.nNodes_global])
-            self.nodeElementOffsets = _intArray(self.mesh.nodeElementOffsets, self.mesh.nNodes_global+1)
+            self.nodeElementsArray = _indexArray(self.mesh.nodeElementsArray, self.mesh.nodeElementOffsets[self.mesh.nNodes_global])
+            self.nodeElementOffsets = _indexArray(self.mesh.nodeElementOffsets, self.mesh.nNodes_global+1)
         else:
-            self.nodeElementsArray = np.empty(0, dtype=np.int32)
-            self.nodeElementOffsets = np.empty(0, dtype=np.int32)
+            self.nodeElementsArray = np.empty(0, dtype=INDEX_DTYPE)
+            self.nodeElementOffsets = np.empty(0, dtype=INDEX_DTYPE)
 
-        self.elementNeighborsArray = _intArray(self.mesh.elementNeighborsArray, self.mesh.nElements_global, self.mesh.nElementBoundaries_element)
-        self.elementBoundariesArray = _intArray(self.mesh.elementBoundariesArray, self.mesh.nElements_global, self.mesh.nElementBoundaries_element)
-        self.elementBoundaryNodesArray = _intArray(self.mesh.elementBoundaryNodesArray, self.mesh.nElementBoundaries_global, self.mesh.nNodes_elementBoundary)
-        self.elementBoundaryElementsArray = _intArray(self.mesh.elementBoundaryElementsArray, self.mesh.nElementBoundaries_global, 2)
+        self.elementNeighborsArray = _indexArray(self.mesh.elementNeighborsArray, self.mesh.nElements_global, self.mesh.nElementBoundaries_element)
+        self.elementBoundariesArray = _indexArray(self.mesh.elementBoundariesArray, self.mesh.nElements_global, self.mesh.nElementBoundaries_element)
+        self.elementBoundaryNodesArray = _indexArray(self.mesh.elementBoundaryNodesArray, self.mesh.nElementBoundaries_global, self.mesh.nNodes_elementBoundary)
+        self.elementBoundaryElementsArray = _indexArray(self.mesh.elementBoundaryElementsArray, self.mesh.nElementBoundaries_global, 2)
         self.elementBoundaryLocalElementBoundariesArray = _intArray(self.mesh.elementBoundaryLocalElementBoundariesArray, self.mesh.nElementBoundaries_global, 2)
         if self.mesh.nInteriorElementBoundaries_global:
-            self.interiorElementBoundariesArray = _intArray(self.mesh.interiorElementBoundariesArray, self.mesh.nInteriorElementBoundaries_global)
+            self.interiorElementBoundariesArray = _indexArray(self.mesh.interiorElementBoundariesArray, self.mesh.nInteriorElementBoundaries_global)
         else:
-            self.interiorElementBoundariesArray = np.empty(0, dtype=np.int32)
-        self.exteriorElementBoundariesArray = _intArray(self.mesh.exteriorElementBoundariesArray, self.mesh.nExteriorElementBoundaries_global)
-        self.edgeNodesArray = _intArray(self.mesh.edgeNodesArray, self.mesh.nEdges_global, 2)
+            self.interiorElementBoundariesArray = np.empty(0, dtype=INDEX_DTYPE)
+        self.exteriorElementBoundariesArray = _indexArray(self.mesh.exteriorElementBoundariesArray, self.mesh.nExteriorElementBoundaries_global)
+        self.edgeNodesArray = _indexArray(self.mesh.edgeNodesArray, self.mesh.nEdges_global, 2)
         if self.mesh.nodeStarOffsets != NULL:
-            self.nodeStarArray = _intArray(self.mesh.nodeStarArray, self.mesh.nodeStarOffsets[self.mesh.nNodes_global])
+            self.nodeStarArray = _indexArray(self.mesh.nodeStarArray, self.mesh.nodeStarOffsets[self.mesh.nNodes_global])
         else:
-            self.nodeStarArray = np.empty(0, dtype=np.int32)
-        self.nodeStarOffsets = _intArray(self.mesh.nodeStarOffsets, self.mesh.nNodes_global+1)
+            self.nodeStarArray = np.empty(0, dtype=INDEX_DTYPE)
+        self.nodeStarOffsets = _indexArray(self.mesh.nodeStarOffsets, self.mesh.nNodes_global+1)
         self.elementMaterialTypes = _intArray(self.mesh.elementMaterialTypes, self.mesh.nElements_global)
         self.elementBoundaryMaterialTypes = _intArray(self.mesh.elementBoundaryMaterialTypes, self.mesh.nElementBoundaries_global)
         self.nodeMaterialTypes = _intArray(self.mesh.nodeMaterialTypes, self.mesh.nNodes_global)
