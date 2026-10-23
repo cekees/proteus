@@ -49,6 +49,10 @@ py::tuple runMasked(const C &coef, Arr xn, Arr u, py::object uold, Arr qp, Arr q
 
 PYBIND11_MODULE(adrh_proto, m)
 {
+  m.def("advection_diffusion_sine", [](Arr b, double kappa, Arr omega, double omega0, Arr xn, Arr u, Arr qp, Arr qw) {
+    adrh::AdvectionDiffusionSine c(b.data(), kappa, omega.data(), omega0);
+    return runMasked<adrh::AdvectionDiffusionSine, 3>(c, xn, u, py::none(), qp, qw, 0.0, 0.0);
+  });
   m.def("poisson3d_masked", [](Arr xn, Arr u, Arr qp, Arr qw) {
     return runMasked<adrh::Poisson3D, 3>(adrh::Poisson3D(), xn, u, py::none(), qp, qw, 0.0, 0.0);
   });
