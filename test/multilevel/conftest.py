@@ -91,32 +91,19 @@ def _rank_slots(n):
             f.close()
 
 
-# mpiexec itself sometimes fails to start on a CI runner: PMIx cannot find a network interface for a
-# moment ("ptl_tool: problems getting address for index 0 (kernel index -1)", exit status 213), and
-# every launch in that second fails, whatever it was testing. Nothing of the job has run when that
-# happens, so launching it again is safe; any other failure is left alone.
-_LAUNCH_FAILURE = 'ptl_tool: problems getting address'
-
-
 @pytest.fixture(autouse=True)
-def _launch_policy(monkeypatch):
-    """Every ``subprocess.run`` of an mpiexec from these tests: hold its rank slots while it runs
-    (mode 'slots') and launch again, up to three times, if it never started."""
+def _launch_policy(monkeypatch, _retry_an_mpi_launch_that_never_started):
+    """Every ``subprocess.run`` of an mpiexec from these tests holds its rank slots while it runs
+    (mode 'slots'). It wraps the retry test/conftest.py puts on every launch, so a launch that
+    never started (an Open MPI runner flake) is launched again under the same slots."""
     run = subprocess.run
 
     def launch(cmd, *args, **kwargs):
         ranks = _ranks(cmd) if _MODE == 'slots' else None
-        for attempt in range(3):
-            if ranks is None:
-                result = run(cmd, *args, **kwargs)
-            else:
-                with _rank_slots(ranks):
-                    result = run(cmd, *args, **kwargs)
-            err = getattr(result, 'stderr', None)
-            if (result.returncode == 0 or not isinstance(err, str) or _LAUNCH_FAILURE not in err
-                    or attempt == 2):
-                return result
-            time.sleep(3.0 * (attempt + 1))
+        if ranks is None:
+            return run(cmd, *args, **kwargs)
+        with _rank_slots(ranks):
+            return run(cmd, *args, **kwargs)
     monkeypatch.setattr(subprocess, 'run', launch)
     yield
 
