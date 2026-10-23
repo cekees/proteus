@@ -74,6 +74,8 @@ RANK_SCRIPT = textwrap.dedent(
     hot = os.environ.get("HOT_START") == "1"
     ar = Archiver.XdmfArchive(datadir, "mpitest", global_sync=global_sync,
                               hotStart=hot)
+    if os.environ.get("NO_INCREMENTAL") == "1":
+        ar.writeIncrementalYmf = False
     if hot:
         # what NumericalSolution does: continue after the archive's last step
         ar.n_datasets = len(ar.archived_times)
@@ -129,7 +131,13 @@ RANK_SCRIPT = textwrap.dedent(
                            dimensions=[n_nodes])
         ar.sync()
 
-    ar.close()
+    if os.environ.get("SKIP_CLOSE") == "1":
+        # what a killed run leaves behind: the steps are synced, close()
+        # never happens. Flush so the HDF5 is as it would be, then stop.
+        if ar.hdfFile is not None:
+            ar.hdfFile.flush()
+    else:
+        ar.close()
     comm.barrier()
     if rank == 0:
         print("OBSERVED_SIZE=%d" % size)
@@ -137,7 +145,8 @@ RANK_SCRIPT = textwrap.dedent(
 )
 
 
-def run_ranks(tmp_path, n_ranks, global_sync, hot_start=False):
+def run_ranks(tmp_path, n_ranks, global_sync, hot_start=False,
+              skip_close=False, incremental=True):
     """Run the rank script under mpiexec (or directly for one rank).
 
     ``hot_start`` continues the archive an earlier call wrote, for one
@@ -145,7 +154,9 @@ def run_ranks(tmp_path, n_ranks, global_sync, hot_start=False):
     """
     datadir = str(tmp_path / "archive")
     env = dict(os.environ, GLOBAL_SYNC="1" if global_sync else "0",
-               DATADIR=datadir, HOT_START="1" if hot_start else "0")
+               DATADIR=datadir, HOT_START="1" if hot_start else "0",
+               SKIP_CLOSE="1" if skip_close else "0",
+               NO_INCREMENTAL="0" if incremental else "1")
     # More ranks than cores (3 on a 2-core CI runner): Open MPI refuses
     # unless told it may oversubscribe -- OMPI_MCA_* for Open MPI 4,
     # PRTE_MCA_* for Open MPI 5's PRRTE launcher. MPICH oversubscribes by
@@ -639,3 +650,131 @@ def test_a_parallel_hot_start_continues_the_archive(tmp_path):
     run_ranks(tmp_path, 2, global_sync=False, hot_start=True)
     (collection,) = read_domain(datadir)["time_collections"]
     assert [step["time"] for step in collection["data"]] == [0.0, 0.5, 1.0]
+
+
+# --------------------------------------------------------------------------
+# the document is current during the run, not only after a clean close
+# --------------------------------------------------------------------------
+
+
+def test_an_interrupted_run_still_leaves_a_readable_document(tmp_path):
+    """The point of the incremental write.
+
+    A run that is killed, times out on a scheduler or dies on one rank never
+    reaches close(), and used to leave an archive with no .ymf at all: the
+    metadata was in the HDF5 file but the document that describes it was
+    assembled only at close. Recovering it meant a separate pass. Now the
+    document is already there and already correct.
+    """
+    datadir = run_ranks(tmp_path, 1, global_sync=False, skip_close=True)
+    (collection,) = read_domain(datadir)["time_collections"]
+    assert [s["time"] for s in collection["data"]] == [0.0, 0.5]
+
+
+def test_what_it_looked_like_before(tmp_path):
+    """The same interrupted run with the incremental write switched off.
+
+    Kept as the control: without it there is no document, which is what
+    makes the test above worth having rather than a tautology.
+    """
+    datadir = run_ranks(tmp_path, 1, global_sync=False, skip_close=True,
+                        incremental=False)
+    assert not os.path.exists(os.path.join(datadir, "mpitest.ymf"))
+    assert os.path.exists(os.path.join(datadir, "mpitest.h5"))
+
+
+def test_the_running_document_agrees_with_the_one_written_at_close(tmp_path):
+    """Two independent paths to the same document, so they can be compared.
+
+    The running document is appended to in memory from the grids master
+    already holds; the one at close is re-assembled from the YAML in the
+    HDF5 file. They are built by different code from different sources, and
+    they have to agree -- if they ever diverge, the archive of record
+    depends on whether the run finished, which is exactly the property this
+    campaign exists to remove.
+    """
+    running = read_domain(run_ranks(tmp_path / "a", 1, global_sync=False,
+                                    skip_close=True))
+    closed = read_domain(run_ranks(tmp_path / "b", 1, global_sync=False))
+    assert running == closed
+
+
+@pytest.mark.parametrize("global_sync", [False, True])
+def test_the_running_document_agrees_for_both_layouts(tmp_path, global_sync):
+    running = read_domain(run_ranks(tmp_path / "a", 1, global_sync=global_sync,
+                                    skip_close=True))
+    closed = read_domain(run_ranks(tmp_path / "b", 1, global_sync=global_sync))
+    assert running == closed
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="no MPI launcher available")
+@pytest.mark.parametrize("n_ranks", [2, 3])
+def test_the_running_document_holds_every_ranks_grid(tmp_path, n_ranks):
+    """Only master writes it, but it must describe the whole decomposition."""
+    datadir = run_ranks(tmp_path, n_ranks, global_sync=False, skip_close=True)
+    (collection,) = read_domain(datadir)["time_collections"]
+    assert len(collection["data"]) == 2
+    for step in collection["data"]:
+        subs = step["spatial_collection"]
+        assert len(subs) == n_ranks
+        assert [g["name"] for g in subs] == [
+            "Grid_p%d" % r for r in range(n_ranks)]
+
+
+def test_no_leftover_temporary_file(tmp_path):
+    """The write is rename-based, so nothing may be left beside the target."""
+    datadir = run_ranks(tmp_path, 1, global_sync=False, skip_close=True)
+    leftovers = [f for f in os.listdir(datadir) if f.endswith(".writing")]
+    assert leftovers == []
+
+
+def test_the_running_document_is_appended_not_rewritten(tmp_path):
+    """The file is a stream mid-run, which is what makes the write O(1).
+
+    Rewriting the whole document to record a step is O(steps) per step and
+    so quadratic over a run -- 35 ms a step at 500 steps, minutes over a
+    long one. Appending writes one record whatever the archive holds. The
+    observable difference is the shape of the file: a stream of documents
+    while the run is going, collapsed to a single document at close.
+    """
+    datadir = run_ranks(tmp_path, 1, global_sync=False, skip_close=True)
+    text = open(os.path.join(datadir, "mpitest.ymf"), encoding="utf-8").read()
+    assert text.count("\n---\n") == 2        # one record per step
+    assert text.count("\n...\n") == 2        # each one completed
+
+
+def test_close_leaves_a_single_document(tmp_path):
+    """A finished run is in the canonical shape, so nothing downstream has
+    to care that the live form exists."""
+    datadir = run_ranks(tmp_path, 1, global_sync=False)
+    text = open(os.path.join(datadir, "mpitest.ymf"), encoding="utf-8").read()
+    assert "\n---\n" not in text
+
+
+def test_an_ymf_without_append_step_costs_the_document_not_the_run(tmp_path):
+    """proteus and ymf move independently, so the skew has to be survivable.
+
+    ``append_step`` arrived in ymf after this writer was written, and the
+    import of it used to sit outside the guard -- which turned "your live
+    document is stale" into an exception out of the middle of a timestep.
+    CI caught it honestly: three legs of one run resolved ``ymf@main`` five
+    minutes before the merge that added the function. Any user whose ymf
+    predates it would have hit the same thing.
+    """
+    import types
+    import proteus.Archiver as AR
+    import ymf.archive
+
+    live = types.SimpleNamespace(dataDir=str(tmp_path), filename="skew",
+                                 global_sync=True, _liveYmfStarted=False,
+                                 _liveYmfWarned=False)
+    step = [(0, "Grid", 0.0, [{"topology": {}, "geometry": {}}])]
+
+    saved = ymf.archive.append_step
+    del ymf.archive.append_step
+    try:
+        AR.AR_base._appendLiveStep(live, step)   # must not raise
+    finally:
+        ymf.archive.append_step = saved
+
+    assert live._liveYmfWarned, "the failure has to be reported, not hidden"

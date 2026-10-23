@@ -96,6 +96,9 @@ class AR_base(object):
         self.readOnly = readOnly
         self.n_datasets = 0
         self.archived_domain = None
+        #the running document: appended to a step at a time, never rewritten
+        self._liveYmfStarted = False
+        self._liveYmfWarned = False
         self.global_sync = global_sync
         comm_world = self.comm.comm.tompi4py()
         self.tree=ElementTree(
@@ -453,6 +456,59 @@ class AR_base(object):
         """Name of the HDF5 dataset holding one collection's step metadata."""
         return (collection_name + "_" + str(index)).replace(" ", "_")
 
+    #: Whether each step is appended to the ``.ymf`` as it is produced, so
+    #: that the archive of record is current during the run rather than only
+    #: after a clean close. Appending is constant work per step -- see
+    #: :meth:`_appendLiveStep` -- so this is on by default. Set False to
+    #: restore the write-at-close-only behaviour.
+    writeIncrementalYmf = True
+
+    def _appendLiveStep(self, live_steps):
+        """Append this timestep to the running document.
+
+        One record per collection, appended and flushed. Master already
+        holds the grids, so this costs no HDF5 read and no YAML parse, and
+        because it appends rather than rewrites it costs the same whether
+        the archive holds ten steps or ten thousand.
+
+        The first call writes the header document -- the archive version and
+        an empty domain -- which the records are then appended to. The
+        header is written to a temporary file and renamed so that a reader
+        arriving mid-write never sees half of it; the records after it need
+        no such care, since each ends with the document-end marker that
+        tells a reader it is complete.
+
+        Failures are logged and swallowed, the import among them: an ymf
+        too old to have ``append_step`` should cost the run its live
+        document, not the run. The authoritative document is still written
+        at close from the HDF5 file, and the steps already in the archive
+        matter more than this one.
+        """
+        path = os.path.join(self.dataDir, self.filename + ".ymf")
+        try:
+            from ymf.archive import append_step, new_domain, write_ymf
+            if not self._liveYmfStarted:
+                tmp = path + ".writing"
+                write_ymf(new_domain(live_steps[0][1]), tmp)
+                os.replace(tmp, path)
+                self._liveYmfStarted = True
+            for _, name, t, grids in live_steps:
+                if self.global_sync:
+                    g = grids[0]
+                    step = {"time": t, "topology": g["topology"],
+                            "geometry": g["geometry"],
+                            "attributes": g.get("attributes", [])}
+                else:
+                    step = {"time": t, "spatial_collection": grids}
+                append_step(path, name, step)
+        except Exception as error:
+            if not self._liveYmfWarned:
+                self._liveYmfWarned = True
+                logEvent("Could not update %s during the run (%s); the "
+                         "archive is unaffected and the document will be "
+                         "written at close"
+                         % (os.path.basename(path), error), level=1)
+
     def gatherAndWriteTimes(self):
         """Assemble the whole archive document and write it out.
 
@@ -478,6 +534,7 @@ class AR_base(object):
         write_ymf(domain, ymf_path)
         logEvent("Wrote YMF archive %s (ymf2xmf %s writes an .xmf for viewers)"
                  % (ymf_path, os.path.basename(ymf_path)))
+
     def close(self):
         logEvent("Closing Archive")
         if self.comm.isMaster() and not self.readOnly:
@@ -535,6 +592,7 @@ class AR_base(object):
             self.hdfFile.attrs[self.GLOBAL_SYNC_ATTR] = \
                 1 if self.global_sync else 0
 
+        live_steps = []
         for i, TemporalGridCollection in enumerate(Domain):
             GridLocal = TemporalGridCollection[-1]
             time_elem = GridLocal.find("Time")
@@ -571,7 +629,16 @@ class AR_base(object):
                 if self.comm.isMaster():
                     for j, payload in enumerate(payloads):
                         grid_data[j] = payload
+            if self.comm.isMaster() and self.hdfFile is not None:
+                #master already holds this step's grids, so the running
+                #document costs no extra read and no extra parse
+                live_grids = (grid_dicts if not self.global_sync
+                              else [local_grid])
+                live_steps.append((i, TemporalGridCollection.attrib['Name'],
+                                   float(TimeAttrib), live_grids))
         self.n_datasets += 1
+        if live_steps and self.writeIncrementalYmf:
+            self._appendLiveStep(live_steps)
         logEvent("Done Gathering Archive Time Step")
     def sync(self):
         logEvent("Syncing Archive",level=3)
@@ -818,6 +885,8 @@ def readArchiveDomain(filename, dataDir='.'):
     archive.hdfFilename = filename + ".h5"
     archive.global_sync = True          # overridden by the recorded value
     archive.archived_domain = None
+    archive._liveYmfStarted = False
+    archive._liveYmfWarned = False
     with h5py.File(base + ".h5", "r") as hdfFile:
         archive.hdfFile = hdfFile
         domain = archive.assemble_domain()
