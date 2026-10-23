@@ -724,3 +724,26 @@ def test_no_leftover_temporary_file(tmp_path):
     datadir = run_ranks(tmp_path, 1, global_sync=False, skip_close=True)
     leftovers = [f for f in os.listdir(datadir) if f.endswith(".writing")]
     assert leftovers == []
+
+
+def test_the_running_document_is_appended_not_rewritten(tmp_path):
+    """The file is a stream mid-run, which is what makes the write O(1).
+
+    Rewriting the whole document to record a step is O(steps) per step and
+    so quadratic over a run -- 35 ms a step at 500 steps, minutes over a
+    long one. Appending writes one record whatever the archive holds. The
+    observable difference is the shape of the file: a stream of documents
+    while the run is going, collapsed to a single document at close.
+    """
+    datadir = run_ranks(tmp_path, 1, global_sync=False, skip_close=True)
+    text = open(os.path.join(datadir, "mpitest.ymf"), encoding="utf-8").read()
+    assert text.count("\n---\n") == 2        # one record per step
+    assert text.count("\n...\n") == 2        # each one completed
+
+
+def test_close_leaves_a_single_document(tmp_path):
+    """A finished run is in the canonical shape, so nothing downstream has
+    to care that the live form exists."""
+    datadir = run_ranks(tmp_path, 1, global_sync=False)
+    text = open(os.path.join(datadir, "mpitest.ymf"), encoding="utf-8").read()
+    assert "\n---\n" not in text
