@@ -23,6 +23,47 @@ namespace adrh
     void zero() { std::memset(this, 0, sizeof(*this)); }
   };
 
+  // Geometry of an affine P1 simplex: physical gradients of the basis (constant on the element) and |det J|.
+  template <int nS>
+  inline void affineP1(const double *X, double gw[nS + 1][nS], double &adet)
+  {
+    constexpr int nD = nS + 1;
+    double Jm[nS][nS], Ji[nS][nS], det = 0.0;
+    for (int I = 0; I < nS; ++I)
+      for (int K = 0; K < nS; ++K)
+        Jm[I][K] = X[(K + 1) * 3 + I] - X[0 * 3 + I];
+    if (nS == 2)
+    {
+      det = Jm[0][0] * Jm[1][1] - Jm[0][1] * Jm[1][0];
+      Ji[0][0] = Jm[1][1] / det; Ji[0][1] = -Jm[0][1] / det;
+      Ji[1][0] = -Jm[1][0] / det; Ji[1][1] = Jm[0][0] / det;
+    }
+    else
+    {
+      det = Jm[0][0] * (Jm[1][1] * Jm[2][2] - Jm[1][2] * Jm[2][1])
+          - Jm[0][1] * (Jm[1][0] * Jm[2][2] - Jm[1][2] * Jm[2][0])
+          + Jm[0][2] * (Jm[1][0] * Jm[2][1] - Jm[1][1] * Jm[2][0]);
+      Ji[0][0] = (Jm[1][1] * Jm[2][2] - Jm[1][2] * Jm[2][1]) / det;
+      Ji[0][1] = (Jm[0][2] * Jm[2][1] - Jm[0][1] * Jm[2][2]) / det;
+      Ji[0][2] = (Jm[0][1] * Jm[1][2] - Jm[0][2] * Jm[1][1]) / det;
+      Ji[1][0] = (Jm[1][2] * Jm[2][0] - Jm[1][0] * Jm[2][2]) / det;
+      Ji[1][1] = (Jm[0][0] * Jm[2][2] - Jm[0][2] * Jm[2][0]) / det;
+      Ji[1][2] = (Jm[0][2] * Jm[1][0] - Jm[0][0] * Jm[1][2]) / det;
+      Ji[2][0] = (Jm[1][0] * Jm[2][1] - Jm[1][1] * Jm[2][0]) / det;
+      Ji[2][1] = (Jm[0][1] * Jm[2][0] - Jm[0][0] * Jm[2][1]) / det;
+      Ji[2][2] = (Jm[0][0] * Jm[1][1] - Jm[0][1] * Jm[1][0]) / det;
+    }
+    adet = std::fabs(det);
+    for (int I = 0; I < nS; ++I)
+      gw[0][I] = 0.0;
+    for (int b = 1; b < nD; ++b)
+      for (int I = 0; I < nS; ++I)
+      {
+        gw[b][I] = Ji[b - 1][I];
+        gw[0][I] -= Ji[b - 1][I];
+      }
+  }
+
   // Element residual and Jacobian for P1 on simplices (nS+1 nodes), all elements.
   //   xn  (nE, nS+1, 3)  node coordinates       u, uold (nE, nc, nS+1)  element DOF values
   //   qp  (nQ, nS), qw (nQ)  reference quadrature (weights sum to the reference volume)
@@ -40,43 +81,8 @@ namespace adrh
     for (int eN = 0; eN < nE; ++eN)
     {
       const double *X = xn + eN * nD * 3;
-      // Jacobian of the affine map and its inverse
-      double Jm[nS][nS], Ji[nS][nS], det = 0.0;
-      for (int I = 0; I < nS; ++I)
-        for (int K = 0; K < nS; ++K)
-          Jm[I][K] = X[(K + 1) * 3 + I] - X[0 * 3 + I];
-      if (nS == 2)
-      {
-        det = Jm[0][0] * Jm[1][1] - Jm[0][1] * Jm[1][0];
-        Ji[0][0] = Jm[1][1] / det; Ji[0][1] = -Jm[0][1] / det;
-        Ji[1][0] = -Jm[1][0] / det; Ji[1][1] = Jm[0][0] / det;
-      }
-      else
-      {
-        det = Jm[0][0] * (Jm[1][1] * Jm[2][2] - Jm[1][2] * Jm[2][1])
-            - Jm[0][1] * (Jm[1][0] * Jm[2][2] - Jm[1][2] * Jm[2][0])
-            + Jm[0][2] * (Jm[1][0] * Jm[2][1] - Jm[1][1] * Jm[2][0]);
-        Ji[0][0] = (Jm[1][1] * Jm[2][2] - Jm[1][2] * Jm[2][1]) / det;
-        Ji[0][1] = (Jm[0][2] * Jm[2][1] - Jm[0][1] * Jm[2][2]) / det;
-        Ji[0][2] = (Jm[0][1] * Jm[1][2] - Jm[0][2] * Jm[1][1]) / det;
-        Ji[1][0] = (Jm[1][2] * Jm[2][0] - Jm[1][0] * Jm[2][2]) / det;
-        Ji[1][1] = (Jm[0][0] * Jm[2][2] - Jm[0][2] * Jm[2][0]) / det;
-        Ji[1][2] = (Jm[0][2] * Jm[1][0] - Jm[0][0] * Jm[1][2]) / det;
-        Ji[2][0] = (Jm[1][0] * Jm[2][1] - Jm[1][1] * Jm[2][0]) / det;
-        Ji[2][1] = (Jm[0][1] * Jm[2][0] - Jm[0][0] * Jm[2][1]) / det;
-        Ji[2][2] = (Jm[0][0] * Jm[1][1] - Jm[0][1] * Jm[1][0]) / det;
-      }
-      const double adet = std::fabs(det);
-      // physical gradients of the P1 basis: grad_x w_b = Ji^T grad_ref w_b (constant on the element)
-      double gw[nD][nS];
-      for (int I = 0; I < nS; ++I)
-        gw[0][I] = 0.0;
-      for (int b = 1; b < nD; ++b)
-        for (int I = 0; I < nS; ++I)
-        {
-          gw[b][I] = Ji[b - 1][I];
-          gw[0][I] -= Ji[b - 1][I];
-        }
+      double gw[nD][nS], adet;
+      affineP1<nS>(X, gw, adet);
       double Rloc[nc][nD] = {};
       double Jloc[nc][nD][nc][nD] = {};
       const double *ue = u + eN * nc * nD;
