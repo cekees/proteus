@@ -331,7 +331,8 @@ void asm_NR_solve(SuperMatrix *A,
                   int *node_order, 
                   double** subdomain_dX,
                   double* dX, 
-                  PROTEUS_LAPACK_INTEGER** subdomainPivots) 
+                  PROTEUS_LAPACK_INTEGER** subdomainPivots,
+                  int nodes_to_sweep) 
 { 
 /* Purpose:  asm method with the additional assumption that A is of Stype NRformat 
  */ 
@@ -351,7 +352,14 @@ void asm_NR_solve(SuperMatrix *A,
     colind = AStore->colind; 
     rowptr = AStore->rowptr; 
     memset(dX,0,sizeof(double)*N); 
-    for (i=0; i<N; i++)  
+    /* Sweep only the first nodes_to_sweep entries of node_order. In parallel
+       that is the nodes this rank owns: a star centred on an owned node is a
+       correct square system, because the owned row carries all of its columns,
+       whereas a star centred on a ghost node is built from a row the subdomain
+       holds only partially. Passing a negative count sweeps every node, which
+       is what serial callers want. */
+    if (nodes_to_sweep < 0 || nodes_to_sweep > N) nodes_to_sweep = N;
+    for (i=0; i<nodes_to_sweep; i++)  
     { 
         int cnode = node_order[i]; 
         int j, k,jj, ii; 

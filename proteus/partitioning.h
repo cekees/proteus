@@ -2,6 +2,8 @@
 #define PARTITIONING_H
 #include <iostream>
 #include <valarray>
+#include <vector>
+#include <cstdlib>
 #include <iterator>
 #include "mpi.h"
 #include "hdf5.h"
@@ -149,15 +151,109 @@ namespace proteus
     return 0;
   }
 
+  /* The graph partitioner (MatPartitioning) and the partitioners that read
+     tetgen/triangle files use the PETSc C library. petsc4py initializes it when
+     proteus runs with petsc4py; without petsc4py nothing else does, so those
+     entry points call this first. partitionNodes and partitionElements given
+     their owners use no PETSc and do not. MPI is already initialized by then
+     (mpi4py), so PETSc runs on MPI_COMM_WORLD. */
+  inline bool petscIsInitialized()
+  {
+    PetscBool initialized = PETSC_FALSE;
+    PetscInitialized(&initialized);
+    return initialized == PETSC_TRUE;
+  }
+
+  inline int ensurePetscInitialized()
+  {
+    PetscBool initialized = PETSC_FALSE;
+    PetscInitialized(&initialized);
+    if (initialized)
+      return 0;
+    return PetscInitializeNoArguments();
+  }
+
+  /* Wall-clock time of each stage of a partitioner, reported (the maximum over
+     ranks) on rank 0 when PROTEUS_PARTITION_TIMING is set in the environment.
+     This replaces what PetscLogEvent would record, without PETSc. */
+  class StageTimer
+  {
+  public:
+    StageTimer(const MPI_Comm& comm, const char* name)
+      : comm_(comm), name_(name), last_(MPI_Wtime()), on_(std::getenv("PROTEUS_PARTITION_TIMING") != NULL) {}
+    void mark(const char* stage)
+    {
+      const double now = MPI_Wtime();
+      stages_.push_back(stage);
+      seconds_.push_back(now - last_);
+      last_ = now;
+    }
+    void report()
+    {
+      if (!on_)
+        return;
+      int rank;
+      MPI_Comm_rank(comm_,&rank);
+      std::vector<double> worst(seconds_.size());
+      MPI_Reduce(seconds_.data(),worst.data(),int(seconds_.size()),MPI_DOUBLE,MPI_MAX,0,comm_);
+      if (rank == 0)
+        {
+          std::cout<<"PARTITION_TIMING "<<name_;
+          for (size_t i = 0; i < stages_.size(); i++)
+            std::cout<<" "<<stages_[i]<<"="<<worst[i];
+          std::cout<<std::endl;
+        }
+    }
+  private:
+    MPI_Comm comm_;
+    const char* name_;
+    double last_;
+    bool on_;
+    std::vector<const char*> stages_;
+    std::vector<double> seconds_;
+  };
+
+  /* A regular grid of nn[0] x nn[1] (x nn[2]) nodes on [0,L] -- kind 0
+     quadrilaterals, 1 hexahedra, 2 triangles (split by triangleFlag as
+     generateTriangularMeshFromRectangularGrid splits them), 3 tetrahedra --
+     generated directly as this rank's subdomain of the rankGrid partition: the
+     subdomain mesh (mesh.subdomainp), offsets and subdomain-to-global maps that
+     partitionNodes gives for the global grid from the rectangular-grid
+     generators and MeshTools.cartesianNodeOwners, without the global mesh. mesh
+     keeps only the global counts. See cartesianPartitioning.cpp. */
+  extern int generateCartesianSubdomain(const MPI_Comm& PROTEUS_COMM_WORLD, int kind, int triangleFlag, const int* nn,
+                                        const double* L, const int* rankGrid, int nLayersOfOverlap, Mesh& mesh,
+                                        int level, const double* origin);
+  /* The new numbers of nodes (elements != 0: elements) of that partition,
+     from their old ones: the permutation partitionNodes keeps as
+     nodeNumbering_global_old2new, as a function. level > 0 is the grid nn
+     refined that many times, partitioned by the coarsest level's bricks
+     scaled. */
+  extern int cartesianNumbering(int kind, int triangleFlag, const int* nn, const int* rankGrid, int level, int elements,
+                                int n, const int* oldNumbers, int* newNumbers);
+  /* Global numbers of nodes, elements, element boundaries and edges. */
+  extern int cartesianGlobalCounts(int kind, int triangleFlag, const int* nn, int level, int* counts);
+  /* The rows this rank owns of the vertex prolongation from level-1 to level
+     of a generated hierarchy, in CSR, with columns in level-1's partitioned
+     numbering. */
+  extern int cartesianVertexInterpolation(int kind, int triangleFlag, const int* nn, const int* rankGrid, int level, int rank,
+                                          std::vector<int>& rowptr, std::vector<int>& colind, std::vector<double>& nzval);
+  /* For each element of this rank's subdomain on level, its parent's index in
+     the subdomain on level-1, or -1. */
+  extern int cartesianSubdomainParents(int kind, int triangleFlag, const int* nn, const int* rankGrid, int level, int rank,
+                                       std::vector<int>& parents);
+
   extern int partitionElementsOriginal(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nElements_overlap);
 
-  extern int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nNodes_overlap);
+  extern int partitionNodes(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nNodes_overlap,
+                            const int* nodeOwners=NULL, const int* nodeWeights=NULL);
 
   extern int partitionNodesFromTetgenFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char* filebase, int indexBase, Mesh& newMesh, int nNodes_overlap, double memHardLimit);
 
   extern int partitionNodesFromTriangleFiles(const MPI_Comm& PROTEUS_COMM_WORLD, const char* filebase, int indexBase, Mesh& newMesh, int nNodes_overlap);
 
-  extern int partitionElements(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nElements_overlap);
+  extern int partitionElements(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh, int nElements_overlap,
+                               const int* elementOwners=NULL);
 
   extern int buildQuadraticSubdomain2GlobalMappings_1d(const MPI_Comm& PROTEUS_COMM_WORLD, Mesh& mesh,
                                                        const int *elementOffsets_subdomain_owned,

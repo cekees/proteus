@@ -9,6 +9,12 @@ import numpy as np
 from math import *
 import math #to disambiguate math.log and log
 from .LinearAlgebraTools import *
+# The nonlinear smoothers and FasTwoLevel each hold a placeholder LinearSolver
+# so that NonlinearSolver's machinery has something to talk to; without this
+# import every one of them raised NameError on construction, which is why the
+# whole FAS stack had never run. LinearSolvers does not import this module, so
+# there is no cycle.
+from .LinearSolvers import LinearSolver
 from .Profiling import *
 
 from . import csmoothers
@@ -166,6 +172,31 @@ class NonlinearSolver(object):
                 self.J.matvec(u,r)
             if b is not None:
                 r-=b
+
+    def refreshGhosts(self,par_u):
+        """Make the ghost entries of u agree with their owners again.
+
+        A smoother updates the entries it owns and subtracts the update from the
+        whole local vector, ghosts included, but a ghost entry's update belongs
+        to whichever rank owns it. The next residual reads ghosts, so they have
+        to be replaced by the owners' values first. Serial runs pass par_u=None.
+        A ParVec is ghosted on every rank or on none, so `is not None` is the
+        test: the refresh is collective and a rank with no ghosts must join it.
+        """
+        if par_u is not None and getattr(par_u,'nghosts',None) is not None:
+            par_u.scatter_forward_insert()
+
+    def refreshResidualGhosts(self,par_u,r):
+        """Give the residual's ghost entries their owners' values (see
+        LinearSolver.refreshResidualGhosts): a Schwarz smoother reads them."""
+        if par_u is None or getattr(par_u,'nghosts',None) is None:
+            return
+        par_r = getattr(self,'par_r_work',None)
+        if par_r is None or par_r.proteus_array is not r:
+            if r.size != par_u.proteus_array.size:
+                return
+            par_r = self.par_r_work = par_u.duplicate_with_array(r)
+        par_r.scatter_forward_insert()
 
     def solveInitialize(self,u,r,b):
         if r is None:
@@ -2713,6 +2744,7 @@ class NLJacobi(NonlinearSolver):
             elif type(self.J).__name__ == "SparseMatrix":
                 csmoothers.jacobi_NR_solve(self.J,self.M,r,self.node_order,self.du)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
         else:
             return self.failedFlag
@@ -2787,8 +2819,16 @@ class NLGaussSeidel(NonlinearSolver):
                             rhat -= self.J[i,j]*self.du[j]
                     self.du[i] = self.M[i]*rhat
             elif type(self.J).__name__ == "SparseMatrix":
+                #An owned node's update subtracts its ghost neighbours' updates, and
+                #those come from the ghosts' residuals. A ghost row of the subdomain
+                #residual is assembled from elements the rank holds partially, so left
+                #as it is the sweep has no fixed point at the solution: owned
+                #residuals vanish, ghost ones do not, and the iteration stalls short
+                #of it. The owners' values restore that.
+                self.refreshResidualGhosts(par_u,r)
                 csmoothers.gauss_seidel_NR_solve(self.J,self.M,r,self.node_order,self.du)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
         else:
             return self.failedFlag
@@ -2855,7 +2895,7 @@ class NLStarILU(NonlinearSolver):
                     self.subdomainIndecesList[i][J].update([i,j])
         elif type(self.J).__name__ == 'SparseMatrix':
             self.node_order=numpy.arange(self.F.dim-1,-1,-1,dtype='i')
-            self.asmFactorObject = self.csmoothers.ASMFactor(self.J)
+            self.asmFactorObject = csmoothers.ASMFactor(self.J)
 
     def prepareSubdomains(self):
         if type(self.J).__name__ == 'ndarray':
@@ -2872,7 +2912,7 @@ class NLStarILU(NonlinearSolver):
                 self.subdomainSolvers.append(LU(self.subdomainJ[i]))
                 self.subdomainSolvers[i].prepare()
         elif type(self.J).__name__ == 'SparseMatrix':
-            self.csmoothers.asm_NR_prepare(self.J,self.asmFactorObject)
+            csmoothers.asm_NR_prepare(self.J,self.asmFactorObject)
 
     def solve(self,u,r=None,b=None,par_u=None,par_r=None):
         r=self.solveInitialize(u,r,b)
@@ -2902,8 +2942,26 @@ class NLStarILU(NonlinearSolver):
                     for J,j in enumerate(self.connectionList[i]):
                         self.du[j] += self.subdomainDU[i][J+1]
             elif type(self.J).__name__ == 'SparseMatrix':
-                self.csmoothers.asm_NR_solve(self.J,self.w,self.asmFactorObject,self.node_order,r,self.du)
+                #a Schwarz star takes its right-hand side from every node of the star,
+                #ghosts included, so those entries have to be their owners' values
+                self.refreshResidualGhosts(par_u,r)
+                #In parallel sweep only the stars centred on nodes this rank owns: such a
+                #star is a correct square system (the owned row carries all its columns),
+                #one centred on a ghost node comes from a row the subdomain holds only
+                #partially. The subdomain lists its owned nodes first. See
+                #LinearSolvers.StarILU.
+                if par_u is not None:
+                    ownedNodes = par_u.dim_proc
+                    #the serial sweep runs from the last node down; sweeping "the
+                    #first ownedNodes" of that order would take the ghosts, so the
+                    #parallel order is ascending, which lists the owned nodes first
+                    nodeOrder = numpy.arange(self.F.dim,dtype='i')
+                else:
+                    ownedNodes = -1
+                    nodeOrder = self.node_order
+                csmoothers.asm_NR_solve(self.J,self.w,self.asmFactorObject,nodeOrder,r,self.du,ownedNodes)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
         else:
             return self.failedFlag
@@ -2929,7 +2987,8 @@ class FasTwoLevel(NonlinearSolver):
                  norm = l2Norm,
                  convergenceTest = 'r',
                  computeRates = True,
-                 printInfo = True):
+                 printInfo = True,
+                 par_u_coarse=None):
         NonlinearSolver.__init__(self,F,J,du,
                                  rtol_r,
                                  atol_r,
@@ -2959,6 +3018,16 @@ class FasTwoLevel(NonlinearSolver):
         self.crFAS = Vec(prolong.shape[1])
         self.cdu = Vec(prolong.shape[1])
         self.cu = Vec(prolong.shape[1])
+        #The coarse level's work vectors belong to this solver, so nothing else
+        #holds a parallel counterpart for them; without one the coarse solve
+        #and the smoothers below it run on stale ghost values. par_u_coarse is
+        #any ParVec with the coarse level's layout (see LinearSolvers.TwoLevel).
+        if par_u_coarse is not None:
+            self.par_cb = par_u_coarse.duplicate_with_array(self.cb)
+            self.par_crFAS = par_u_coarse.duplicate_with_array(self.crFAS)
+            self.par_cdu = par_u_coarse.duplicate_with_array(self.cdu)
+        else:
+            self.par_cb = self.par_crFAS = self.par_cdu = None
         self.cError = 'FAS-chord'#'linear'#'FAS'#'FAS-chord'#'linear'
 
     def fullNewtonOff(self):
@@ -2985,14 +3054,15 @@ class FasTwoLevel(NonlinearSolver):
         r=self.solveInitialize(u,r,b)
         while (not self.converged(r) and
                not self.failed()):
-            self.preSmoother.solve(u,r,b)
+            self.preSmoother.solve(u,r,b,par_u=par_u,par_r=par_r)
             self.restrict.matvec(r,self.cb)
             if self.cError == 'linear':
                 self.coarseSolver.fullResidualOff()
                 self.coarseSolver.fullNewtonOff()
                 lsSave = self.coarseSolver.lineSearch
                 self.coarseSolver.lineSearch = False
-                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb)
+                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb,
+                                        par_u=self.par_cdu,par_r=self.par_crFAS)
                 self.coarseSolver.lineSearch = lsSave
                 self.coarseSolver.fullNewtonOn()
                 self.coarseSolver.fullResidualOn()
@@ -3007,7 +3077,8 @@ class FasTwoLevel(NonlinearSolver):
                 self.cb+=self.cr
                 self.cdu[:]=self.cu
                 self.coarseSolver.fullNewtonOff()
-                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb)
+                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb,
+                                        par_u=self.par_cdu,par_r=self.par_crFAS)
                 self.coarseSolver.fullNewtonOn()
                 self.cdu-=self.cu
             else:
@@ -3020,11 +3091,12 @@ class FasTwoLevel(NonlinearSolver):
                 self.cF.getResidual(self.cu,self.cr)
                 self.cb+=self.cr
                 self.cdu[:]=self.cu
-                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb)
+                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb,
+                                        par_u=self.par_cdu,par_r=self.par_crFAS)
                 self.cdu-=self.cu
             self.prolong.matvec(self.cdu,self.du)
             u-=self.du
-            self.postSmoother.solve(u,r,b)
+            self.postSmoother.solve(u,r,b,par_u=par_u,par_r=par_r)
         else:
             return self.failedFlag
 
@@ -3042,7 +3114,8 @@ class FAS(object):
                  postSmootherList,
                  coarseSolver,
                  mgItsList=[],
-                 printInfo=True):
+                 printInfo=True,
+                 par_uList=None):
         self.solverList=[coarseSolver]
         for i in range(1,len(FList)):
             if mgItsList ==[]:
@@ -3058,11 +3131,12 @@ class FAS(object):
                             F = FList[i],
                             maxIts = mgItsList[i],
                             convergenceTest = 'its',
-                            printInfo=False))
+                            printInfo=False,
+                            par_u_coarse = par_uList[i-1] if par_uList else None))
         self.fasSolver = self.solverList[len(FList)-1]
 
     def solve(self,u,r=None,b=None,par_u=None,par_r=None):
-        self.fasSolver.solve(u,r,b)
+        self.fasSolver.solve(u,r,b,par_u=par_u,par_r=par_r)
         return self.fasSolver.failedFlag
 
 
@@ -3320,6 +3394,13 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
     multilevelNonlinearSolver=None
     levelNonlinearSolverList=[]
     if levelNonlinearSolverType == FAS:
+        from . import Comm
+        if Comm.get().size() > 1 and len(prolongList) > 1 and not hasattr(prolongList[1],'mat'):
+            #FAS acts on the stacked free unknowns, which need the distributed stacked
+            #operators; a global SparseMatrix cannot act on a rank's subdomain vector
+            raise ValueError("FAS in parallel needs distributed stacked transfer operators, "
+                             "which Transport builds when the system's components are "
+                             "interleaved and share one space type; this problem has none")
         preSmootherList=[]
         postSmootherList=[]
         mgItsList=[]
@@ -3343,7 +3424,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                                      du=duList[l],
                                                      weight=relaxationFactor,
                                                      maxIts=postSmooths,
-                                                     convergenceTest=smootherFullNewtonFlag,
+                                                     convergenceTest=smootherConvergenceTest,
                                                      computeRates = computeSmootherRates,
                                                      printInfo=printSmootherInfo,
                                                      fullNewton=smootherFullNewtonFlag))
@@ -3404,7 +3485,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                             du=duList[l],
                                             weight=relaxationFactor,
                                             maxIts=postSmooths,
-                                            convergenceTest=smootherFullNewtonFlag,
+                                            convergenceTest=smootherConvergenceTest,
                                             computeRates = computeSmootherRates,
                                             printInfo=printSmootherInfo,
                                             fullNewton=smootherFullNewtonFlag,
@@ -3450,7 +3531,8 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                    postSmootherList = postSmootherList,
                                    coarseSolver = coarseSolver,
                                    mgItsList = mgItsList,
-                                   printInfo=printLevelSolverInfo)
+                                   printInfo=printLevelSolverInfo,
+                                   par_uList = par_duList)
         levelNonlinearSolverList = levelNonlinearSolver.solverList
     elif levelNonlinearSolverType == Newton:
         for l in range(nLevels):
@@ -3658,7 +3740,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                                        EWtol=EWtol,
                                                        maxLSits=maxLSits ))
         except:
-            raise RuntimeError("Unknown level nonlinear solver "+ levelNonlinearSolverType)
+            raise RuntimeError("Unknown level nonlinear solver %r" % (levelNonlinearSolverType,))
     if multilevelNonlinearSolverType == NLNI:
         multilevelNonlinearSolver = NLNI(fList = nonlinearOperatorList,
                                          solverList = levelNonlinearSolverList,
@@ -3684,7 +3766,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                                               computeRates = computeSolverRates,
                                                               printInfo = printSolverInfo)
     else:
-        raise RuntimeError("!!!!!!!!!!!!!!!!!!!!!!!!!Unknown multilevelNonlinearSolverType " + multilevelNonlinearSolverType)
+        raise RuntimeError("!!!!!!!!!!!!!!!!!!!!!!!!!Unknown multilevelNonlinearSolverType %r" % (multilevelNonlinearSolverType,))
 
     #add minimal configuration for parallel?
     for levelSolver in multilevelNonlinearSolver.solverList:

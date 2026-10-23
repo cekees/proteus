@@ -162,6 +162,12 @@ computeEigenvectors = None#'left','right'
 linearSmoother = None
 
 linearSmootherOptions = ()
+#How the coarsest level of a linear multigrid cycle is solved in parallel: 'direct' (a
+#parallel sparse direct solver, MUMPS or SuperLU_DIST: exact, distributed; the default),
+#'redundant' (gathered and factored on every rank: exact, replicated, needs no package) or
+#'amg' (one algebraic multigrid V-cycle: distributed, inexact). See
+#LinearSolvers.coarseSolverOptions.
+linearCoarseSolver = 'direct'
 
 linTolFac = 0.001
 
@@ -233,6 +239,12 @@ parallelPartitioningType = MeshParallelPartitioningTypes.node
 #C0P1 methods don't need to do communication in global element assembly
 #nodal partitioning does not need communication for C0P1 (has overlap 1) regardless
 nLayersOfOverlapForParallel = 1
+
+#'generated': a regular grid on a rectangular domain is generated in pieces,
+#every rank its own, with no global mesh or graph partitioner; 'global': the
+#global mesh, partitioned. Triangles other than triangleFlag 0, overlap other
+#than 1 and element partitioning take the global path either way.
+regularGrid = 'generated'
 
 parallelPeriodic=False#set this to true and use element,0 overlap to use periodic BC's in parallel
 

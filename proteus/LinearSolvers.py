@@ -12,7 +12,7 @@ from . import superluWrappers
 from . import TransportCoefficients
 from . import cfemIntegrals
 from . import Quadrature
-from petsc4py import PETSc as p4pyPETSc
+from .petsc_optional import PETSc as p4pyPETSc, HAVE_PETSC4PY
 from math import *
 import math
 from .Profiling import logEvent
@@ -38,6 +38,7 @@ class LinearSolver(object):
                  computeRates = True,
                  printInfo = False):
         self.solverName = "Base Class"
+        self.par_u_current = None
         self.L = L
         self.n = L.shape[0]
         self.du = Vec(self.n)
@@ -87,12 +88,51 @@ class LinearSolver(object):
     def setResTol(self,rtol,atol):
         self.rtol_r = rtol
         self.atol_r = atol
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         pass
     def solve(self,u,r=None,b=None,par_u=None,par_b=None):
         pass
     def calculateEigenvalues(self):
         pass
+    def refreshGhosts(self,par_u):
+        """Make the ghost entries of u agree with their owners again.
+
+        The smoothers compute a correction for the unknowns this rank owns and
+        subtract it from the whole local vector, ghosts included -- but a ghost
+        entry's correction belongs to whichever rank owns it, so the values
+        left there are wrong. The next residual reads them (the subdomain
+        matrix couples owned rows to ghost columns), so they have to be
+        replaced by the owners' values before computeResidual runs.
+
+        Serial runs pass par_u=None and this does nothing.
+        """
+        #Transport builds par vectors several ways, and not all of them are
+        #ghosted -- a vector with no ghost entries has nothing to refresh, and
+        #asking PETSc to scatter it raises "Vector is not ghosted".
+        if par_u is not None and getattr(par_u,'nghosts',None) is not None:
+            par_u.scatter_forward_insert()
+    def refreshResidualGhosts(self,par_u,r):
+        """Give the residual's ghost entries their owners' values.
+
+        computeResidual forms r = L u - b with the subdomain matrix, which is
+        correct only for the rows this rank owns; a ghost row is assembled from
+        a row the subdomain holds partially, so r there is meaningless.
+
+        Jacobi and Gauss-Seidel never read it -- their update for an owned
+        unknown uses that unknown's own residual entry. A Schwarz smoother
+        does: the star it solves around an owned node takes its right-hand side
+        from every node in the star, ghosts included. So those entries have to
+        come from their owners before the local solve, or the iteration is
+        driven by noise.
+        """
+        if par_u is None or getattr(par_u,'nghosts',None) is None:
+            return
+        par_r = getattr(self,'par_r_work',None)
+        if par_r is None or par_r.proteus_array is not r:
+            if r.size != par_u.proteus_array.size:
+                return
+            par_r = self.par_r_work = par_u.duplicate_with_array(r)
+        par_r.scatter_forward_insert()
     def computeResidual(self,u,r,b,initialGuessIsZero=False):
         if initialGuessIsZero:
             r[:]=b
@@ -103,7 +143,24 @@ class LinearSolver(object):
             elif type(self.L).__name__ == 'SparseMatrix':
                 self.L.matvec(u,r)
             r-=b
-    def solveInitialize(self,u,r,b,initialGuessIsZero=True):
+    def solveNorm(self,r):
+        """The norm the convergence test should use.
+
+        self.norm runs over the whole local vector, which in parallel includes
+        the ghost rows -- rows the subdomain holds only partially, where the
+        residual is meaningless. Counting them makes the reported norm both
+        wrong and rank-dependent, so the test either never fires or fires at
+        the wrong point. Over the owned entries, reduced across ranks, it is
+        the same number every decomposition computes and the same one a serial
+        run computes.
+        """
+        par_u = self.par_u_current
+        if par_u is None or getattr(par_u,'nghosts',None) is None:
+            return self.norm(r)
+        owned = par_u.dim_proc
+        return sqrt(globalSum(float(numpy.dot(r[:owned],r[:owned]))))
+    def solveInitialize(self,u,r,b,initialGuessIsZero=True,par_u=None):
+        self.par_u_current = par_u
         if r is None:
             if self.r is None:
                 self.r = Vec(self.n)
@@ -168,7 +225,7 @@ class LinearSolver(object):
             self.lastNorm_r = self.norm_r
     def converged(self,r):
         convergedFlag = False
-        self.norm_r = self.norm(r)
+        self.norm_r = self.solveNorm(r)
         self.norm_du = self.norm(self.du)
         if self.computeRates ==  True:
             self.computeConvergenceRates()
@@ -301,7 +358,7 @@ class LU(LinearSolver):
                                        self.denseFactor)
         #
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         self.du[:]=u
         self.converged(r)
         self.failed()
@@ -338,6 +395,94 @@ class LU(LinearSolver):
             logEvent("Maximum real part of eigenvalue "+repr(self.eigenvalues_r.max()))
             logEvent("Minimum complex part of eigenvalue "+repr(self.eigenvalues_i.min()))
             logEvent("Maximum complex part of eigenvalue "+repr(self.eigenvalues_i.max()))
+
+class RedundantLU(LinearSolver):
+    """An exact solve of the global system, factored on every rank, with no PETSc.
+
+    The coarse level of a parallel multigrid cycle needs the global coarse
+    system solved exactly; factoring each rank's subdomain matrix (LU) is
+    block-Jacobi instead. This does what PETSc's redundant preconditioner does
+    for the PETSc path (see mgmCoarseSolver): every rank contributes its owned
+    rows, in global numbers, every rank assembles and factors the whole matrix
+    with SuperLU, and every rank solves the whole system with the gathered
+    right-hand side. The solution is then known everywhere, so the ghost
+    entries come out right with no exchange. That is cheap only because the
+    coarse level is small, which is what it is for.
+
+    par_L carries the layout (LinearAlgebraTools.ParMat_mpi4py): owned row
+    count, block size, global size and the subdomain-to-global map. Only the
+    plain layout (owned entries first, components interleaved) is supported.
+    """
+    def __init__(self,L,par_L):
+        LinearSolver.__init__(self,L)
+        from . import Comm
+        if getattr(par_L,'nzval_proteus2petsc',None) is not None:
+            raise NotImplementedError(
+                "RedundantLU needs the plain parallel layout (owned entries first, components "
+                "interleaved); mixed spaces are numbered by a permutation it does not apply. "
+                "Use petsc4py for this problem.")
+        self.mpi = Comm.get().comm.tompi4py()
+        bs = max(1,par_L.blockSize)
+        self.nOwned = bs*par_L.par_n
+        self.N = bs*par_L.par_N
+        s2g = numpy.asarray(par_L.subdomain2global)
+        if bs > 1:
+            s2g = (bs*numpy.repeat(s2g,bs) + numpy.tile(numpy.arange(bs),s2g.size))
+        assert s2g.size == self.n, (
+            "the subdomain matrix has %i rows but the layout describes %i" % (self.n,s2g.size))
+        self.localToGlobal = s2g.astype(numpy.int64)
+        self.sparseFactor = superluWrappers.SparseFactor(self.N)
+        self.solverName = "RedundantLU"
+
+    def prepare(self,b=None,newton_its=None):
+        import scipy.sparse
+        rowptr,colind,nzval = self.L.getCSRrepresentation()
+        nnzOwned = int(rowptr[self.nOwned])
+        rows = numpy.repeat(self.localToGlobal[:self.nOwned],numpy.diff(rowptr[:self.nOwned+1]))
+        cols = self.localToGlobal[colind[:nnzOwned]]
+        pieces = self.mpi.allgather((rows,cols,numpy.array(nzval[:nnzOwned])))
+        A = scipy.sparse.csr_matrix((numpy.concatenate([p[2] for p in pieces]),
+                                     (numpy.concatenate([p[0] for p in pieces]),
+                                      numpy.concatenate([p[1] for p in pieces]))),
+                                    shape=(self.N,self.N))
+        A.sum_duplicates()
+        A.sort_indices()
+        assert numpy.all(numpy.diff(A.indptr) > 0), "a global row of the coarse matrix is empty"
+        #The factor keeps state tied to the matrix it was first prepared with
+        #(SuperLU reuses the column permutation and the storage it points to),
+        #so the global matrix is built once and refactored with new values in
+        #place, as LU does with its own matrix. Handing it a fresh matrix on
+        #every prepare gave a wrong factorization once the first matrix's
+        #arrays had been freed and reused. A changed pattern starts over.
+        samePattern = (getattr(self,'globalL',None) is not None and
+                       numpy.array_equal(self.globalRowptr,A.indptr) and
+                       numpy.array_equal(self.globalColind,A.indices))
+        if samePattern:
+            self.globalNzval[:] = A.data
+        else:
+            self.globalNzval = numpy.ascontiguousarray(A.data,'d')
+            self.globalColind = numpy.ascontiguousarray(A.indices,'i')
+            self.globalRowptr = numpy.ascontiguousarray(A.indptr,'i')
+            self.globalL = superluWrappers.SparseMatrix(self.N,self.N,self.globalNzval.size,
+                                                        self.globalNzval,self.globalColind,
+                                                        self.globalRowptr)
+            self.sparseFactor = superluWrappers.SparseFactor(self.N)
+        superluWrappers.sparseFactorPrepare(self.globalL,self.sparseFactor)
+
+    def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
+        self.du[:]=u
+        self.converged(r)
+        self.failed()
+        pieces = self.mpi.allgather((self.localToGlobal[:self.nOwned],numpy.array(b[:self.nOwned])))
+        x = numpy.zeros((self.N,),'d')
+        for (indices,values) in pieces:
+            x[indices] = values
+        superluWrappers.sparseFactorSolve(self.sparseFactor,x)
+        u[:] = x[self.localToGlobal]
+        self.computeResidual(u,r,b)
+        self.du -= u
+        self.converged(r)
 
 class KSP_petsc4py(LinearSolver):
     """ A class that interfaces Proteus with PETSc KSP. """
@@ -506,7 +651,22 @@ class KSP_petsc4py(LinearSolver):
         return failedFlag
 
     def info(self):
-        self.ksp.view()
+        """Summarise the last solve.
+
+        Every caller of info() either prints the result or concatenates it into
+        an infoString, so it has to return a string. This used to call
+        ksp.view(), which returns None and writes PETSc's full object dump to
+        stdout -- so NI raised TypeError the moment it logged a KSP level
+        solver, and any run that got that far was buried in dump output.
+        """
+        self.infoString = "************Start Linear Solver Info************\n"
+        self.infoString += "ksp type              =  %s \n" % self.ksp.getType()
+        self.infoString += "pc type               =  %s \n" % self.ksp.getPC().getType()
+        self.infoString += "its                   =  %i \n" % self.ksp.getIterationNumber()
+        self.infoString += "converged reason      =  %s \n" % self.ksp.getConvergedReason()
+        self.infoString += "residual norm         = %12.5e\n" % self.ksp.getResidualNorm()
+        self.infoString += "************End Linear Solver Info************\n"
+        return self.infoString
 
     def _setMatOperators(self):
         """ Initializes python context for the ksp matrix operator """
@@ -570,6 +730,12 @@ class KSP_petsc4py(LinearSolver):
                 logEvent("NAHead Preconditioner ASM")
                 self.preconditioner = petsc_ASM(par_L,
                                                 prefix)
+                self.pc = self.preconditioner.pc
+            elif Preconditioner == petsc_MG:
+                logEvent("NAHead Preconditioner MG")
+                self.preconditioner = petsc_MG(par_L,
+                                               prefix,
+                                               self.preconditionerOptions)
                 self.pc = self.preconditioner.pc
             if Preconditioner == Jacobi:
                 self.pccontext= Preconditioner(L,
@@ -1241,6 +1407,149 @@ class petsc_ASM(KSP_Preconditioner):
         self.pc = p4pyPETSc.PC().create()
         self.pc.setOptionsPrefix(prefix)
         self.pc.setType('asm')
+
+    def setUp(self,
+              global_ksp=None,
+              newton_its=None):
+        self.pc.setUp()
+
+COARSE_SOLVERS = ('redundant','direct','amg')
+
+
+def coarseSolverOptions(kind):
+    """PETSc options (names without a prefix) that make a coarse level be solved as ``kind``.
+
+    The coarsest level of a multigrid cycle has to be solved, not smoothed, and in parallel
+    that is a choice with a scaling consequence.
+
+    ``direct`` (the default) is a parallel sparse direct solver (MUMPS, else SuperLU_DIST):
+    exact, so a cycle is the same cycle to roundoff whatever the rank count, with the factors
+    distributed. Serious parallel builds have one of the two, and at a small coarse level it
+    costs the same as ``redundant`` (measured: 0.16 vs 0.19 s at 64 ranks, 4 levels).
+
+    ``redundant`` gathers the coarse matrix onto every rank, factors it there in full, and
+    applies it with no iteration. It is exact and needs no external package, but it is
+    *replicated*: every rank does the same work, so with weak scaling -- a coarse level that
+    grows with the rank count -- the cost grows with it. Measured on a 3-level hexahedral
+    hierarchy at 64 ranks it was 91% of all flops and took 8.7 s of a 12.6 s run (``direct``:
+    0.15 s); a deeper hierarchy made it cheap. Keep it for builds with no parallel direct
+    solver.
+
+    ``amg`` is one algebraic multigrid V-cycle (hypre BoomerAMG, else PETSc's GAMG): scalable
+    and cheap, but *not* exact -- the coarse correction is approximate, so a proteus MGM cycle
+    stops being the serial cycle and agrees with it only through convergence. It suits
+    elliptic coarse operators; it is a poor bet for strongly nonsymmetric ones.
+
+    Any ``-<prefix>`` option the user sets takes precedence over these.
+    """
+    if kind == 'redundant':
+        return (('ksp_type','preonly'),('pc_type','redundant'),('redundant_pc_type','lu'))
+    if kind == 'direct':
+        for package in ('mumps','superlu_dist'):
+            if p4pyPETSc.Sys.hasExternalPackage(package):
+                return (('ksp_type','preonly'),('pc_type','lu'),
+                        ('pc_factor_mat_solver_type',package))
+        raise ValueError("coarseSolver='direct' needs PETSc built with MUMPS or SuperLU_DIST")
+    if kind == 'amg':
+        if p4pyPETSc.Sys.hasExternalPackage('hypre'):
+            return (('ksp_type','preonly'),('pc_type','hypre'),('pc_hypre_type','boomeramg'))
+        return (('ksp_type','preonly'),('pc_type','gamg'))
+    raise ValueError("coarseSolver must be one of %s, not %r" % (COARSE_SOLVERS,kind))
+
+
+def applyCoarseSolverDefaults(options,coarsePrefix,kind):
+    """Fill in the options for ``kind`` under ``coarsePrefix`` that the user has not set.
+
+    "Not set" is an exact-key test: PETSc's lookup falls back from a numbered prefix to the
+    unnumbered one, so hasName('mg_levels_0_ksp_type') is true whenever mg_levels_ksp_type
+    is, and a hasName guard would never fill in the option that has to override it.
+    """
+    given = options.getAll()
+    for name,value in coarseSolverOptions(kind):
+        if coarsePrefix+name not in given:
+            options[coarsePrefix+name] = value
+
+
+class MGHierarchy(object):
+    """The levels a petsc_MG preconditioner is assembled over.
+
+    ``operators[l]`` is level l's system matrix and ``interpolations[l]`` the
+    PETSc Mat taking level l-1 to level l, for every level *below* the one the
+    preconditioner belongs to -- that level's own matrix is the KSP's. Level 0
+    is the coarsest, as everywhere in proteus. ``interpolations[0]`` is unused
+    and kept None so the lists index like prolongList does.
+    """
+    def __init__(self,operators,interpolations,coarseSolver='direct'):
+        assert len(interpolations) == len(operators) + 1, (len(operators),len(interpolations))
+        self.operators = operators
+        self.interpolations = interpolations
+        self.coarseSolver = coarseSolver
+
+    @property
+    def nLevels(self):
+        return len(self.operators) + 1
+
+
+class petsc_MG(KSP_Preconditioner):
+    """PETSc's geometric multigrid, PCMG, over proteus's own level hierarchy.
+
+    It uses the same two ingredients proteus's MGM does -- the transfer
+    operators from the multilevel mesh and one system matrix per level -- and
+    leaves everything else to PETSc: smoothers, cycle type and coarse solver
+    are PETSc options (``-mg_levels_ksp_type``, ``-pc_mg_cycle_type``, ...
+    under the solver's options prefix). That is what makes it a cross-check on
+    MGM: the same discretization and transfers with an independent
+    implementation of the cycle.
+
+    Only the coarse solve is configured here, because PETSc's default there
+    needs a parallel direct solver that a plain build lacks. As in
+    mgmCoarseSolver it gathers the coarse matrix and factors it in full
+    (``redundant``), and a user setting any ``mg_coarse_`` option takes
+    precedence.
+
+    The operators are the model's own re-discretized level matrices, not
+    Galerkin products, matching MGM. Their values are refreshed by whichever
+    solver owns each level, so this reads them as they stand at setUp.
+    """
+    def __init__(self,L,prefix=None,hierarchy=None):
+        """
+        Parameters
+        ----------
+        L : the global system matrix of the level this preconditioner is for.
+        prefix : str
+            Prefix handle for PETSc options.
+        hierarchy : MGHierarchy
+            The coarser levels and the transfers between them.
+        """
+        assert isinstance(hierarchy,MGHierarchy), (
+            "petsc_MG needs the level hierarchy; pass an MGHierarchy as "
+            "preconditionerOptions (multilevelLinearSolverChooser does this)")
+        self.PCType = 'mg'
+        self.L = L
+        self.hierarchy = hierarchy
+        self.pc = p4pyPETSc.PC().create()
+        self.pc.setOptionsPrefix(prefix)
+        self.pc.setType('mg')
+        self.pc.setMGLevels(hierarchy.nLevels)
+        for l in range(1,hierarchy.nLevels):
+            self.pc.setMGInterpolation(l,hierarchy.interpolations[l])
+        for l,A in enumerate(hierarchy.operators):
+            smoother = self.pc.getMGCoarseSolve() if l == 0 else self.pc.getMGSmoother(l)
+            smoother.setOperators(A,A)
+        #With one level PCMG has no coarse solver: level 0 is configured as a
+        #smoother, under mg_levels_0_, and a user's mg_levels_ options (richardson
+        #and jacobi, say) would make the "solve" three damped sweeps. A level
+        #with nothing below it has to be exact -- it is level 0 of a nested
+        #iteration -- so its defaults go under the prefix PETSc actually reads.
+        #
+        #"Not set by the user" has to be an exact-key test. PETSc's lookup
+        #falls back from a numbered prefix to the unnumbered one, so
+        #hasName('mg_levels_0_ksp_type') is true whenever mg_levels_ksp_type is,
+        #and a hasName guard would never fill in the very option that has to
+        #override it.
+        coarse = 'mg_levels_0_' if hierarchy.nLevels == 1 else 'mg_coarse_'
+        applyCoarseSolverDefaults(p4pyPETSc.Options(prefix),coarse,hierarchy.coarseSolver)
+        self.pc.setFromOptions()
 
     def setUp(self,
               global_ksp=None,
@@ -2509,13 +2818,13 @@ class Jacobi(LinearSolver):
         self.M=Vec(self.n)
         self.w=weight
         self.node_order=numpy.arange(self.n,dtype="i")
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         if type(self.L).__name__ == 'ndarray':
             self.M = self.w/numpy.diagonal(self.L)
         elif type(self.L).__name__ == 'SparseMatrix':
             self.csmoothers.jacobi_NR_prepare(self.L,self.w,1.0e-16,self.M)
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         while (not self.converged(r) and
                not self.failed()):
             if type(self.L).__name__ == 'ndarray':
@@ -2524,6 +2833,7 @@ class Jacobi(LinearSolver):
             elif type(self.L).__name__ == "SparseMatrix":
                 self.csmoothers.jacobi_NR_solve(self.L,self.M,r,self.node_order,self.du)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
 
 class GaussSeidel(LinearSolver):
@@ -2561,14 +2871,14 @@ class GaussSeidel(LinearSolver):
         self.node_order=numpy.arange(self.n,dtype="i")
         self.w=weight
         self.sym=sym
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         if type(self.L).__name__ == 'ndarray':
             self.M = self.w/numpy.diagonal(self.L)
         elif type(self.L).__name__ == 'SparseMatrix':
             self.csmoothers.gauss_seidel_NR_prepare(self.L,self.w,1.0e-16,self.M)
             #self.csmoothers.jacobi_NR_prepare(self.L,self.w,1.0e-16,self.M)
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         while (not self.converged(r) and
                not self.failed()):
             if type(self.L).__name__ == 'ndarray':
@@ -2591,6 +2901,7 @@ class GaussSeidel(LinearSolver):
                 self.csmoothers.gauss_seidel_NR_solve(self.L,self.M,r,self.node_order,self.du)
                 #self.csmoothers.jacobi_NR_solve(self.L,self.M,r,self.node_order,self.du)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
 
 class StarILU(LinearSolver):
@@ -2652,7 +2963,7 @@ class StarILU(LinearSolver):
         elif type(L).__name__ == 'SparseMatrix':
             self.node_order=numpy.arange(self.n,dtype="i")
             self.asmFactorObject = self.csmoothers.ASMFactor(L)
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         if type(self.L).__name__ == 'ndarray':
             self.subdomainSolvers=[]
             for i in range(self.n):
@@ -2669,7 +2980,7 @@ class StarILU(LinearSolver):
         elif type(self.L).__name__ == 'SparseMatrix':
             self.csmoothers.asm_NR_prepare(self.L,self.asmFactorObject)
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         while (not self.converged(r) and
                not self.failed()):
             self.du[:]=0.0
@@ -2692,8 +3003,19 @@ class StarILU(LinearSolver):
                     for J,j in enumerate(self.connectionList[i]):
                         self.du[j] += self.subdomainDU[i][J+1]
             elif type(self.L).__name__ == 'SparseMatrix':
-                self.csmoothers.asm_NR_solve(self.L,self.w,self.asmFactorObject,self.node_order,r,self.du)
+                #In parallel sweep only the stars centred on nodes this rank
+                #owns. A star centred on an owned node is a correct square
+                #system -- the owned row carries all of its columns -- while
+                #one centred on a ghost node is assembled from a row the
+                #subdomain holds only partially, and sweeping those stalls the
+                #iteration rather than converging it. The subdomain lists its
+                #owned nodes first, so node_order's leading entries are them.
+                ownedNodes = par_u.dim_proc if par_u is not None else -1
+                self.refreshResidualGhosts(par_u,r)
+                self.csmoothers.asm_NR_solve(self.L,self.w,self.asmFactorObject,
+                                             self.node_order,r,self.du,ownedNodes)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
 
 class StarBILU(LinearSolver):
@@ -2735,13 +3057,13 @@ class StarBILU(LinearSolver):
         elif type(L).__name__ == 'SparseMatrix':
             self.node_order=numpy.arange(self.n,dtype="i")
             self.basmFactorObject = self.csmoothers.BASMFactor(L,bs)
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         if type(self.L).__name__ == 'ndarray':
             raise NotImplementedError
         elif type(self.L).__name__ == 'SparseMatrix':
             self.csmoothers.basm_NR_prepare(self.L,self.basmFactorObject)
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         while (not self.converged(r) and
                not self.failed()):
             #mwf debug
@@ -2752,6 +3074,7 @@ class StarBILU(LinearSolver):
             elif type(self.L).__name__ == 'SparseMatrix':
                 self.csmoothers.basm_NR_solve(self.L,self.w,self.basmFactorObject,self.node_order,r,self.du)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
 class TwoLevel(LinearSolver):
     """
@@ -2774,7 +3097,8 @@ class TwoLevel(LinearSolver):
                  norm = l2Norm,
                  convergenceTest = 'r',
                  computeRates = True,
-                 printInfo = True):
+                 printInfo = True,
+                 par_u_coarse=None):
         LinearSolver.__init__(self,L,
                               rtol_r,
                               atol_r,
@@ -2795,25 +3119,64 @@ class TwoLevel(LinearSolver):
         self.cb = Vec(prolong.shape[1])
         self.cr = Vec(prolong.shape[1])
         self.cdu = Vec(prolong.shape[1])
+        #The coarse level's work vectors belong to this solver, so nothing else
+        #holds a parallel counterpart for them. Without one the coarse solve
+        #runs on stale ghost values and the smoothers down there have nothing
+        #to refresh, which is what kept a parallel cycle from working.
+        if par_u_coarse is not None:
+            self.par_cb = par_u_coarse.duplicate_with_array(self.cb)
+            self.par_cr = par_u_coarse.duplicate_with_array(self.cr)
+            self.par_cdu = par_u_coarse.duplicate_with_array(self.cdu)
+        else:
+            self.par_cb = self.par_cr = self.par_cdu = None
         self.prepareCoarse=prepareCoarse
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         self.preSmoother.prepare()
         self.postSmoother.prepare()
         if self.prepareCoarse is True:
             self.coarseSolver.prepare()
+    def failed(self):
+        """A fixed cycle count is this solver's convergence criterion.
+
+        MGM builds its levels with convergenceTest='its' and maxIts set to the
+        requested number of cycles, so ``its == maxIts`` is the *expected* exit,
+        not a failure. The inherited failed() reports any such exit as a
+        failure, so Newton saw linearSolverFailed on the very first step and
+        gave up -- MGM could never drive a nonlinear solve. Linear problems hid
+        this because they set maxNonlinearIts=1 and so only ever take the one
+        Newton step.
+
+        The iteration counter is still advanced here: solve() uses failed() as
+        the loop counter as well as the loop guard.
+        """
+        if self.convergenceTest == 'its':
+            self.its += 1
+            return False
+        return LinearSolver.failed(self)
     def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
-        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero)
+        (r,b) = self.solveInitialize(u,r,b,initialGuessIsZero,par_u=par_u)
         while (not self.converged(r) and
                not self.failed()):
-            self.preSmoother.solve(u,r,b,initialGuessIsZero)
+            #LinearSolver.solve is (u,r,b,par_u,par_b,initialGuessIsZero):
+            #passing initialGuessIsZero positionally put it in the par_u slot,
+            #which now matters -- the smoothers refresh their iterate's ghost
+            #entries through par_u, and a bool quietly disables that.
+            self.preSmoother.solve(u,r,b,par_u=par_u,par_b=par_b,
+                                   initialGuessIsZero=initialGuessIsZero)
             initialGuessIsZero=False
             self.restrict.matvec(r,self.cb)
             self.cdu[:]=0.0
-            self.coarseSolver.solve(u=self.cdu,r=self.cr,b=self.cb,initialGuessIsZero=True)
+            #the coarse level's vectors are TwoLevel's own and have no parallel
+            #counterpart yet, so the coarse solve is still serial-only
+            self.coarseSolver.solve(u=self.cdu,r=self.cr,b=self.cb,
+                                    par_u=self.par_cdu,par_b=self.par_cb,
+                                    initialGuessIsZero=True)
             self.prolong.matvec(self.cdu,self.du)
             u-=self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
-            self.postSmoother.solve(u,r,b,initialGuessIsZero=False)
+            self.postSmoother.solve(u,r,b,par_u=par_u,par_b=par_b,
+                                    initialGuessIsZero=False)
 
 class MultilevelLinearSolver(object):
     """
@@ -2835,6 +3198,13 @@ class MultilevelLinearSolver(object):
             self.infoString += "**************End Level %i Info********************\n" % l
         self.infoString+="********************End Multilevel Linear Solver Info*********************\n"
         return self.infoString
+    def failed(self):
+        """Newton calls failed() on whatever linear solver it was handed.
+
+        MultilevelLinearSolver does not derive from LinearSolver, so it has to
+        answer for itself; the finest level is the one that produced the solve.
+        """
+        return self.solverList[-1].failed()
 
 class MGM(MultilevelLinearSolver):
     """
@@ -2849,13 +3219,15 @@ class MGM(MultilevelLinearSolver):
                  coarseSolver,
                  mgItsList=[],
                  printInfo=False,
-                 computeRates=False):
+                 computeRates=False,
+                 par_duList=None):
         self.printInfo=printInfo
         self.nLevels = len(LList)
         self.solverList=[coarseSolver]
         for i in range(1,len(LList)):
             if mgItsList ==[]:
                 mgItsList.append(1)
+            par_u_coarse = par_duList[i-1] if par_duList is not None else None
             self.solverList.append(TwoLevel(prolong = prolongList[i],
                                             restrict = restrictList[i],
                                             coarseL = LList[i-1],
@@ -2866,15 +3238,23 @@ class MGM(MultilevelLinearSolver):
                                             maxIts = mgItsList[i],
                                             convergenceTest = 'its',
                                             computeRates=computeRates,
-                                            printInfo=False))
+                                            printInfo=False,
+                                            par_u_coarse=par_u_coarse))
         self.mgmSolver = self.solverList[self.nLevels-1]
         self.solverName = "TwoLevel"
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         for s in self.solverList:
             s.prepare()
 
-    def solve(self,u,r=None,b=None,initialGuessIsZero=False):
-        self.mgmSolver.solve(u,r,b,initialGuessIsZero)
+    def solve(self,u,r=None,b=None,par_u=None,par_b=None,initialGuessIsZero=False):
+        #This passed initialGuessIsZero positionally into TwoLevel.solve's
+        #par_u slot -- the same slip NI and TwoLevel had. With the smoothers
+        #now reading par_u it is not cosmetic: without it they fall back to a
+        #norm over the local vector, so the ranks disagree about when to stop,
+        #take different numbers of iterations, and deadlock on the first
+        #collective after they diverge.
+        self.mgmSolver.solve(u=u,r=r,b=b,par_u=par_u,par_b=par_b,
+                             initialGuessIsZero=initialGuessIsZero)
 
 class NI(MultilevelLinearSolver):
     """
@@ -2888,7 +3268,8 @@ class NI(MultilevelLinearSolver):
                  tolList=None,
                  atol=None,
                  computeRates=True,
-                 printInfo=False):
+                 printInfo=False,
+                 par_duList=None):
         self.levelSolverList=solverList
         self.solverList = [self for n in range(len(solverList))]
         MultilevelLinearSolver.__init__(self,self.solverList,computeRates=computeRates,printInfo=printInfo)
@@ -2906,6 +3287,22 @@ class NI(MultilevelLinearSolver):
         self.levelDict[solverList[-1].n]=self.fineMesh
         self.uList.append([])
         self.bList.append([])
+        # Parallel counterparts of the per-level work vectors above. A level
+        # solver that talks to PETSc (KSP_petsc4py) needs a ParVec for every
+        # solve, not just the one on the finest level, and NI's coarse-level
+        # vectors are its own -- they are not the model's. Each one therefore
+        # gets a ParVec of its own, over NI's array but with that level's
+        # parallel layout, taken from the model's du vector for the level.
+        self.par_uList=[]
+        self.par_bList=[]
+        for l in range(self.fineMesh+1):
+            par_du = par_duList[l] if par_duList is not None else None
+            if par_du is None:
+                self.par_uList.append(None)
+                self.par_bList.append(None)
+            else:
+                self.par_uList.append(par_du.duplicate_with_array(self.uList[l]))
+                self.par_bList.append(par_du.duplicate_with_array(self.bList[l]))
         self.maxIts = maxIts
         self.tolList = tolList
         self.atol_r=atol
@@ -2916,7 +3313,7 @@ class NI(MultilevelLinearSolver):
             for l in range(self.nLevels):
                 self.tolList[l] = rtol
             self.atol_r = atol
-    def prepare(self,b=None):
+    def prepare(self,b=None,newton_its=None):
         if b is not None:
             currentMesh = self.levelDict[b.shape[0]]
         else:
@@ -2938,7 +3335,10 @@ class NI(MultilevelLinearSolver):
             if self.tolList is not None:
                 self.switchToResidualConvergence(self.levelSolverList[l],
                                                  self.tolList[l])
-            self.levelSolverList[l].solve(u=self.uList[l],b=self.bList[l],initialGuessIsZero=initialGuessIsZero)
+            self.levelSolverList[l].solve(u=self.uList[l],b=self.bList[l],
+                                          par_u=self.par_uList[l],
+                                          par_b=self.par_bList[l],
+                                          initialGuessIsZero=initialGuessIsZero)
             initialGuessIsZero=False
             if self.tolList is not None:
                 self.revertToFixedIteration(self.levelSolverList[l])
@@ -2949,7 +3349,12 @@ class NI(MultilevelLinearSolver):
         if self.tolList is not None:
             self.switchToResidualConvergence(self.levelSolverList[currentMesh],
                                              self.tolList[currentMesh])
-        self.levelSolverList[currentMesh].solve(u,r,b,initialGuessIsZero)
+        # LinearSolver.solve is (u,r,b,par_u,par_b,initialGuessIsZero): passing
+        # initialGuessIsZero positionally put it in the par_u slot. The coarse
+        # level solves above still carry no parallel vectors -- NI needs a
+        # per-level ParVec for that, which is not built yet.
+        self.levelSolverList[currentMesh].solve(u=u,r=r,b=b,par_u=par_u,par_b=par_b,
+                                                initialGuessIsZero=initialGuessIsZero)
         self.infoString += "**************Start Level %i Info********************\n" % currentMesh
         self.infoString+=self.levelSolverList[currentMesh].info()
         self.infoString += "**************End Level %i Info********************\n" % currentMesh
@@ -2960,7 +3365,10 @@ class NI(MultilevelLinearSolver):
         for l in range(self.fineMesh):
             if self.tolList is not None:
                 self.switchToResidualConvergence(self.levelSolverList[l],self.tolList[l])
-            self.levelSolverList[l].solve(u=uList[l],b=bList[l],initialGuessIsZero=initialGuessIsZero)
+            self.levelSolverList[l].solve(u=uList[l],b=bList[l],
+                                          par_u=None if par_uList is None else par_uList[l],
+                                          par_b=None if par_bList is None else par_bList[l],
+                                          initialGuessIsZero=initialGuessIsZero)
             initialGuessIsZero=False
             if self.tolList is not None:
                 self.revertToFixedIteration(self.levelSolverList[l])
@@ -2970,7 +3378,11 @@ class NI(MultilevelLinearSolver):
             self.infoString += "**************End Level %i Info********************\n" % l
         if self.tolList is not None:
             self.switchToResidualConvergence(self.levelSolverList[self.fineMesh],self.tolList[self.fineMesh])
-        self.levelSolverList[self.fineMesh].solve(u=uList[self.fineMesh],b=bList[self.fineMesh],initialGuessIsZero=initialGuessIsZero)
+        self.levelSolverList[self.fineMesh].solve(
+            u=uList[self.fineMesh],b=bList[self.fineMesh],
+            par_u=None if par_uList is None else par_uList[self.fineMesh],
+            par_b=None if par_bList is None else par_bList[self.fineMesh],
+            initialGuessIsZero=initialGuessIsZero)
         self.infoString += "**************Start Level %i Info********************\n" % l
         self.infoString+=self.levelSolverList[self.fineMesh].info()
         self.infoString += "**************End Level %i Info********************\n" % l
@@ -2999,6 +3411,91 @@ class NI(MultilevelLinearSolver):
 
     def info(self):
         return self.infoString
+    def failed(self):
+        """NI sets solverList to [self]*nLevels, so the inherited failed()
+        would recurse; ask the finest level solver instead."""
+        return self.levelSolverList[-1].failed()
+def petscMGHierarchy(par_linearOperatorList,prolongList,level,coarseSolver='direct'):
+    """The MGHierarchy for the KSP on ``level``: levels 0..level-1 and the
+    transfers between 0..level.
+
+    The transfers have to be PETSc Mats, which is what the distributed nodal
+    operators carry. A global proteus SparseMatrix is the wrong shape for a
+    rank's vectors, so a hierarchy built over one would be wrong without
+    complaint; refuse it here instead.
+    """
+    interpolations = [None]
+    for k in range(1,level+1):
+        mat = getattr(prolongList[k],'mat',None)
+        if mat is None:
+            raise ValueError(
+                "petsc_MG needs the transfer operators as PETSc matrices, but "
+                "level %i's is a %s. Only the distributed nodal operators "
+                "qualify (see Transport.useParallelTransfers)."
+                % (k,type(prolongList[k]).__name__))
+        interpolations.append(mat)
+    return MGHierarchy(list(par_linearOperatorList[:level]),interpolations,coarseSolver)
+
+
+def starILURelaxation():
+    """Default relaxation for StarILU: undamped in serial, damped in parallel.
+
+    In serial the sweep over stars is multiplicative -- each star sees the
+    updates of the ones before it -- and converges undamped. In parallel it is
+    multiplicative only within a rank; between ranks every owned node is
+    updated from the pre-sweep values on the other side, which makes it
+    additive there. Undamped, that additive coupling is not convergent for
+    every partition: on the 81-node Poisson mesh StarILU as a plain linear
+    solver diverges on 3 ranks (checksum 2e15) while converging on 1, 2 and 4,
+    and weights of 0.7 and below converge on all of them. 0.5 leaves margin,
+    since which partitions fail is not something to tune to.
+
+    Overridable through the relaxationFactor argument of
+    multilevelLinearSolverChooser.
+    """
+    from . import Comm
+    return 1.0 if Comm.get().size() == 1 else 0.5
+
+
+def mgmCoarseSolver(L,par_L,prefix='mgm_coarse_',kind='direct'):
+    """The solver for the coarsest level of a multigrid cycle.
+
+    In serial that is a sparse LU factorization of the level's matrix. In
+    parallel it must be an exact solve of the *global* coarse system, and a
+    rank's subdomain matrix is not that: factoring it (what LU does) solves
+    each rank's block on its own and drops the coupling between them. The cycle
+    then still converges, but to a rank-count-dependent iterate -- a
+    block-Jacobi coarse correction in place of the exact one -- and loses the
+    property that makes multigrid's rate independent of the mesh.
+
+    The coarse level is small by construction, so the default parallel solve is
+    PETSc's redundant preconditioner: gather the coarse matrix, factor it in
+    full, and apply it with no iteration (KSP preonly). Every rank holds a copy,
+    which is cheap exactly because the level is coarse, and needs no external
+    direct-solver package. It is replicated, though, and stops being cheap when the
+    coarse level grows with the rank count; ``kind`` ('redundant', 'direct', 'amg';
+    see coarseSolverOptions) chooses a distributed alternative.
+
+    The solver reads PETSc options under ``prefix``, so a run can replace any of it --
+    ``-mgm_coarse_pc_type gamg``, say. The defaults only fill options the user has
+    not set.
+    """
+    from . import Comm
+    if par_L is None or Comm.get().size() == 1:
+        return LU(L=L)
+    if not HAVE_PETSC4PY:
+        return RedundantLU(L,par_L)
+    applyCoarseSolverDefaults(p4pyPETSc.Options(prefix),'',kind)
+    #maxIts is left generous on purpose: preonly reports one iteration, and a
+    #solver whose iteration count equals maxIts is reported as having failed,
+    #which Newton acts on when this solver is the level-0 solver of a nested
+    #iteration.
+    return KSP_petsc4py(L,par_L,
+                        maxIts=100,
+                        convergenceTest='r',
+                        prefix=prefix)
+
+
 """
 A function for setting up a multilevel linear solver.
 """
@@ -3030,8 +3527,11 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                   par_duList=None,
                                   solver_options_prefix=None,
                                   linearSolverLocalBlockSize=1,
-                                  linearSmootherOptions=()):
+                                  linearSmootherOptions=(),
+                                  coarseSolver='direct'):
     logEvent("multilevelLinearSolverChooser type= %s" % multilevelLinearSolverType)
+    if coarseSolver not in COARSE_SOLVERS:
+        raise ValueError("coarseSolver must be one of %s, not %r" % (COARSE_SOLVERS,coarseSolver))
     if (multilevelLinearSolverType == KSP_petsc4py or
         multilevelLinearSolverType == LU or
         multilevelLinearSolverType == Jacobi or
@@ -3040,7 +3540,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
         multilevelLinearSolverType == StarBILU or
         multilevelLinearSolverType == MGM):
         levelLinearSolverType = multilevelLinearSolverType
-        printLevelLinearSolverInfo = printSolverInfo
+        printLevelSolverInfo = printSolverInfo
         computeLevelSolverRates = computeSolverRates
     nLevels = len(linearOperatorList)
     multilevelLinearSolver = None
@@ -3087,7 +3587,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                                         printInfo = printSmootherInfo))
                 elif smootherType == StarILU:
                     if relaxationFactor is None:
-                        relaxationFactor = 1.0
+                        relaxationFactor = starILURelaxation()
                     preSmootherList.append(StarILU(connectionList = connectivityListList[l],
                                                    L=linearOperatorList[l],
                                                    weight=relaxationFactor,
@@ -3122,20 +3622,31 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                                      computeRates = computeSmootherRates,
                                                      printInfo = printSmootherInfo))
                 else:
-                    logEvent("smootherType unrecognized")
+                    # Leaving this as a log message left preSmootherList short,
+                    # so MGM.__init__ failed later with a bare IndexError that
+                    # named neither the option nor the cause.
+                    raise ValueError(
+                        "MGM requires a smoother, but linearSmoother=%r is not one "
+                        "of Jacobi, GaussSeidel, StarILU, StarBILU."
+                        % (smootherType,))
             else:
                 preSmootherList.append([])
                 postSmootherList.append([])
-                coarseSolver = LU(L=linearOperatorList[l])
+                coarseSolver_ = mgmCoarseSolver(linearOperatorList[l],
+                                                par_linearOperatorList[l]
+                                                if par_linearOperatorList is not None
+                                                else None,
+                                                kind=coarseSolver)
         levelLinearSolver = MGM(prolongList = prolongList,
                                 restrictList = restrictList,
                                 LList = linearOperatorList,
                                 preSmootherList = preSmootherList,
                                 postSmootherList = postSmootherList,
-                                coarseSolver = coarseSolver,
+                                coarseSolver = coarseSolver_,
                                 mgItsList = mgItsList,
                                 printInfo = printLevelSolverInfo,
-                                computeRates = computeLevelSolverRates)
+                                computeRates = computeLevelSolverRates,
+                                par_duList = par_duList)
         levelLinearSolverList = levelLinearSolver.solverList
     elif levelLinearSolverType == LU:
         for l in range(nLevels):
@@ -3143,18 +3654,21 @@ def multilevelLinearSolverChooser(linearOperatorList,
         levelLinearSolver = levelLinearSolverList
     elif levelLinearSolverType == KSP_petsc4py:
         for l in range(nLevels):
+            preconditionerOptions = linearSmootherOptions
+            if smootherType == petsc_MG:
+                preconditionerOptions = petscMGHierarchy(par_linearOperatorList,prolongList,l,coarseSolver)
             levelLinearSolverList.append(KSP_petsc4py(linearOperatorList[l],par_linearOperatorList[l],
                                                       maxIts = solverMaxIts,
                                                       convergenceTest = solverConvergenceTest,
                                                       rtol_r = relativeToleranceList[l],
                                                       atol_r = absoluteTolerance,
                                                       computeRates = computeLevelSolverRates,
-                                                      printInfo = printLevelLinearSolverInfo,
+                                                      printInfo = printLevelSolverInfo,
                                                       prefix=solver_options_prefix,
                                                       Preconditioner=smootherType,
                                                       connectionList = connectivityListList[l],
                                                       linearSolverLocalBlockSize = linearSolverLocalBlockSize,
-                                                      preconditionerOptions = linearSmootherOptions))
+                                                      preconditionerOptions = preconditionerOptions))
         levelLinearSolver = levelLinearSolverList
     elif levelLinearSolverType == Jacobi:
         if relaxationFactor is None:
@@ -3185,7 +3699,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
         levelLinearSolver = levelLinearSolverList
     elif levelLinearSolverType == StarILU:
         if relaxationFactor is None:
-            relaxationFactor=1.0
+            relaxationFactor=starILURelaxation()
         for l in range(nLevels):
             levelLinearSolverList.append(StarILU(connectionList = connectivityListList[l],
                                                  L=linearOperatorList[l],
@@ -3213,7 +3727,7 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                                   printInfo = printLevelSolverInfo))
         levelLinearSolver = levelLinearSolverList
     else:
-        raise RuntimeError("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Unknown level linear solver "+ levelLinearSolverType)
+        raise RuntimeError("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Unknown level linear solver %r" % (levelLinearSolverType,))
     if multilevelLinearSolverType == NI:
         multilevelLinearSolver = NI(solverList = levelLinearSolverList,
                                     prolongList = prolongList,
@@ -3222,7 +3736,8 @@ def multilevelLinearSolverChooser(linearOperatorList,
                                     tolList = relativeToleranceList,
                                     atol    = absoluteTolerance,
                                     printInfo= printSolverInfo,
-                                    computeRates = computeSolverRates)
+                                    computeRates = computeSolverRates,
+                                    par_duList = par_duList)
     elif (multilevelLinearSolverType == KSP_petsc4py or
           multilevelLinearSolverType == LU or
           multilevelLinearSolverType == Jacobi or

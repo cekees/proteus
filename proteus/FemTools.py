@@ -2404,7 +2404,9 @@ class QuadraticLagrangeCubeDOFMap(DOFMap):
         """
         from . import Comm
         mpi_comm = Comm.get().comm.tompi4py()
-        if self.nd==2:
+        if self.nd==2 and getattr(globalMesh,'nodeNumbering_subdomain2global',None) is not None:
+            self._buildPartitionedQuadraticQuad(globalMesh,mpi_comm)
+        elif self.nd==2:
             # start with the vertex DoFs
             for i,node in enumerate(globalMesh.nodeArray):
                 self.lagrangeNodesArray[i] = node
@@ -2474,6 +2476,79 @@ class QuadraticLagrangeCubeDOFMap(DOFMap):
                                                                                             self.subdomain2global,
                                                                                             self.lagrangeNodesArray)
             assert self.nDOF == self.nDOF_subdomain
+    def _buildPartitionedQuadraticQuad(self,globalMesh,mpi_comm):
+        """The 2D (quadrilateral Q2) dof numbering on a partitioned mesh.
+
+        A Q2 quad has a dof at each vertex, each edge and each cell centre. The
+        partitioner already numbers vertices, edges and cells globally with
+        every rank's owned ones contiguous (the *_subdomain_owned offsets and
+        *Numbering_subdomain2global), so the dof numbering follows from those
+        and the offsets alone, with no communication: rank r's block is its
+        owned vertices, then edges, then cells, and a dof's global number is its
+        owner's block start plus its place in the owner's block. Subdomain dofs
+        are ordered owned first (vertices, edges, cells), then ghosts in the
+        same order, as every other dof map's are.
+        """
+        sd = globalMesh.subdomainMesh
+        rank = mpi_comm.Get_rank()
+        nodeOff = numpy.asarray(globalMesh.nodeOffsets_subdomain_owned)
+        edgeOff = numpy.asarray(globalMesh.elementBoundaryOffsets_subdomain_owned)
+        cellOff = numpy.asarray(globalMesh.elementOffsets_subdomain_owned)
+        blockStart = nodeOff+edgeOff+cellOff
+        nNodesOwned = int(nodeOff[rank+1]-nodeOff[rank])
+        nEdgesOwned = int(edgeOff[rank+1]-edgeOff[rank])
+        nCellsOwned = int(cellOff[rank+1]-cellOff[rank])
+        nNodes,nEdges,nCells = sd.nNodes_global,sd.nElementBoundaries_global,sd.nElements_global
+        assert self.nDOF == nNodes+nEdges+nCells, (self.nDOF,nNodes,nEdges,nCells)
+        def globalNumber(local,numbering,offsets,within):
+            """New global dof number of subdomain entities given their partitioned numbers."""
+            g = numpy.asarray(numbering)[local]
+            owner = numpy.searchsorted(offsets[1:],g,side='right')
+            return blockStart[owner]+within[owner]+(g-offsets[owner])
+        # where, inside its owner's block, each kind starts
+        nodeWithin = numpy.zeros(len(nodeOff)-1,'i')
+        edgeWithin = nodeOff[1:]-nodeOff[:-1]
+        cellWithin = edgeWithin+(edgeOff[1:]-edgeOff[:-1])
+        nodeIds = globalNumber(numpy.arange(nNodes),globalMesh.nodeNumbering_subdomain2global,nodeOff,nodeWithin)
+        edgeIds = globalNumber(numpy.arange(nEdges),globalMesh.elementBoundaryNumbering_subdomain2global,edgeOff,edgeWithin)
+        cellIds = globalNumber(numpy.arange(nCells),globalMesh.elementNumbering_subdomain2global,cellOff,cellWithin)
+        # subdomain dof numbers: owned vertices, edges, cells, then the ghosts
+        localNode = numpy.where(numpy.arange(nNodes) < nNodesOwned,numpy.arange(nNodes),
+                                nNodesOwned+nEdgesOwned+nCellsOwned+numpy.arange(nNodes)-nNodesOwned)
+        ghostBase = nNodesOwned+nEdgesOwned+nCellsOwned+(nNodes-nNodesOwned)
+        localEdge = numpy.where(numpy.arange(nEdges) < nEdgesOwned,nNodesOwned+numpy.arange(nEdges),
+                                ghostBase+numpy.arange(nEdges)-nEdgesOwned)
+        ghostBase2 = ghostBase+(nEdges-nEdgesOwned)
+        localCell = numpy.where(numpy.arange(nCells) < nCellsOwned,nNodesOwned+nEdgesOwned+numpy.arange(nCells),
+                                ghostBase2+numpy.arange(nCells)-nCellsOwned)
+        self.subdomain2global = numpy.zeros((self.nDOF,),'i')
+        self.subdomain2global[localNode] = nodeIds
+        self.subdomain2global[localEdge] = edgeIds
+        self.subdomain2global[localCell] = cellIds
+        en = numpy.asarray(sd.elementNodesArray)
+        eb = numpy.asarray(sd.elementBoundariesArray)
+        # the reference element's local ordering, as the serial map has it
+        for k,v in enumerate((0,3,2,1)):
+            self.l2g[:,k] = localNode[en[:,v]]
+        for k,v in enumerate((3,2,1,0)):
+            self.l2g[:,4+k] = localEdge[eb[:,v]]
+        self.l2g[:,8] = localCell[numpy.arange(nCells)]
+        # where each dof sits
+        x = numpy.asarray(sd.nodeArray)
+        self.lagrangeNodesArray[localNode] = x
+        for j in range(4):
+            self.lagrangeNodesArray[localEdge[eb[:,j]]] = 0.5*(x[en[:,j]]+x[en[:,(j+1)%4]])
+        centre = numpy.zeros((nCells,3))
+        centre[:,0] = 0.5*(x[en[:,0],0]+x[en[:,-1],0])
+        centre[:,1] = 0.5*(x[en[:,0],1]+x[en[:,1],1])
+        self.lagrangeNodesArray[localCell] = centre
+        self.dof_offsets_subdomain_owned = numpy.zeros(nodeOff.shape,'i')
+        self.dof_offsets_subdomain_owned[:] = blockStart
+        self.nDOF_all_processes = int(blockStart[-1])
+        self.nDOF_subdomain = self.nDOF
+        #each dof couples to at most 25 others on a quadrilateral mesh (a vertex
+        #meets four cells of nine dofs)
+        self.max_dof_neighbors = 25
 #QuadraticDOFMap
 
 class QuadraticLagrangeDOFMap(DOFMap):
@@ -3259,7 +3334,7 @@ class AffineMaps(ParametricMaps):
     def __init__(self,mesh,referenceElement,localFunctionSpace):
         ParametricMaps.__init__(self,mesh,referenceElement,localFunctionSpace)
         self.useC=True
-    def getInverseValues(self,
+    def _getInverseValuesAffine(self,
                          inverseJacobian,
                          xArray,
                          xiArray):
@@ -3300,7 +3375,7 @@ class AffineMaps(ParametricMaps):
                     for m in self.referenceElement.range_dim:
                         for n in self.referenceElement.range_dim:
                             xiArray[eN,k,m] += inverseJacobian[m,n]*dx[n]
-    def getInverseValue(self,
+    def _getInverseValueAffine(self,
                         eN,
                         x):
         xi=numpy.zeros((self.referenceElement.dim,),'d')
@@ -3334,7 +3409,7 @@ class AffineMaps(ParametricMaps):
             for n in self.referenceElement.range_dim:
                 xi[m] += inverseJacobian[m,n]*dx[n]
         return xi
-    def getInverseValuesTrace(self,
+    def _getInverseValuesTraceAffine(self,
                               inverseJacobian,
                               xArray,
                               xiArray):
@@ -3375,7 +3450,7 @@ class AffineMaps(ParametricMaps):
                         for m in self.referenceElement.range_dim:
                             for n in self.referenceElement.range_dim:
                                 xiArray[eN,ebN,k,m] += inverseJacobian[m,n]*dx[n]
-    def getInverseValuesGlobalExteriorTrace(self,
+    def _getInverseValuesGlobalExteriorTraceAffine(self,
                                             inverseJacobian,
                                             xArray,
                                             xiArray):
@@ -3422,6 +3497,95 @@ class AffineMaps(ParametricMaps):
                     for m in self.referenceElement.range_dim:
                         for n in self.referenceElement.range_dim:
                             xiArray[ebNE,k,m] += inverseJacobian[m,n]*dx[n]
+
+    def _referenceOriginOfNodeZero(self):
+        """Reference coordinates of the element's first node.
+
+        The affine inverse maps x to J^{-1}(x - x_0), which is the position
+        *relative to* node 0. That is the reference coordinate only when node 0
+        sits at the reference origin, as it does on the reference simplex. The
+        reference cube is [-1,1]^d and its first node is (-1,...,-1), so every
+        coordinate came out shifted by one: a point at a cell's first corner
+        mapped to the cell centre and a coarse basis function evaluated there
+        gave 0.25 (2D) or 0.125 (3D) where it should give 1. The convention is
+        the basis's, not nodeList's, which lists a 1D cube as [0,1] while its
+        basis is on [-1,1].
+        """
+        dim = self.referenceElement.dim
+        if isinstance(self.referenceElement,ReferenceCube):
+            return -numpy.ones((dim,))
+        return numpy.zeros((dim,))
+
+    def _refineInverseForCubes(self,eN,X,xi,maxIts=12,tol=1.0e-14):
+        """Newton iteration for the inverse of the (multilinear) cell map.
+
+        The affine inverse is exact for parallelograms and parallelepipeds, which
+        includes every regular grid, and wrong for a general quadrilateral or
+        hexahedron, whose map is not affine. Starting from the affine estimate
+        this converges quadratically, and it stops after the first step when the
+        cell is affine because the residual is already rounding error.
+
+        eN : (N,) element of each point; X : (N,dim) physical points;
+        xi : (N,dim) reference coordinates, refined in place.
+        """
+        dim = self.referenceElement.dim
+        N = X.shape[0]
+        nodes = numpy.asarray(self.mesh.nodeArray)[numpy.asarray(self.meshDOFMap.l2g)[eN]][:,:,:dim]
+        for it in range(maxIts):
+            xiT = xi.T
+            Xp = numpy.zeros((N,dim))
+            J = numpy.zeros((N,dim,dim))
+            for j in self.localFunctionSpace.range_dim:
+                psi = numpy.broadcast_to(numpy.asarray(self.localFunctionSpace.basis[j](xiT),dtype=float),(N,))
+                g = numpy.broadcast_to(numpy.asarray(self.localFunctionSpace.basisGradients[j](xiT),dtype=float),(dim,N))
+                Xp += nodes[:,j,:]*psi[:,None]
+                J += nodes[:,j,:,None]*g.T[:,None,:]
+            dxi = numpy.linalg.solve(J,(X-Xp)[:,:,None])[:,:,0]
+            xi += dxi
+            if numpy.abs(dxi).max() <= tol*(1.0+numpy.abs(xi).max()):
+                break
+
+    def getInverseValues(self,
+                         inverseJacobian,
+                         xArray,
+                         xiArray):
+        self._getInverseValuesAffine(inverseJacobian,xArray,xiArray)
+        dim = self.referenceElement.dim
+        xiArray[...,:dim] += self._referenceOriginOfNodeZero()
+        if isinstance(self.referenceElement,ReferenceCube):
+            nE,nP = xArray.shape[0],xArray.shape[1]
+            eN = numpy.repeat(numpy.arange(nE),nP)
+            xi = numpy.ascontiguousarray(xiArray[:,:,:dim].reshape(nE*nP,dim))
+            self._refineInverseForCubes(eN,numpy.ascontiguousarray(xArray[:,:,:dim].reshape(nE*nP,dim)),xi)
+            xiArray[:,:,:dim] = xi.reshape(nE,nP,dim)
+
+    def getInverseValue(self,
+                        eN,
+                        x):
+        xi = self._getInverseValueAffine(eN,x) + self._referenceOriginOfNodeZero()
+        if isinstance(self.referenceElement,ReferenceCube):
+            dim = self.referenceElement.dim
+            xi2 = xi.reshape(1,dim).copy()
+            self._refineInverseForCubes(numpy.array([eN]),numpy.asarray(x,dtype=float)[:dim].reshape(1,dim),xi2)
+            xi = xi2.reshape(dim)
+        return xi
+
+    def getInverseValuesTrace(self,
+                              inverseJacobian,
+                              xArray,
+                              xiArray):
+        self._getInverseValuesTraceAffine(inverseJacobian,xArray,xiArray)
+        dim = self.referenceElement.dim
+        xiArray[...,:dim] += self._referenceOriginOfNodeZero()
+
+    def getInverseValuesGlobalExteriorTrace(self,
+                                            inverseJacobian,
+                                            xArray,
+                                            xiArray):
+        self._getInverseValuesGlobalExteriorTraceAffine(inverseJacobian,xArray,xiArray)
+        dim = self.referenceElement.dim
+        xiArray[...,:dim] += self._referenceOriginOfNodeZero()
+
 #  """
 #  Function Spaces iso-(diffeo-)morphic to reference spaces
 
@@ -7131,6 +7295,55 @@ class StressBoundaryConditions(object):
                         self.stressTraceBoundaryConditionsDict[(ebNE,k)] = g
             #k
         #ebNE
+def nodalTransfersApply(multilevelMesh,femSpaceDictList,
+                        dofBoundaryConditionsDictList=None):
+    """Whether the combinatorial nodal transfer operators apply to this problem.
+
+    They are a specialization, not a replacement. Two conditions, and both the
+    mesh and the spaces have a say:
+
+    * the hierarchy must be nodally nested -- see
+      MeshTools.MultilevelMesh.hasVertexInterpolation, which accepts uniform
+      refinement of simplices and regular quadrilateral/hexahedral grids, and
+      rules out weakly non-hierarchical refinements whose new vertices miss the
+      parent edges and hierarchies built by coarsening a fine mesh, where the
+      levels need not share a node numbering at all;
+    * every space must put its degrees of freedom exactly on the mesh
+      vertices, i.e. use a NodalDOFMap, and -- when the boundary conditions are
+      supplied -- strong Dirichlet conditions must not have eliminated any of
+      them, since the solvers transfer free unknowns rather than vertices. Higher-order Lagrange
+      (QuadraticLagrangeDOFMap), modal and discontinuous spaces
+      (DiscontinuousGalerkinDOFMap) and the non-conforming P1 space
+      (ElementBoundaryDOFMap, whose dofs sit at face barycenters) all have
+      degrees of freedom that are not vertices, so naming a fine dof by a pair
+      of coarse vertices is meaningless for them.
+
+    When this is False the operators must be built the general way, by
+    evaluating coarse basis functions against the fine space's interpolation
+    conditions -- MultilevelProjectionOperators. That path is the fallback and
+    stays: this function exists so the cheap path is taken only where it is
+    provably valid, never by assumption.
+    """
+    for femSpaceDict in femSpaceDictList:
+        for femSpace in femSpaceDict.values():
+            if not isinstance(femSpace.dofMap,NodalDOFMap):
+                return False
+    if dofBoundaryConditionsDictList is not None:
+        #the solvers transfer *free* unknowns. When strong Dirichlet conditions
+        #eliminate dofs the free numbering stops coinciding with the vertex
+        #numbering, and the parent pairs -- which are vertex numbers -- no
+        #longer index the operator's rows and columns. Restricting the vertex
+        #operator to the free dofs is possible but needs a global free-dof
+        #numbering, which proteus only maintains for vertices, so defer to the
+        #general path instead of inventing one.
+        for (dofBoundaryConditionsDict,femSpaceDict) in zip(dofBoundaryConditionsDictList,
+                                                            femSpaceDictList):
+            for (cj,dofBoundaryConditions) in dofBoundaryConditionsDict.items():
+                if dofBoundaryConditions.nFreeDOF_global != femSpaceDict[cj].dim:
+                    return False
+    return multilevelMesh.hasVertexInterpolation()
+
+
 class MultilevelProjectionOperators(object):
     """
     A class that takes a hierarchical (multiLevel) mesh and generates
@@ -7172,8 +7385,35 @@ class MultilevelProjectionOperators(object):
                  femSpaceDictList,
                  offsetListList,
                  strideListList,
-                 dofBoundaryConditionsDictList):
+                 dofBoundaryConditionsDictList,
+                 subdomainFemSpaceDictList=None,
+                 build=True):
+        """Build the inter-level transfer operators.
+
+        The spaces and mesh must be consistent in their numbering: the multilevel
+        mesh's elementChildrenArrayList indexes the spaces' elements. In serial
+        that is the global mesh and its spaces. In parallel pass the subdomain
+        spaces together with MultilevelMesh.subdomainHierarchy(), whose
+        parent/child relations are numbered over the subdomain meshes; the
+        operators are then complete on the rows a rank owns (see
+        Transport.useGeneralParallelTransfers). With build=False only the empty
+        containers are made, for a caller that installs its own operators.
+        """
+        self.subdomainFemSpaceDictList = subdomainFemSpaceDictList
         self.nc = len(offsetListList[0])
+        #Take the combinatorial route only where it is provably valid: a
+        #nodally nested hierarchy, spaces whose dofs are the mesh vertices, and
+        #no dofs eliminated by strong Dirichlet conditions. Everything else --
+        #higher-order nodal, modal and discontinuous spaces, the
+        #non-conforming P1 space, weakly non-hierarchical refinements, and
+        #hierarchies obtained by coarsening a fine mesh -- keeps the geometric
+        #construction below, which asks only that coarse basis functions can be
+        #evaluated against the fine space's interpolation conditions.
+        self.useNodalTransfers = nodalTransfersApply(multilevelMesh,
+                                                     femSpaceDictList,
+                                                     dofBoundaryConditionsDictList)
+        logEvent("MultilevelProjectionOperators: %s transfer operators"
+                 % ("nodal" if self.useNodalTransfers else "geometric"),level=2)
         self.restrictList = [[]]
         self.rzvalList = [[]]
         self.restrictSumList=[[]]
@@ -7190,6 +7430,10 @@ class MultilevelProjectionOperators(object):
         self.interp_bczvalListDict = dict([(cj,[[]]) for cj in range(self.nc)])
         self.femSpaceDictList=femSpaceDictList
         self.dof_bc_DictList = dofBoundaryConditionsDictList
+        if not build:
+            #the caller installs its own operators (distributed ones); this is
+            #only the container they go into
+            return
         usingAtLeastOneNCproj = False
         for l in range(len(multilevelMesh.meshList)-1):
             r = {}
@@ -7228,153 +7472,184 @@ class MultilevelProjectionOperators(object):
                 pbc = {}
                 scaled_rbc = {}
                 interp_bc = {}
-                #mwf should tell us if interpolation condition is at coarse element interface or not
-                # aka (nonconforming on coarse grid?)
-                #check typecode if go to c
-                isNonConformingOnCoarseGrid = numpy.zeros((fineMesh.nElements_global,nInterpolationPoints),'i')
-                if referenceElement.dim  > 1 and isinstance(fineSpace,NC_AffineLinearOnSimplexWithNodalBasis):
-                    #mwf old mesh interface multilevelMesh.calculateElementParents()
-                    parentsArray = multilevelMesh.elementParentsArrayList[l+1]
-                    usingAtLeastOneNCproj = True
-                    #need to care about interpolation conditions being conforming on coarse grid or not
-                    for ebNI in range(fineMesh.nInteriorElementBoundaries_global):
-                        ebN = fineMesh.interiorElementBoundariesArray[ebNI]
-                        eN_left  = fineMesh.elementBoundaryElementsArray[ebN,0]
-                        eN_right = fineMesh.elementBoundaryElementsArray[ebN,1]
-                        ebn_left = fineMesh.elementBoundaryLocalElementBoundariesArray[ebN,0]
-                        ebn_right= fineMesh.elementBoundaryLocalElementBoundariesArray[ebN,1]
-                        #mwf old interface
-                        #PeN_left = multilevelMesh.elementParents[l+1][eN_left]
-                        #PeN_right= multilevelMesh.elementParents[l+1][eN_right]
-                        PeN_left = parentsArray[eN_left]
-                        PeN_right= parentsArray[eN_right]
+                if self.useNodalTransfers:
+                    #For a vertex-based space the entries are the vertex
+                    #interpolation weights, known without evaluating any basis
+                    #function -- see MultilevelMesh.vertexInterpolation. A node
+                    #the refinement inherited takes its coarse value; one added
+                    #at an edge midpoint averages that edge; on quadrilaterals and
+                    #hexahedra a cell or face centre has four or eight parents.
+                    #Only rbc/pbc/r/p are filled here; rbcSum, interp_bc,
+                    #scaled_rbc and rSum are derived from them by the same code
+                    #the geometric branch uses, so the two branches cannot drift
+                    #apart in how those are defined.
+                    (vrowptr,vcolind,vnzval) = multilevelMesh.vertexInterpolation()[l+1]
+                    for I in range(fineSpace.dim):
+                        contributions = [(int(vcolind[k]),float(vnzval[k]))
+                                         for k in range(vrowptr[I],vrowptr[I+1])]
+                        for (J,w) in contributions:
+                            pbc[(I,J)] = w
+                            rbc[(J,I)] = w
+                            rbcColumnIndeces[J].add(I)
+                            if I in fineDOFBoundaryConditions.global2freeGlobal:
+                                II = fineDOFBoundaryConditions.global2freeGlobal[I]*strideListList[l+1][cj]+offsetListList[l+1][cj]
+                                if J in coarseDOFBoundaryConditions.global2freeGlobal:
+                                    JJ = coarseDOFBoundaryConditions.global2freeGlobal[J]*strideListList[l][cj]+offsetListList[l][cj]
+                                    rColumnIndeces[JJ].add(II)
+                                    r[(JJ,II)] = rbc[(J,I)]
+                                    p[(II,JJ)] = pbc[(I,J)]
+                else:
+                    #mwf should tell us if interpolation condition is at coarse element interface or not
+                    # aka (nonconforming on coarse grid?)
+                    #check typecode if go to c
+                    isNonConformingOnCoarseGrid = numpy.zeros((fineMesh.nElements_global,nInterpolationPoints),'i')
+                    if referenceElement.dim  > 1 and isinstance(fineSpace,NC_AffineLinearOnSimplexWithNodalBasis):
+                        #mwf old mesh interface multilevelMesh.calculateElementParents()
+                        parentsArray = multilevelMesh.elementParentsArrayList[l+1]
+                        usingAtLeastOneNCproj = True
+                        #need to care about interpolation conditions being conforming on coarse grid or not
+                        for ebNI in range(fineMesh.nInteriorElementBoundaries_global):
+                            ebN = fineMesh.interiorElementBoundariesArray[ebNI]
+                            eN_left  = fineMesh.elementBoundaryElementsArray[ebN,0]
+                            eN_right = fineMesh.elementBoundaryElementsArray[ebN,1]
+                            ebn_left = fineMesh.elementBoundaryLocalElementBoundariesArray[ebN,0]
+                            ebn_right= fineMesh.elementBoundaryLocalElementBoundariesArray[ebN,1]
+                            #mwf old interface
+                            #PeN_left = multilevelMesh.elementParents[l+1][eN_left]
+                            #PeN_right= multilevelMesh.elementParents[l+1][eN_right]
+                            PeN_left = parentsArray[eN_left]
+                            PeN_right= parentsArray[eN_right]
 
-                        if PeN_left != PeN_right:
-                            #assumes a unique correspondence interpCondition <--> local element boundary
-                            isNonConformingOnCoarseGrid[eN_left,ebn_left]  = 1
-                            isNonConformingOnCoarseGrid[eN_right,ebn_right]= 1
-                            #mwf debug
-                            #print """MultilevelProjNC nc IP ebN= %d eN_left=%d PeN_left=%d eN_right=%d PeN_right=%d """ % (ebN,
-                            #                                                                                               eN_left,
-                            #                                                                                               PeN_left,
-                            #                                                                                               eN_right,
-                            #                                                                                               PeN_right)
-                        #different parents
-                    #interior element boundaries
-                    #what about exterior ones?
-                    for ebNE in range(fineMesh.nExteriorElementBoundaries_global):
-                        ebN = fineMesh.exteriorElementBoundariesArray[ebNE]
-                        eN_left = fineMesh.elementBoundaryElementsArray[ebN,0]
-                        ebn_left = fineMesh.elementBoundaryLocalElementBoundariesArray[ebN,0]
-                        isNonConformingOnCoarseGrid[eN_left,ebn_left]  = -1
-                    #end exterior
-                #need to care about nonconforming points
-                if (not isinstance(fineSpace,NC_AffineLinearOnSimplexWithNodalBasis) and
-                    referenceElement.dim > 1 and usingAtLeastOneNCproj):
-                    logEvent("""WARNING testStuff.MultiLevelProjectionOperatorsNC mixing NC and C0 projection operators!!!""")
-                #map reference interpolation points of fine elements to physical space
-                interpolationPointsOnFineElement_physical =  fineSpace.updateInterpolationPoints()
-                #copy physical space reference points on fine elements to an array for their parents
-                interpolationPointsOnCoarseElement_physical = numpy.zeros((coarseMesh.nElements_global,
-                                                                             nChildrenMax_element*nInterpolationPoints,
-                                                                             3),
-                                                                            'd')
-                child_N_global=0 #cek new mesh interface, keep track of position in children array
-                for coarse_eN in range(coarseMesh.nElements_global):
-                    #cek old mesh interface
-                    #for child_N,fine_e in enumerate(children[coarse_eN]):
-                    #new mesh interface
-                    for child_N,offset in enumerate(range(childrenOffsets[coarse_eN],childrenOffsets[coarse_eN+1])):
-                        fine_eN = children[offset] #new
-                        for pN in range_nInterpolationPoints:
-                            #cek old mesh interface
-                            #interpolationPointsOnCoarseElement_physical[coarse_eN,child_N*nInterpolationPoints + pN,:] = interpolationPointsOnFineElement_physical[fine_e.N,pN]
-                            interpolationPointsOnCoarseElement_physical[coarse_eN,child_N*nInterpolationPoints + pN,:] = interpolationPointsOnFineElement_physical[fine_eN,pN]
-                #map physical interpolation points on coarse elements to coarse reference coordinates
-                interpolationPointsOnCoarseElement_reference = numpy.zeros((coarseMesh.nElements_global,
-                                                                              nChildrenMax_element*nInterpolationPoints,
-                                                                              3),
-                                                                             'd')
-                J = numpy.zeros((coarseMesh.nElements_global,
-                                   nChildrenMax_element*nInterpolationPoints,
-                                   referenceElement.dim,
-                                   referenceElement.dim),
-                                  'd')
-                invJ = numpy.zeros((coarseMesh.nElements_global,
-                                      nChildrenMax_element*nInterpolationPoints,
-                                      referenceElement.dim,
-                                      referenceElement.dim),
-                                     'd')
-                detJ = numpy.zeros((coarseMesh.nElements_global,
-                                      nChildrenMax_element*nInterpolationPoints),
-                                     'd')
-                interpolationPointsOnCoarseElement_reference_dummy = numpy.zeros((nChildrenMax_element*nInterpolationPoints,
-                                                                                    3),
-                                                                                  'd')
-                coarseSpace.elementMaps.getJacobianValues(interpolationPointsOnCoarseElement_reference_dummy,
-                                                          J,
-                                                          invJ,
-                                                          detJ)
-                coarseSpace.elementMaps.getInverseValues(invJ,
-                                                         interpolationPointsOnCoarseElement_physical,
-                                                         interpolationPointsOnCoarseElement_reference)
-                #get coarse scale basis function values at these reference points
-                psi = numpy.zeros((coarseMesh.nElements_global,
-                                     nChildrenMax_element*nInterpolationPoints,
-                                     coarseSpace.referenceFiniteElement.localFunctionSpace.dim),
-                                    'd')
-                coarseSpace.getBasisValuesAtArray(interpolationPointsOnCoarseElement_reference,
-                                                  psi)
-                #cek new mesh interface
-                child_N_global=0
-                for coarse_eN in range(coarseMesh.nElements_global):
-                    #cek old mesh interface
-                    #for fine_eN,fine_e in enumerate(children[coarse_eN]):
+                            if PeN_left != PeN_right:
+                                #assumes a unique correspondence interpCondition <--> local element boundary
+                                isNonConformingOnCoarseGrid[eN_left,ebn_left]  = 1
+                                isNonConformingOnCoarseGrid[eN_right,ebn_right]= 1
+                                #mwf debug
+                                #print """MultilevelProjNC nc IP ebN= %d eN_left=%d PeN_left=%d eN_right=%d PeN_right=%d """ % (ebN,
+                                #                                                                                               eN_left,
+                                #                                                                                               PeN_left,
+                                #                                                                                               eN_right,
+                                #                                                                                               PeN_right)
+                            #different parents
+                        #interior element boundaries
+                        #what about exterior ones?
+                        for ebNE in range(fineMesh.nExteriorElementBoundaries_global):
+                            ebN = fineMesh.exteriorElementBoundariesArray[ebNE]
+                            eN_left = fineMesh.elementBoundaryElementsArray[ebN,0]
+                            ebn_left = fineMesh.elementBoundaryLocalElementBoundariesArray[ebN,0]
+                            isNonConformingOnCoarseGrid[eN_left,ebn_left]  = -1
+                        #end exterior
+                    #need to care about nonconforming points
+                    if (not isinstance(fineSpace,NC_AffineLinearOnSimplexWithNodalBasis) and
+                        referenceElement.dim > 1 and usingAtLeastOneNCproj):
+                        logEvent("""WARNING testStuff.MultiLevelProjectionOperatorsNC mixing NC and C0 projection operators!!!""")
+                    #map reference interpolation points of fine elements to physical space
+                    interpolationPointsOnFineElement_physical =  fineSpace.updateInterpolationPoints()
+                    #copy physical space reference points on fine elements to an array for their parents
+                    interpolationPointsOnCoarseElement_physical = numpy.zeros((coarseMesh.nElements_global,
+                                                                                 nChildrenMax_element*nInterpolationPoints,
+                                                                                 3),
+                                                                                'd')
+                    child_N_global=0 #cek new mesh interface, keep track of position in children array
+                    for coarse_eN in range(coarseMesh.nElements_global):
+                        #cek old mesh interface
+                        #for child_N,fine_e in enumerate(children[coarse_eN]):
+                        #new mesh interface
+                        for child_N,offset in enumerate(range(childrenOffsets[coarse_eN],childrenOffsets[coarse_eN+1])):
+                            fine_eN = children[offset] #new
+                            for pN in range_nInterpolationPoints:
+                                #cek old mesh interface
+                                #interpolationPointsOnCoarseElement_physical[coarse_eN,child_N*nInterpolationPoints + pN,:] = interpolationPointsOnFineElement_physical[fine_e.N,pN]
+                                interpolationPointsOnCoarseElement_physical[coarse_eN,child_N*nInterpolationPoints + pN,:] = interpolationPointsOnFineElement_physical[fine_eN,pN]
+                    #map physical interpolation points on coarse elements to coarse reference coordinates
+                    interpolationPointsOnCoarseElement_reference = numpy.zeros((coarseMesh.nElements_global,
+                                                                                  nChildrenMax_element*nInterpolationPoints,
+                                                                                  3),
+                                                                                 'd')
+                    J = numpy.zeros((coarseMesh.nElements_global,
+                                       nChildrenMax_element*nInterpolationPoints,
+                                       referenceElement.dim,
+                                       referenceElement.dim),
+                                      'd')
+                    invJ = numpy.zeros((coarseMesh.nElements_global,
+                                          nChildrenMax_element*nInterpolationPoints,
+                                          referenceElement.dim,
+                                          referenceElement.dim),
+                                         'd')
+                    detJ = numpy.zeros((coarseMesh.nElements_global,
+                                          nChildrenMax_element*nInterpolationPoints),
+                                         'd')
+                    interpolationPointsOnCoarseElement_reference_dummy = numpy.zeros((nChildrenMax_element*nInterpolationPoints,
+                                                                                        3),
+                                                                                      'd')
+                    coarseSpace.elementMaps.getJacobianValues(interpolationPointsOnCoarseElement_reference_dummy,
+                                                              J,
+                                                              invJ,
+                                                              detJ)
+                    coarseSpace.elementMaps.getInverseValues(invJ,
+                                                             interpolationPointsOnCoarseElement_physical,
+                                                             interpolationPointsOnCoarseElement_reference)
+                    #get coarse scale basis function values at these reference points
+                    psi = numpy.zeros((coarseMesh.nElements_global,
+                                         nChildrenMax_element*nInterpolationPoints,
+                                         coarseSpace.referenceFiniteElement.localFunctionSpace.dim),
+                                        'd')
+                    coarseSpace.getBasisValuesAtArray(interpolationPointsOnCoarseElement_reference,
+                                                      psi)
                     #cek new mesh interface
-                    for fine_eN,offset in enumerate(range(childrenOffsets[coarse_eN],childrenOffsets[coarse_eN+1])):
-                        fine_eN_global = children[offset] #new
-                        for i in fineSpace.referenceFiniteElement.localFunctionSpace.range_dim:
-                            #I = fineSpace.dofMap.l2g[fine_e.N,i]
-                            I = fineSpace.dofMap.l2g[fine_eN_global,i]
-                            for j in coarseSpace.referenceFiniteElement.localFunctionSpace.range_dim:
-                                J = coarseSpace.dofMap.l2g[coarse_eN,j]
-                                psi_j = psi[coarse_eN,fine_eN*nInterpolationPoints:(fine_eN+1)*nInterpolationPoints,j]
-                                F_ij = fineSpaceInterpolationFunctionals[i](psi_j)
-                                if abs(F_ij ) > 1.0e-16:
-                                    #mwf orig F_ij > 1.e-16 changed to abs(F_ij)
-                                    #mwf now account for nonconforming points?
-                                    #cek old mesh interface
-                                    #if usingAtLeastOneNCproj and isNonConformingOnCoarseGrid[fine_e.N,i] > 0:
-                                    #cek new mesh interface
-                                    if usingAtLeastOneNCproj and isNonConformingOnCoarseGrid[fine_eN_global,i] > 0:
-                                        F_ij *= 0.5
-                                        #have to allow for summing up values hit multiple times
-                                        #only here
-                                        if (J,I) in rbc:
-                                            rbc[(J,I)] += F_ij
-                                            pbc[(I,J)] += F_ij
+                    child_N_global=0
+                    for coarse_eN in range(coarseMesh.nElements_global):
+                        #cek old mesh interface
+                        #for fine_eN,fine_e in enumerate(children[coarse_eN]):
+                        #cek new mesh interface
+                        for fine_eN,offset in enumerate(range(childrenOffsets[coarse_eN],childrenOffsets[coarse_eN+1])):
+                            fine_eN_global = children[offset] #new
+                            for i in fineSpace.referenceFiniteElement.localFunctionSpace.range_dim:
+                                #I = fineSpace.dofMap.l2g[fine_e.N,i]
+                                I = fineSpace.dofMap.l2g[fine_eN_global,i]
+                                for j in coarseSpace.referenceFiniteElement.localFunctionSpace.range_dim:
+                                    J = coarseSpace.dofMap.l2g[coarse_eN,j]
+                                    psi_j = psi[coarse_eN,fine_eN*nInterpolationPoints:(fine_eN+1)*nInterpolationPoints,j]
+                                    F_ij = fineSpaceInterpolationFunctionals[i](psi_j)
+                                    if abs(F_ij ) > 1.0e-16:
+                                        #mwf orig F_ij > 1.e-16 changed to abs(F_ij)
+                                        #mwf now account for nonconforming points?
+                                        #cek old mesh interface
+                                        #if usingAtLeastOneNCproj and isNonConformingOnCoarseGrid[fine_e.N,i] > 0:
+                                        #cek new mesh interface
+                                        if usingAtLeastOneNCproj and isNonConformingOnCoarseGrid[fine_eN_global,i] > 0:
+                                            F_ij *= 0.5
+                                            #have to allow for summing up values hit multiple times
+                                            #only here
+                                            if (J,I) in rbc:
+                                                rbc[(J,I)] += F_ij
+                                                pbc[(I,J)] += F_ij
+                                            else:
+                                                rbc[(J,I)] = F_ij
+                                                pbc[(I,J)] = F_ij
                                         else:
                                             rbc[(J,I)] = F_ij
                                             pbc[(I,J)] = F_ij
-                                    else:
-                                        rbc[(J,I)] = F_ij
-                                        pbc[(I,J)] = F_ij
-                                    rbcColumnIndeces[J].add(I)
-                                    #check why this is being called, todo
-                                    if I in fineDOFBoundaryConditions.global2freeGlobal:
-                                        II = fineDOFBoundaryConditions.global2freeGlobal[I]*strideListList[l+1][cj]+offsetListList[l+1][cj]
-                                        if J in coarseDOFBoundaryConditions.global2freeGlobal:
-                                            JJ = coarseDOFBoundaryConditions.global2freeGlobal[J]*strideListList[l][cj]+offsetListList[l][cj]
-                                            rColumnIndeces[JJ].add(II)
-                                            r[(JJ,II)] = rbc[(J,I)]
-                                            p[(II,JJ)] = pbc[(I,J)]
+                                        rbcColumnIndeces[J].add(I)
+                                        #check why this is being called, todo
+                                        if I in fineDOFBoundaryConditions.global2freeGlobal:
+                                            II = fineDOFBoundaryConditions.global2freeGlobal[I]*strideListList[l+1][cj]+offsetListList[l+1][cj]
+                                            if J in coarseDOFBoundaryConditions.global2freeGlobal:
+                                                JJ = coarseDOFBoundaryConditions.global2freeGlobal[J]*strideListList[l][cj]+offsetListList[l][cj]
+                                                rColumnIndeces[JJ].add(II)
+                                                r[(JJ,II)] = rbc[(J,I)]
+                                                p[(II,JJ)] = pbc[(I,J)]
                 #end coarse_eN
                 for I in range(coarseSpace.dim):
                     for J in rbcColumnIndeces[I]:
                         rbcSum[I] += abs(rbc[(I,J)])
                         if rbc[(I,J)] > 1.0-1.0e-8 and rbc[(I,J)] < 1.0 + 1.0e-8:
                             interp_bc[(I,J)] = 1.0
-                for I in range(offsetListList[l][cj],offsetListList[l][cj]+coarseDOFBoundaryConditions.nFreeDOF_global,strideListList[l][cj]):
+                #the stacked system interleaves components, so component cj's free dofs are
+                #offset, offset+stride, ...: nFreeDOF_global of them, which span stride times
+                #that many entries (the range stopped at nFreeDOF_global, so with two
+                #components the second half of rSum stayed zero and FAS divided by it)
+                for I in range(offsetListList[l][cj],offsetListList[l][cj]+strideListList[l][cj]*coarseDOFBoundaryConditions.nFreeDOF_global,strideListList[l][cj]):
                     for J in rColumnIndeces[I]:
                         rSum[I] += r[(I,J)]
                 for I in range(coarseSpace.dim):

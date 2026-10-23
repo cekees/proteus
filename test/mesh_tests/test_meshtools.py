@@ -559,7 +559,8 @@ class TestMeshTools(object):
         n = 3
         for ptype in [MeshParallelPartitioningTypes.element,
                       MeshParallelPartitioningTypes.node]:
-            mlMesh = MultilevelTriangularMesh(3,3,1,refinementLevels=n,parallelPartitioningType=ptype)
+            mlMesh = MultilevelTriangularMesh(3,3,1,refinementLevels=n,parallelPartitioningType=ptype,
+                                              regularGrid='global')
             elementChildren= [np.array([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16,
                                          17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31], dtype=np.int32), np.array([  0,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,  11,  12,
                                                                                                                                    13,  14,  15,  16,  17,  18,  19,  20,  21,  22,  23,  24,  25,
@@ -600,7 +601,8 @@ class TestMeshTools(object):
         n = 2
         for ptype in [MeshParallelPartitioningTypes.element,
                       MeshParallelPartitioningTypes.node]:
-            mlMesh = MultilevelTetrahedralMesh(3,3,3,refinementLevels=n,parallelPartitioningType=ptype)
+            mlMesh = MultilevelTetrahedralMesh(3,3,3,refinementLevels=n,parallelPartitioningType=ptype,
+                                               regularGrid='global')
             elementChildren= [np.array([  0,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,  11,  12,
                                           13,  14,  15,  16,  17,  18,  19,  20,  21,  22,  23,  24,  25,
                                           26,  27,  28,  29,  30,  31,  32,  33,  34,  35,  36,  37,  38,

@@ -1,11 +1,36 @@
 # A type of -*- python -*- file
+from libcpp.vector cimport vector
 from mpi4py.libmpi cimport MPI_Comm
 cimport mesh
 
 cdef extern from "partitioning.h" namespace "proteus":
+    extern int c_ensurePetscInitialized "proteus::ensurePetscInitialized" ()
+    extern bint c_petscIsInitialized "proteus::petscIsInitialized" ()
+    extern int c_generateCartesianSubdomain "proteus::generateCartesianSubdomain" (const MPI_Comm& PROTEUS_COMM_WORLD,
+                                                                                   int kind,
+                                                                                   int triangleFlag,
+                                                                                   const int* nn,
+                                                                                   const double* L,
+                                                                                   const int* rankGrid,
+                                                                                   int nLayersOfOverlap,
+                                                                                   mesh.Mesh& mesh,
+                                                                                   int level,
+                                                                                   const double* origin)
+    extern int c_cartesianNumbering "proteus::cartesianNumbering" (int kind, int triangleFlag, const int* nn, const int* rankGrid,
+                                                                   int level, int elements, int n, const int* oldNumbers, int* newNumbers)
+    extern int c_cartesianVertexInterpolation "proteus::cartesianVertexInterpolation" (int kind, int triangleFlag, const int* nn,
+                                                                                       const int* rankGrid, int level, int rank,
+                                                                                       vector[int]& rowptr, vector[int]& colind,
+                                                                                       vector[double]& nzval)
+    extern int c_cartesianSubdomainParents "proteus::cartesianSubdomainParents" (int kind, int triangleFlag, const int* nn,
+                                                                                 const int* rankGrid, int level, int rank,
+                                                                                 vector[int]& parents)
+    extern int c_cartesianGlobalCounts "proteus::cartesianGlobalCounts" (int kind, int triangleFlag, const int* nn, int level, int* counts)
     extern int c_partitionNodes "proteus::partitionNodes" (const MPI_Comm& PROTEUS_COMM_WORLD,
                                                            mesh.Mesh& mesh,
-                                                           int nNodes_overlap);
+                                                           int nNodes_overlap,
+                                                           const int* nodeOwners,
+                                                           const int* nodeWeights);
     extern int c_partitionNodesFromTetgenFiles "proteus::partitionNodesFromTetgenFiles" (const MPI_Comm& PROTEUS_COMM_WORLD,
                                                                                          const char* filebase,
                                                                                          int indexBase, mesh.Mesh& newMesh,
@@ -18,7 +43,8 @@ cdef extern from "partitioning.h" namespace "proteus":
 
     extern int c_partitionElements "proteus::partitionElements" (const MPI_Comm& PROTEUS_COMM_WORLD,
                                                                  mesh.Mesh& mesh,
-                                                                 int nElements_overlap);
+                                                                 int nElements_overlap,
+                                                                 const int* elementOwners);
     extern int buildQuadraticSubdomain2GlobalMappings_1d(const MPI_Comm& PROTEUS_COMM_WORLD, mesh.Mesh& mesh,
                                                          const int *elementOffsets_subdomain_owned,
                                                          const int *nodeOffsets_subdomain_owned,

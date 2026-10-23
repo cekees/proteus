@@ -26,7 +26,7 @@ from . import cnumericalFlux
 from . import Comm
 from . import csparsity
 from .Profiling import logEvent
-from petsc4py import PETSc as p4pyPETSc
+from .petsc_optional import PETSc as p4pyPETSc, HAVE_PETSC4PY
 from . import superluWrappers
 import numpy as np
 
@@ -4347,6 +4347,17 @@ class OneLevelTransport(NonlinearEquation):
                                         self.ebqe[('advectiveFlux',ci)],
                                         self.inflowFlux[ci])
     def setUnknowns(self,free_u):
+        # copyBetweenFreeUnknownsAndGlobalUnknowns indexes free_u from C with no
+        # bounds checking, so handing it a vector shorter than this level needs
+        # corrupts whatever happens to follow it in memory instead of raising --
+        # typically the dof arrays' own headers, which then surface far away as
+        # a nonsensical shape. Callers iterating a multilevel model have passed
+        # uList[0] for every level more than once, so check the contract here.
+        if free_u.size < self.dim:
+            raise ValueError(
+                "setUnknowns needs at least %i free unknowns for this level but "
+                "was given %i; a caller is probably passing the coarsest level's "
+                "vector for every level" % (self.dim, free_u.size))
         for cj in range(self.nc):
             assert len(self.dirichletConditions[cj].global2freeGlobal_global_dofs) == len(self.dirichletConditions[cj].global2freeGlobal_free_dofs)
             fromFreeToGlobal=1 #direction copying
@@ -6312,6 +6323,8 @@ class OneLevelTransport(NonlinearEquation):
 #end Transport definition
 class MultilevelTransport(object):
     """Nonlinear ADR on a multilevel mesh"""
+    #None or False: distributed transfer operators only when there is more than one rank
+    distributedTransfers = False
     def __init__(self,problem,numerics,mlMesh,OneLevelTransportType=OneLevelTransport):
         self.name = problem.name
         #cek temporary fix to get everything weaned off the old BC's
@@ -6411,6 +6424,17 @@ class MultilevelTransport(object):
         for  cj in list(TrialSpaceTypeDict.keys()):
             self.trialSpaceListDict[cj]=[]
             self.bcListDict[cj]=[]
+        # In parallel the transfer operators are built per rank from the
+        # subdomain spaces (see useParallelTransfers); a single level has no
+        # transfers at all.
+        from . import Comm
+        _comm = Comm.get()
+        #Distributed (PETSc Mat) transfers are what parallel runs need. A serial run
+        #uses the global SparseMatrix ones unless distributedTransfers is True, which
+        #lets a one-rank run use exactly the code a many-rank run does -- PETSc's PCMG
+        #needs it, and so does a scaling study with a one-rank baseline.
+        self.parallelTransfers = ((_comm.size() > 1 or self.distributedTransfers)
+                                  and len(mlMesh.meshList) > 1)
         for mesh in mlMesh.meshList:
             
             sdmesh = mesh.subdomainMesh # Linoj: mesh.subdomainMesh.nodeArray[:,2]=all zeros
@@ -6621,8 +6645,40 @@ class MultilevelTransport(object):
                 for ts in list(trialSpaceDict.values()):
                     if ts.dofMap.nDOF_all_processes != par_N:
                         mixed=True
-                assert(options.multilevelLinearSolver == KSP_petsc4py or
-                       options.levelLinearSolver == KSP_petsc4py), "Must use KSP_petsc4py in parallel"
+                #proteus's own smoothers refresh the ghost entries of their
+                #iterate through par_u after each local update, so they are
+                #usable in parallel: Jacobi's update is pointwise and gives the
+                #same iterates as in serial, while GaussSeidel becomes
+                #processor-block Gauss-Seidel and StarILU/StarBILU are already
+                #Schwarz methods. MGM and NI drive those.
+                #
+                #LU is still refused. It would factor the *subdomain* matrix,
+                #which is a block-Jacobi approximation rather than the direct
+                #solve the caller asked for, and would quietly return a
+                #different answer in parallel than in serial.
+                #StarILU is usable once two things hold: its sweep is
+                #restricted to stars centred on nodes this rank owns, and the
+                #residual's ghost entries carry their owners' values before the
+                #local solves read them. Both are handled in LinearSolvers.
+                #
+                #StarBILU is absent because it returns a zero solution even in
+                #serial on the problems tested here, which is its own question;
+                #there is nothing to preserve in parallel until that is fixed.
+                #
+                #LU is absent for a different reason: it would factor the
+                #subdomain matrix, which is a block-Jacobi approximation rather
+                #than the direct solve the caller asked for.
+                parallelCapableSolvers = (KSP_petsc4py,Jacobi,GaussSeidel,StarILU,MGM,NI,petsc_MG)
+                for (what,solver) in (("multilevelLinearSolver",options.multilevelLinearSolver),
+                                      ("levelLinearSolver",options.levelLinearSolver),
+                                      ("linearSmoother",getattr(options,'linearSmoother',None))):
+                    if solver is None:
+                        continue
+                    assert solver in parallelCapableSolvers, (
+                        "%s=%s cannot be used in parallel: it would return a "
+                        "different answer than in serial. Use one of %s."
+                        % (what,getattr(solver,'__name__',solver),
+                           [c.__name__ for c in parallelCapableSolvers]))
                 if mixed:
                     #
                     #calculate dimensions mixed multicomponent system
@@ -6850,8 +6906,13 @@ class MultilevelTransport(object):
                     logEvent("Allocating ghosted parallel vectors on rank %i" % comm.rank(),level=2)
                     par_u = ParVec_petsc4py(u,par_bs,par_n,par_N,par_nghost,subdomain2global)
                     par_r = ParVec_petsc4py(r,par_bs,par_n,par_N,par_nghost,subdomain2global)
-                    logEvent("Allocating un-ghosted parallel vectors on rank %i" % comm.rank(),level=2)
-                    par_du = ParVec_petsc4py(du,par_bs,par_n,par_N)
+                    logEvent("Allocating ghosted parallel vectors on rank %i" % comm.rank(),level=2)
+                    #du is ghosted like u and r. KSP never needed it to be --
+                    #it only ever reads the owned range -- but proteus's own
+                    #smoothers compute residuals with the subdomain matrix,
+                    #whose owned rows couple to ghost columns, so they have to
+                    #be able to refresh du's ghost entries after each update.
+                    par_du = ParVec_petsc4py(du,par_bs,par_n,par_N,par_nghost,subdomain2global)
                     logEvent("Allocating matrix on rank %i" % comm.rank(),level=2)
                     
                     try:
@@ -6954,16 +7015,224 @@ class MultilevelTransport(object):
         logEvent("Building Mesh Transfers",level=2)
         
         MultilevelProjectionOperatorType = MultilevelProjectionOperators
-        self.meshTransfers = MultilevelProjectionOperatorType(
-            mlMesh,
-            self.trialSpaceDictList,
-            self.offsetListList,
-            self.strideListList,
-            self.bcDictList)
+        if self.parallelTransfers:
+            #only the container: the distributed operators are installed into it
+            self.meshTransfers = MultilevelProjectionOperatorType(
+                mlMesh,
+                self.trialSpaceDictList,
+                self.offsetListList,
+                self.strideListList,
+                self.bcDictList,
+                build=False)
+            self.useParallelTransfers(mlMesh)
+        else:
+            #a hierarchy generated in pieces has no global levels; on one rank its
+            #pieces are the whole levels, related by subdomainHierarchy
+            self.meshTransfers = MultilevelProjectionOperatorType(
+                mlMesh.subdomainHierarchy() if getattr(mlMesh,'generated',False) else mlMesh,
+                self.trialSpaceDictList,
+                self.offsetListList,
+                self.strideListList,
+                self.bcDictList)
         logEvent(memory("mesh transfers","MultilevelTransport"),level=4)
         #mwf hack keep reference to mlMesh in Transport ctor for now
         self.mlMeshSave = mlMesh
         
+    def useParallelTransfers(self,mlMesh):
+        """Replace the transfer operators with distributed ones where possible.
+
+        MultilevelProjectionOperators builds global matrices, which cannot act
+        on a subdomain's vectors. For a nodally nested hierarchy of spaces whose
+        dofs are the mesh vertices the operators follow from the node parents
+        alone, so each rank can assemble the rows it owns and PETSc applies
+        them -- see LinearAlgebraTools.nodalProlongationMat. The parents have to
+        be read in the partitioned node numbering, which is what
+        partitionedNodeParents does.
+
+        There are two families of operators and they act on different vectors.
+        prolongList/restrictList act on the *free* unknowns of the stacked
+        system, which is what the linear multigrid solvers see. The
+        *_bcListDict operators act on each component's full dof array,
+        Dirichlet dofs included, which is what the nonlinear nested iteration
+        and the post-processing see. Parallel runs require weak Dirichlet
+        conditions (OneLevelTransport asserts it), so no dof is ever eliminated
+        and the two families are the same matrix up to how the vectors are laid
+        out -- which is why one prolongation Mat serves both. Strong
+        elimination of Dirichlet dofs is a serial-only variant: the free
+        numbering stops coinciding with the vertex numbering, and
+        nodalTransfersApply declines it.
+
+        Anything that does not qualify -- higher-order, modal, discontinuous
+        and non-conforming spaces, hierarchies that are not nodally nested --
+        takes useGeneralParallelTransfers.
+        """
+        #the nodal route reads node parents through the partitioner's node
+        #renumbering, which only node partitioning records
+        if hasattr(mlMesh,'hasPartitionedNumbering'):
+            permuted = mlMesh.hasPartitionedNumbering()
+        else:
+            permuted = all(getattr(mesh,'nodeNumbering_global_old2new',None) is not None
+                           for mesh in mlMesh.meshList)
+        if not permuted or not FemTools.nodalTransfersApply(mlMesh,
+                                                            self.trialSpaceDictList,
+                                                            self.bcDictList):
+            self.useGeneralParallelTransfers(mlMesh)
+            return
+        if not getattr(mlMesh,'generated',False):
+            mlMesh.vertexInterpolation()
+        nc = len(self.trialSpaceDictList[0])
+        cache = {}
+        def levelMats(l):
+            if l not in cache:
+                interpolation = mlMesh.partitionedVertexInterpolation(l)
+                coarseOffsets = np.asarray(mlMesh.meshList[l].nodeOffsets_subdomain_owned)
+                fineOffsets = np.asarray(mlMesh.meshList[l+1].nodeOffsets_subdomain_owned)
+                prolongMat = vertexProlongationMat(*interpolation,
+                                                   coarseNodeOffsets=coarseOffsets,
+                                                   fineNodeOffsets=fineOffsets)
+                injectionMat = vertexProlongationMat(*interpolation,
+                                                     coarseNodeOffsets=coarseOffsets,
+                                                     fineNodeOffsets=fineOffsets,
+                                                     inheritedOnly=True)
+                rowSums = nodalRestrictionScaling(prolongMat)
+                stackedMat = prolongMat if nc == 1 else vertexProlongationMat(
+                    *interpolation,coarseNodeOffsets=coarseOffsets,
+                    fineNodeOffsets=fineOffsets,blockSize=nc)
+                cache[l] = (prolongMat,injectionMat,rowSums,stackedMat)
+            return cache[l]
+        self.installParallelTransfers(mlMesh,
+                                      lambda l,cj: levelMats(l)[:3],
+                                      lambda l: levelMats(l)[3])
+
+    def useGeneralParallelTransfers(self,mlMesh):
+        """Distributed transfers for any space, built from each rank's own subdomain.
+
+        The nodal route needs a dof to be a vertex. Otherwise the operators come
+        from the geometric construction in MultilevelProjectionOperators --
+        coarse basis functions evaluated at the fine interpolation points --
+        run on the *subdomain* spaces over the subdomain parent/child relations
+        (MultilevelMesh.subdomainHierarchy). That gives each rank a prolongation
+        between its subdomain dofs, complete on the rows it owns, because a finer
+        level inherits the coarser one's partition (MultilevelMesh.partitionLevels)
+        and so every fine element touching an owned dof has its parent here.
+        The owned rows are translated to global dof numbers and assembled into a
+        distributed Mat (LinearAlgebraTools.subdomainProlongationMat); nothing is
+        gathered, and no space or operator is built on the global mesh.
+
+        An owned row with no entries means the partitions were not
+        level-consistent, and raises rather than building a wrong operator.
+        """
+        nc = len(self.trialSpaceDictList[0])
+        hierarchy = mlMesh.subdomainHierarchy()
+        ops = FemTools.MultilevelProjectionOperators(
+            hierarchy,self.trialSpaceDictList,self.offsetListList,self.strideListList,
+            self.bcDictList)
+        def csr(sparseMat):
+            rowptr,colind,nzval = sparseMat.getCSRrepresentation()
+            return (np.asarray(rowptr),np.asarray(colind),np.asarray(nzval))
+        def maps(l,cj):
+            fine = self.trialSpaceDictList[l+1][cj].dofMap
+            coarse = self.trialSpaceDictList[l][cj].dofMap
+            return (fine.subdomain2global,coarse.subdomain2global,
+                    np.asarray(fine.dof_offsets_subdomain_owned),
+                    np.asarray(coarse.dof_offsets_subdomain_owned))
+        cache = {}
+        def mats(l,cj):
+            if (l,cj) not in cache:
+                P = csr(ops.prolong_bcListDict[cj][l+1])
+                build = lambda c,**kw: subdomainProlongationMat(*c,*maps(l,cj),**kw)
+                prolongMat = build(P)
+                #entries equal to one are what the injection keeps, as in the
+                #global operators' interp_bc
+                injectionMat = build(filterCSR(*P,lambda w: np.abs(w-1.0) < 1.0e-8),
+                                     allowEmptyRows=True)
+                #restricted solutions are divided by the row sums of |P|
+                absMat = build(filterCSR(*P,lambda w: np.ones(w.shape,dtype=bool),np.abs))
+                cache[(l,cj)] = (prolongMat,injectionMat,nodalRestrictionScaling(absMat))
+            return cache[(l,cj)]
+        def stackedMat(l):
+            if nc == 1:
+                return mats(l,0)[0]
+            fineS2G,coarseS2G,fineOff,coarseOff = maps(l,0)
+            return subdomainProlongationMat(*csr(ops.prolong_bcListDict[0][l+1]),
+                                            fineS2G,coarseS2G,fineOff,coarseOff,blockSize=nc)
+        self.installParallelTransfers(mlMesh,mats,stackedMat,sameSpaces=len(
+            set((type(ts.dofMap).__name__) for ts in self.trialSpaceDictList[0].values())) == 1)
+
+    def installParallelTransfers(self,mlMesh,mats,stackedMat,sameSpaces=True):
+        """Put distributed operators into the mesh transfers.
+
+        mats(l,cj) gives (prolongation, injection, restriction row sums) from
+        level l to l+1 for component cj, as distributed Mats; stackedMat(l)
+        gives the prolongation of the whole interleaved system.
+        """
+        nc = len(self.trialSpaceDictList[0])
+        #The stacked system's operator is P (x) I only if its vectors interleave
+        #the components node by node, so that component c of node i is entry
+        #nc*i + c on every level. Nodal spaces give that whenever weak Dirichlet
+        #conditions apply, which parallel runs require, but it is a property of
+        #how Transport laid the system out, so read it back rather than assume.
+        stacked = sameSpaces and all(
+            list(self.offsetListList[l]) == list(range(nc)) and
+            list(self.strideListList[l]) == [nc]*nc and
+            getattr(self.par_uList[l],'bs',1) == nc
+            for l in range(len(mlMesh.meshList)))
+        if not stacked:
+            logEvent("free-unknown transfers stay global: the system's "
+                     "components are not interleaved node by node, which the "
+                     "distributed stacked operator assumes (the per-component "
+                     "ones are built)",level=2)
+        mt = self.meshTransfers
+        prolongList = [[]]
+        restrictList = [[]]
+        restrictSumList = [[]]
+        prolong_bc = dict((cj,[[]]) for cj in range(nc))
+        restrict_bc = dict((cj,[[]]) for cj in range(nc))
+        scaled_restrict_bc = dict((cj,[[]]) for cj in range(nc))
+        interp_bc = dict((cj,[[]]) for cj in range(nc))
+        restrict_bcSum = dict((cj,[[]]) for cj in range(nc))
+        for l in range(len(mlMesh.meshList)-1):
+            if stacked:
+                stackedP = stackedMat(l)
+                prolongList.append(ParTransferOperator(
+                    stackedP,self.par_uList[l],self.par_uList[l+1]))
+                restrictList.append(ParTransposeTransferOperator(
+                    stackedP,self.par_uList[l],self.par_uList[l+1]))
+                #FAS divides a restricted *solution* by these row sums (the paper's
+                #I-tilde); ghosts included, since the next residual reads them
+                coarseU = self.par_uList[l]
+                rowSums = np.zeros(coarseU.proteus_array.size)
+                rowSums[:coarseU.dim_proc] = nodalRestrictionScaling(stackedP).getArray()
+                coarseU.duplicate_with_array(rowSums).scatter_forward_insert()
+                restrictSumList.append(rowSums)
+            for cj in range(nc):
+                prolongMat,injectionMat,rowSums = mats(l,cj)
+                coarse = self.uDictList[l][cj].par_dof
+                fine = self.uDictList[l+1][cj].par_dof
+                prolong_bc[cj].append(ParTransferOperator(prolongMat,coarse,fine))
+                restrict_bc[cj].append(ParTransposeTransferOperator(prolongMat,coarse,fine))
+                scaled_restrict_bc[cj].append(
+                    ParScaledTransposeTransferOperator(prolongMat,coarse,fine,rowSums))
+                #the injection's transpose, so it lands coarse <- fine like the
+                #restrictions; entries are 1 on the nodes the refinement inherited
+                interp_bc[cj].append(ParTransposeTransferOperator(injectionMat,coarse,fine))
+                #NLNI divides a restricted solution by these, ghosts included
+                sums = np.zeros(coarse.proteus_array.size)
+                sums[:coarse.dim_proc] = rowSums.getArray()
+                coarse.duplicate_with_array(sums).scatter_forward_insert()
+                restrict_bcSum[cj].append(sums)
+        if stacked:
+            mt.prolongList = prolongList
+            mt.restrictList = restrictList
+            mt.restrictSumList = restrictSumList
+        mt.prolong_bcListDict = prolong_bc
+        mt.restrict_bcListDict = restrict_bc
+        mt.scaled_restrict_bcListDict = scaled_restrict_bc
+        mt.interp_bcListDict = interp_bc
+        mt.restrict_bcSumListDict = restrict_bcSum
+        logEvent("mesh transfers assembled as distributed matrices over %i levels"
+                 % (len(mlMesh.meshList),),level=2)
+
     def setInitialConditions(self,getInitialConditionsDict,T=0.0):
         logEvent("Setting initial conditions on model "+self.name)
         self.t=T

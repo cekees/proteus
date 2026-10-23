@@ -18,8 +18,8 @@ cdef class cASMFactor(object):
         AS.Stype = superluWrappers._SLU_NR
         AS.Dtype = superluWrappers._SLU_D
         AS.Mtype = superluWrappers._SLU_GE
-        AS.nrow = L.nr
-        AS.ncol = L.nc
+        AS.nrow = L.dim[0]
+        AS.ncol = L.dim[1]
         AS.Store = &L.A        
         rval = casm_NR_init(&AS,
                             &self.subdomain_dim,
@@ -58,8 +58,8 @@ cdef class cBASMFactor(object):
         AS.Stype = superluWrappers._SLU_NR
         AS.Dtype = superluWrappers._SLU_D
         AS.Mtype = superluWrappers._SLU_GE
-        AS.nrow = L.nr
-        AS.ncol = L.nc
+        AS.nrow = L.dim[0]
+        AS.ncol = L.dim[1]
         AS.Store = &L.A
         rval = cbasm_NR_init(bs,
                              &AS,
@@ -102,8 +102,8 @@ cdef void smootherWrappersjacobi_NR_prepare(superluWrappers.cSparseMatrix sm,
     AS.Stype = superluWrappers._SLU_NR
     AS.Dtype = superluWrappers._SLU_D
     AS.Mtype = superluWrappers._SLU_GE
-    AS.nrow = sm.nr
-    AS.ncol = sm.nc
+    AS.nrow = sm.dim[0]
+    AS.ncol = sm.dim[1]
     AS.Store = &sm.A
     cjacobi_NR_prepare(&AS, w, tol, &M[0])
 
@@ -129,8 +129,8 @@ cdef void smootherWrappersjacobi_NR_solve(superluWrappers.cSparseMatrix sm,
     AS.Stype = superluWrappers._SLU_NR
     AS.Dtype = superluWrappers._SLU_D
     AS.Mtype = superluWrappers._SLU_GE
-    AS.nrow = sm.nr
-    AS.ncol = sm.nc
+    AS.nrow = sm.dim[0]
+    AS.ncol = sm.dim[1]
     AS.Store = &sm.A
     cjacobi_NR_solve(&AS, &M[0], &R[0], &node_order[0], &dX[0])
 
@@ -158,12 +158,12 @@ cdef void smootherWrappersnl_jacobi_NR_solve(superluWrappers.cSparseMatrix sm,
     AS.Stype = superluWrappers._SLU_NR
     AS.Dtype = superluWrappers._SLU_D
     AS.Mtype = superluWrappers._SLU_GE
-    AS.nrow = sm.nr
-    AS.ncol = sm.nc
+    AS.nrow = sm.dim[0]
+    AS.ncol = sm.dim[1]
     AS.Store = &sm.A
     cnl_jacobi_NR_solve(&AS, &R[0], &node_order[0], w, tol, &dX[0])
 
-def gauss_seidel_NR_preare(A, w, tol, M):
+def gauss_seidel_NR_prepare(A, w, tol, M):
     """
 
     Arguments
@@ -183,8 +183,8 @@ cdef void smootherWrappersgauss_seidel_NR_prepare(superluWrappers.cSparseMatrix 
     AS.Stype = superluWrappers._SLU_NR
     AS.Dtype = superluWrappers._SLU_D
     AS.Mtype = superluWrappers._SLU_GE
-    AS.nrow = sm.nr
-    AS.ncol = sm.nc
+    AS.nrow = sm.dim[0]
+    AS.ncol = sm.dim[1]
     AS.Store = &sm.A
     cgauss_seidel_NR_prepare(&AS, w, tol, &M[0])
 
@@ -210,8 +210,8 @@ cdef void smootherWrappersgauss_seidel_NR_solve(superluWrappers.cSparseMatrix sm
     AS.Stype = superluWrappers._SLU_NR
     AS.Dtype = superluWrappers._SLU_D
     AS.Mtype = superluWrappers._SLU_GE
-    AS.nrow = sm.nr
-    AS.ncol = sm.nc
+    AS.nrow = sm.dim[0]
+    AS.ncol = sm.dim[1]
     AS.Store = &sm.A
     cgauss_seidel_NR_solve(&AS, &M[0], &R[0], &node_order[0], &dX[0])
 
@@ -244,8 +244,8 @@ cdef smootherWrappers_nl_gauss_seidel_NR_solve(superluWrappers.cSparseMatrix sm,
     AS.Stype = superluWrappers._SLU_NR
     AS.Dtype = superluWrappers._SLU_D
     AS.Mtype = superluWrappers._SLU_GE
-    AS.nrow = sm.nr
-    AS.ncol = sm.nc
+    AS.nrow = sm.dim[0]
+    AS.ncol = sm.dim[1]
     AS.Store = &sm.A
     cnl_gauss_seidel_NR_solve(&AS, &R[0], &node_order[0], w, tol, &dX[0])
 
@@ -266,8 +266,8 @@ cdef void smootherWrappers_asm_NR_prepare(superluWrappers.cSparseMatrix sm,
     AS.Stype = superluWrappers._SLU_NR
     AS.Dtype = superluWrappers._SLU_D
     AS.Mtype = superluWrappers._SLU_GE
-    AS.nrow = sm.nr
-    AS.ncol = sm.nc
+    AS.nrow = sm.dim[0]
+    AS.ncol = sm.dim[1]
     AS.Store = &sm.A
     casm_NR_prepare(&AS,
                     asmFactor.subdomain_dim,
@@ -275,7 +275,7 @@ cdef void smootherWrappers_asm_NR_prepare(superluWrappers.cSparseMatrix sm,
                     asmFactor.subdomain_L,
                     asmFactor.subdomain_pivots)
 
-def asm_NR_solve(A, w, asmFactor, node_order, R, dX):
+def asm_NR_solve(A, w, asmFactor, node_order, R, dX, nodes_to_sweep=-1):
     """
     
     Arguments
@@ -286,26 +286,34 @@ def asm_NR_solve(A, w, asmFactor, node_order, R, dX):
     node_order : np.array int
     R : np.array double
     dX : np.array double
+    nodes_to_sweep : int
+        How many entries of node_order to sweep; negative means all of them.
+        In parallel this is the number of nodes the rank owns, so that only
+        stars centred on an owned node are solved -- those are correct square
+        systems, where a star centred on a ghost node is built from a row the
+        subdomain holds only partially.
     """
     smootherWrappers_asm_NR_solve(A._cSparseMatrix,
                                   w,
                                   asmFactor._cASMFactor,
                                   node_order,
                                   R,
-                                  dX)
+                                  dX,
+                                  nodes_to_sweep)
 
 cdef void smootherWrappers_asm_NR_solve(superluWrappers.cSparseMatrix sm,
                                         double w,
                                         cASMFactor asmFactor,
                                         IDATA node_order,
                                         DDATA R,
-                                        DDATA dX):
+                                        DDATA dX,
+                                        int nodes_to_sweep):
     cdef SuperMatrix AS
     AS.Stype = superluWrappers._SLU_NR
     AS.Dtype = superluWrappers._SLU_D
     AS.Mtype = superluWrappers._SLU_GE
-    AS.nrow = sm.nr
-    AS.ncol = sm.nc
+    AS.nrow = sm.dim[0]
+    AS.ncol = sm.dim[1]
     AS.Store = &sm.A
     casm_NR_solve(&AS,
                   w,
@@ -317,7 +325,8 @@ cdef void smootherWrappers_asm_NR_solve(superluWrappers.cSparseMatrix sm,
                   &node_order[0],
                   asmFactor.subdomain_dX,
                   &dX[0],
-                  asmFactor.subdomain_pivots)
+                  asmFactor.subdomain_pivots,
+                  nodes_to_sweep)
 
 def basm_NR_prepare(A, basmFactor):
     """
@@ -335,8 +344,8 @@ cdef void smootherWrappers_basm_NR_prepare(superluWrappers.cSparseMatrix sm,
     cdef SuperMatrix AS
     AS.Dtype = superluWrappers._SLU_D
     AS.Mtype = superluWrappers._SLU_GE
-    AS.nrow = sm.nr
-    AS.ncol = sm.nc
+    AS.nrow = sm.dim[0]
+    AS.ncol = sm.dim[1]
     AS.Store = &sm.A
     cbasm_NR_prepare(basmFactor.bs,
                      basmFactor.N,
@@ -377,8 +386,8 @@ cdef void smootherWrappers_basm_NR_solve(superluWrappers.cSparseMatrix sm,
     AS.Stype = superluWrappers._SLU_NR
     AS.Dtype = superluWrappers._SLU_D
     AS.Mtype = superluWrappers._SLU_GE
-    AS.nrow = sm.nr
-    AS.ncol = sm.nc
+    AS.nrow = sm.dim[0]
+    AS.ncol = sm.dim[1]
     AS.Store = &sm.A
     cbasm_NR_solve(basmFactor.bs,
                    basmFactor.N,

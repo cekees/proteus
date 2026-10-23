@@ -1720,7 +1720,7 @@ class XdmfWriter(object):
                 values_dof.text = ar.hdfFilename+":/"+name+"_dof"+"_t"+str(tCount)
                 ar.create_dataset_sync(name+"_dof"+"_t"+str(tCount),
                                        offsets = dofMap.dof_offsets_subdomain_owned,
-                                       data = u.dof)
+                                       data = u.dof[:dofMap.dof_offsets_subdomain_owned[ar.rank+1] - dofMap.dof_offsets_subdomain_owned[ar.rank]])
             else:
                 assert False, "global_sync not implemented for text heavy data"
         else:
