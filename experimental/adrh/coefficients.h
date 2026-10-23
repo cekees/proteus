@@ -111,9 +111,12 @@ namespace adrh
   //   div(b u - kappa grad u) + d(x) = 0,  u = sin(omega.x + omega0),
   //   d(x) = -(b.omega) cos(omega.x + omega0) - kappa |omega|^2 sin(omega.x + omega0).
   // In proteus's form f = b u, a = kappa I, phi = u, r = d(x). The parameters are data of the functor.
+  // Steady advection-diffusion with the manufactured solution u = sin(omega.x + omega0) in nS = 2 or 3 dimensions:
+  // div(b u - kappa grad u) + r(x) = 0 with r chosen so u is exact (AnalyticalSolutions.LinearADR_Sine, c = 0).
+  template <int nS_>
   struct AdvectionDiffusionSine : DenseMasks
   {
-    static constexpr int nc = 1, nSpace = 3;
+    static constexpr int nc = 1, nSpace = nS_;
     static constexpr bool has_mass = false, has_hamiltonian = false;
     static constexpr bool da_nz(int, int, int) { return false; }  // a does not depend on u
     static constexpr bool dr_nz(int, int) { return false; }       // nor does the source
@@ -121,15 +124,15 @@ namespace adrh
     AdvectionDiffusionSine(const double *b_, double kappa_, const double *omega_, double omega0_)
         : kappa(kappa_), omega0(omega0_)
     {
-      for (int I = 0; I < 3; ++I) { b[I] = b_[I]; omega[I] = omega_[I]; }
+      for (int I = 0; I < 3; ++I) { b[I] = I < nS_ ? b_[I] : 0.0; omega[I] = I < nS_ ? omega_[I] : 0.0; }
     }
-    void evaluate(double, const double x[3], const double u[1], const double gu[1][3], Terms<1, 3> &T) const
+    void evaluate(double, const double x[3], const double u[1], const double gu[1][nS_], Terms<1, nS_> &T) const
     {
       T.phi[0] = u[0];
       T.dphi[0][0] = 1.0;
       double bw = 0.0, ww = 0.0, arg = omega0;
-      for (int I = 0; I < 3; ++I) { bw += b[I] * omega[I]; ww += omega[I] * omega[I]; arg += omega[I] * x[I]; }
-      for (int I = 0; I < 3; ++I)
+      for (int I = 0; I < nS_; ++I) { bw += b[I] * omega[I]; ww += omega[I] * omega[I]; arg += omega[I] * x[I]; }
+      for (int I = 0; I < nS_; ++I)
       {
         T.f[0][I] = b[I] * u[0];
         T.df[0][0][I] = b[I];

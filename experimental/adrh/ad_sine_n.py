@@ -1,4 +1,4 @@
-"""Numerics for ad_sine_p.py: P1 Galerkin on regular tetrahedra, direct solve, no stabilization."""
+"""Numerics for ad_sine_p.py: P1 Galerkin on regular triangles or tetrahedra, direct solve, no stabilization."""
 import os
 from proteus import *
 from proteus.default_n import *
@@ -25,6 +25,8 @@ if BC == 'strong':
     numericalFluxType = None
 elif BC in _WEAK:
     numericalFluxType = _WEAK[BC]
+elif BC == 'robin':
+    numericalFluxType = NumericalFlux.RobinFactory({0: getRobin}, base=NumericalFlux.StrongDirichletFactory({0: 'outFlow'}))
 else:
     numericalFluxType = NumericalFlux.StrongDirichletFactory({0: 'outFlow'})
 multilevelNonlinearSolver = Newton

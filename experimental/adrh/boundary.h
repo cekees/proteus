@@ -1,4 +1,5 @@
-// Exterior-face terms of the weak form for P1 simplices (tetrahedra), as a separate kernel.
+// Exterior-face terms of the weak form for P1 simplices (segments of triangles, triangles of tetrahedra),
+// as a separate kernel.
 //
 // The Galerkin form integrated by parts leaves, on every exterior face,
 //     + integral over the face of  F . n  w  dS,   F = f(u) - sum_k a^{ik} grad phi^k   (the total flux),
@@ -11,18 +12,19 @@
 //   Strong         nothing here; the driver removes the unknown or replaces its row
 //                  (StrongDirichletFactory, or numericalFluxType=None).
 //   Flux           the total flux is given. Diffusive part: g = -a grad u . n, prescribed (a
-//                  diffusiveFluxBoundaryCondition). Advective part: prescribed where a value is given (an
-//                  advectiveFluxBoundaryCondition; no Jacobian, as proteus zeroes dadvectiveFlux_left there);
-//                  where none is, the interior flux f(u) . n on outflow (df . n >= 0) and ZERO on inflow,
-//                  which is what StrongDirichlet's 'outFlow' does (calculateExteriorNumericalAdvectiveFlux_NoBC
-//                  drops the inflow flux).
+//                  diffusiveFluxBoundaryCondition), optionally affine in the trace, g0 + dg u (RobinFactory:
+//                  alpha u + beta q.n = g gives q.n = g/beta - (alpha/beta) u, with the Jacobian -alpha/beta).
+//                  Advective part: prescribed where a value is given (an advectiveFluxBoundaryCondition; no
+//                  Jacobian, as proteus zeroes dadvectiveFlux_left there); where none is, the interior flux
+//                  f(u) . n on outflow (df . n >= 0) and ZERO on inflow, which is what StrongDirichlet's
+//                  'outFlow' does (calculateExteriorNumericalAdvectiveFlux_NoBC drops the inflow flux).
 //   WeakDirichlet  the value g_D is imposed weakly, as Advection_DiagonalUpwind_Diffusion_{IIPG,NIPG,SIPG}_exterior
 //                  do. Advective part: upwinded between f(u) . n and f(g_D) . n by the signs of df(u) . n and
 //                  df(g_D) . n (calculateExteriorNumericalAdvectiveFlux: a shock speed decides the mixed case, a
 //                  transonic rarefaction is averaged), with a Jacobian only where the interior flux is taken.
 //                  Diffusive part: -a grad phi . n + (C / h^p) (u - g_D), h the face diameter (its longest
-//                  edge); C, p = 2, 1 for IIPG, 10, 1 for NIPG, 100, 1 for SIPG. Adjoint part (sigma = 0 IIPG,
-//                  -1 NIPG, +1 SIPG): - sigma (u - g_D) (a^T n) . grad w dS, in the residual and the Jacobian.
+//                  edge; the edge itself in 2D); C, p = 2, 1 for IIPG, 10, 1 for NIPG, 100, 1 for SIPG. Adjoint part
+//                  (sigma = 0 IIPG, -1 NIPG, +1 SIPG): - sigma (u - g_D) (a^T n) . grad w dS, residual and Jacobian.
 //
 // nc > 1: the kind is per component i. The diffusive part of component i sums over the potentials k with
 // a^{ik} nonzero; penalty and adjoint are on the jump of u_k against g_D[k], and zero where component k is
@@ -36,8 +38,8 @@
 // but its diffusive-flux Jacobian carries the da term like the element kernel. The regressions have an
 // isotropic, constant a, where none of this shows.
 //
-// Output is per face (not scattered): Rf (nF, nc, nD) and Jf (nF, nc, nD, nc, nD); the driver adds
-// them to the element rows of the face's element.
+// Output is per face (not scattered): Rf (nF, nc, nD) and Jf (nF, nc, nD, nc, nD), nD = nS + 1; the driver
+// adds them to the element rows of the face's element.
 #pragma once
 #include <cmath>
 #include <cstring>
@@ -53,14 +55,15 @@ namespace adrh
   {
     int kind[nc];
     double gD[nc];       // WeakDirichlet: the Dirichlet value
-    double gdiff[nc];    // Flux: the prescribed diffusive flux -a grad u . n (0 = no diffusive flux)
+    double gdiff[nc];    // Flux: the prescribed diffusive flux -a grad u . n at u = 0 (0 = no diffusive flux),
+    double dgdiff[nc];   //       plus dgdiff * u_i (Robin); 0 for a flux that does not depend on the trace
     bool hasAdv[nc];     // Flux: whether the advective flux is prescribed too,
     double fadv[nc];     //       and its value f . n
     void reset()
     {
       for (int i = 0; i < nc; ++i)
       {
-        kind[i] = Strong; gD[i] = 0.0; gdiff[i] = 0.0; hasAdv[i] = false; fadv[i] = 0.0;
+        kind[i] = Strong; gD[i] = 0.0; gdiff[i] = 0.0; dgdiff[i] = 0.0; hasAdv[i] = false; fadv[i] = 0.0;
       }
     }
   };
@@ -75,44 +78,55 @@ namespace adrh
   };
 
   // The boundary kernel. bc.evaluate(t, x, n, F, FaceBC<nc>&) is called per face F and quadrature point;
-  // the face index lets a functor look a per-face kind up.
+  // the face index lets a functor look a per-face kind up. nS = Coefficients::nSpace = 2 or 3.
   template <class Coefficients, class BC>
   void exteriorFaceKernel(const Coefficients &C, const BC &bc, const WeakDirichletParams &wd,
                           int nF, int nQf,
                           const int *faceLocal,            // (nF) local face index k = the opposite node
-                          const double *xn,                // (nF, 4, 3) coordinates of the face's element
-                          const double *u,                 // (nF, nc, 4) the element's dofs
-                          const double *qpf, const double *qwf,   // face quadrature on the reference triangle
+                          const double *xn,                // (nF, nS+1, 3) coordinates of the face's element
+                          const double *u,                 // (nF, nc, nS+1) the element's dofs
+                          const double *qpf, const double *qwf,   // (nQf, nS-1), (nQf): quadrature on the reference face
                           double t, double *Rf, double *Jf)
   {
     using Co = Coefficients;
-    constexpr int nc = Co::nc, nS = 3, nD = 4;
-    static_assert(Co::nSpace == 3, "tetrahedra");
+    constexpr int nc = Co::nc, nS = Co::nSpace, nD = nS + 1, nFN = nS;   // nFN = nodes of a face
+    static_assert(nS == 2 || nS == 3, "segments of triangles or triangles of tetrahedra");
     for (int F = 0; F < nF; ++F)
     {
       const double *X = xn + F * nD * 3;
       const int k = faceLocal[F];
-      int fn[3], m = 0;
+      int fn[nFN], m = 0;
       for (int b = 0; b < nD; ++b)
         if (b != k) fn[m++] = b;
-      double e1[3], e2[3], cr[3];
-      for (int I = 0; I < 3; ++I)
+      // outward unit normal and the face measure factor len (|edge| in 2D, |e1 x e2| = 2 area in 3D)
+      double nrm[3] = {0.0, 0.0, 0.0}, len;
+      if constexpr (nS == 3)
       {
-        e1[I] = X[fn[1] * 3 + I] - X[fn[0] * 3 + I];
-        e2[I] = X[fn[2] * 3 + I] - X[fn[0] * 3 + I];
+        double e1[3], e2[3], cr[3];
+        for (int I = 0; I < 3; ++I)
+        {
+          e1[I] = X[fn[1] * 3 + I] - X[fn[0] * 3 + I];
+          e2[I] = X[fn[2] * 3 + I] - X[fn[0] * 3 + I];
+        }
+        cr[0] = e1[1] * e2[2] - e1[2] * e2[1];
+        cr[1] = e1[2] * e2[0] - e1[0] * e2[2];
+        cr[2] = e1[0] * e2[1] - e1[1] * e2[0];
+        len = std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]);
+        for (int I = 0; I < 3; ++I) nrm[I] = cr[I] / len;
       }
-      cr[0] = e1[1] * e2[2] - e1[2] * e2[1];
-      cr[1] = e1[2] * e2[0] - e1[0] * e2[2];
-      cr[2] = e1[0] * e2[1] - e1[1] * e2[0];
-      const double len = std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]);
-      double nrm[3] = {cr[0] / len, cr[1] / len, cr[2] / len};
+      else
+      {
+        const double ex = X[fn[1] * 3 + 0] - X[fn[0] * 3 + 0], ey = X[fn[1] * 3 + 1] - X[fn[0] * 3 + 1];
+        len = std::sqrt(ex * ex + ey * ey);
+        nrm[0] = ey / len; nrm[1] = -ex / len;
+      }
       double out = 0.0;                                   // orient away from the opposite node
-      for (int I = 0; I < 3; ++I) out += nrm[I] * (X[fn[0] * 3 + I] - X[k * 3 + I]);
-      if (out < 0.0) for (int I = 0; I < 3; ++I) nrm[I] = -nrm[I];
-      // face diameter = its longest edge (mesh.cpp computeGeometricInfo_tetrahedron), for the penalty
+      for (int I = 0; I < nS; ++I) out += nrm[I] * (X[fn[0] * 3 + I] - X[k * 3 + I]);
+      if (out < 0.0) for (int I = 0; I < nS; ++I) nrm[I] = -nrm[I];
+      // face diameter = its longest edge (mesh.cpp computeGeometricInfo_*), for the penalty
       double h = 0.0;
-      for (int p = 0; p < 3; ++p)
-        for (int r = p + 1; r < 3; ++r)
+      for (int p = 0; p < nFN; ++p)
+        for (int r = p + 1; r < nFN; ++r)
         {
           double d2 = 0.0;
           for (int I = 0; I < 3; ++I)
@@ -139,10 +153,13 @@ namespace adrh
       Terms<nc, nS> T, Tb;
       for (int q = 0; q < nQf; ++q)
       {
-        double w[nD] = {0.0, 0.0, 0.0, 0.0};
-        w[fn[0]] = 1.0 - qpf[q * 2] - qpf[q * 2 + 1];
-        w[fn[1]] = qpf[q * 2];
-        w[fn[2]] = qpf[q * 2 + 1];
+        double w[nD] = {};
+        w[fn[0]] = 1.0;
+        for (int mm = 0; mm < nS - 1; ++mm)
+        {
+          w[fn[mm + 1]] = qpf[q * (nS - 1) + mm];
+          w[fn[0]] -= qpf[q * (nS - 1) + mm];
+        }
         double x[3] = {0.0, 0.0, 0.0};
         for (int b = 0; b < nD; ++b)
           for (int I = 0; I < 3; ++I) x[I] += w[b] * X[b * 3 + I];
@@ -185,9 +202,9 @@ namespace adrh
           if constexpr (Co::has_advection && Co::f_nz(i))
           {
             double fl = 0.0, dl = 0.0;
-            for (int I = 0; I < 3; ++I) fl += T.f[i][I] * nrm[I];
+            for (int I = 0; I < nS; ++I) fl += T.f[i][I] * nrm[I];
             if constexpr (Co::df_nz(i, i))
-              for (int I = 0; I < 3; ++I) dl += T.df[i][i][I] * nrm[I];
+              for (int I = 0; I < nS; ++I) dl += T.df[i][i][I] * nrm[I];
             bool interior = false, prescribed = false;
             if (B.kind[i] == Flux)
             {
@@ -197,9 +214,9 @@ namespace adrh
             else                                     // WeakDirichlet: upwind against f(g_D)
             {
               double fr = 0.0, dr = 0.0;
-              for (int I = 0; I < 3; ++I) fr += Tb.f[i][I] * nrm[I];
+              for (int I = 0; I < nS; ++I) fr += Tb.f[i][I] * nrm[I];
               if constexpr (Co::df_nz(i, i))
-                for (int I = 0; I < 3; ++I) dr += Tb.df[i][i][I] * nrm[I];
+                for (int I = 0; I < nS; ++I) dr += Tb.df[i][i][I] * nrm[I];
               if (dl >= 0.0 && dr >= 0.0) interior = true;
               else if (dl <= 0.0 && dr <= 0.0) interior = false;
               else if (dl >= 0.0 && dr <= 0.0)
@@ -215,7 +232,7 @@ namespace adrh
                 constexpr_for<0, nc>([&](auto j_) {
                   constexpr int j = decltype(j_)::value;
                   if constexpr (Co::df_nz(i, j))
-                    for (int I = 0; I < 3; ++I) dFn[j] += 0.5 * T.df[i][j][I] * nrm[I];
+                    for (int I = 0; I < nS; ++I) dFn[j] += 0.5 * T.df[i][j][I] * nrm[I];
                 });
               }
               if (!prescribed && !interior) Fn += fr;
@@ -226,7 +243,7 @@ namespace adrh
               constexpr_for<0, nc>([&](auto j_) {
                 constexpr int j = decltype(j_)::value;
                 if constexpr (Co::df_nz(i, j))
-                  for (int I = 0; I < 3; ++I) dFn[j] += T.df[i][j][I] * nrm[I];
+                  for (int I = 0; I < nS; ++I) dFn[j] += T.df[i][j][I] * nrm[I];
               });
             }
           }
@@ -234,7 +251,10 @@ namespace adrh
           if constexpr (Co::has_diffusion)
           {
             if (B.kind[i] == Flux)
-              Fn += B.gdiff[i];
+            {
+              Fn += B.gdiff[i] + B.dgdiff[i] * uq[i];
+              dFn[i] += B.dgdiff[i];
+            }
             else
             {
               constexpr_for<0, nc>([&](auto k_) {
@@ -297,28 +317,33 @@ namespace adrh
     }
   }
 
-  // Boundary data of the sine solution u = sin(omega.x + omega0) for the regression. The kind of each face
-  // comes from an array: 1 = Flux (diffusive flux given; advection leaves by the interior value, inflow dropped),
-  // 2 = Flux with the advective flux (b.n) u given too, 3 = WeakDirichlet with u given; anything else = Strong.
+  // Boundary data of the sine solution u = sin(omega.x + omega0) for the regression, in nS dimensions. The kind
+  // of each face comes from an array: 1 = Flux (diffusive flux given; advection leaves by the interior value,
+  // inflow dropped), 2 = Flux with the advective flux (b.n) u given too, 3 = WeakDirichlet with u given,
+  // 4 = Robin alpha u + beta q.n = g with g from the exact solution; anything else = Strong.
+  template <int nS>
   struct SineBC
   {
-    double b[3], kappa, omega[3], omega0;
+    double b[3], kappa, omega[3], omega0, alpha, beta;
     const int *faceKind;
-    SineBC(const double *b_, double kappa_, const double *omega_, double omega0_, const int *faceKind_)
-        : kappa(kappa_), omega0(omega0_), faceKind(faceKind_)
+    SineBC(const double *b_, double kappa_, const double *omega_, double omega0_, const int *faceKind_,
+           double alpha_ = 1.0, double beta_ = 1.0)
+        : kappa(kappa_), omega0(omega0_), alpha(alpha_), beta(beta_), faceKind(faceKind_)
     {
-      for (int I = 0; I < 3; ++I) { b[I] = b_[I]; omega[I] = omega_[I]; }
+      for (int I = 0; I < 3; ++I) { b[I] = I < nS ? b_[I] : 0.0; omega[I] = I < nS ? omega_[I] : 0.0; }
     }
     void evaluate(double, const double x[3], const double n[3], int F, FaceBC<1> &B) const
     {
       double arg = omega0, wn = 0.0, bn = 0.0;
-      for (int I = 0; I < 3; ++I) { arg += omega[I] * x[I]; wn += omega[I] * n[I]; bn += b[I] * n[I]; }
-      const double ue = std::sin(arg), gradn = wn * std::cos(arg);
+      for (int I = 0; I < nS; ++I) { arg += omega[I] * x[I]; wn += omega[I] * n[I]; bn += b[I] * n[I]; }
+      const double ue = std::sin(arg), qn = -kappa * wn * std::cos(arg);   // exact u and -kappa grad u . n
       switch (faceKind[F])
       {
-      case 1: B.kind[0] = Flux; B.gdiff[0] = -kappa * gradn; break;
-      case 2: B.kind[0] = Flux; B.gdiff[0] = -kappa * gradn; B.hasAdv[0] = true; B.fadv[0] = bn * ue; break;
+      case 1: B.kind[0] = Flux; B.gdiff[0] = qn; break;
+      case 2: B.kind[0] = Flux; B.gdiff[0] = qn; B.hasAdv[0] = true; B.fadv[0] = bn * ue; break;
       case 3: B.kind[0] = WeakDirichlet; B.gD[0] = ue; break;
+      case 4:                                                                 // g = alpha u_exact + beta q_exact
+        B.kind[0] = Flux; B.gdiff[0] = (alpha * ue + beta * qn) / beta; B.dgdiff[0] = -alpha / beta; break;
       default: B.kind[0] = Strong;
       }
     }
