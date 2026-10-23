@@ -892,7 +892,9 @@ def test_split_carries_the_provenance_but_not_the_log(tmp_path):
     datadir = run_ranks(tmp_path, 1, global_sync=True, with_log=True)
     _, extra = read_ymf(os.path.join(datadir, "mpitest.ymf"))
     assert extra["proteus"]["archive_mode"] == "split"
-    assert "log" not in extra["proteus"]
+    # neither the log nor the command line: two runs of the same
+    # computation (pro run and parun, say) leave identical documents
+    assert "log" not in extra["proteus"] and "command" not in extra["proteus"]
 
 
 def test_the_running_document_already_names_the_run(tmp_path):

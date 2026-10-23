@@ -340,18 +340,21 @@ class AR_base(object):
     def _document_extra(self, with_log):
         """What the ``.ymf`` carries beside the domain: the run's provenance.
 
-        Always proteus's version, the command line and the rank count;
-        with ``includeLog`` the run's log as well (``with_log`` chooses,
-        since the log is only complete at close).
+        Always proteus's version, the rank count and the mode -- what any
+        two runs of the same computation share, so the documents of two
+        such runs stay identical. With ``includeLog`` the command line as
+        well, and the run's log (``with_log`` chooses, since the log is
+        only complete at close).
         """
         import sys
-        provenance = {"command": " ".join(sys.argv), "ranks": self.size,
-                      "archive_mode": self.mode}
+        provenance = {"ranks": self.size, "archive_mode": self.mode}
         try:
             from proteus import __version__
             provenance["version"] = str(__version__)
         except ImportError:
             pass
+        if self.includeLog:
+            provenance["command"] = " ".join(sys.argv)
         if with_log and self.includeLog:
             logFile = Profiling.logFile
             if logFile is not None and not logFile.closed:
