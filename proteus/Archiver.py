@@ -29,6 +29,32 @@ def indentXML(elem, level=0):
         if level and (not elem.tail or not elem.tail.strip()):
             elem.tail = i
 
+#: The dtype of the index arrays the XDMF writers number themselves -- the
+#: point numbering of quadrature, DG and particle meshes -- as opposed to a
+#: mesh's own connectivity, whose dtype comes from the mesh. The writers
+#: build those arrays with it and declare them with it, so the two cannot
+#: disagree.
+GENERATED_INDEX_DTYPE = numpy.dtype('i')
+
+def xdmf_number_type(*arrays):
+    """``{"DataType": ..., "Precision": ...}`` for a DataItem holding ``arrays``.
+
+    Pass the array a DataItem describes, or its dtype. Pass several when the
+    data is computed from them, as in ``offset + l2g``: the type is the one
+    numpy gives that expression (``numpy.result_type``). The XDMF writers
+    build a DataItem at every step but write its data only when the mesh
+    changes, so they name what the data is made from, which always exists.
+
+    The map from dtype to XDMF type is :func:`ymf.archive.data_item_for`'s,
+    so the XDMF writers and the ymf writers cannot describe one array two
+    ways, and a dtype with no XDMF type is refused rather than guessed.
+    Before this, the mesh writers declared ``Int`` (4 bytes) and
+    ``Float``/``8`` whatever they wrote.
+    """
+    from ymf.archive import data_item_for
+    item = data_item_for(numpy.empty(0, numpy.result_type(*arrays)), inline=True)
+    return {"DataType": item["data_type"], "Precision": str(item["precision"])}
+
 class ArchiveFlags(object):
     EVERY_MODEL_STEP     = 0
     EVERY_USER_STEP      = 1
@@ -717,8 +743,7 @@ class AR_base(object):
         return grid, time
 
     def write_topology(self, grid, topology_type, n_elements, dimensions,
-                       dataset, text_stem, nodes_per_element=None,
-                       data_type="Int", precision=None):
+                       dataset, text_stem, nodes_per_element=None, *, dtype):
         """Write a ``Topology`` and its ``DataItem``. Returns the DataItem.
 
         The array reference is filled in here, but the array itself is
@@ -727,38 +752,42 @@ class AR_base(object):
         caller keeps that decision, and the data preparation that goes with
         it, because it differs at every call site (element-to-node maps,
         DG node duplication, particle index ranges).
+
+        ``dtype`` is the type of the array the reference names: the array
+        itself, its dtype, or a tuple of what it is computed from (see
+        :func:`xdmf_number_type`). It has no default, so a caller cannot
+        describe an array without saying what it holds.
         """
         attrs = {"Type": topology_type, "NumberOfElements": str(n_elements)}
         if nodes_per_element is not None:
             attrs["NodesPerElement"] = str(nodes_per_element)
         topology = SubElement(grid, "Topology", attrs)
         return self._mesh_data_item(topology, dimensions, dataset, text_stem,
-                                    data_type, precision)
+                                    dtype)
 
     def write_geometry(self, grid, dimensions, dataset, text_stem,
-                       geometry_type="XYZ", data_type="Float", precision=8):
+                       geometry_type="XYZ", *, dtype):
         """Write a ``Geometry`` and its ``DataItem``. Returns the DataItem.
 
-        Same division of labour as :meth:`write_topology`.
+        Same division of labour, and the same ``dtype``, as
+        :meth:`write_topology`.
         """
         geometry = SubElement(grid, "Geometry", {"Type": geometry_type})
         return self._mesh_data_item(geometry, dimensions, dataset, text_stem,
-                                    data_type, precision)
+                                    dtype)
 
-    def _mesh_data_item(self, parent, dimensions, dataset, text_stem,
-                        data_type, precision):
+    def _mesh_data_item(self, parent, dimensions, dataset, text_stem, dtype):
         """The DataItem shared by :meth:`write_topology`/:meth:`write_geometry`.
 
-        Unlike :meth:`write_field` this cannot read the dtype off an array,
+        Unlike :meth:`write_field` this cannot read the dtype off the array,
         because the array often does not exist yet at this point -- the
         reference is written on every pass and the data only when the mesh
-        changed. So ``data_type``/``precision`` are stated by the caller.
+        changed. So the caller names what the array is made from.
         """
+        dtypes = dtype if isinstance(dtype, tuple) else (dtype,)
         attrs = {"Format": self.dataItemFormat,
-                 "DataType": data_type,
+                 **xdmf_number_type(*dtypes),
                  "Dimensions": " ".join(str(d) for d in dimensions)}
-        if precision is not None:
-            attrs["Precision"] = str(precision)
         item = SubElement(parent, "DataItem", attrs)
         if self.hdfFile is not None:
             item.text = "{0:s}:/{1:s}".format(self.hdfFilename, dataset)
@@ -948,13 +977,12 @@ class XdmfWriter(object):
                                           "NodesPerElement":str(Xdmf_NodesPerElement)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(GENERATED_INDEX_DTYPE),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements,Xdmf_NodesPerElement)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(x),
                                           "Dimensions":"%i %i" % (Xdmf_NodesGlobal,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+spaceSuffix+str(tCount)
@@ -971,7 +999,7 @@ class XdmfWriter(object):
                         comm = Comm.get()
                         q_l2g = numpy.arange(mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank]*Xdmf_NodesPerElement,
                                              mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank+1]*Xdmf_NodesPerElement,
-                                             dtype='i').reshape((mesh.nElements_owned,Xdmf_NodesPerElement))
+                                             dtype=GENERATED_INDEX_DTYPE).reshape((mesh.nElements_owned,Xdmf_NodesPerElement))
                         ar.create_dataset_sync('elements'+spaceSuffix+str(tCount),
                                                offsets=mesh.globalMesh.elementOffsets_subdomain_owned,
                                                data = q_l2g)
@@ -994,13 +1022,12 @@ class XdmfWriter(object):
                                           "NodesPerElement":str(Xdmf_NodesPerElement)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(GENERATED_INDEX_DTYPE),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements,Xdmf_NodesPerElement)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(x),
                                           "Dimensions":"%i %i" % (Xdmf_NodesGlobal,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+str(ar.rank)+spaceSuffix+str(tCount)
@@ -1013,7 +1040,7 @@ class XdmfWriter(object):
                         #    for nN in range(Xdmf_NodesPerElement):
                         #        q_l2g[eN,nN] = eN*Xdmf_NodesPerElement + nN
                         #
-                        q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype='i').reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
+                        q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
                         ar.create_dataset_async('elements'+str(ar.rank)+spaceSuffix+str(tCount), data = q_l2g)
                         ar.create_dataset_async('nodes'+str(ar.rank)+spaceSuffix+str(tCount), data = x.flat[:])
                 else:
@@ -1027,7 +1054,7 @@ class XdmfWriter(object):
                         #    for nN in range(Xdmf_NodesPerElement):
                         #        q_l2g[eN,nN] = eN*Xdmf_NodesPerElement + nN
                         #
-                        q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype='i').reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
+                        q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
                         numpy.savetxt(ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt",q_l2g,fmt='%d')
                         numpy.savetxt(ar.textDataDir+"/nodes"+spaceSuffix+str(tCount)+".txt",x.flat[:])
 
@@ -1144,13 +1171,12 @@ class XdmfWriter(object):
                                           "NumberOfElements": "{0:d}".format(mesh.globalMesh.nElements_global)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(dofMap.dof_offsets_subdomain_owned,dofMap.l2g),
                                           "Dimensions":"{0:d} {1:d}".format(mesh.globalMesh.nElements_global,mesh.nNodes_element)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(mesh.nodeArray),
                                           "Dimensions":"{0:d} {1:d}".format(dofMap.nDOF_all_processes,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+spaceSuffix+str(tCount)
@@ -1162,7 +1188,7 @@ class XdmfWriter(object):
                                                data = dofMap.dof_offsets_subdomain_owned[ar.rank]+dofMap.l2g[:mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank+1]
                                                                                                              -mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank]])
                         #bad
-                        dgnodes = numpy.zeros((dofMap.dof_offsets_subdomain_owned[ar.rank+1]-dofMap.dof_offsets_subdomain_owned[ar.rank],3),'d')
+                        dgnodes = numpy.zeros((dofMap.dof_offsets_subdomain_owned[ar.rank+1]-dofMap.dof_offsets_subdomain_owned[ar.rank],3),mesh.nodeArray.dtype)
                         for eN in range(mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank+1]
                                         -mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank]):
                             for nN in range(mesh.nNodes_element):
@@ -1181,13 +1207,12 @@ class XdmfWriter(object):
                                           "NumberOfElements":str(mesh.nElements_global)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(dofMap.l2g),
                                           "Dimensions":"%i %i" % (mesh.nElements_global,mesh.nNodes_element)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(mesh.nodeArray),
                                           "Dimensions":"%i %i" % (dofMap.nDOF,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+str(ar.rank)+spaceSuffix+str(tCount)
@@ -1196,7 +1221,7 @@ class XdmfWriter(object):
                         #this will fail if elements_dgp1 already exists
                         ar.create_dataset_async('elements'+str(ar.rank)+spaceSuffix+str(tCount), data = dofMap.l2g)
                         #bad
-                        dgnodes = numpy.zeros((dofMap.nDOF,3),'d')
+                        dgnodes = numpy.zeros((dofMap.nDOF,3),mesh.nodeArray.dtype)
                         for eN in range(mesh.nElements_global):
                             for nN in range(mesh.nNodes_element):
                                 dgnodes[dofMap.l2g[eN,nN],:]=mesh.nodeArray[mesh.elementNodesArray[eN,nN]]
@@ -1207,7 +1232,7 @@ class XdmfWriter(object):
                     if init or meshChanged:
                         numpy.savetxt(ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt",dofMap.l2g,fmt='%d')
                         #bad
-                        dgnodes = numpy.zeros((dofMap.nDOF,3),'d')
+                        dgnodes = numpy.zeros((dofMap.nDOF,3),mesh.nodeArray.dtype)
                         for eN in range(mesh.nElements_global):
                             for nN in range(mesh.nNodes_element):
                                 dgnodes[dofMap.l2g[eN,nN],:]=mesh.nodeArray[mesh.elementNodesArray[eN,nN]]
@@ -1243,14 +1268,13 @@ class XdmfWriter(object):
                                           "NumberOfElements":"{0:d}".format(mesh.globalMesh.nElements_global)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(dofMap.dof_offsets_subdomain_owned,dofMap.l2g),
                                           "Dimensions":"{0:d} {1:d}".format(mesh.globalMesh.nElements_global,dofMap.l2g.shape[-1])})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 #try to use fancy functions later
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(CGDOFMap.lagrangeNodesArray),
                                           "Dimensions":"{0:d} {1:d}".format(dofMap.nDOF_all_processes,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+spaceSuffix+str(tCount)
@@ -1262,7 +1286,7 @@ class XdmfWriter(object):
                                                data = dofMap.dof_offsets_subdomain_owned[ar.rank]+dofMap.l2g[:mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank+1]-
                                                                                                              mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank]])
                         #bad
-                        dgnodes = numpy.zeros((dofMap.dof_offsets_subdomain_owned[ar.rank+1]-dofMap.dof_offsets_subdomain_owned[ar.rank],3),'d')
+                        dgnodes = numpy.zeros((dofMap.dof_offsets_subdomain_owned[ar.rank+1]-dofMap.dof_offsets_subdomain_owned[ar.rank],3),CGDOFMap.lagrangeNodesArray.dtype)
                         for eN in range(mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank+1]-mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank]):
                             for i in range(dofMap.l2g.shape[1]):
                                 #for nN in range(mesh.nNodes_element):
@@ -1287,14 +1311,13 @@ class XdmfWriter(object):
                                           "NumberOfElements":str(mesh.nElements_global)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(dofMap.l2g),
                                           "Dimensions":"%i %i" % dofMap.l2g.shape})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 #try to use fancy functions later
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(CGDOFMap.lagrangeNodesArray),
                                           "Dimensions":"%i %i" % (dofMap.nDOF,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+str(ar.rank)+spaceSuffix+str(tCount)
@@ -1303,7 +1326,7 @@ class XdmfWriter(object):
                         #this will fail if elements_dgp1 already exists
                         ar.create_dataset_async('elements'+str(ar.rank)+spaceSuffix+str(tCount), data = dofMap.l2g)
                         #bad
-                        dgnodes = numpy.zeros((dofMap.nDOF,3),'d')
+                        dgnodes = numpy.zeros((dofMap.nDOF,3),CGDOFMap.lagrangeNodesArray.dtype)
                         for eN in range(mesh.nElements_global):
                             for i in range(dofMap.l2g.shape[1]):
                                 #for nN in range(mesh.nNodes_element):
@@ -1321,7 +1344,7 @@ class XdmfWriter(object):
                     if init or meshChanged:
                         numpy.savetxt(ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt",dofMap.l2g,fmt='%d')
                         #bad
-                        dgnodes = numpy.zeros((dofMap.nDOF,3),'d')
+                        dgnodes = numpy.zeros((dofMap.nDOF,3),CGDOFMap.lagrangeNodesArray.dtype)
                         for eN in range(mesh.nElements_global):
                             for i in range(dofMap.l2g.shape[1]):
                                 #for nN in range(mesh.nNodes_element):
@@ -1379,9 +1402,12 @@ class XdmfWriter(object):
             self.arGrid, self.arTime = ar.write_grid(self.arGridCollection,
                                                      gridName, t, tCount)
             ar.write_topology(self.arGrid, Xdmf_ElementTopology, n_elements,
-                              elements_dims, elements_dataset, elements_stem)
+                              elements_dims, elements_dataset, elements_stem,
+                              dtype=(dofMap.subdomain2global if ar.global_sync
+                                     else dofMap.l2g))
             ar.write_geometry(self.arGrid, nodes_dims,
-                              nodes_dataset, nodes_stem)
+                              nodes_dataset, nodes_stem,
+                              dtype=lagrangeNodesArray)
 
             if ar.hdfFile is None:
                 assert not ar.global_sync, \
@@ -1440,7 +1466,7 @@ class XdmfWriter(object):
                 e2s=[ [0,4,8,7], [7,8,6,3],  [4,1,5,8], [8,5,2,6] ]
                 nsubelements=4
 
-                l2g = numpy.zeros((4*mesh.nElements_global,4),'i')
+                l2g = numpy.zeros((4*mesh.nElements_global,4),dofMap.l2g.dtype)
                 for eN in range(mesh.nElements_global):
                     dofs=dofMap.l2g[eN,:]
                     for i in range(4): #loop over subelements
@@ -1452,7 +1478,7 @@ class XdmfWriter(object):
                 e2s=[[0,8,20,11,12,21,26,24], [8,1,9,20,21,13,22,26], [11,20,10,3,24,26,23,15], [20,9,2,10,26,22,14,23],
                      [12,21,26,24,4,16,25,19], [21,13,22,26,16,5,17,25], [24,26,23,15,19,25,18,7], [26,22,14,23,25,17,6,18] ]
 
-                l2g = numpy.zeros((8*mesh.nElements_global,8),'i')
+                l2g = numpy.zeros((8*mesh.nElements_global,8),dofMap.l2g.dtype)
                 nsubelements=8
                 for eN in range(mesh.nElements_global):
                     dofs=dofMap.l2g[eN,:]
@@ -1470,14 +1496,13 @@ class XdmfWriter(object):
                                        "NumberOfElements":str(mesh.globalMesh.nElements_global*nsubelements)})
                 elements = SubElement(topology,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
+                                       **xdmf_number_type(dofMap.subdomain2global),
                                        "Dimensions":"%i %i" % (mesh.globalMesh.nElements_global*nsubelements, l2g.shape[-1])})
                 geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
 
                 allNodes = SubElement(geometry,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
+                                       **xdmf_number_type(lagrangeNodesArray),
                                        "Dimensions":"%i %i" % (dofMap.nDOF_all_processes, lagrangeNodesArray.shape[-1])})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+spaceSuffix+str(tCount)
@@ -1503,14 +1528,13 @@ class XdmfWriter(object):
                                        "NumberOfElements":str(l2g.shape[0])})
                 elements = SubElement(topology,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
+                                       **xdmf_number_type(l2g),
                                        "Dimensions":"%i %i" % l2g.shape})
                 geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
 
                 allNodes = SubElement(geometry,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
+                                       **xdmf_number_type(lagrangeNodesArray),
                                        "Dimensions":"%i %i" % lagrangeNodesArray.shape})
 
                 if ar.hdfFile is not None:
@@ -1559,19 +1583,19 @@ class XdmfWriter(object):
                                           "NumberOfElements":str(Xdmf_NumberOfElements)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(GENERATED_INDEX_DTYPE),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements,Xdmf_NodesPerElement)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
+                                          **xdmf_number_type(mesh.nodeArray),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements*Xdmf_NodesPerElement,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+spaceSuffix+str(tCount)
                     nodes.text    = ar.hdfFilename+":/nodes"+spaceSuffix+str(tCount)
                     if init or meshChanged:
                         #simple dg l2g mapping
-                        dg_l2g = numpy.arange(mesh.nElements_owned*Xdmf_NodesPerElement,dtype='i').reshape((mesh.nElements_owned,Xdmf_NodesPerElement))
+                        dg_l2g = numpy.arange(mesh.nElements_owned*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((mesh.nElements_owned,Xdmf_NodesPerElement))
                         ar.create_dataset_sync('elements'+spaceSuffix+str(tCount),
                                                offsets = mesh.globalMesh.elementOffsets_subdomain_owned,
                                                data = dg_l2g)
@@ -1592,19 +1616,19 @@ class XdmfWriter(object):
                                           "NumberOfElements":str(Xdmf_NumberOfElements)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(GENERATED_INDEX_DTYPE),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements,Xdmf_NodesPerElement)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
+                                          **xdmf_number_type(mesh.nodeArray),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements*Xdmf_NodesPerElement,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+str(ar.rank)+spaceSuffix+str(tCount)
                     nodes.text    = ar.hdfFilename+":/nodes"+str(ar.rank)+spaceSuffix+str(tCount)
                     if init or meshChanged:
                         #simple dg l2g mapping
-                        dg_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype='i').reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
+                        dg_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
                         ar.create_dataset_async('elements'+str(ar.rank)+spaceSuffix+str(tCount), data = dg_l2g)
 
                         dgnodes = numpy.reshape(mesh.nodeArray[mesh.elementNodesArray],(Xdmf_NumberOfElements*Xdmf_NodesPerElement,3))
@@ -1613,7 +1637,7 @@ class XdmfWriter(object):
                     SubElement(elements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt"})
                     SubElement(nodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+spaceSuffix+str(tCount)+".txt"})
                     if init or meshChanged:
-                        dg_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype='i').reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
+                        dg_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
                         numpy.savetxt(ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt",dg_l2g,fmt='%d')
 
                         dgnodes = numpy.reshape(mesh.nodeArray[mesh.elementNodesArray],(Xdmf_NumberOfElements*Xdmf_NodesPerElement,3))
@@ -1669,10 +1693,10 @@ class XdmfWriter(object):
                                                             "Center":"Node"})
             values    = SubElement(attribute,"DataItem",
                                    {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
+                                    **xdmf_number_type(u.dof),
                                     "Dimensions":"%i" % (Xdmf_NumberOfElements*Xdmf_NodesPerElement,)})
             nElements_owned = u.femSpace.mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank+1] - u.femSpace.mesh.globalMesh.elementOffsets_subdomain_owned[ar.rank]
-            u_tmp = numpy.zeros((nElements_owned*Xdmf_NodesPerElement,),'d')
+            u_tmp = numpy.zeros((nElements_owned*Xdmf_NodesPerElement,),u.dof.dtype)
             if u.femSpace.nSpace_global == 1:
                 for eN in range(nElements_owned):
                     #dof associated with face id, so opposite usual C0P1 ordering here
@@ -1714,7 +1738,7 @@ class XdmfWriter(object):
                                                          "Center":"Face"})
             values_dof    = SubElement(attribute_dof,"DataItem",
                                    {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
+                                    **xdmf_number_type(u.dof),
                                     "Dimensions":"%i" % (dofMap.nDOF_all_processes,)})
             if ar.hdfFile is not None:
                 values_dof.text = ar.hdfFilename+":/"+name+"_dof"+"_t"+str(tCount)
@@ -1734,9 +1758,9 @@ class XdmfWriter(object):
                                                             "Center":"Node"})
             values    = SubElement(attribute,"DataItem",
                                    {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
+                                    **xdmf_number_type(u.dof),
                                     "Dimensions":"%i" % (Xdmf_NumberOfElements*Xdmf_NodesPerElement,)})
-            u_tmp = numpy.zeros((Xdmf_NumberOfElements*Xdmf_NodesPerElement,),'d')
+            u_tmp = numpy.zeros((Xdmf_NumberOfElements*Xdmf_NodesPerElement,),u.dof.dtype)
             if u.femSpace.nSpace_global == 1:
                 for eN in range(Xdmf_NumberOfElements):
                     #dof associated with face id, so opposite usual C0P1 ordering here
@@ -1779,7 +1803,7 @@ class XdmfWriter(object):
                                                          "Center":"Face"})
             values_dof    = SubElement(attribute_dof,"DataItem",
                                    {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
+                                    **xdmf_number_type(u.dof),
                                     "Dimensions":"%i" % (u.nDOF_global,)})
             if ar.hdfFile is not None:
                 values_dof.text = ar.hdfFilename+":/"+name+"_dof"+"_p"+str(ar.rank)+"_t"+str(tCount)
@@ -1794,10 +1818,6 @@ class XdmfWriter(object):
             attribute = SubElement(self.arGrid,"Attribute",{"Name":vectorName,
                                                             "AttributeType":"Vector",
                                                             "Center":"Node"})
-            values    = SubElement(attribute,"DataItem",
-                                   {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Dimensions":"%i %i" % (uList[components[0]].femSpace.dofMap.nDOF_all_processes,3)})
             u_dof = uList[components[0]].dof
             if len(components) < 2:
                 v_dof = numpy.zeros(u_dof.shape,dtype='d')
@@ -1808,6 +1828,12 @@ class XdmfWriter(object):
             else:
                 w_dof = uList[components[2]].dof
             velocity = numpy.column_stack((u_dof,v_dof,w_dof))
+            #after velocity, so the DataItem describes what is written; it
+            #declared 4-byte floats over these 8-byte ones
+            values    = SubElement(attribute,"DataItem",
+                                   {"Format":ar.dataItemFormat,
+                                    **xdmf_number_type(velocity),
+                                    "Dimensions":"%i %i" % (uList[components[0]].femSpace.dofMap.nDOF_all_processes,3)})
             if ar.hdfFile is not None:
                 values.text = ar.hdfFilename+":/"+vectorName+"_t"+str(tCount)
                 nDOF_owned = (uList[components[0]].femSpace.dofMap.dof_offsets_subdomain_owned[ar.rank+1] -
@@ -1819,10 +1845,6 @@ class XdmfWriter(object):
             attribute = SubElement(self.arGrid,"Attribute",{"Name":vectorName,
                                                             "AttributeType":"Vector",
                                                             "Center":"Node"})
-            values    = SubElement(attribute,"DataItem",
-                                   {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Dimensions":"%i %i" % (nDOF_global,3)})
             u_dof = uList[components[0]].dof
             if len(components) < 2:
                 v_dof = numpy.zeros(u_dof.shape,dtype='d')
@@ -1833,6 +1855,10 @@ class XdmfWriter(object):
             else:
                 w_dof = uList[components[2]].dof
             velocity = numpy.column_stack((u_dof,v_dof,w_dof))
+            values    = SubElement(attribute,"DataItem",
+                                   {"Format":ar.dataItemFormat,
+                                    **xdmf_number_type(velocity),
+                                    "Dimensions":"%i %i" % (nDOF_global,3)})
             if ar.hdfFile is not None:
                 values.text = ar.hdfFilename+":/"+vectorName+"_p"+str(ar.rank)+"_t"+str(tCount)
                 ar.create_dataset_async(vectorName+"_p"+str(ar.rank)+"_t"+str(tCount), data = velocity)
@@ -1871,19 +1897,18 @@ class XdmfWriter(object):
                                           "NodesPerElement":str(Xdmf_NodesPerElement)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(GENERATED_INDEX_DTYPE),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements,Xdmf_NodesPerElement)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(interpolationPoints),
                                           "Dimensions":"%i %i" % (Xdmf_NodesGlobal,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+spaceSuffix+str(tCount)
                     nodes.text    = ar.hdfFilename+":/nodes"+spaceSuffix+str(tCount)
                     if init or meshChanged:
-                        q_l2g = numpy.arange(mesh.nElements_owned*Xdmf_NodesPerElement,dtype='i').reshape((mesh.nElements_owned,Xdmf_NodesPerElement))
+                        q_l2g = numpy.arange(mesh.nElements_owned*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((mesh.nElements_owned,Xdmf_NodesPerElement))
                         ar.create_dataset_sync('elements'+spaceSuffix+str(tCount),
                                                offsets = mesh.globalMesh.elementOffsets_subdomain_owned,
                                                data = q_l2g)
@@ -1905,26 +1930,25 @@ class XdmfWriter(object):
                                           "NodesPerElement":str(Xdmf_NodesPerElement)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(GENERATED_INDEX_DTYPE),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements,Xdmf_NodesPerElement)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(interpolationPoints),
                                           "Dimensions":"%i %i" % (Xdmf_NodesGlobal,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+str(ar.rank)+spaceSuffix+str(tCount)
                     nodes.text    = ar.hdfFilename+":/nodes"+str(ar.rank)+spaceSuffix+str(tCount)
                     if init or meshChanged:
-                        q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype='i').reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
+                        q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
                         ar.create_dataset_async('elements'+str(ar.rank)+spaceSuffix+str(tCount), data = q_l2g)
                         ar.create_dataset_async('nodes'+str(ar.rank)+spaceSuffix+str(tCount), data = interpolationPoints.flat[:])
                 else:
                     SubElement(elements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt"})
                     SubElement(nodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+spaceSuffix+str(tCount)+".txt"})
                     if init or meshChanged:
-                        q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype='i').reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
+                        q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
                         numpy.savetxt(ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt",q_l2g,fmt='%d')
                         numpy.savetxt(ar.textDataDir+"/nodes"+spaceSuffix+str(tCount)+".txt",interpolationPoints.flat[:])
 
@@ -1964,11 +1988,10 @@ class XdmfWriter(object):
                                                             "Center":"Node"})
             values    = SubElement(attribute,"DataItem",
                                    {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Precision":"8",
+                                    **xdmf_number_type(interpolationValues),
                                     "Dimensions":"%i %i" % (Xdmf_NodesGlobal,3)})#force 3d vector since points 3d
             #mwf brute force
-            tmp = numpy.zeros((Xdmf_NodesGlobal,3),'d')
+            tmp = numpy.zeros((Xdmf_NodesGlobal,3),interpolationValues.dtype)
             tmp[:,:Xdmf_NumberOfComponents]=numpy.reshape(interpolationValues.flat,(interpolationValues.shape[0]*interpolationValues.shape[1],
                                                                                     Xdmf_NumberOfComponents))
 
@@ -1987,11 +2010,10 @@ class XdmfWriter(object):
                                                             "Center":"Node"})
             values    = SubElement(attribute,"DataItem",
                                    {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Precision":"8",
+                                    **xdmf_number_type(interpolationValues),
                                     "Dimensions":"%i %i" % (Xdmf_NodesGlobal,3)})#force 3d vector since points 3d
             #mwf brute force
-            tmp = numpy.zeros((Xdmf_NodesGlobal,3),'d')
+            tmp = numpy.zeros((Xdmf_NodesGlobal,3),interpolationValues.dtype)
             tmp[:,:Xdmf_NumberOfComponents]=numpy.reshape(interpolationValues.flat,(Xdmf_NodesGlobal,Xdmf_NumberOfComponents))
 
             if ar.hdfFile is not None:
@@ -2038,18 +2060,17 @@ class XdmfWriter(object):
                     assert 'xdmf_topology' in dir(mesh)
                     elements = SubElement(topology,"DataItem",
                                           {"Format":ar.dataItemFormat,
-                                           "DataType":"Int",
+                                           **xdmf_number_type(mesh.globalMesh.nodeNumbering_subdomain2global),
                                            "Dimensions":"{0:d}".format(len(self.xdmf_topology))})
                 else:
                     elements    = SubElement(topology,"DataItem",
                                              {"Format":ar.dataItemFormat,
-                                              "DataType":"Int",
+                                              **xdmf_number_type(mesh.globalMesh.nodeNumbering_subdomain2global),
                                               "Dimensions":"{0:d} {1:d}".format(mesh.nElements_global,mesh.nNodes_element)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(mesh.nodeArray),
                                           "Dimensions":"{0:d} {1:d}".format(mesh.nNodes_global,3)})
                 #just reuse spatial mesh entries
                 if ar.hdfFile is not None:
@@ -2082,18 +2103,17 @@ class XdmfWriter(object):
                     assert 'xdmf_topology' in dir(mesh)
                     elements = SubElement(topology,"DataItem",
                                           {"Format":ar.dataItemFormat,
-                                           "DataType":"Int",
+                                           **xdmf_number_type(mesh.elementNodesArray),
                                            "Dimensions":"%i" % len(self.xdmf_topology)})
                 else:
                     elements    = SubElement(topology,"DataItem",
                                              {"Format":ar.dataItemFormat,
-                                              "DataType":"Int",
+                                              **xdmf_number_type(mesh.elementNodesArray),
                                               "Dimensions":"%i %i" % (mesh.nElements_global,mesh.nNodes_element)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(mesh.nodeArray),
                                           "Dimensions":"%i %i" % (mesh.nNodes_global,3)})
                 #just reuse spatial mesh entries
                 if ar.hdfFile is not None:
@@ -2176,13 +2196,12 @@ class XdmfWriter(object):
                                           "NumberOfElements":str(Xdmf_NumberOfElements)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(mesh.elementNodesArray),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements,Xdmf_NodesPerElement)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(mesh.nodeArray),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfNodes,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+spaceSuffix+str(tCount)
@@ -2206,13 +2225,12 @@ class XdmfWriter(object):
                                           "NumberOfElements":str(Xdmf_NumberOfElements)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(mesh.elementNodesArray),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements,Xdmf_NodesPerElement)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
-                                          "Precision":"8",
+                                          **xdmf_number_type(mesh.nodeArray),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfNodes,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+str(ar.rank)+spaceSuffix+str(tCount)
@@ -2248,8 +2266,7 @@ class XdmfWriter(object):
                                                             "Center":"Node"})
             values    = SubElement(attribute,"DataItem",
                                    {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Precision":"8",
+                                    **xdmf_number_type(u.dof),
                                     "Dimensions":"%i" % (Xdmf_NumberOfNodes,)})
             if ar.hdfFile is not None:
                 values.text = ar.hdfFilename+":/"+name+"_t"+str(tCount)
@@ -2270,8 +2287,7 @@ class XdmfWriter(object):
                                                             "Center":"Node"})
             values    = SubElement(attribute,"DataItem",
                                    {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Precision":"8",
+                                    **xdmf_number_type(u.dof),
                                     "Dimensions":"%i" % (Xdmf_NumberOfNodes,)})
             if ar.hdfFile is not None:
                 values.text = ar.hdfFilename+":/"+name+"_p"+str(ar.rank)+"_t"+str(tCount)
@@ -2305,10 +2321,6 @@ class XdmfWriter(object):
             attribute = SubElement(self.arGrid,"Attribute",{"Name":vectorName,
                                                             "AttributeType":"Vector",
                                                             "Center":"Node"})
-            values    = SubElement(attribute,"DataItem",
-                                   {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Dimensions":"%i %i" % (nDOF_global,3)})
             u_dof = uList[components[0]].dof[0:nDOF_local]
             if len(components) < 2:
                 v_dof = numpy.zeros((nDOF_global,),dtype='d')
@@ -2319,6 +2331,10 @@ class XdmfWriter(object):
             else:
                 w_dof = uList[components[2]].dof[0:nDOF_local]
             velocity = numpy.column_stack((u_dof,v_dof,w_dof))
+            values    = SubElement(attribute,"DataItem",
+                                   {"Format":ar.dataItemFormat,
+                                    **xdmf_number_type(velocity),
+                                    "Dimensions":"%i %i" % (nDOF_global,3)})
             if ar.hdfFile is not None:
                 values.text = ar.hdfFilename+":/"+vectorName+"_t"+str(tCount)
                 ar.create_dataset_sync(vectorName+"_t"+str(tCount),
@@ -2329,10 +2345,6 @@ class XdmfWriter(object):
             attribute = SubElement(self.arGrid,"Attribute",{"Name":vectorName,
                                                             "AttributeType":"Vector",
                                                             "Center":"Node"})
-            values    = SubElement(attribute,"DataItem",
-                                   {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Dimensions":"%i %i" % (nDOF_global,3)})
             u_dof = uList[components[0]].dof[0:nDOF_global]
             if len(components) < 2:
                 v_dof = numpy.zeros((nDOF_global,),dtype='d')
@@ -2343,6 +2355,10 @@ class XdmfWriter(object):
             else:
                 w_dof = uList[components[2]].dof[0:nDOF_global]
             velocity = numpy.column_stack((u_dof,v_dof,w_dof))
+            values    = SubElement(attribute,"DataItem",
+                                   {"Format":ar.dataItemFormat,
+                                    **xdmf_number_type(velocity),
+                                    "Dimensions":"%i %i" % (nDOF_global,3)})
             if ar.hdfFile is not None:
                 values.text = ar.hdfFilename+":/"+vectorName+"_p"+str(ar.rank)+"_t"+str(tCount)
                 ar.create_dataset_async(vectorName+"_p"+str(ar.rank)+"_t"+str(tCount), data = velocity)
@@ -2373,15 +2389,16 @@ class XdmfWriter(object):
             ar.write_topology(self.arGrid, "Polyvertex", nPoints,
                               [nPoints, Xdmf_NodesPerElement],
                               elements_dataset, elements_stem,
-                              nodes_per_element=Xdmf_NodesPerElement)
+                              nodes_per_element=Xdmf_NodesPerElement,
+                              dtype=GENERATED_INDEX_DTYPE)
             ar.write_geometry(self.arGrid, [nPoints, 3],
-                              nodes_dataset, nodes_stem)
+                              nodes_dataset, nodes_stem, dtype=x)
 
             #the references above are written every pass; the arrays only when
             #the mesh actually changed
             if init or meshChanged:
                 q_l2g = numpy.arange(nPoints*Xdmf_NodesPerElement,
-                                     dtype='i').reshape((nPoints,Xdmf_NodesPerElement))
+                                     dtype=GENERATED_INDEX_DTYPE).reshape((nPoints,Xdmf_NodesPerElement))
                 if ar.hdfFile is not None:
                     ar.create_dataset_async(elements_dataset, data = q_l2g)
                     ar.create_dataset_async(nodes_dataset, data = x.flat[:])
@@ -2429,19 +2446,19 @@ class XdmfWriter(object):
                                           "NumberOfElements":str(Xdmf_NumberOfElements)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(GENERATED_INDEX_DTYPE),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements,Xdmf_NodesPerElement)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
+                                          **xdmf_number_type(mesh.nodeArray),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements*Xdmf_NodesPerElement,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+spaceSuffix+str(tCount)
                     nodes.text    = ar.hdfFilename+":/nodes"+spaceSuffix+str(tCount)
                     if init or meshChanged:
                         #simple dg l2g mapping
-                        dg_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype='i').reshape((mesh.nElements_global,
+                        dg_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((mesh.nElements_global,
                                                                                                              Xdmf_NodesPerElement))
                         ar.create_dataset_sync('elements'+spaceSuffix+str(tCount),
                                                offsets = mesh.globalMesh.elementOffsets_subdomain_owned,
@@ -2462,19 +2479,19 @@ class XdmfWriter(object):
                                           "NumberOfElements":str(Xdmf_NumberOfElements)})
                 elements    = SubElement(topology,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Int",
+                                          **xdmf_number_type(GENERATED_INDEX_DTYPE),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements,Xdmf_NodesPerElement)})
                 geometry    = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes       = SubElement(geometry,"DataItem",
                                          {"Format":ar.dataItemFormat,
-                                          "DataType":"Float",
+                                          **xdmf_number_type(mesh.nodeArray),
                                           "Dimensions":"%i %i" % (Xdmf_NumberOfElements*Xdmf_NodesPerElement,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+str(ar.rank)+spaceSuffix+str(tCount)
                     nodes.text    = ar.hdfFilename+":/nodes"+str(ar.rank)+spaceSuffix+str(tCount)
                     if init or meshChanged:
                         #simple dg l2g mapping
-                        dg_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype='i').reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
+                        dg_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
                         ar.create_dataset_async('elements'+str(ar.rank)+spaceSuffix+str(tCount), data = dg_l2g)
                     
                     dgnodes = numpy.reshape(mesh.nodeArray[mesh.elementNodesArray],(Xdmf_NumberOfElements*Xdmf_NodesPerElement,3))
@@ -2483,7 +2500,7 @@ class XdmfWriter(object):
                     SubElement(elements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt"})
                     SubElement(nodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+spaceSuffix+str(tCount)+".txt"})
                     if init or meshChanged:
-                        dg_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype='i').reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
+                        dg_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
                         numpy.savetxt(ar.textDataDir+"/elements"+spaceSuffix+str(tCount)+".txt",dg_l2g,fmt='%d')
 
                         dgnodes = numpy.reshape(mesh.nodeArray[mesh.elementNodesArray],(Xdmf_NumberOfElements*Xdmf_NodesPerElement,3))
@@ -2506,10 +2523,9 @@ class XdmfWriter(object):
                                                             "Center":"Node"})
             values    = SubElement(attribute,"DataItem",
                                    {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Precision":"8",
+                                    **xdmf_number_type(u),
                                     "Dimensions":"%i %i" % (Xdmf_NodesGlobal,Xdmf_StorageDim)})#force 3d vector since points 3d
-            tmp = numpy.zeros((u.shape[0]*u.shape[1],Xdmf_StorageDim),'d')
+            tmp = numpy.zeros((u.shape[0]*u.shape[1],Xdmf_StorageDim),u.dtype)
             tmp[:,:Xdmf_NumberOfComponents]=numpy.reshape(u.flat,(u.shape[0]*u.shape[1],Xdmf_NumberOfComponents))
 
             if ar.hdfFile is not None:
@@ -2528,10 +2544,9 @@ class XdmfWriter(object):
                                                             "Center":"Node"})
             values    = SubElement(attribute,"DataItem",
                                    {"Format":ar.dataItemFormat,
-                                    "DataType":"Float",
-                                    "Precision":"8",
+                                    **xdmf_number_type(u),
                                     "Dimensions":"%i %i" % (Xdmf_NodesGlobal,Xdmf_StorageDim)})#force 3d vector since points 3d
-            tmp = numpy.zeros((Xdmf_NodesGlobal,Xdmf_StorageDim),'d')
+            tmp = numpy.zeros((Xdmf_NodesGlobal,Xdmf_StorageDim),u.dtype)
             tmp[:,:Xdmf_NumberOfComponents]=numpy.reshape(u.flat,(Xdmf_NodesGlobal,Xdmf_NumberOfComponents))
 
             if ar.hdfFile is not None:
