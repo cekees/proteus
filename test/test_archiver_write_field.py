@@ -39,6 +39,7 @@ class StubArchive(AR_base):
         self.hdfFile = object() if hdf else None
         self.hdfFilename = "out.h5"
         self.dataItemFormat = "HDF" if hdf else "XML"
+        self.driver, self.inline = "mpio", False
         self.textDataDir = "out_Data"
         self.sync_calls = []
         self.async_calls = []

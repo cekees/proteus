@@ -1024,7 +1024,7 @@ class Mesh(object):
             #topology and geometry
             #
             if ar.global_sync:
-                assert ar.hdfFile is not None, "global_sync not  supported with text heavy data"
+                assert ar.writesDatasets, "global_sync not  supported with text heavy data"
                 n_elements       = self.globalMesh.nElements_global
                 nodes_dims       = [self.globalMesh.nNodes_global, 3]
                 elements_dataset = 'elements'+name+str(tCount)
@@ -1050,7 +1050,7 @@ class Mesh(object):
                     ar.create_dataset_sync(nodes_dataset,
                                            offsets=self.globalMesh.nodeOffsets_subdomain_owned,
                                            data=self.nodeArray[:self.nNodes_owned])
-                elif ar.hdfFile is not None:
+                elif ar.writesDatasets:
                     ar.create_dataset_async(elements_dataset,data=self.elementNodesArray[:self.nElements_owned])
                     ar.create_dataset_async(nodes_dataset,data=self.nodeArray)
                 else:
@@ -1071,7 +1071,7 @@ class Mesh(object):
                                   'nodes'+str(rank)+name+str(tCount), 'nodes'+name,
                                   dtype=self.nodeArray)
                 if init or meshChanged:
-                    if ar.hdfFile is not None:
+                    if ar.writesDatasets:
                         ar.create_dataset_async('elementBoundaries'+str(rank)+name+str(tCount), data = self.elementBoundaryNodesArray)
                     else:
                         np.savetxt(ar.textDataDir+"/elementBoundaries"+name+".txt",self.elementBoundaryNodesArray,fmt='%d')
@@ -4408,7 +4408,7 @@ class Mesh2DM(Mesh):
             #topology and geometry
             #
             if ar.global_sync:
-                assert ar.hdfFile is not None, "global_sync with text heavy data not supported"
+                assert ar.writesDatasets, "global_sync with text heavy data not supported"
                 n_elements       = self.globalMesh.nElements_global
                 nodes_dims       = [self.globalMesh.nNodes_global, 3]
                 elements_dataset = 'elements'+name+str(tCount)
@@ -4446,7 +4446,7 @@ class Mesh2DM(Mesh):
                     ar.create_dataset_sync(nodes_dataset,
                                            offsets = self.globalMesh.nodeOffsets_subdomain_owned,
                                            data = self.nodeArray[:self.nNodes_owned])
-                elif ar.hdfFile is not None:
+                elif ar.writesDatasets:
                     ar.create_dataset_async(elements_dataset, data = self.elementNodesArray[:self.nElements_owned])
                     ar.create_dataset_async(nodes_dataset, data = self.nodeArray)
                 else:
@@ -4726,7 +4726,7 @@ class Mesh3DM(Mesh):
             #topology and geometry
             #
             if ar.global_sync:
-                assert ar.hdfFile is not None, "global_sync with text heavy data not supported"
+                assert ar.writesDatasets, "global_sync with text heavy data not supported"
                 n_elements       = self.globalMesh.nElements_global
                 nodes_dims       = [self.globalMesh.nNodes_global, 3]
                 elements_dataset = 'elements'+name+str(tCount)
@@ -4764,7 +4764,7 @@ class Mesh3DM(Mesh):
                     ar.create_dataset_sync(nodes_dataset,
                                            offsets = self.globalMesh.nodeOffsets_subdomain_owned,
                                            data = self.nodeArray[:self.nNodes_owned])
-                elif ar.hdfFile is not None:
+                elif ar.writesDatasets:
                     ar.create_dataset_async(elements_dataset, data = self.elementNodesArray[:self.nElements_owned])
                     ar.create_dataset_async(nodes_dataset, data = self.nodeArray)
                 else:
