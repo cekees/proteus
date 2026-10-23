@@ -608,8 +608,8 @@ class NS_base(object):  # (HasTraits):
             if not self.opts.hotStart:
                 logEvent("Archiving initial conditions")
                 self.archiveInitialSolution(m,index)
-            else:
-                self.ar[index].domain = self.ar[index].tree.find("Domain")
+            #a hot-started archive seeded its domain with the collections
+            #the archive already has when it was opened
             #if(not hasattr(self.pList[0].domain,'PUMIMesh') and not self.opts.hotStart):
             self.initializeViewSolution(m)
             logEvent("Estimating initial time derivative and initializing time history for model "+p.name)
@@ -1124,13 +1124,12 @@ class NS_base(object):  # (HasTraits):
     ##save model's initial solution values to archive
     def archiveInitialSolution(self,model,index):
         if True if self.fastArchive == False else 'clsvof' in model.name:
-            import xml.etree.ElementTree as ElementTree
             if self.archiveFlag == ArchiveFlags.UNDEFINED:
                 return
             logEvent("Writing initial mesh for  model = "+model.name,level=3)
             logEvent("Writing initial conditions for  model = "+model.name,level=3)
-            if not self.so.useOneArchive or index==0:
-                self.ar[index].domain = ElementTree.SubElement(self.ar[index].tree.getroot(),"Domain")
+            #the archive owns its domain (Archiver.ArchiveDomain) from
+            #construction; the writers add their collections to it
             if self.so.useOneArchive:
                 model.levelModelList[-1].archiveFiniteElementSolutions(self.ar[index],self.tnList[0],self.tCount,initialPhase=True,
                                                                        writeVectors=True,meshChanged=True,femSpaceWritten=self.femSpaceWritten,

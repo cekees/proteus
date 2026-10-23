@@ -10,7 +10,6 @@ import array
 import inspect
 import h5py
 import os
-from xml.etree import ElementTree as ET
 from .Archiver import *
 from .LinearAlgebraTools import ParVec_petsc4py
 from .Profiling import logEvent,memory, memHardLimit
@@ -999,231 +998,135 @@ class Mesh(object):
         # logEvent(memory("Without global mesh","Mesh"),level=1)
         # comm.endSequential()
     def writeMeshXdmf(self,ar,name='',t=0.0,init=False,meshChanged=False,Xdmf_ElementTopology="Triangle",tCount=0, EB=False):
+        """Describe this mesh in the archive at time ``t``; with ``EB`` its element boundaries too.
+
+        The grid -- a ymf grid dict in the collection ``Mesh <name>`` (and
+        ``EBMesh <name>``) -- is built on every pass through the archive's
+        builders; the arrays behind it are written only when ``init or
+        meshChanged``. The material types are written on every pass, as
+        they were; the local-to-global maps, which ``collect.py`` and a
+        hot start from a global archive read, only with the arrays.
+        """
         if self.arGridCollection is not None:
             init = False
         elif not init:
-            grids = ar.domain.findall("Grid")
-            self.arGridCollection = grids[0]
+            self.arGridCollection = ar.domain[0]
             if EB:
-                assert(len(grids) > 1)
-                self.arEBGridCollection = grids[1]
+                assert(len(ar.domain) > 1)
+                self.arEBGridCollection = ar.domain[1]
         if init:
-            self.arGridCollection = SubElement(ar.domain,"Grid",{"Name":"Mesh "+name,
-                                                               "GridType":"Collection",
-                                                               "CollectionType":"Temporal"})
+            self.arGridCollection = ar.domain.collection("Mesh "+name)
             if EB:
-                self.arEBGridCollection = SubElement(ar.domain,"Grid",{"Name":"EBMesh "+name,
-                                                                       "GridType":"Collection",
-                                                                       "CollectionType":"Temporal"})
-        if self.arGrid is None or self.arTime.get('Value') != "{0:e}".format(t):
+                self.arEBGridCollection = ar.domain.collection("EBMesh "+name)
+        if not self.arGridCollection.is_current(t):
+            rank = ar.comm.rank()
             #
             #topology and geometry
             #
             if ar.global_sync:
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":"%e" % (t,),"Name":"%i" % (tCount,)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.globalMesh.nElements_global,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.globalMesh.nodeNumbering_subdomain2global),
-                                       "Dimensions":"%i %i" % (self.globalMesh.nElements_global,self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.nodeArray),
-                                       "Dimensions":"%i %i" % (self.globalMesh.nNodes_global,3)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+name+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_sync('elements'+name+str(tCount),
-                                               offsets=self.globalMesh.elementOffsets_subdomain_owned,
-                                               data=self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
-                        ar.create_dataset_sync('nodes'+name+str(tCount),
-                                               offsets=self.globalMesh.nodeOffsets_subdomain_owned,
-                                               data=self.nodeArray[:self.nNodes_owned])
-                else:
-                    assert False, "global_sync not  supported with text heavy data"
+                assert ar.hdfFile is not None, "global_sync not  supported with text heavy data"
+                n_elements       = self.globalMesh.nElements_global
+                nodes_dims       = [self.globalMesh.nNodes_global, 3]
+                elements_dataset = 'elements'+name+str(tCount)
+                nodes_dataset    = 'nodes'+name+str(tCount)
+                elements_dtype   = self.globalMesh.nodeNumbering_subdomain2global
             else:
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":"%e" % (t,),"Name":"%i" % (tCount,)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.nElements_owned,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.elementNodesArray),
-                                       "Dimensions":"%i %i" % (self.nElements_owned,self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.nodeArray),
-                                       "Dimensions":"%i %i" % (self.nNodes_global,3)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+str(ar.comm.rank())+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+str(ar.comm.rank())+name+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_async('elements'+str(ar.comm.rank())+name+str(tCount),data=self.elementNodesArray[:self.nElements_owned])
-                        ar.create_dataset_async('nodes'+str(ar.comm.rank())+name+str(tCount),data=self.nodeArray)
+                n_elements       = self.nElements_owned
+                nodes_dims       = [self.nNodes_global, 3]
+                elements_dataset = 'elements'+str(rank)+name+str(tCount)
+                nodes_dataset    = 'nodes'+str(rank)+name+str(tCount)
+                elements_dtype   = self.elementNodesArray
+            self.arGrid = ar.write_grid(self.arGridCollection, None, t, tCount)
+            ar.write_topology(self.arGrid, Xdmf_ElementTopology, n_elements,
+                              [n_elements, self.nNodes_element],
+                              elements_dataset, 'elements'+name, dtype=elements_dtype)
+            ar.write_geometry(self.arGrid, nodes_dims, nodes_dataset, 'nodes'+name,
+                              dtype=self.nodeArray)
+            if init or meshChanged:
+                if ar.global_sync:
+                    ar.create_dataset_sync(elements_dataset,
+                                           offsets=self.globalMesh.elementOffsets_subdomain_owned,
+                                           data=self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
+                    ar.create_dataset_sync(nodes_dataset,
+                                           offsets=self.globalMesh.nodeOffsets_subdomain_owned,
+                                           data=self.nodeArray[:self.nNodes_owned])
+                elif ar.hdfFile is not None:
+                    ar.create_dataset_async(elements_dataset,data=self.elementNodesArray[:self.nElements_owned])
+                    ar.create_dataset_async(nodes_dataset,data=self.nodeArray)
                 else:
-                    SubElement(elements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elements"+name+".txt"})
-                    SubElement(nodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+name+".txt"})
-                    if init or meshChanged:
-                        numpy.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
-                        numpy.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
+                    numpy.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
+                    numpy.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
             #
             #element boundary topology and geometry
             #
             if EB:
-                self.arEBGrid = SubElement(self.arEBGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arEBTime = SubElement(self.arEBGrid,"Time",{"Value":"%e" % (t,),"Name":"%i" % (tCount,)})
                 Xdmf_ElementEBTopology = "Triangle" #cek hack
-                ebtopology = SubElement(self.arEBGrid,"Topology",
-                                    {"Type":Xdmf_ElementEBTopology,
-                                     "NumberOfElements":"%i" % (self.nElementBoundaries_global,)})
-                ebelements = SubElement(ebtopology,"DataItem",
-                                    {"Format":ar.dataItemFormat,
-                                     **xdmf_number_type(self.elementBoundaryNodesArray),
-                                     "Dimensions":"%i %i" % (self.nElementBoundaries_global,self.nNodes_elementBoundary)})
-                ebgeometry = SubElement(self.arEBGrid,"Geometry",{"Type":"XYZ"})
-                ebnodes    = SubElement(ebgeometry,"DataItem",
-                                    {"Format":ar.dataItemFormat,
-                                     **xdmf_number_type(self.nodeArray),
-                                     "Dimensions":"%i %i" % (self.nNodes_global,3)})
-                if ar.hdfFile is not None:
-                    ebelements.text = ar.hdfFilename+":/elementBoundaries"+str(ar.comm.rank())+name+str(tCount)
-                    ebnodes.text = ar.hdfFilename+":/nodes"+str(ar.comm.rank())+name+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_async('elementBoundaries'+str(ar.comm.rank())+name+str(tCount), data = self.elementBoundaryNodesArray)
-                        #ar.create_dataset_async('nodes'+`ar.comm.rank()`+name+`tCount`, data = self.nodeArray)
-                else:
-                    SubElement(ebelements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elementBoundaries"+name+".txt"})
-                    SubElement(ebnodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+name+".txt"})
-                    if init or meshChanged:
+                self.arEBGrid = ar.write_grid(self.arEBGridCollection, None, t, tCount)
+                #the boundary grid shares the mesh's nodes dataset
+                ar.write_topology(self.arEBGrid, Xdmf_ElementEBTopology, self.nElementBoundaries_global,
+                                  [self.nElementBoundaries_global, self.nNodes_elementBoundary],
+                                  'elementBoundaries'+str(rank)+name+str(tCount),
+                                  'elementBoundaries'+name, dtype=self.elementBoundaryNodesArray)
+                ar.write_geometry(self.arEBGrid, [self.nNodes_global, 3],
+                                  'nodes'+str(rank)+name+str(tCount), 'nodes'+name,
+                                  dtype=self.nodeArray)
+                if init or meshChanged:
+                    if ar.hdfFile is not None:
+                        ar.create_dataset_async('elementBoundaries'+str(rank)+name+str(tCount), data = self.elementBoundaryNodesArray)
+                    else:
                         np.savetxt(ar.textDataDir+"/elementBoundaries"+name+".txt",self.elementBoundaryNodesArray,fmt='%d')
 
             # Add the local->global index maps for collect.py and for
-            # reverse mapping in hotstarts from a global XDMF file.
+            # reverse mapping in hotstarts from a global archive.
             if self.globalMesh is not None and not ar.global_sync:
-                nodeMapAtt = SubElement(self.arGrid,"Attribute",
-                                        {"Name":"NodeMapL2G",
-                                         "AttributeType":"Scalar",
-                                         "Center":"Node"})
-                nodeMap = SubElement(nodeMapAtt,"DataItem",
-                                     {"Format":ar.dataItemFormat,
-                                      **xdmf_number_type(self.globalMesh.nodeNumbering_subdomain2global),
-                                      "Dimensions":"%i" % (self.nNodes_global,)})
-                elemMapAtt = SubElement(self.arGrid,"Attribute",
-                                        {"Name":"CellMapL2G",
-                                         "AttributeType":"Scalar",
-                                         "Center":"Cell"})
-                elemMap = SubElement(elemMapAtt,"DataItem",
-                                     {"Format":ar.dataItemFormat,
-                                      **xdmf_number_type(self.globalMesh.elementNumbering_subdomain2global),
-                                      "Dimensions":"%i" % (self.nElements_owned,)})
-
-                if ar.hdfFile is not None:
-                    nodeMap.text = ar.hdfFilename+":/nodeMapL2G"+str(ar.comm.rank())+name+str(tCount)
-                    elemMap.text = ar.hdfFilename+":/cellMapL2G"+str(ar.comm.rank())+name+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_async('nodeMapL2G'+str(ar.comm.rank())+name+str(tCount), data=self.globalMesh.nodeNumbering_subdomain2global)
-                        ar.create_dataset_async('cellMapL2G'+str(ar.comm.rank())+name+str(tCount), data=self.globalMesh.elementNumbering_subdomain2global[:self.nElements_owned])
-                else:
-                    SubElement(nodeMap,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodeMapL2G"+name+".txt"})
-                    SubElement(nodeMap,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/cellMapL2G"+name+".txt"})
-                    if init or meshChanged:
-                        np.savetxt(ar.textDataDir+"/nodeMapL2G"+name+".txt",self.globalMesh.nodeNumbering_subdomain2global)
-                        np.savetxt(ar.textDataDir+"/cellMapL2G"+name+".txt",self.globalMesh.elementNumbering_subdomain2global[:self.nElements_owned])
+                ar.write_field(self.arGrid, "NodeMapL2G",
+                               self.globalMesh.nodeNumbering_subdomain2global, tCount,
+                               dimensions=[self.nNodes_global],
+                               dataset='nodeMapL2G'+str(rank)+name+str(tCount),
+                               text_stem='nodeMapL2G'+name,
+                               write_data=init or meshChanged)
+                ar.write_field(self.arGrid, "CellMapL2G",
+                               self.globalMesh.elementNumbering_subdomain2global[:self.nElements_owned], tCount,
+                               center="Cell", dimensions=[self.nElements_owned],
+                               dataset='cellMapL2G'+str(rank)+name+str(tCount),
+                               text_stem='cellMapL2G'+name,
+                               write_data=init or meshChanged)
             #
             #material types
             #
             if ar.global_sync:
-                nodeMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"nodeMaterialTypes",
-                                                                        "AttributeType":"Scalar",
-                                                                        "Center":"Node"})
-                nodeMaterialTypesValues = SubElement(nodeMaterialTypes,"DataItem",
-                                                     {"Format":ar.dataItemFormat,
-                                                      **xdmf_number_type(self.nodeMaterialTypes),
-                                                      "Dimensions":"%i" % (self.globalMesh.nNodes_global,)})
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         **xdmf_number_type(self.elementMaterialTypes),
-                                                         "Dimensions":"%i" % (self.globalMesh.nElements_global,)})
+                ar.write_field(self.arGrid, "nodeMaterialTypes", self.nodeMaterialTypes, tCount,
+                               dimensions=[self.globalMesh.nNodes_global],
+                               sync_offsets=self.globalMesh.nodeOffsets_subdomain_owned,
+                               sync_data=self.nodeMaterialTypes[:self.nNodes_owned])
+                ar.write_field(self.arGrid, "elementMaterialTypes", self.elementMaterialTypes, tCount,
+                               center="Cell", dimensions=[self.globalMesh.nElements_global],
+                               sync_offsets=self.globalMesh.elementOffsets_subdomain_owned,
+                               sync_data=self.elementMaterialTypes[:self.nElements_owned])
                 if EB:
-                    ebnodeMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"ebnodeMaterialTypes",
-                                                                          "AttributeType":"Scalar",
-                                                                          "Center":"Node"})
-                    ebnodeMaterialTypesValues = SubElement(ebnodeMaterialTypes,"DataItem",
-                                                       {"Format":ar.dataItemFormat,
-                                                        **xdmf_number_type(self.nodeMaterialTypes),
-                                                        "Dimensions":"%i" % (self.globalMesh.nNodes_global,)})
-                    elementBoundaryMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"elementBoundaryMaterialTypes",
-                                                                                             "AttributeType":"Scalar",
-                                                                                             "Center":"Cell"})
-                    elementBoundaryMaterialTypesValues = SubElement(elementBoundaryMaterialTypes,"DataItem",
-                                                          {"Format":ar.dataItemFormat,
-                                                           **xdmf_number_type(self.elementBoundaryMaterialTypes),
-                                                           "Dimensions":"%i" % (self.globalMesh.nElementBoundaries_global,)})
-                if ar.hdfFile is not None:
-                    nodeMaterialTypesValues.text = ar.hdfFilename+":/"+"nodeMaterialTypes"+"_t"+str(tCount)
-                    ar.create_dataset_sync("nodeMaterialTypes"+"_t"+str(tCount), offsets=self.globalMesh.nodeOffsets_subdomain_owned, data=self.nodeMaterialTypes[:self.nNodes_owned])
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_t"+str(tCount)
-                    ar.create_dataset_sync("elementMaterialTypes"+"_t"+str(tCount), offsets=self.globalMesh.elementOffsets_subdomain_owned, data=self.elementMaterialTypes[:self.nElements_owned])
-                    if EB:
-                        ebnodeMaterialTypesValues.text = ar.hdfFilename+":/"+"nodeMaterialTypes"+"_t"+str(tCount)
-                        elementBoundaryMaterialTypesValues.text = ar.hdfFilename+":/"+"elementBoundaryMaterialTypes"+"_t"+str(tCount)
-                        ar.create_dataset_sync("elementBoundaryMaterialTypes"+"_t"+str(tCount), offsets = self.globalMesh.elementBoundaryOffsets_subdomain_owned, data=self.elementBoundaryMaterialTypes[:self.nElementBoundaries_owned])
-                else:
-                    assert False, "global_sync  not  supported with text heavy data"
+                    #the boundary grid's node types are the mesh's, just written
+                    ar.write_field(self.arEBGrid, "ebnodeMaterialTypes", self.nodeMaterialTypes, tCount,
+                                   dimensions=[self.globalMesh.nNodes_global],
+                                   dataset="nodeMaterialTypes_t"+str(tCount), write_data=False)
+                    ar.write_field(self.arEBGrid, "elementBoundaryMaterialTypes",
+                                   self.elementBoundaryMaterialTypes, tCount,
+                                   center="Cell", dimensions=[self.globalMesh.nElementBoundaries_global],
+                                   sync_offsets=self.globalMesh.elementBoundaryOffsets_subdomain_owned,
+                                   sync_data=self.elementBoundaryMaterialTypes[:self.nElementBoundaries_owned])
             else:
-                nodeMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"nodeMaterialTypes",
-                                                                        "AttributeType":"Scalar",
-                                                                        "Center":"Node"})
-                nodeMaterialTypesValues = SubElement(nodeMaterialTypes,"DataItem",
-                                                     {"Format":ar.dataItemFormat,
-                                                      **xdmf_number_type(self.nodeMaterialTypes),
-                                                      "Dimensions":"%i" % (self.nNodes_global,)})
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         **xdmf_number_type(self.elementMaterialTypes),
-                                                         "Dimensions":"%i" % (self.nElements_owned,)})
+                ar.write_field(self.arGrid, "nodeMaterialTypes", self.nodeMaterialTypes, tCount,
+                               dimensions=[self.nNodes_global])
+                ar.write_field(self.arGrid, "elementMaterialTypes",
+                               self.elementMaterialTypes[:self.nElements_owned], tCount,
+                               center="Cell", dimensions=[self.nElements_owned])
                 if EB:
-                    ebnodeMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"ebnodeMaterialTypes",
-                                                                          "AttributeType":"Scalar",
-                                                                          "Center":"Node"})
-                    ebnodeMaterialTypesValues = SubElement(ebnodeMaterialTypes,"DataItem",
-                                                       {"Format":ar.dataItemFormat,
-                                                        **xdmf_number_type(self.nodeMaterialTypes),
-                                                        "Dimensions":"%i" % (self.nNodes_global,)})
-                    elementBoundaryMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"elementBoundaryMaterialTypes",
-                                                                                             "AttributeType":"Scalar",
-                                                                                             "Center":"Cell"})
-                    elementBoundaryMaterialTypesValues = SubElement(elementBoundaryMaterialTypes,"DataItem",
-                                                          {"Format":ar.dataItemFormat,
-                                                           **xdmf_number_type(self.elementBoundaryMaterialTypes),
-                                                           "Dimensions":"%i" % (self.nElementBoundaries_global,)})
-                if ar.hdfFile is not None:
-                    nodeMaterialTypesValues.text = ar.hdfFilename+":/"+"nodeMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                    ar.create_dataset_async("nodeMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount), data=self.nodeMaterialTypes)
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                    ar.create_dataset_async("elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount), data=self.elementMaterialTypes[:self.nElements_owned])
-                    if EB:
-                        ebnodeMaterialTypesValues.text = ar.hdfFilename+":/"+"nodeMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                        elementBoundaryMaterialTypesValues.text = ar.hdfFilename+":/"+"elementBoundaryMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                        ar.create_dataset_async("elementBoundaryMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount), data=self.elementBoundaryMaterialTypes)
-                else:
-                    numpy.savetxt(ar.textDataDir+"/"+"nodeMaterialTypes"+str(tCount)+".txt",self.nodeMaterialTypes)
-                    SubElement(nodeMaterialTypesValues,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"nodeMaterialTypes"+str(tCount)+".txt"})
-                    numpy.savetxt(ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt",self.elementMaterialTypes[:self.nElements_owned])
-                    SubElement(elementMaterialTypesValues,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt"})
+                    ar.write_field(self.arEBGrid, "ebnodeMaterialTypes", self.nodeMaterialTypes, tCount,
+                                   dimensions=[self.nNodes_global],
+                                   dataset="nodeMaterialTypes_p"+str(rank)+"_t"+str(tCount),
+                                   write_data=False)
+                    ar.write_field(self.arEBGrid, "elementBoundaryMaterialTypes",
+                                   self.elementBoundaryMaterialTypes, tCount,
+                                   center="Cell", dimensions=[self.nElementBoundaries_global])
             #done with material types
     def buildFromC(self,cmesh):
         from . import cmeshTools
@@ -4496,94 +4399,59 @@ class Mesh2DM(Mesh):
         if self.arGridCollection is not None:
             init = False
         elif not init:
-            self.arGridCollection = ar.domain.find("Grid")
+            self.arGridCollection = ar.domain[0]
         if init:
-            self.arGridCollection = SubElement(ar.domain,"Grid",{"Name":"Mesh "+name,
-                                                                "GridType":"Collection",
-                                                                "CollectionType":"Temporal"})
-        if self.arGrid is None or self.arTime.get('Value') != "{0:e}".format(t):
+            self.arGridCollection = ar.domain.collection("Mesh "+name)
+        if not self.arGridCollection.is_current(t):
+            rank = ar.comm.rank()
             #
             #topology and geometry
             #
             if ar.global_sync:
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":str(t),"Name":str(tCount)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.globalMesh.nElements_global,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.globalMesh.nodeNumbering_subdomain2global),
-                                       "Dimensions":"%i %i" % (self.globalMesh.nElements_global,
-                                                               self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.nodeArray),
-                                       "Dimensions":"%i %i" % (self.globalMesh.nNodes_global,3)})
-                #material types
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         **xdmf_number_type(self.elementMaterialTypes),
-                                                         "Dimensions":"%i" % (self.globalMesh.nElements_global,)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+name+str(tCount)
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_t"+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_sync('elements'+name+str(tCount),
-                                               offsets = self.globalMesh.elementOffsets_subdomain_owned,
-                                               data = self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
-                        ar.create_dataset_sync('nodes'+name+str(tCount),
-                                               offsets = self.globalMesh.nodeOffsets_subdomain_owned,
-                                               data = self.nodeArray[:self.nNodes_owned])
-                        ar.create_dataset_sync("elementMaterialTypes"+"_t"+str(tCount),
-                                               offsets = self.globalMesh.elementOffsets_subdomain_owned,
-                                               data = self.elementMaterialTypes[:self.nElements_owned])
-                else:
-                    assert False, "global_sync with text heavy data not supported"
+                assert ar.hdfFile is not None, "global_sync with text heavy data not supported"
+                n_elements       = self.globalMesh.nElements_global
+                nodes_dims       = [self.globalMesh.nNodes_global, 3]
+                elements_dataset = 'elements'+name+str(tCount)
+                nodes_dataset    = 'nodes'+name+str(tCount)
+                elements_dtype   = self.globalMesh.nodeNumbering_subdomain2global
             else:
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":str(t),"Name":str(tCount)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.nElements_owned,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.elementNodesArray),
-                                       "Dimensions":"%i %i" % (self.nElements_owned,self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.nodeArray),
-                                       "Dimensions":"%i %i" % (self.nNodes_global,3)})
-                #material types
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         **xdmf_number_type(self.elementMaterialTypes),
-                                                         "Dimensions":"%i" % (self.nElements_owned,)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+str(ar.comm.rank())+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+str(ar.comm.rank())+name+str(tCount)
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_async('elements'+str(ar.comm.rank())+name+str(tCount), data = self.elementNodesArray[:self.nElements_owned])
-                        ar.create_dataset_async('nodes'+str(ar.comm.rank())+name+str(tCount), data = self.nodeArray)
-                        ar.create_dataset_async("elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount), data = self.elementMaterialTypes[:self.nElements_owned])
+                n_elements       = self.nElements_owned
+                nodes_dims       = [self.nNodes_global, 3]
+                elements_dataset = 'elements'+str(rank)+name+str(tCount)
+                nodes_dataset    = 'nodes'+str(rank)+name+str(tCount)
+                elements_dtype   = self.elementNodesArray
+            self.arGrid = ar.write_grid(self.arGridCollection, None, t, tCount)
+            ar.write_topology(self.arGrid, Xdmf_ElementTopology, n_elements,
+                              [n_elements, self.nNodes_element],
+                              elements_dataset, 'elements'+name, dtype=elements_dtype)
+            ar.write_geometry(self.arGrid, nodes_dims, nodes_dataset, 'nodes'+name,
+                              dtype=self.nodeArray)
+            #material types
+            if ar.global_sync:
+                ar.write_field(self.arGrid, "elementMaterialTypes", self.elementMaterialTypes, tCount,
+                               center="Cell", dimensions=[self.globalMesh.nElements_global],
+                               sync_offsets=self.globalMesh.elementOffsets_subdomain_owned,
+                               sync_data=self.elementMaterialTypes[:self.nElements_owned],
+                               write_data=init or meshChanged)
+            else:
+                ar.write_field(self.arGrid, "elementMaterialTypes",
+                               self.elementMaterialTypes[:self.nElements_owned], tCount,
+                               center="Cell", dimensions=[self.nElements_owned],
+                               write_data=init or meshChanged)
+            if init or meshChanged:
+                if ar.global_sync:
+                    ar.create_dataset_sync(elements_dataset,
+                                           offsets = self.globalMesh.elementOffsets_subdomain_owned,
+                                           data = self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
+                    ar.create_dataset_sync(nodes_dataset,
+                                           offsets = self.globalMesh.nodeOffsets_subdomain_owned,
+                                           data = self.nodeArray[:self.nNodes_owned])
+                elif ar.hdfFile is not None:
+                    ar.create_dataset_async(elements_dataset, data = self.elementNodesArray[:self.nElements_owned])
+                    ar.create_dataset_async(nodes_dataset, data = self.nodeArray)
                 else:
-                    SubElement(elements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elements"+name+".txt"})
-                    SubElement(nodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+name+".txt"})
-                    SubElement(elementMaterialTypesValues,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt"})
-                    if init or meshChanged:
-                        np.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
-                        np.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
-                        np.savetxt(ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt",self.elementMaterialTypes[:self.nElements_owned])
+                    np.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
+                    np.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
 
 
 class Mesh3DM(Mesh):
@@ -4849,97 +4717,60 @@ class Mesh3DM(Mesh):
         if self.arGridCollection is not None:
             init = False
         elif not init:
-            self.arGridCollection = ar.domain.find("Grid")
+            self.arGridCollection = ar.domain[0]
         if init:
-            self.arGridCollection = SubElement(ar.domain,"Grid",{"Name":"Mesh "+name,
-                                                               "GridType":"Collection",
-                                                               "CollectionType":"Temporal"})
-        if self.arGrid is None or self.arTime.get('Value') != "{0:e}".format(t):
+            self.arGridCollection = ar.domain.collection("Mesh "+name)
+        if not self.arGridCollection.is_current(t):
+            rank = ar.comm.rank()
+            #
+            #topology and geometry
+            #
             if ar.global_sync:
-                #
-                #topology and geometry
-                #
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":str(t),"Name":str(tCount)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.globalMesh.nElements_global,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.globalMesh.nodeNumbering_subdomain2global),
-                                       "Dimensions":"%i %i" % (self.globalMesh.nElements_global,
-                                                               self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.nodeArray),
-                                       "Dimensions":"%i %i" % (self.globalMesh.nNodes_global,3)})
-                #material types
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         **xdmf_number_type(self.elementMaterialTypes),
-                                                         "Dimensions":"%i" % (self.globalMesh.nElements_global,)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+name+str(tCount)
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_t"+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_sync('elements'+name+str(tCount),
-                                               offsets = self.globalMesh.elementOffsets_subdomain_owned,
-                                               data = self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
-                        ar.create_dataset_sync('nodes'+name+str(tCount),
-                                               offsets = self.globalMesh.nodeOffsets_subdomain_owned,
-                                               data = self.nodeArray[:self.nNodes_owned])
-                        ar.create_dataset_sync("elementMaterialTypes"+"_t"+str(tCount),
-                                               offsets = self.globalMesh.elementOffsets_subdomain_owned,
-                                               data = self.elementMaterialTypes[:self.nElements_owned])
-                else:
-                    assert False, "global_sync not supported  with text heavy data"
+                assert ar.hdfFile is not None, "global_sync with text heavy data not supported"
+                n_elements       = self.globalMesh.nElements_global
+                nodes_dims       = [self.globalMesh.nNodes_global, 3]
+                elements_dataset = 'elements'+name+str(tCount)
+                nodes_dataset    = 'nodes'+name+str(tCount)
+                elements_dtype   = self.globalMesh.nodeNumbering_subdomain2global
             else:
-                #
-                #topology and geometry
-                #
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":str(t),"Name":str(tCount)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.nElements_owned,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.elementNodesArray),
-                                       "Dimensions":"%i %i" % (self.nElements_owned,self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       **xdmf_number_type(self.nodeArray),
-                                       "Dimensions":"%i %i" % (self.nNodes_global,3)})
-                #material types
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         **xdmf_number_type(self.elementMaterialTypes),
-                                                         "Dimensions":"%i" % (self.nElements_owned,)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+str(ar.comm.rank())+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+str(ar.comm.rank())+name+str(tCount)
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_async('elements'+str(ar.comm.rank())+name+str(tCount), data = self.elementNodesArray[:self.nElements_owned])
-                        ar.create_dataset_async('nodes'+str(ar.comm.rank())+name+str(tCount), data = self.nodeArray)
-                        ar.create_dataset_async("elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount), data = self.elementMaterialTypes[:self.nElements_owned])
+                n_elements       = self.nElements_owned
+                nodes_dims       = [self.nNodes_global, 3]
+                elements_dataset = 'elements'+str(rank)+name+str(tCount)
+                nodes_dataset    = 'nodes'+str(rank)+name+str(tCount)
+                elements_dtype   = self.elementNodesArray
+            self.arGrid = ar.write_grid(self.arGridCollection, None, t, tCount)
+            ar.write_topology(self.arGrid, Xdmf_ElementTopology, n_elements,
+                              [n_elements, self.nNodes_element],
+                              elements_dataset, 'elements'+name, dtype=elements_dtype)
+            ar.write_geometry(self.arGrid, nodes_dims, nodes_dataset, 'nodes'+name,
+                              dtype=self.nodeArray)
+            #material types
+            if ar.global_sync:
+                ar.write_field(self.arGrid, "elementMaterialTypes", self.elementMaterialTypes, tCount,
+                               center="Cell", dimensions=[self.globalMesh.nElements_global],
+                               sync_offsets=self.globalMesh.elementOffsets_subdomain_owned,
+                               sync_data=self.elementMaterialTypes[:self.nElements_owned],
+                               write_data=init or meshChanged)
+            else:
+                ar.write_field(self.arGrid, "elementMaterialTypes",
+                               self.elementMaterialTypes[:self.nElements_owned], tCount,
+                               center="Cell", dimensions=[self.nElements_owned],
+                               write_data=init or meshChanged)
+            if init or meshChanged:
+                if ar.global_sync:
+                    ar.create_dataset_sync(elements_dataset,
+                                           offsets = self.globalMesh.elementOffsets_subdomain_owned,
+                                           data = self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
+                    ar.create_dataset_sync(nodes_dataset,
+                                           offsets = self.globalMesh.nodeOffsets_subdomain_owned,
+                                           data = self.nodeArray[:self.nNodes_owned])
+                elif ar.hdfFile is not None:
+                    ar.create_dataset_async(elements_dataset, data = self.elementNodesArray[:self.nElements_owned])
+                    ar.create_dataset_async(nodes_dataset, data = self.nodeArray)
                 else:
-                    SubElement(elements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elements"+name+".txt"})
-                    SubElement(nodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+name+".txt"})
-                    SubElement(elementMaterialTypesValues,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt"})
-                    if init or meshChanged:
-                        np.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
-                        np.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
-                        np.savetxt(ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt",self.elementMaterialTypes[:self.nElements_owned])
+                    np.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
+                    np.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
+
 
 class MultilevelTetrahedralMesh(MultilevelMesh):
     """A hierarchical multilevel mesh with tetrahedral cells"""
@@ -7144,80 +6975,60 @@ class MultilevelSimplicialMesh(MultilevelMesh):
 
 ## @}
 
-###utility functions for reading meshes from Xdmf
+###utility functions for reading meshes back from an archive
 
 def _dataitem_dataset(node, label):
-    """The HDF5 dataset name a node's DataItem refers to.
+    """The HDF5 dataset name a topology, geometry or attribute's data item refers to.
 
-    Replaces ``node[0].text.split(':')[-1]``, which reached into the first
-    child by position and split the reference on any colon. A DataItem
-    reference is ``<file>:/<dataset>``, so splitting on ``:/`` keeps a
-    dataset path containing a colon intact.
+    A data item reference is ``<file>:/<dataset>``, so splitting on ``:/``
+    keeps a dataset path that itself contains a colon intact.
     """
-    item = node.find('DataItem')
-    assert item is not None, "no <DataItem> under <%s>" % (label,)
-    text = (item.text or "").strip()
-    assert text, "<DataItem> under <%s> has no reference" % (label,)
+    item = node.get("data_item") if node is not None else None
+    assert item is not None, "no data_item under %s" % (label,)
+    text = (item.get("data") or "").strip()
+    assert text, "the data_item under %s has no HDF5 reference" % (label,)
     return text.split(':/')[-1]
 
 
-def findXMLgridElement(xmf,MeshTag='Spatial_Domain',id_in_collection=-1,verbose=0):
-    """Try to find the element of the xml tree xmf that holds a uniform
-    grid with the name given in MeshTag by searching through Temporal
-    Grid Collections and Grid Collections.
+def findArchiveGrid(domain, MeshTag='Spatial_Domain', id_in_collection=-1, verbose=0):
+    """One grid of an archive's domain: a step of the collection named by ``MeshTag``.
 
-    If MeshTag isn't found, uses the first entry in the Domain
+    ``domain`` is the ymf domain dict (:func:`proteus.Archiver.readArchiveDomain`
+    reads one from an archive's ``.h5``). The collection is the first whose
+    name contains ``MeshTag``, or the first of all when none does;
+    ``id_in_collection`` selects the step, -1 being the last written. A
+    per-subdomain step holds one grid per rank, of which the first is
+    returned, which is what a serial reader can use.
     """
-    #Find the Domain by tag rather than as the root's last child: an
-    #<Information> element is legal ahead of it, and a positional read
-    #silently picks up whatever happens to sit last.
-    Domain = xmf.getroot().find('Domain')
-    assert Domain is not None, "no <Domain> in the XDMF document"
-
-    GridCollection = None
-    for collection in Domain.findall('Grid'):
-        if MeshTag in collection.attrib.get('Name', ''):
-            GridCollection = collection
+    collections = domain.get("time_collections", [])
+    assert collections, "the archive has no time collections"
+    collection = None
+    for c in collections:
+        if MeshTag in c.get("name", ""):
+            collection = c
             break
-    if GridCollection is None:
-        candidates = Domain.findall('Grid')
-        assert candidates, "no <Grid> under <Domain>"
-        GridCollection = candidates[0]
+    if collection is None:
+        collection = collections[0]
         logEvent("No grid collection named %r; using %r"
-                 % (MeshTag, GridCollection.attrib.get('Name', '<unnamed>')), 3)
-    logEvent("Trying GridCollection.tag= %s" % (GridCollection.tag),4)
+                 % (MeshTag, collection.get("name", "<unnamed>")), 3)
+    steps = collection["data"]
+    assert steps, ("grid collection %r holds no grids"
+                   % (collection.get("name", "<unnamed>"),))
+    step = steps[id_in_collection]
+    if "spatial_collection" in step:
+        subdomains = step["spatial_collection"]
+        assert subdomains, "spatial collection holds no subdomain grids"
+        return subdomains[0]
+    return step
 
-    if GridCollection.attrib['GridType'] == 'Collection':
-        #id_in_collection selects the step; -1 is the last one written
-        steps = GridCollection.findall('Grid')
-        assert steps, ("grid collection %r holds no grids"
-                       % (GridCollection.attrib.get('Name', '<unnamed>'),))
-        Grid = steps[id_in_collection]
-        if Grid.attrib.get('GridType') == 'Collection':
-            #a spatial collection of subdomain grids: take the first, which
-            #is what a serial reader can use
-            subdomains = Grid.findall('Grid')
-            assert subdomains, "spatial collection holds no subdomain grids"
-            Grid = subdomains[0]
-    elif GridCollection.attrib['GridType'] == 'Uniform':
-        Grid = GridCollection
-    assert Grid.tag == 'Grid'
-    assert Grid.attrib['GridType'] == 'Uniform'
 
-    return Grid
-
-def extractPropertiesFromXdmfGridNode(Grid):
-    """unpack the Topology, Geometry, NodeMaterials, and ElementMaterials
-    nodes from xdmf node for a uniform grid
-    """
-    #Look these up by tag and name. The previous version iterated with
-    #enumerate and then re-indexed Grid[i] to get the very leaf it was
-    #already holding.
-    Topology = Grid.find('Topology')
-    Geometry = Grid.find('Geometry')
+def extractPropertiesFromGrid(grid):
+    """Unpack the topology, geometry, nodeMaterialTypes and elementMaterialTypes of a grid dict."""
+    Topology = grid.get("topology")
+    Geometry = grid.get("geometry")
     NodeMaterials = ElementMaterials = None
-    for attribute in Grid.findall('Attribute'):
-        name = attribute.attrib.get('Name')
+    for attribute in grid.get("attributes", []):
+        name = attribute.get("name")
         if name == 'nodeMaterialTypes':
             NodeMaterials = attribute
         elif name == 'elementMaterialTypes':
@@ -7231,7 +7042,7 @@ def extractPropertiesFromXdmfGridNode(Grid):
 
 def readUniformElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topologyid2name,topology2nodes):
     """
-    Read xmdf element topology information when there are uniform elements in the mesh
+    Read the element topology when there are uniform elements in the mesh
     Type of element given by elementTopologyName
     Heavy data stored in hdf5
     topologyid2name -- lookup for number of nodes in a given element type
@@ -7241,7 +7052,7 @@ def readUniformElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topolog
     nElements_global  -- the number of elements in the mesh
     nNodes_element    -- number of nodes per element
     elementNodesArray -- element --> node connectivity stored as flattened array accessed using elementNodes_offset
-    elementNodes_offset -- offsets into the elementNodesArray storage for element connectivity, 
+    elementNodes_offset -- offsets into the elementNodesArray storage for element connectivity,
     element eN nodes are in elementNodesArray[elementNodes_offset[eN]:elementNodes_offset[eN+1]]
 
     """
@@ -7261,19 +7072,19 @@ def readUniformElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topolog
 
 def readMixedElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topologyid2name,topology2nodes):
     """
-    Read xmdf element topology information when there are mixed elements in the mesh
+    Read the element topology when there are mixed elements in the mesh
     Heavy data stored in hdf5
     topologyid2name -- lookup for number of nodes in a given element type
 
     returns
 
     nElements_global  -- the number of elements in the mesh
-    elementNodesArray -- element --> node connectivity stored as flattened 
+    elementNodesArray -- element --> node connectivity stored as flattened
     array accessed using elementNodes_offset
-    elementNodes_offset -- offsets into the elementNodesArray storage for element 
-    connectivity, element eN nodes are 
+    elementNodes_offset -- offsets into the elementNodesArray storage for element
+    connectivity, element eN nodes are
     inelementNodesArray[elementNodes_offset[eN]:elementNodes_offset[eN+1]]
- 
+
     """
     assert elementTopologyName == 'Mixed'
 
@@ -7299,41 +7110,29 @@ def readMixedElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topologyi
         eN += 1; i += nNodes_local+1
     elementNodesArray = np.zeros((elementNodes_offset[nElements_global],),'i')
     i = 0; eN = 0
-    while i < len(self.xdmf_topology):
+    #this read self.xdmf_topology, which does not exist in a module function
+    while i < len(xdmf_topology):
         nNodes_local = topology2nodes[topologyid2name[xdmf_topology[i]]]
         elementNodesArray[elementNodes_offset[eN]:elementNodes_offset[eN+1]][:] = xdmf_topology[i+1:i+1+nNodes_local][:]
         eN += 1; i += nNodes_local+1
 
     return nElements_global, elementNodesArray, elementNodes_offset
 
-def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHDF5=True,verbose=0):
-    """Read in a mesh from XDMF, assuming heavy data is in hdf5
+def readMeshFromArchive(archive_base,MeshTag="Spatial_Domain",verbose=0):
+    """Read a mesh back from an archive, assuming heavy data is in its hdf5 file
+
+    ``archive_base`` is the archive's path without the ``.h5`` extension.
+    Its metadata (version 1, the XDMF fragments proteus <= 1.9.x stored, or
+    version 2) describes every step; the last step of the collection named
+    by ``MeshTag`` is read, so no ``.xmf`` is needed. Serial only: a
+    per-subdomain archive yields its first subdomain.
 
     :return: a BasicMeshInfo object with the minimal information read
-    
+
     """
-    # start trying to read an xdmf archive with name xmf_archive_base.xmf
-    # assumes heavy_file_base.h5 has heavy data
-    # root Element is Xdmf
-    #   last child of Xdmf which should be a Domain Element
-    #      find child of Domain that is a Temporal Grid Collection with a name containing MeshTag, if None use first collection
-    #         last child of Temporal Grid Collection should be a Uniform Grid at final time
-    #            Attribute (usually 1) of child is  Topology
-    #               set elementTopologyName to Type
-    #               if Type != Mixed
-    #                 get text attribute and read this entry from  hdf5 file
-    #                 set nNodes_element based on Type, nElements_global from leading dimension of elementNodesArray
-    #                 create elementNodes_offset from Type and flatten elementNodesArray
-    #               else
-    #                 get text attribute and read this entry from  hdf5 file to place in into xdmf_topology
-    #                 generate elementNodesArray from xdmf_topology, calculating the number of elements using
-    #                   walk through xdmf_topology
-    #            Attribute (usually 2) of child is Geometry  --> load data into nodeArray
-    #                set nNodes_global from nodeArray
-    #            If has Attribute nodeMaterials read this from hdf file, else set to default of all zeros
-    #            If has Attribute elementMaterialTypes, read this from hdf file, else set to default of all zeros
-    assert os.path.isfile(xmf_archive_base+'.xmf')
-    assert os.path.isfile(heavy_file_base+'.h5')
+    dataDir, filename = os.path.split(archive_base)
+    dataDir = dataDir or '.'
+    assert os.path.isfile(os.path.join(dataDir, filename+'.h5'))
 
     ###information about allowed Xdmf topologies
     #Xdmf cell type id to Name
@@ -7360,13 +7159,12 @@ def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHD
     #
     MeshInfo = BasicMeshInfo()
 
-    xmf = ET.parse(xmf_archive_base+'.xmf')
-    hdf5= h5py.File(heavy_file_base+'.h5',"r")
-    assert hasHDF5
+    domain = readArchiveDomain(filename, dataDir)
+    hdf5= h5py.File(os.path.join(dataDir, filename+'.h5'),"r")
 
-    Grid = findXMLgridElement(xmf,MeshTag,id_in_collection=-1,verbose=verbose)
+    Grid = findArchiveGrid(domain,MeshTag,id_in_collection=-1,verbose=verbose)
 
-    Topology,Geometry,NodeMaterials,ElementMaterials = extractPropertiesFromXdmfGridNode(Grid)
+    Topology,Geometry,NodeMaterials,ElementMaterials = extractPropertiesFromGrid(Grid)
 
     assert Geometry is not None
     entry = _dataitem_dataset(Geometry, "Geometry")
@@ -7383,10 +7181,7 @@ def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHD
         MeshInfo.nodeMaterialTypes = np.zeros((MeshInfo.nNodes_global,),'i')
 
     assert Topology is not None
-    if 'Type' in Topology.attrib:
-        MeshInfo.elementTopologyName = Topology.attrib['Type']
-    elif 'TopologyType' in Topology.attrib:
-        MeshInfo.elementTopologyName = Topology.attrib['TopologyType']
+    MeshInfo.elementTopologyName = Topology.get("type")
     assert MeshInfo.elementTopologyName is not None
 
     logEvent("elementTopologyName= %s " % MeshInfo.elementTopologyName,3)
@@ -7416,7 +7211,18 @@ def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHD
     hdf5.close()
 
     return MeshInfo
+
+def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHDF5=True,verbose=0):
+    """The old name of :func:`readMeshFromArchive`.
+
+    The ``.xmf`` is no longer read: the archive's ``.h5`` carries the same
+    description of every step, for archives written by any proteus, so
+    ``heavy_file_base`` is all that is needed.
+    """
+    assert hasHDF5, "a mesh is read back from the archive's HDF5 file"
+    return readMeshFromArchive(heavy_file_base, MeshTag=MeshTag, verbose=verbose)
 #
+
 def writeHexMesh(mesh_info,hexfile_base,index_base=0):
     """
     Write a hex mesh in Ido's format with base numbering index_base

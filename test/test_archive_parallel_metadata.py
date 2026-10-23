@@ -54,7 +54,6 @@ MPIEXEC = _find_mpiexec()
 RANK_SCRIPT = textwrap.dedent(
     '''
     import os, shutil, sys
-    from xml.etree.ElementTree import SubElement
     import numpy as np
 
     from proteus import Comm
@@ -79,23 +78,18 @@ RANK_SCRIPT = textwrap.dedent(
     if hot:
         # what NumericalSolution does: continue after the archive's last step
         ar.n_datasets = len(ar.archived_times)
-        ar.domain = ar.tree.getroot().find("Domain")
-    else:
-        ar.domain = SubElement(ar.tree.getroot(), "Domain")
 
     # Sizes differ per rank on purpose: the metadata dataset is fixed-width
     # and created collectively, so if the width agreement is wrong the
     # longest rank's YAML is silently truncated.
     n_elements, n_nodes = 4 + rank, 6 + rank
     if hot:
-        # found by name, as XdmfWriter.setGridCollectionAndGridElements does
-        (collection,) = [c for c in ar.domain
-                         if c.attrib["Name"] == "Mesh Spatial_Domain"]
+        # found by name, as XdmfWriter.setGridCollectionAndGridElements does;
+        # the archive seeded it from the .h5 when it was opened
+        collection = ar.domain.collection("Mesh Spatial_Domain", create=False)
+        assert collection is not None, ar.domain.names()
     else:
-        collection = SubElement(ar.domain, "Grid",
-                                {"Name": "Mesh Spatial_Domain",
-                                 "GridType": "Collection",
-                                 "CollectionType": "Temporal"})
+        collection = ar.domain.collection("Mesh Spatial_Domain")
 
     # global_sync describes one assembled global array, so the metadata
     # carries global counts and each rank contributes only the slice it owns.
@@ -107,7 +101,7 @@ RANK_SCRIPT = textwrap.dedent(
 
     times = [1.0] if hot else [0.0, 0.5]
     for tCount, t in enumerate(times, start=ar.n_datasets):
-        grid, _ = ar.write_grid(collection, "Grid_p%d" % rank, t, tCount)
+        grid = ar.write_grid(collection, "Grid_p%d" % rank, t, tCount)
         if global_sync:
             ar.write_topology(grid, "Triangle", n_elements_global,
                               [n_elements_global, 3],

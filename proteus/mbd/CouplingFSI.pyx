@@ -50,9 +50,32 @@ import h5py
 cimport ChronoHeaders as ch
 # chrono Python headers
 from proteus.mprans import BodyDynamics as bd
-from proteus.Archiver import indentXML
 import pychrono as chrono
 from pychrono import fea as chrono_fea
+
+
+def indentXML(elem, level=0):
+    """Pretty-print an ElementTree in place.
+
+    This module still writes its own XDMF for the bodies and cables it
+    moves (one ``.xmf`` per object, with the per-step fragments stored in
+    the HDF5 file the way proteus <= 1.9.x did). proteus's own archive no
+    longer builds XML, so the helper that used to live in Archiver lives
+    here until these writers go through the archive too.
+    """
+    i = "\n" + level*"  "
+    if len(elem):
+        if not elem.text or not elem.text.strip():
+            elem.text = i + "  "
+        for e in elem:
+            indentXML(e, level+1)
+            if not e.tail or not e.tail.strip():
+                e.tail = i + "  "
+        if not e.tail or not e.tail.strip():
+            e.tail = i
+    else:
+        if level and (not elem.tail or not elem.tail.strip()):
+            elem.tail = i
 
 # needed for sphinx docs
 __all__ = ['ProtChSystem',
