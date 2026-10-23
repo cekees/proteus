@@ -105,4 +105,37 @@ namespace adrh
       }
     }
   };
+
+  // Steady linear advection-diffusion with the manufactured sine solution of
+  // proteus.AnalyticalSolutions.LinearADR_Sine (c = 0):
+  //   div(b u - kappa grad u) + d(x) = 0,  u = sin(omega.x + omega0),
+  //   d(x) = -(b.omega) cos(omega.x + omega0) - kappa |omega|^2 sin(omega.x + omega0).
+  // In proteus's form f = b u, a = kappa I, phi = u, r = d(x). The parameters are data of the functor.
+  struct AdvectionDiffusionSine : DenseMasks
+  {
+    static constexpr int nc = 1, nSpace = 3;
+    static constexpr bool has_mass = false, has_hamiltonian = false;
+    static constexpr bool da_nz(int, int, int) { return false; }  // a does not depend on u
+    static constexpr bool dr_nz(int, int) { return false; }       // nor does the source
+    double b[3], kappa, omega[3], omega0;
+    AdvectionDiffusionSine(const double *b_, double kappa_, const double *omega_, double omega0_)
+        : kappa(kappa_), omega0(omega0_)
+    {
+      for (int I = 0; I < 3; ++I) { b[I] = b_[I]; omega[I] = omega_[I]; }
+    }
+    void evaluate(double, const double x[3], const double u[1], const double gu[1][3], Terms<1, 3> &T) const
+    {
+      T.phi[0] = u[0];
+      T.dphi[0][0] = 1.0;
+      double bw = 0.0, ww = 0.0, arg = omega0;
+      for (int I = 0; I < 3; ++I) { bw += b[I] * omega[I]; ww += omega[I] * omega[I]; arg += omega[I] * x[I]; }
+      for (int I = 0; I < 3; ++I)
+      {
+        T.f[0][I] = b[I] * u[0];
+        T.df[0][0][I] = b[I];
+        T.a[0][0][I][I] = kappa;
+      }
+      T.r[0] = -bw * std::cos(arg) - kappa * ww * std::sin(arg);
+    }
+  };
 } // namespace adrh
