@@ -19,3 +19,18 @@ elements with no exterior face: the Python element residual includes the exterio
 terms) and 8e-16 (Jacobian); coupled Jacobian vs central differences 1e-10. Element residual and
 Jacobian for 162,000 tets: 0.054 s for the kernel including geometry and coefficient evaluation,
 against 0.39 s for the Python path's kernels alone with its quadrature arrays already filled.
+
+## Sparsity masks and the advection-diffusion regression
+
+* `masked.h` – `elementKernelMasked`: the same kernel with the functor's sparsity as `static constexpr` predicates
+  (`DenseMasks` says everything is nonzero; a functor redefines what it knows). Component loops are unrolled with
+  `constexpr_for` and every disallowed block is dropped with `if constexpr`. `compare_masks.py` checks it against the
+  runtime-loop kernel and times both: a five-component chain with tridiagonal reaction is 23x faster, a two-component
+  coupled system 2.1x, Poisson 1.3x; with all-true masks the unrolled kernel costs the same as the runtime loops, so the gain
+  is all sparsity.
+* `ad_regression.py` – steady advection-diffusion with the manufactured sine solution
+  (`AnalyticalSolutions.LinearADR_Sine`, c = 0) on regular tets: the engine, a plain Proteus model (`ad_sine_p.py`,
+  `ad_sine_n.py`) and the exact solution. Engine and Proteus nodal solutions agree to 4e-15; L2 error rates 1.85 and 1.97.
+  The driver imposes strong Dirichlet rows; boundary conditions are not in the engine yet.
+
+Design, decisions and numbers: `ADRH_ENGINE_DESIGN.md` (kept beside the campaign notes, sections 11-13).

@@ -1,0 +1,5 @@
+*.so
+*.h5
+*.xmf
+*.log
+__pycache__/
