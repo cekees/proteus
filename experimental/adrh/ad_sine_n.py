@@ -16,8 +16,17 @@ quad = False
 nLevels = 1
 subgridError = None
 shockCapturing = None
-# strong Dirichlet (the Dirichlet unknowns are eliminated), advective outflow from the interior value, prescribed diffusive flux
-numericalFluxType = NumericalFlux.StrongDirichletFactory({0: 'outFlow'}) if mixed else None
+# strong Dirichlet (the Dirichlet unknowns are eliminated) with advective outflow by the interior value and prescribed
+# fluxes, or weak Dirichlet by the interior-penalty exterior fluxes (see ad_sine_p.py for AD_BC)
+_WEAK = {'iipg': NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG_exterior,
+         'nipg': NumericalFlux.Advection_DiagonalUpwind_Diffusion_NIPG_exterior,
+         'sipg': NumericalFlux.Advection_DiagonalUpwind_Diffusion_SIPG_exterior}
+if BC == 'strong':
+    numericalFluxType = None
+elif BC in _WEAK:
+    numericalFluxType = _WEAK[BC]
+else:
+    numericalFluxType = NumericalFlux.StrongDirichletFactory({0: 'outFlow'})
 multilevelNonlinearSolver = Newton
 levelNonlinearSolver = Newton
 fullNewtonFlag = True

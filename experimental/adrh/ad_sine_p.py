@@ -54,26 +54,43 @@ coefficients.variableNames = ['u0']
 eps = 1.0e-8
 
 
-# AD_MIXED=1: Dirichlet data on every face except x = 1, where the diffusive flux -kappa grad u . n is prescribed
-# (advection leaves by the interior value); the default is Dirichlet data on the whole boundary
-mixed = os.environ.get('AD_MIXED', '0') == '1'
+# AD_BC selects the boundary treatment, matching ad_regression.py:
+#   strong (default)  Dirichlet data on the whole boundary, imposed strongly (numericalFluxType = None)
+#   mixed             as strong except the face x = 1, where the diffusive flux -kappa grad u . n is prescribed and
+#                     advection leaves by the interior value (StrongDirichletFactory({0: 'outFlow'}); AD_MIXED=1 is this)
+#   inflow            as mixed, and on the face x = 0 (inflow, b . n < 0) the advective flux (b . n) u and the
+#                     diffusive flux are both prescribed
+#   iipg, nipg, sipg  Dirichlet data on the whole boundary, imposed weakly by
+#                     Advection_DiagonalUpwind_Diffusion_{IIPG,NIPG,SIPG}_exterior (the Dirichlet dofs stay unknowns)
+BC = os.environ.get('AD_BC', 'mixed' if os.environ.get('AD_MIXED', '0') == '1' else 'strong')
+assert BC in ('strong', 'mixed', 'inflow', 'iipg', 'nipg', 'sipg'), BC
+mixed = BC in ('mixed', 'inflow')
+not_dirichlet = {'mixed': [3], 'inflow': [0, 3]}.get(BC, [])     # indices into distances below: 0 = x=0, 3 = x=1
 
 
 def getDBC(x, flag):
     distances = [x[i] - x0[i] for i in range(3)] + [x0[i] + L[i] - x[i] for i in range(3)]
-    if mixed:
-        distances = distances[:3] + distances[4:]        # not the face x = 1 (index 3)
+    distances = [d for i, d in enumerate(distances) if i not in not_dirichlet]
     if min(distances) < eps:
         return lambda x, t: exact(x)
 
 
 def getDiffusiveFlux(x, flag):
+    # -kappa grad u . n with n = +-e_x on the faces x = 1 and x = 0
     if mixed and abs(x[0] - (x0[0] + L[0])) < eps:
         return lambda x, t: -kappa * omega[0] * np.cos(np.dot(omega, x[:3]) + omega0)
+    if BC == 'inflow' and abs(x[0] - x0[0]) < eps:
+        return lambda x, t: kappa * omega[0] * np.cos(np.dot(omega, x[:3]) + omega0)
+
+
+def getAdvectiveFlux(x, flag):
+    # (b . n) u on the inflow face x = 0, n = -e_x
+    if BC == 'inflow' and abs(x[0] - x0[0]) < eps:
+        return lambda x, t: -b[0] * exact(x)
 
 
 dirichletConditions = {0: getDBC}
-advectiveFluxBoundaryConditions = {}
+advectiveFluxBoundaryConditions = {0: getAdvectiveFlux} if BC == 'inflow' else {}
 diffusiveFluxBoundaryConditions = {0: {0: getDiffusiveFlux}} if mixed else {0: {}}
-fluxBoundaryConditions = {0: 'outFlow' if mixed else 'noFlow'}
+fluxBoundaryConditions = {0: 'outFlow' if BC != 'strong' else 'noFlow'}
 analyticalSolution = {}

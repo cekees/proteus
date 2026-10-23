@@ -5,12 +5,20 @@ verified AnalyticalSolutions.LinearADR_Sine with c = 0), P1 Galerkin on regular 
 Dirichlet data from the exact solution. The engine builds the element residual and Jacobian; the driver
 assembles, imposes the Dirichlet rows and solves with scipy. Checks:
 
-  1. engine and Proteus solve the same discrete problem: nodal solutions agree to solver round-off;
-     AD_MIXED=1 makes the face x = 1 a flux face (prescribed diffusive flux, advective outflow) instead of Dirichlet;
+  1. engine and Proteus solve the same discrete problem: nodal solutions agree to solver round-off.
+     AD_BC picks the boundary treatment on both sides (ad_sine_p.py has the Proteus side):
+       strong (default)  Dirichlet data everywhere, imposed strongly by the driver (Proteus: numericalFluxType=None)
+       mixed             the face x = 1 is a flux face: prescribed diffusive flux, advection out by the interior value
+                         (Proteus: StrongDirichletFactory({0: 'outFlow'}); AD_MIXED=1 means this)
+       inflow            as mixed, and the inflow face x = 0 has the advective flux (b . n) u and the diffusive flux
+                         prescribed (the engine's Flux kind with hasAdv)
+       iipg, nipg, sipg  Dirichlet data everywhere, imposed weakly: upwinded advective flux against f(g), diffusive flux
+                         with penalty C/h (2, 10, 100) and the NIPG/SIPG adjoint term (the engine's WeakDirichlet kind
+                         against Proteus's Advection_DiagonalUpwind_Diffusion_*_exterior);
   2. both converge to the exact solution at the P1 rates (L2 ~ h^2, max-norm ~ h^2);
   3. the exact solution fed through the engine's residual is small and shrinks with h (consistency).
 
-usage: python ad_regression.py [nn ...]        default 5 9 17
+usage: [AD_BC=mode] python ad_regression.py [nn ...]        default 5 9 17
 """
 import os
 import sys
@@ -53,9 +61,23 @@ def proteus_solution(nn):
     return np.array(lm.u[0].dof), np.array(lm.mesh.nodeArray), np.array(lm.mesh.elementNodesArray)
 
 
-MIXED = os.environ.get('AD_MIXED', '0') == '1'
+BC = os.environ.get('AD_BC', 'mixed' if os.environ.get('AD_MIXED', '0') == '1' else 'strong')
+WEAK = {'iipg': (2.0, 1.0, 0.0), 'nipg': (10.0, 1.0, -1.0), 'sipg': (100.0, 1.0, 1.0)}   # C, p, sigma as in Proteus
+assert BC in ('strong', 'mixed', 'inflow') or BC in WEAK, BC
+os.environ['AD_BC'] = BC
 quadf = Quadrature.SimplexGaussQuadrature(2, order)
 qpf = np.array([list(p)[:2] for p in quadf.points]); qwf = np.array(quadf.weights)
+# the faces the engine's boundary kernel sees, by plane: (kind code of SineBC, axis, value); the rest is strong Dirichlet
+FACES = {'strong': [], 'mixed': [(1, 0, 1.0)], 'inflow': [(2, 0, 0.0), (1, 0, 1.0)]}
+for mode in WEAK:
+    FACES[mode] = [(3, ax, v) for ax in range(3) for v in (0.0, 1.0)]
+
+
+def plane_faces(nodes, conn, axis, value):
+    """Element faces (element, local face = the opposite node) whose three nodes lie on the plane x[axis] = value.
+    Per plane, because a face with its nodes on two different planes is an interior face."""
+    on = np.abs(nodes[conn][:, :, axis] - value) < 1e-12                       # (nE, 4)
+    return np.nonzero(on.sum(axis=1)[:, None] - on.astype(int) == 3)
 
 
 def engine_solution(nodes, conn):
@@ -66,20 +88,31 @@ def engine_solution(nodes, conn):
     rows = np.repeat(conn, 4, axis=1).ravel(); cols = np.tile(conn, (1, 4)).ravel()
     K = sp.coo_matrix((J[:, 0, :, 0, :].ravel(), (rows, cols)), shape=(nN, nN)).tocsr()
     rhs = -np.bincount(conn.ravel(), weights=R[:, 0, :].ravel(), minlength=nN)
-    if MIXED:
-        # strong Dirichlet on every boundary node except those strictly inside the face x = 1
-        onb = (nodes.min(axis=1) < 1e-12) | (nodes[:, 1:].max(axis=1) > 1 - 1e-12)
-        # flux faces: element faces whose three nodes all lie on x = 1; local face k is opposite node k
-        onx1 = nodes[conn][:, :, 0] > 1 - 1e-12                              # (nE, 4)
-        fe, fk = np.nonzero(onx1.sum(axis=1)[:, None] - onx1.astype(int) == 3)
+    if FACES[BC]:
+        fe, fk, kind = [], [], []
+        for code, ax, v in FACES[BC]:
+            e, k = plane_faces(nodes, conn, ax, v)
+            fe.append(e); fk.append(k); kind.append(np.full(len(e), code))
+        fe, fk, kind = (np.concatenate(a) for a in (fe, fk, kind))
+        pc, pp, sig = WEAK.get(BC, (2.0, 1.0, 0.0))
         face_conn = conn[fe]
-        Rf, Jf = adrh_proto.advection_diffusion_sine_flux_faces(b, kappa, omega, omega0, np.ascontiguousarray(fk, dtype='i'),
-                                                                np.ascontiguousarray(nodes[face_conn]), np.zeros((len(fe), 1, 4)), qpf, qwf)
+        Rf, Jf = adrh_proto.advection_diffusion_sine_faces(b, kappa, omega, omega0, np.ascontiguousarray(fk, dtype='i'),
+                                                           np.ascontiguousarray(kind, dtype='i'),
+                                                           np.ascontiguousarray(nodes[face_conn]), np.zeros((len(fe), 1, 4)),
+                                                           qpf, qwf, pc, pp, sig)
         rows_f = np.repeat(face_conn, 4, axis=1).ravel(); cols_f = np.tile(face_conn, (1, 4)).ravel()
         K = K + sp.coo_matrix((Jf[:, 0, :, 0, :].ravel(), (rows_f, cols_f)), shape=(nN, nN)).tocsr()
         rhs = rhs - np.bincount(face_conn.ravel(), weights=Rf[:, 0, :].ravel(), minlength=nN)
+    # the nodes whose rows the driver replaces by the Dirichlet value
+    lo, hi = nodes.min(axis=1) < 1e-12, nodes.max(axis=1) > 1 - 1e-12
+    if BC in WEAK:
+        onb = np.zeros(nN, bool)
+    elif BC == 'mixed':
+        onb = lo | (nodes[:, 1:].max(axis=1) > 1 - 1e-12)
+    elif BC == 'inflow':
+        onb = (nodes[:, 1:].min(axis=1) < 1e-12) | (nodes[:, 1:].max(axis=1) > 1 - 1e-12)
     else:
-        onb = (nodes.min(axis=1) < 1e-12) | (nodes.max(axis=1) > 1 - 1e-12)
+        onb = lo | hi
     ub = exact(nodes)
     free = ~onb
     Kff = K[free][:, free]
@@ -101,6 +134,7 @@ def errors(u, nodes, conn, xn):
 
 sizes = [int(a) for a in sys.argv[1:]] or [5, 9, 17]
 prev = None
+print("AD_BC=%s" % BC)
 print("%4s %9s %12s %12s %14s %14s %9s %9s %14s" % ("nn", "elements", "|eng-prot|", "eng-vs-ex L2", "prot-vs-ex L2", "eng max err", "L2 rate", "max rate", "res(exact) inf"))
 for nn in sizes:
     up, nodes, conn = proteus_solution(nn)

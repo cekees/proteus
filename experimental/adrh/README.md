@@ -30,7 +30,22 @@ against 0.39 s for the Python path's kernels alone with its quadrature arrays al
   is all sparsity.
 * `ad_regression.py` – steady advection-diffusion with the manufactured sine solution
   (`AnalyticalSolutions.LinearADR_Sine`, c = 0) on regular tets: the engine, a plain Proteus model (`ad_sine_p.py`,
-  `ad_sine_n.py`) and the exact solution. Engine and Proteus nodal solutions agree to 4e-15; L2 error rates 1.85 and 1.97.
-  The driver imposes strong Dirichlet rows; boundary conditions are not in the engine yet.
+  `ad_sine_n.py`) and the exact solution. Engine and Proteus nodal solutions agree to solver round-off (< 1e-14) in every
+  boundary mode; L2 error rates 1.85-1.97.
 
-Design, decisions and numbers: `ADRH_ENGINE_DESIGN.md` (kept beside the campaign notes, sections 11-13).
+## Boundary conditions (`boundary.h`)
+
+`exteriorFaceKernel` adds the exterior-face terms per face (residual and Jacobian, scattered by the driver). A BC functor
+says, per component and boundary quadrature point, which of three kinds applies; each is the engine's version of a
+Proteus exterior numerical-flux treatment, and `ad_regression.py` compares against that treatment (`AD_BC=`):
+
+| kind | what it does | Proteus equivalent | `AD_BC` |
+|---|---|---|---|
+| `Strong` | nothing on the face; the driver replaces the row | `StrongDirichletFactory`, `numericalFluxType=None` | `strong` |
+| `Flux` | prescribed diffusive flux; advective flux prescribed where given, else the interior `f(u).n` on outflow and zero on inflow | `StrongDirichletFactory({ci: 'outFlow'})` with `diffusiveFluxBoundaryConditions` / `advectiveFluxBoundaryConditions` | `mixed`, `inflow` |
+| `WeakDirichlet` | upwinded advective flux against `f(g)`, `-a grad phi . n + (C/h^p)(u - g)`, adjoint `-sigma (u - g) (a^T n).grad w` | `Advection_DiagonalUpwind_Diffusion_{IIPG,NIPG,SIPG}_exterior` (C = 2, 10, 100; sigma = 0, -1, +1) | `iipg`, `nipg`, `sipg` |
+
+The header's comment says where the engine deliberately differs from Proteus (the adjoint's tensor contraction, da/du in
+the Jacobian); neither shows with an isotropic constant diffusion tensor.
+
+Design, decisions and numbers: `ADRH_ENGINE_DESIGN.md` (kept beside the campaign notes, sections 11-15).

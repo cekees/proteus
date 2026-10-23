@@ -50,17 +50,24 @@ py::tuple runMasked(const C &coef, Arr xn, Arr u, py::object uold, Arr qp, Arr q
 
 PYBIND11_MODULE(adrh_proto, m)
 {
-  // flux faces of the advection-diffusion sine problem: advective outflow f(u).n plus the prescribed diffusive flux
-  m.def("advection_diffusion_sine_flux_faces", [](Arr b, double kappa, Arr omega, double omega0, py::array_t<int, py::array::c_style | py::array::forcecast> faceLocal,
-                                                   Arr xn, Arr u, Arr qpf, Arr qwf) {
+  // exterior faces of the advection-diffusion sine problem; faceKind (nF) per face: 1 = flux face (diffusive flux
+  // given, advection by the interior value on outflow), 2 = flux face with the advective flux given too,
+  // 3 = weak Dirichlet (penalty_constant / h^penalty_power, adjoint sigma: 0 IIPG, -1 NIPG, +1 SIPG)
+  m.def("advection_diffusion_sine_faces", [](Arr b, double kappa, Arr omega, double omega0,
+                                              py::array_t<int, py::array::c_style | py::array::forcecast> faceLocal,
+                                              py::array_t<int, py::array::c_style | py::array::forcecast> faceKind,
+                                              Arr xn, Arr u, Arr qpf, Arr qwf,
+                                              double penalty_constant, double penalty_power, double sigma) {
     adrh::AdvectionDiffusionSine c(b.data(), kappa, omega.data(), omega0);
-    adrh::SineDiffusiveFlux bc(kappa, omega.data(), omega0);
+    adrh::SineBC bc(b.data(), kappa, omega.data(), omega0, faceKind.data());
+    adrh::WeakDirichletParams wd{penalty_constant, penalty_power, sigma};
     const int nF = xn.shape(0), nQf = qwf.shape(0);
     py::array_t<double> Rf({nF, 1, 4}), Jf({nF, 1, 4, 1, 4});
     {
       py::gil_scoped_release release;
-      adrh::exteriorFluxFaceKernel<adrh::AdvectionDiffusionSine, adrh::SineDiffusiveFlux>(
-          c, bc, nF, nQf, faceLocal.data(), xn.data(), u.data(), qpf.data(), qwf.data(), 0.0, Rf.mutable_data(), Jf.mutable_data());
+      adrh::exteriorFaceKernel<adrh::AdvectionDiffusionSine, adrh::SineBC>(
+          c, bc, wd, nF, nQf, faceLocal.data(), xn.data(), u.data(), qpf.data(), qwf.data(), 0.0,
+          Rf.mutable_data(), Jf.mutable_data());
     }
     return py::make_tuple(Rf, Jf);
   });
