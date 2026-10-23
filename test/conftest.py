@@ -1,6 +1,8 @@
 """Test-suite wide fixtures."""
 import os
+import subprocess
 import sys
+import time
 
 import pytest
 
@@ -35,6 +37,41 @@ def pytest_configure(config):
 # its own still sets Comm.argv before anything starts it.)
 from proteus import Comm, runtime  # noqa: E402
 Comm.argv = runtime.petsc_argv()
+
+
+# mpiexec itself sometimes fails to start on a CI runner (the macOS Intel runner with Open MPI 5,
+# mostly). Either PMIx cannot find a network interface for a moment ("ptl_tool: problems getting
+# address for index 0 (kernel index -1)", exit status 213), or a rank's MPI_Init cannot reach the
+# others ("It looks like MPI_INIT failed for some reason ... PML add procs failed --> Returned
+# "Not found" (-13)", exit status 14). Every launch in that second fails, whatever it was testing,
+# and no rank has run anything of the job when it happens, so launching it again is safe; any
+# other failure is left alone. The messages are Open MPI's, so only its launches are ever retried.
+MPI_LAUNCH_FAILURES = ('ptl_tool: problems getting address', 'It looks like MPI_INIT failed')
+
+
+def mpi_launch_never_started(result):
+    """True for a ``subprocess.CompletedProcess`` whose mpiexec failed before any rank ran."""
+    err = getattr(result, 'stderr', None)
+    if isinstance(err, bytes):
+        err = err.decode(errors='replace')
+    return (result.returncode != 0 and isinstance(err, str)
+            and any(text in err for text in MPI_LAUNCH_FAILURES))
+
+
+@pytest.fixture(autouse=True)
+def _retry_an_mpi_launch_that_never_started(monkeypatch):
+    """Every ``subprocess.run`` from a test: launch again, up to three times in all, if an mpiexec
+    never started (MPI_LAUNCH_FAILURES). The pause before a relaunch is
+    PROTEUS_TEST_MPI_RETRY_DELAY seconds (default 3), doubled before the last attempt."""
+    run = subprocess.run
+
+    def run_with_retry(cmd, *args, **kwargs):
+        for attempt in range(3):
+            result = run(cmd, *args, **kwargs)
+            if attempt == 2 or not mpi_launch_never_started(result):
+                return result
+            time.sleep(float(os.environ.get('PROTEUS_TEST_MPI_RETRY_DELAY', 3.0)) * (attempt + 1))
+    monkeypatch.setattr(subprocess, 'run', run_with_retry)
 
 
 @pytest.fixture(autouse=True)
