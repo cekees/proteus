@@ -5,7 +5,7 @@ by PETSc PCMG-preconditioned CG, or -- as the single-level baseline whose iterat
 count grows with the mesh -- by ASM-preconditioned CG. Reports the wall-clock time of
 each phase (maximum over ranks), the iteration count, and peak resident memory.
 
-Usage: mg_scaling_mpi.py KIND NN LEVELS MODE [independent] [global] [coarse=redundant|direct|amg] [space=p1|dg|nc]
+Usage: mg_scaling_mpi.py KIND NN LEVELS MODE [independent] [global] [coarse=redundant|direct|amg] [space=p1|dg|nc] [smoother=NAME]
 
 space=dg or nc (tetrahedra only) solves discontinuous P1 (SIPG) or non-conforming P1 instead of C0 P1,
 partitioned by elements: their dofs are not vertices, so they take the general transfer route.
@@ -140,6 +140,19 @@ if space != 'p1':
     # interior faces; each rank must own whole elements for those fluxes to be complete
     n.numericalFluxType = (default_n.Advection_DiagonalUpwind_Diffusion_SIPG if space == 'dg'
                            else default_n.Advection_DiagonalUpwind_Diffusion_SIPG_exterior)
+# smoother=NAME: what the PCMG levels use (PETSc options layered over the Chebyshev(2)/Jacobi default).
+# The point smoothers ignore the element blocks of a discontinuous space, the block ones do not.
+SMOOTHERS = {
+    'jacobi': {},
+    'cheb4': {'mg_levels_ksp_max_it': '4'},
+    'sor': {'mg_levels_ksp_type': 'richardson', 'mg_levels_ksp_max_it': '2', 'mg_levels_pc_type': 'sor',
+            'mg_levels_pc_sor_its': '1'},
+    'bjacobi_ilu': {'mg_levels_pc_type': 'bjacobi', 'mg_levels_sub_pc_type': 'ilu'},
+    'bjacobi_lu': {'mg_levels_pc_type': 'bjacobi', 'mg_levels_sub_pc_type': 'lu'},
+    'asm1_ilu': {'mg_levels_pc_type': 'asm', 'mg_levels_pc_asm_overlap': '1', 'mg_levels_sub_pc_type': 'ilu'},
+    'asm1_lu': {'mg_levels_pc_type': 'asm', 'mg_levels_pc_asm_overlap': '1', 'mg_levels_sub_pc_type': 'lu'},
+    'asm0_lu': {'mg_levels_pc_type': 'asm', 'mg_levels_pc_asm_overlap': '0', 'mg_levels_sub_pc_type': 'lu'},
+}
 n.regularGrid = 'global' if 'global' in flags else 'generated'
 n.parallelPartitioningType = (MeshTools.MeshParallelPartitioningTypes.element if 'space=dg' in flags or 'space=nc' in flags
                               else MeshTools.MeshParallelPartitioningTypes.node)
@@ -178,6 +191,9 @@ else:
                           'mg_levels_ksp_type': 'chebyshev', 'mg_levels_ksp_max_it': '2',
                           'mg_levels_pc_type': 'jacobi',
                           'ksp_rtol': '1e-8', 'ksp_atol': '1e-30', 'ksp_max_it': '500'}
+        smoother = [f.split('=', 1)[1] for f in flags if f.startswith('smoother=')]
+        if smoother:
+            n.petscOptions.update(SMOOTHERS[smoother[0]])
     else:
         n.linearSmoother = None
         n.petscOptions = {'ksp_type': 'cg', 'pc_type': 'asm', 'pc_asm_overlap': '1',
