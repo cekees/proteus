@@ -7119,7 +7119,7 @@ def readMixedElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topologyi
     return nElements_global, elementNodesArray, elementNodes_offset
 
 def readMeshFromArchive(archive_base,MeshTag="Spatial_Domain",verbose=0):
-    """Read a mesh back from an archive, assuming heavy data is in its hdf5 file
+    """Read a mesh back from a proteus archive, from its hdf5 file alone
 
     ``archive_base`` is the archive's path without the ``.h5`` extension.
     Its metadata (version 1, the XDMF fragments proteus <= 1.9.x stored, or
@@ -7132,7 +7132,35 @@ def readMeshFromArchive(archive_base,MeshTag="Spatial_Domain",verbose=0):
     """
     dataDir, filename = os.path.split(archive_base)
     dataDir = dataDir or '.'
-    assert os.path.isfile(os.path.join(dataDir, filename+'.h5'))
+    h5_path = os.path.join(dataDir, filename+'.h5')
+    assert os.path.isfile(h5_path)
+    domain = readArchiveDomain(filename, dataDir)
+    assert domain is not None and domain.get("time_collections"), \
+        ("%s holds no proteus archive metadata; a mesh in an XDMF file written "
+         "by another tool is read with readMeshXdmf" % (h5_path,))
+    return _readMeshFromDomain(domain, h5_path, MeshTag=MeshTag, verbose=verbose)
+
+def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHDF5=True,verbose=0):
+    """Read a mesh from an XDMF file, assuming heavy data is in hdf5
+
+    For XDMF written by other tools -- an OpenFOAM mesh converted to XDMF,
+    say -- whose ``.h5`` holds the arrays and nothing else. The XDMF is
+    parsed by ``ymf.xdmf``, so proteus itself imports no XML parser. A
+    proteus archive needs no ``.xmf``: :func:`readMeshFromArchive` reads it
+    from its ``.h5``.
+
+    :return: a BasicMeshInfo object with the minimal information read
+
+    """
+    from ymf.xdmf import read_xdmf
+    assert hasHDF5, "a mesh is read with its heavy data in an hdf5 file"
+    assert os.path.isfile(xmf_archive_base+'.xmf')
+    assert os.path.isfile(heavy_file_base+'.h5')
+    domain, _ = read_xdmf(xmf_archive_base+'.xmf')
+    return _readMeshFromDomain(domain, heavy_file_base+'.h5', MeshTag=MeshTag, verbose=verbose)
+
+def _readMeshFromDomain(domain, h5_path, MeshTag="Spatial_Domain", verbose=0):
+    """The mesh described by one grid of ``domain``, its arrays read from ``h5_path``."""
 
     ###information about allowed Xdmf topologies
     #Xdmf cell type id to Name
@@ -7159,8 +7187,7 @@ def readMeshFromArchive(archive_base,MeshTag="Spatial_Domain",verbose=0):
     #
     MeshInfo = BasicMeshInfo()
 
-    domain = readArchiveDomain(filename, dataDir)
-    hdf5= h5py.File(os.path.join(dataDir, filename+'.h5'),"r")
+    hdf5= h5py.File(h5_path,"r")
 
     Grid = findArchiveGrid(domain,MeshTag,id_in_collection=-1,verbose=verbose)
 
@@ -7211,16 +7238,6 @@ def readMeshFromArchive(archive_base,MeshTag="Spatial_Domain",verbose=0):
     hdf5.close()
 
     return MeshInfo
-
-def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHDF5=True,verbose=0):
-    """The old name of :func:`readMeshFromArchive`.
-
-    The ``.xmf`` is no longer read: the archive's ``.h5`` carries the same
-    description of every step, for archives written by any proteus, so
-    ``heavy_file_base`` is all that is needed.
-    """
-    assert hasHDF5, "a mesh is read back from the archive's HDF5 file"
-    return readMeshFromArchive(heavy_file_base, MeshTag=MeshTag, verbose=verbose)
 #
 
 def writeHexMesh(mesh_info,hexfile_base,index_base=0):
