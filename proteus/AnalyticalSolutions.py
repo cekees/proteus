@@ -70,6 +70,27 @@ class AS_base(object):
         """
         pass
 
+    def rOfUXT(self, u, x, T):
+        """
+        Return the reaction term at a point and time; steady solutions define :func:`rOfUX`
+        """
+        return self.rOfUX(u, x)
+
+    def drOfUXT(self, u, x, T):
+        """
+        Return the derivative of the reaction term at a point and time
+        """
+        return self.drOfUX(u, x)
+
+    def advectiveFluxOfXT(self, x, T):
+        return self.advectiveFluxOfX(x)
+
+    def diffusiveFluxOfXT(self, x, T):
+        return self.diffusiveFluxOfX(x)
+
+    def totalFluxOfXT(self, x, T):
+        return self.totalFluxOfX(x)
+
     def getUOfXT(self, X, T, U):
         """
         Set the solution, U, at an array of 3D points, X, and a time, T
@@ -82,17 +103,29 @@ class AS_base(object):
         """
         self.p_to_v(self.duOfXT, X, T, DU)
 
-    def getROfUX(self, X, T, R):
+    def getROfUX(self, X, T, R, U=None):
         """
         Set the reaction term, R, at an array of 3D points, X, and a time, T
-        """
-        self.coeff_p_to_v(self.rOfXT, U, X, T, R)
 
-    def getDROfUX(self, X, T, DR):
+        U holds the values of u to evaluate it at; by default it is the exact solution.
+        """
+        if U is None:
+            U = numpy.zeros(X.shape[:-1])
+            self.p_to_v(self.uOfXT, X, T, U)
+        for idx in numpy.ndindex(*X.shape[:-1]):
+            R[idx] = self.rOfUXT(U[idx], X[idx], T)
+
+    def getDROfUX(self, X, T, DR, U=None):
         """
         Set the derivative of the reaction term, DR, at an array of 3D points, X, and a time, T
+
+        U holds the values of u to evaluate it at; by default it is the exact solution.
         """
-        self.coeff_p_to_v(self.drOfXT, U, X, T, DR)
+        if U is None:
+            U = numpy.zeros(X.shape[:-1])
+            self.p_to_v(self.uOfXT, X, T, U)
+        for idx in numpy.ndindex(*X.shape[:-1]):
+            DR[idx] = self.drOfUXT(U[idx], X[idx], T)
 
     def getAdvectiveFluxOfXT(self, X, T, F):
         """
@@ -100,27 +133,28 @@ class AS_base(object):
         """
         self.p_to_v(self.advectiveFluxOfXT, X, T, F)
 
-    def getDiffusiveFluxOfX(self, X, T, F):
+    def getDiffusiveFluxOfXT(self, X, T, F):
         """
         Set the diffusive flux, F, at an array of 3D points, X, and a time, T
         """
         self.p_to_v(self.diffusiveFluxOfXT, X, T, F)
 
-    def getTotalFluxOfX(self, X, T, F):
+    def getTotalFluxOfXT(self, X, T, F):
         """
         Set the total flux, F, at an array of 3D points, X, and a time, T
         """
         self.p_to_v(self.totalFluxOfXT, X, T, F)
 
+    # the names these had before the time argument was added to the flux methods
+    getDiffusiveFluxOfX = getDiffusiveFluxOfXT
+    getTotalFluxOfX = getTotalFluxOfXT
+
     def p_to_v(self, func, X, T, funcValVec):
         """
-        Calculate a point-wise function over and array of points.
+        Set funcValVec to func(x, T) at every point of X, whose last dimension is the 3D point
         """
-        nPoints = 1
-        for d in X.shape[:-1]:
-            nPoints *= d
-        for i in range(nPoints):
-            funcValVec[i] = funcValVec(X.flat[i*3:i*3+3], T)
+        for idx in numpy.ndindex(*X.shape[:-1]):
+            funcValVec[idx] = func(X[idx], T)
 
 
 class DAE_base(AS_base):
@@ -131,7 +165,7 @@ class DAE_base(AS_base):
     """
 
     def uOfXT(self, X, T):
-        return self.uOfT(self, T)
+        return self.uOfT(T)
 
     def uOfT(self, T):
         pass
@@ -141,7 +175,7 @@ class NonlinearDAE(DAE_base):
     r"""
     The exact solution of the simple nonlinear DAE
 
-    .. math: u_t  = - a \max(u,0)^p \quad u(0) = 1
+    .. math:: u_t  = - a \max(u,0)^p \quad u(0) = 1
     """
 
     def __init__(self, a, p):
@@ -183,7 +217,7 @@ class LinearAD_SteadyState(SteadyState):
 
     The boundary value problem is
 
-    .. math: (bu - au_x)_x = 0 \quad u(0) = 1 \quad u(1) = 0
+    .. math:: (bu - au_x)_x = 0 \quad u(0) = 1 \quad u(1) = 0
     """
 
     def __init__(self, b=1.0, a=5.0e-1):
@@ -209,7 +243,7 @@ class NonlinearAD_SteadyState(LinearAD_SteadyState):
 
     The boundary value problem is
 
-    .. math: (bu^q - a(u^r)_x)_x = 0 \quad u(0) = 1 \quad u(1) = 0
+    .. math:: (bu^q - a(u^r)_x)_x = 0 \quad u(0) = 1 \quad u(1) = 0
 
     Currently :math:`q=1,r=2`, and :math:`r=2,q=1` are implemented
     """
@@ -245,23 +279,20 @@ class NonlinearAD_SteadyState(LinearAD_SteadyState):
                 return 2.0*(log(C-1.0) - log(C)) + 2.0*C*(1.0/(C-1.0) - 1.0/C)
             C = 1.0 + 1.0e-10
             f0 = f(C)
-            print(f0)
+            logEvent('f0=' + repr(f0))
             while abs(f(C)) > (1.0e-7*abs(f0) + 1.0e-7):
                 dC = -f(C)/df(C)
                 logEvent("dc")
-                print(dC)
+                logEvent('dC=' + repr(dC))
                 Ctmp = C + dC
                 while (abs(f(Ctmp)) > 0.99*abs(f(C))
                        or Ctmp <= 1.0):
-                    print(f(Ctmp))
-                    print(f(C))
+                    logEvent('f(Ctmp)=%r f(C)=%r' % (f(Ctmp), f(C)))
                     logEvent("ls")
                     dC *= 0.9
                     Ctmp = C + dC
                 logEvent("out")
-                print(Ctmp)
-                print(f(Ctmp))
-                print(df(Ctmp))
+                logEvent('Ctmp=%r f=%r df=%r' % (Ctmp, f(Ctmp), df(Ctmp)))
                 C = Ctmp
             logEvent("C="+repr(C))
             self.nlC_ = C
@@ -480,7 +511,7 @@ class LinearAD_DiracIC(AS_base):
     def duOfXT(self, x, T):
         t = T + self.tStart
         y = (x[:self.b_.shape[0]] - self.x0_[:self.b_.shape[0]] - self.b_*t)
-        return self.uOfXT(x, T)*2.0*y/(4.0*self.a_*t)
+        return -self.uOfXT(x, T)*2.0*y/(4.0*self.a_*t)  # du/dx_j = -u y_j/(2 a t)
 
     def advectiveFluxOfXT(self, x, T):
         return self.b_*self.uOfXT(x, T)
@@ -532,6 +563,12 @@ class NonlinearADR_Decay_DiracIC(LinearADR_Decay_DiracIC):
 
     on an infinite domain with Dirac initial data.
     Also returns the fluxes (by inheritance).
+
+    .. warning:: This is a heuristic (the linear solution times a decay factor), not an
+       exact solution, and not an accurate one: against its own equation the rate of change
+       of the total mass is off by 33-66% for d=2 (c=0.05-1.3, a=0.02-0.2), and for d=3 the
+       decay factor is constant in time, so the mass does not decay at all. Use
+       :class:`LinearADR_Decay_DiracIC` or a numerical reference to check a code.
     """
 
     def __init__(self,
@@ -602,7 +639,7 @@ class PlaneCouetteFlow_v(SteadyState):
 
 class PlaneCouetteFlow_p(SteadyState):
     """
-    The exact solution for the v component of  velocity in plane Couette Flow
+    The exact solution for the pressure in plane Couette Flow (zero)
     """
 
     def __init__(self,
@@ -671,7 +708,7 @@ class PlanePoiseuilleFlow_v(SteadyState):
 
 class PlanePoiseuilleFlow_p(SteadyState):
     """
-    The exact solution for the v component of  velocity in plane Poiseuille Flow
+    The exact solution for the pressure in plane Poiseuille Flow, grad_p*x
     """
 
     def __init__(self,
@@ -736,7 +773,8 @@ class Buckley_Leverett_RiemannSoln(AS_base):
 
 class PlaneBase(SteadyState):
     """
-    The exact solution for the u component of  velocity in plane Poiseuille Flow
+    Base class for plane Poiseuille flow between plates at any orientation, driven by the pressure
+    gradient grad_p along the unit vector v_n, which is perpendicular to the plates' normal
     """
     # constructor or initializer function, reads in parameters needed in the iwork and rwork arrays
 
@@ -763,6 +801,8 @@ class PlaneBase(SteadyState):
             logEvent(
                 "plate is is parallel to z-axis, using angle of velocity with z-axis instead of angle with x-axis")
             v_theta = plane_theta - pi/2.0
+            if v_phi is None:
+                v_phi = pi/2.0  # horizontal flow, perpendicular to the plate's normal
         self.v_n = numpy.array([cos(v_theta)*sin(v_phi),
                                 sin(v_theta)*sin(v_phi),
                                 cos(v_phi)])
@@ -853,7 +893,7 @@ class PlanePoiseuilleFlow_v2(PlaneBase):
 
 class PlanePoiseuilleFlow_w2(PlaneBase):
     """
-    The exact solution for the v component of  velocity in plane Poiseuille Flow
+    The exact solution for the w component of  velocity in plane Poiseuille Flow
     """
 
     def __init__(self,
@@ -881,7 +921,7 @@ class PlanePoiseuilleFlow_w2(PlaneBase):
 
 class PlanePoiseuilleFlow_p2(PlaneBase):
     """
-    The exact solution for the v component of  velocity in plane Poiseuille Flow
+    The exact solution for the pressure in plane Poiseuille Flow
     """
 
     def __init__(self,
@@ -926,7 +966,7 @@ class VortexDecay_u(AS_base):
 
 class VortexDecay_v(AS_base):
     """
-    The exact solution for the u component of  velocity in the vortex  decay problem
+    The exact solution for the v component of  velocity in the vortex  decay problem
     """
     # constructor or initializer function, reads in parameters needed in the iwork and rwork arrays
 
@@ -943,7 +983,7 @@ class VortexDecay_v(AS_base):
 
 class VortexDecay_p(AS_base):
     """
-    The exact solution for the u component of  velocity in the vortex  decay problem
+    The exact solution for the pressure in the vortex  decay problem
     """
     # constructor or initializer function, reads in parameters needed in the iwork and rwork arrays
 
