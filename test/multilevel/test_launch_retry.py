@@ -1,7 +1,8 @@
 """The conftest retries an mpiexec launch that never started, and only that.
 
-PMIx sometimes cannot find a network interface for a moment on a CI runner, and every launch
-in that second dies with "ptl_tool: problems getting address ..." before any rank runs.
+On a CI runner PMIx sometimes cannot find a network interface for a moment ("ptl_tool: problems
+getting address ...") or Open MPI's ranks cannot reach each other ("PML add procs failed"); every
+launch in that moment dies before any rank computes anything.
 """
 import subprocess
 import sys
@@ -26,6 +27,12 @@ def _run(tmp_path, failures, message):
 
 def test_a_launch_that_never_started_is_run_again(tmp_path):
     result, runs = _run(tmp_path, 1, 'ptl_tool: problems getting address for index 0 (kernel index -1)')
+    assert result.returncode == 0
+    assert runs == 2
+
+
+def test_an_mpi_init_failure_is_run_again(tmp_path):
+    result, runs = _run(tmp_path, 1, 'It looks like MPI_INIT failed ... PML add procs failed\n --> Returned "Not found" (-13)')
     assert result.returncode == 0
     assert runs == 2
 

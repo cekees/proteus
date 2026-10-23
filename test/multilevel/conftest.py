@@ -91,11 +91,12 @@ def _rank_slots(n):
             f.close()
 
 
-# mpiexec itself sometimes fails to start on a CI runner: PMIx cannot find a network interface for a
-# moment ("ptl_tool: problems getting address for index 0 (kernel index -1)", exit status 213), and
-# every launch in that second fails, whatever it was testing. Nothing of the job has run when that
-# happens, so launching it again is safe; any other failure is left alone.
-_LAUNCH_FAILURE = 'ptl_tool: problems getting address'
+# mpiexec or MPI_Init itself sometimes fails on a CI runner (the macOS Intel one, Open MPI): PMIx cannot find a
+# network interface for a moment ("ptl_tool: problems getting address for index 0 (kernel index -1)", exit status 213),
+# or the ranks cannot reach each other ("MPI_INIT failed ... PML add procs failed ... Returned "Not found" (-13)"),
+# and every launch in that moment fails, whatever it was testing. Nothing of the job has run when that happens, so
+# launching it again is safe; any other failure is left alone.
+_LAUNCH_FAILURES = ('ptl_tool: problems getting address', 'PML add procs failed')
 
 
 @pytest.fixture(autouse=True)
@@ -113,7 +114,7 @@ def _launch_policy(monkeypatch):
                 with _rank_slots(ranks):
                     result = run(cmd, *args, **kwargs)
             err = getattr(result, 'stderr', None)
-            if (result.returncode == 0 or not isinstance(err, str) or _LAUNCH_FAILURE not in err
+            if (result.returncode == 0 or not isinstance(err, str) or not any(f in err for f in _LAUNCH_FAILURES)
                     or attempt == 2):
                 return result
             time.sleep(3.0 * (attempt + 1))
