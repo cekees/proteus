@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include "coefficients.h"
+#include "boundary.h"
 
 namespace py = pybind11;
 using Arr = py::array_t<double, py::array::c_style | py::array::forcecast>;
@@ -49,6 +50,20 @@ py::tuple runMasked(const C &coef, Arr xn, Arr u, py::object uold, Arr qp, Arr q
 
 PYBIND11_MODULE(adrh_proto, m)
 {
+  // flux faces of the advection-diffusion sine problem: advective outflow f(u).n plus the prescribed diffusive flux
+  m.def("advection_diffusion_sine_flux_faces", [](Arr b, double kappa, Arr omega, double omega0, py::array_t<int, py::array::c_style | py::array::forcecast> faceLocal,
+                                                   Arr xn, Arr u, Arr qpf, Arr qwf) {
+    adrh::AdvectionDiffusionSine c(b.data(), kappa, omega.data(), omega0);
+    adrh::SineDiffusiveFlux bc(kappa, omega.data(), omega0);
+    const int nF = xn.shape(0), nQf = qwf.shape(0);
+    py::array_t<double> Rf({nF, 1, 4}), Jf({nF, 1, 4, 1, 4});
+    {
+      py::gil_scoped_release release;
+      adrh::exteriorFluxFaceKernel<adrh::AdvectionDiffusionSine, adrh::SineDiffusiveFlux>(
+          c, bc, nF, nQf, faceLocal.data(), xn.data(), u.data(), qpf.data(), qwf.data(), 0.0, Rf.mutable_data(), Jf.mutable_data());
+    }
+    return py::make_tuple(Rf, Jf);
+  });
   m.def("advection_diffusion_sine", [](Arr b, double kappa, Arr omega, double omega0, Arr xn, Arr u, Arr qp, Arr qw) {
     adrh::AdvectionDiffusionSine c(b.data(), kappa, omega.data(), omega0);
     return runMasked<adrh::AdvectionDiffusionSine, 3>(c, xn, u, py::none(), qp, qw, 0.0, 0.0);

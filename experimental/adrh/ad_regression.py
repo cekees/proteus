@@ -6,6 +6,7 @@ Dirichlet data from the exact solution. The engine builds the element residual a
 assembles, imposes the Dirichlet rows and solves with scipy. Checks:
 
   1. engine and Proteus solve the same discrete problem: nodal solutions agree to solver round-off;
+     AD_MIXED=1 makes the face x = 1 a flux face (prescribed diffusive flux, advective outflow) instead of Dirichlet;
   2. both converge to the exact solution at the P1 rates (L2 ~ h^2, max-norm ~ h^2);
   3. the exact solution fed through the engine's residual is small and shrinks with h (consistency).
 
@@ -52,6 +53,11 @@ def proteus_solution(nn):
     return np.array(lm.u[0].dof), np.array(lm.mesh.nodeArray), np.array(lm.mesh.elementNodesArray)
 
 
+MIXED = os.environ.get('AD_MIXED', '0') == '1'
+quadf = Quadrature.SimplexGaussQuadrature(2, order)
+qpf = np.array([list(p)[:2] for p in quadf.points]); qwf = np.array(quadf.weights)
+
+
 def engine_solution(nodes, conn):
     nE, nN = len(conn), len(nodes)
     xn = np.ascontiguousarray(nodes[conn])
@@ -60,7 +66,20 @@ def engine_solution(nodes, conn):
     rows = np.repeat(conn, 4, axis=1).ravel(); cols = np.tile(conn, (1, 4)).ravel()
     K = sp.coo_matrix((J[:, 0, :, 0, :].ravel(), (rows, cols)), shape=(nN, nN)).tocsr()
     rhs = -np.bincount(conn.ravel(), weights=R[:, 0, :].ravel(), minlength=nN)
-    onb = (nodes.min(axis=1) < 1e-12) | (nodes.max(axis=1) > 1 - 1e-12)
+    if MIXED:
+        # strong Dirichlet on every boundary node except those strictly inside the face x = 1
+        onb = (nodes.min(axis=1) < 1e-12) | (nodes[:, 1:].max(axis=1) > 1 - 1e-12)
+        # flux faces: element faces whose three nodes all lie on x = 1; local face k is opposite node k
+        onx1 = nodes[conn][:, :, 0] > 1 - 1e-12                              # (nE, 4)
+        fe, fk = np.nonzero(onx1.sum(axis=1)[:, None] - onx1.astype(int) == 3)
+        face_conn = conn[fe]
+        Rf, Jf = adrh_proto.advection_diffusion_sine_flux_faces(b, kappa, omega, omega0, np.ascontiguousarray(fk, dtype='i'),
+                                                                np.ascontiguousarray(nodes[face_conn]), np.zeros((len(fe), 1, 4)), qpf, qwf)
+        rows_f = np.repeat(face_conn, 4, axis=1).ravel(); cols_f = np.tile(face_conn, (1, 4)).ravel()
+        K = K + sp.coo_matrix((Jf[:, 0, :, 0, :].ravel(), (rows_f, cols_f)), shape=(nN, nN)).tocsr()
+        rhs = rhs - np.bincount(face_conn.ravel(), weights=Rf[:, 0, :].ravel(), minlength=nN)
+    else:
+        onb = (nodes.min(axis=1) < 1e-12) | (nodes.max(axis=1) > 1 - 1e-12)
     ub = exact(nodes)
     free = ~onb
     Kff = K[free][:, free]

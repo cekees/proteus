@@ -54,13 +54,26 @@ coefficients.variableNames = ['u0']
 eps = 1.0e-8
 
 
+# AD_MIXED=1: Dirichlet data on every face except x = 1, where the diffusive flux -kappa grad u . n is prescribed
+# (advection leaves by the interior value); the default is Dirichlet data on the whole boundary
+mixed = os.environ.get('AD_MIXED', '0') == '1'
+
+
 def getDBC(x, flag):
-    if min(min(x[i] - x0[i], x0[i] + L[i] - x[i]) for i in range(3)) < eps:
+    distances = [x[i] - x0[i] for i in range(3)] + [x0[i] + L[i] - x[i] for i in range(3)]
+    if mixed:
+        distances = distances[:3] + distances[4:]        # not the face x = 1 (index 3)
+    if min(distances) < eps:
         return lambda x, t: exact(x)
+
+
+def getDiffusiveFlux(x, flag):
+    if mixed and abs(x[0] - (x0[0] + L[0])) < eps:
+        return lambda x, t: -kappa * omega[0] * np.cos(np.dot(omega, x[:3]) + omega0)
 
 
 dirichletConditions = {0: getDBC}
 advectiveFluxBoundaryConditions = {}
-diffusiveFluxBoundaryConditions = {0: {}}
-fluxBoundaryConditions = {0: 'noFlow'}
+diffusiveFluxBoundaryConditions = {0: {0: getDiffusiveFlux}} if mixed else {0: {}}
+fluxBoundaryConditions = {0: 'outFlow' if mixed else 'noFlow'}
 analyticalSolution = {}

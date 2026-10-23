@@ -16,7 +16,8 @@ quad = False
 nLevels = 1
 subgridError = None
 shockCapturing = None
-numericalFluxType = None
+# strong Dirichlet (the Dirichlet unknowns are eliminated), advective outflow from the interior value, prescribed diffusive flux
+numericalFluxType = NumericalFlux.StrongDirichletFactory({0: 'outFlow'}) if mixed else None
 multilevelNonlinearSolver = Newton
 levelNonlinearSolver = Newton
 fullNewtonFlag = True
