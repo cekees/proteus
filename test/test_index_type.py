@@ -20,7 +20,10 @@ from proteus import Comm, MeshTools
 from proteus import cmeshTools
 from proteus.Archiver import GENERATED_INDEX_DTYPE
 
-HEADER = os.path.join(os.path.dirname(MeshTools.__file__), "index_type.h")
+#: in the source tree, not next to the installed package: a non-editable
+#: install (CI) does not ship the headers
+HEADER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                      os.pardir, "proteus", "index_type.h")
 
 #: numbers, counts and offsets of mesh entities: proteus_index_t
 INDEX_ARRAYS = [
