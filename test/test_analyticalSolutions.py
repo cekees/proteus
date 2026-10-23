@@ -193,21 +193,21 @@ def test_LinearAD_DiracIC():
     up75 = [sol.uOfXT(x, T=0.75) for x in X]
     assert up75[midpoint_x_index] == 1.362394143014481e-08
     Dup25 = [sol.duOfXT(x, T=0.25)[0] for x in X]
-    assert Dup25[midpoint_x_index] == -0.24840948011219627
+    assert Dup25[midpoint_x_index] == 0.24840948011219627
     Dup75 = [sol.duOfXT(x, T=0.75)[0] for x in X]
-    assert Dup75[midpoint_x_index] == -6.484340861040867e-07
+    assert Dup75[midpoint_x_index] == 6.484340861040867e-07
     afluxp25 = [sol.advectiveFluxOfXT(x, T=0.25)[0] for x in X]
     assert afluxp25[midpoint_x_index] == 0.005805917122996999
     afluxp75 = [sol.advectiveFluxOfXT(x, T=0.75)[0] for x in X]
     assert afluxp75[midpoint_x_index] == 1.362394143014481e-08
     dfluxp25 = [sol.diffusiveFluxOfXT(x, T=0.25)[0] for x in X]
-    assert dfluxp25[midpoint_x_index] == 0.0024840948011219627
+    assert dfluxp25[midpoint_x_index] == -0.0024840948011219627
     dfluxp75 = [sol.diffusiveFluxOfXT(x, T=0.75)[0] for x in X]
-    assert dfluxp75[midpoint_x_index] == 6.484340861040867e-09
+    assert dfluxp75[midpoint_x_index] == -6.484340861040867e-09
     tfluxp25 = [sol.totalFluxOfXT(x, T=0.25)[0] for x in X]
-    assert tfluxp25[midpoint_x_index] == 0.008290011924118962
+    assert tfluxp25[midpoint_x_index] == 0.003321822321875036
     tfluxp75 = [sol.totalFluxOfXT(x, T=0.75)[0] for x in X]
-    assert tfluxp75[midpoint_x_index] == 2.0108282291185675e-08
+    assert tfluxp75[midpoint_x_index] == 7.139600569103944e-09
     if save_plots:
         fig = plt.figure()
         plt.plot(Xx,
@@ -253,21 +253,21 @@ def test_LinearADR_Decay_DiracIC():
     up75 = [sol.uOfXT(x, T=0.75) for x in X]
     assert up75[midpoint_x_index] == 6.435494248102993e-09
     Dup25 = [sol.duOfXT(x, T=0.25)[0] for x in X]
-    assert Dup25[midpoint_x_index] == -0.19346149763373902
+    assert Dup25[midpoint_x_index] == 0.19346149763373902
     Dup75 = [sol.duOfXT(x, T=0.75)[0] for x in X]
-    assert Dup75[midpoint_x_index] == -3.062985739327577e-07
+    assert Dup75[midpoint_x_index] == 3.062985739327577e-07
     afluxp25 = [sol.advectiveFluxOfXT(x, T=0.25)[0] for x in X]
     assert afluxp25[midpoint_x_index] == 0.0045216528018377404
     afluxp75 = [sol.advectiveFluxOfXT(x, T=0.75)[0] for x in X]
     assert afluxp75[midpoint_x_index] == 6.435494248102993e-09
     dfluxp25 = [sol.diffusiveFluxOfXT(x, T=0.25)[0] for x in X]
-    assert dfluxp25[midpoint_x_index] == 0.0019346149763373901
+    assert dfluxp25[midpoint_x_index] == -0.0019346149763373901
     dfluxp75 = [sol.diffusiveFluxOfXT(x, T=0.75)[0] for x in X]
-    assert dfluxp75[midpoint_x_index] == 3.062985739327577e-09
+    assert dfluxp75[midpoint_x_index] == -3.062985739327577e-09
     tfluxp25 = [sol.totalFluxOfXT(x, T=0.25)[0] for x in X]
-    assert tfluxp25[midpoint_x_index] == 0.00645626777817513
+    assert tfluxp25[midpoint_x_index] == 0.0025870378255003503
     tfluxp75 = [sol.totalFluxOfXT(x, T=0.75)[0] for x in X]
-    assert tfluxp75[midpoint_x_index] == 9.498479987430571e-09
+    assert tfluxp75[midpoint_x_index] == 3.3725085087754163e-09
     if save_plots:
         fig = plt.figure()
         plt.plot(Xx,
@@ -313,21 +313,21 @@ def test_NonlinearADR_Decay_DiracIC():
     up75 = [sol.uOfXT(x, T=0.75) for x in X]
     assert up75[midpoint_x_index] == 1.3623941337338921e-08
     Dup25 = [sol.duOfXT(x, T=0.25)[0] for x in X]
-    assert Dup25[midpoint_x_index] == -0.248169222231705570
+    assert Dup25[midpoint_x_index] == 0.24816922223170557
     Dup75 = [sol.duOfXT(x, T=0.75)[0] for x in X]
-    assert Dup75[midpoint_x_index] == -6.484340816869727e-07
+    assert Dup75[midpoint_x_index] == 6.484340816869727e-07
     afluxp25 = [sol.advectiveFluxOfXT(x, T=0.25)[0] for x in X]
     assert afluxp25[midpoint_x_index] == 0.0058003017280384575
     afluxp75 = [sol.advectiveFluxOfXT(x, T=0.75)[0] for x in X]
     assert afluxp75[midpoint_x_index] == 1.3623941337338921e-08
     dfluxp25 = [sol.diffusiveFluxOfXT(x, T=0.25)[0] for x in X]
-    assert dfluxp25[midpoint_x_index] == 0.0024816922223170556
+    assert dfluxp25[midpoint_x_index] == -0.0024816922223170556
     dfluxp75 = [sol.diffusiveFluxOfXT(x, T=0.75)[0] for x in X]
-    assert dfluxp75[midpoint_x_index] == 6.484340816869727e-09
+    assert dfluxp75[midpoint_x_index] == -6.484340816869727e-09
     tfluxp25 = [sol.totalFluxOfXT(x, T=0.25)[0] for x in X]
-    assert tfluxp25[midpoint_x_index] == 0.008281993950355513
+    assert tfluxp25[midpoint_x_index] == 0.003318609505721402
     tfluxp75 = [sol.totalFluxOfXT(x, T=0.75)[0] for x in X]
-    assert tfluxp75[midpoint_x_index] == 2.010828215420865e-08
+    assert tfluxp75[midpoint_x_index] == 7.139600520469194e-09
     if save_plots:
         fig = plt.figure()
         plt.plot(Xx,

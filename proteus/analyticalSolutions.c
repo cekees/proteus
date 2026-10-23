@@ -436,7 +436,7 @@ int LinearAD_DiracIC_du(int *iwork, double *rwork, int nPoints, double T, double
 		for (j=0; j<3; j++)
 		{
 			y[j] = x[i*3+j] - x0[j] - b[j]*t;
-			f[i*3+j] = u[i]*2.0*y[j] / (4.0*a*t);
+			f[i*3+j] = -u[i]*2.0*y[j] / (4.0*a*t);  /* du/dx_j = -u y_j / (2 a t) */
 		}
 	}
 	free(u);
