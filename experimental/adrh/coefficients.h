@@ -1,14 +1,17 @@
 // Hand-written coefficient functors in the form a generator would emit (see adrh.h).
 #pragma once
-#include "adrh.h"
+#include "masked.h"
 
 namespace adrh
 {
   // test/ci/poisson_3d_p.py: -div(a(x) grad u) = f(x), a = diag(x+5, y+5, z+10),
   // f = -2x - 2(5+x) - 2y - 2(5+y) - 2z - 2(10+z). Proteus stores r = -f.
-  struct Poisson3D
+  struct Poisson3D : DenseMasks
   {
     static constexpr int nc = 1, nSpace = 3;
+    // only diffusion (a, phi = u) and the source r are present
+    static constexpr bool has_mass = false, has_advection = false, has_hamiltonian = false;
+    static constexpr bool dr_nz(int, int) { return false; }  // r does not depend on u
     void evaluate(double, const double x[3], const double u[1], const double gu[1][3], Terms<1, 3> &T) const
     {
       T.phi[0] = u[0];
@@ -23,9 +26,17 @@ namespace adrh
 
   // A coupled two-component system with every term nonlinear, for checking the Jacobian by
   // finite differences. The potentials are linear (phi = u), as in the existing kernels' Jacobians.
-  struct Coupled2
+  struct Coupled2 : DenseMasks
   {
     static constexpr int nc = 2, nSpace = 3;
+    // the coupling is spelled out: dm[0][1], df[0][1], a^{01}, H_0 depends on grad u_0 and grad u_1 only
+    static constexpr bool dm_nz(int i, int j) { return i == j || (i == 0 && j == 1); }
+    static constexpr bool df_nz(int i, int j) { return i == j || (i == 0 && j == 1); }
+    static constexpr bool a_nz(int i, int k) { return i == k || (i == 0 && k == 1); }
+    static constexpr bool da_nz(int i, int k, int j) { return (i == 0 && k == 0 && j == 0) || (i == 1 && k == 1 && j == 1) || (i == 0 && k == 1 && j == 0); }
+    static constexpr bool dphi_nz(int k, int j) { return k == j; }
+    static constexpr bool H_nz(int i) { return i == 0; }
+    static constexpr bool dH_nz(int i, int j) { return i == 0; }
     void evaluate(double t, const double x[3], const double u[2], const double gu[2][3], Terms<2, 3> &T) const
     {
       const double u0 = u[0], u1 = u[1];
@@ -55,6 +66,43 @@ namespace adrh
       // reaction
       T.r[0] = u0 * u1 - 0.3 * std::sin(t + x[2]);  T.dr[0][0] = u1;  T.dr[0][1] = u0;
       T.r[1] = u1 * u1 * u1 - u0;                   T.dr[1][1] = 3.0 * u1 * u1;  T.dr[1][0] = -1.0;
+    }
+  };
+
+  // Five components in a chain, for the cost of ignoring structure: mass, advection and diffusion are
+  // diagonal in the components, the reaction couples neighbours (tridiagonal, 13 of 25 blocks).
+  // UseMasks = false inherits the all-true masks and writes exactly the same values, so the two
+  // differ only in the work the kernel does.
+  template <bool UseMasks>
+  struct Chain5 : DenseMasks
+  {
+    static constexpr int nc = 5, nSpace = 3;
+    static constexpr bool has_hamiltonian = !UseMasks;  // there is no Hamiltonian; dense still loops over it
+    static constexpr bool m_nz(int i) { return !UseMasks || true; }
+    static constexpr bool dm_nz(int i, int j) { return !UseMasks || i == j; }
+    static constexpr bool df_nz(int i, int j) { return !UseMasks || i == j; }
+    static constexpr bool a_nz(int i, int k) { return !UseMasks || i == k; }
+    static constexpr bool da_nz(int i, int k, int j) { return !UseMasks || (i == k && k == j); }
+    static constexpr bool dphi_nz(int k, int j) { return !UseMasks || k == j; }
+    static constexpr bool H_nz(int i) { return !UseMasks; }
+    static constexpr bool dH_nz(int i, int j) { return !UseMasks; }
+    static constexpr bool dr_nz(int i, int j) { return !UseMasks || (i - j >= -1 && i - j <= 1); }
+    void evaluate(double, const double x[3], const double u[5], const double gu[5][3], Terms<5, 3> &T) const
+    {
+      const double v[3] = {1.0, 0.5, 0.25};
+      for (int i = 0; i < 5; ++i)
+      {
+        T.m[i] = u[i];                 T.dm[i][i] = 1.0;
+        for (int I = 0; I < 3; ++I) { T.f[i][I] = v[I] * u[i]; T.df[i][i][I] = v[I]; }
+        T.phi[i] = u[i];               T.dphi[i][i] = 1.0;
+        const double kappa = 0.1 * (i + 1) * (1.0 + 0.1 * u[i] * u[i]);
+        for (int I = 0; I < 3; ++I) { T.a[i][i][I][I] = kappa; T.da[i][i][i][I][I] = 0.02 * (i + 1) * u[i]; }
+        const double um = i > 0 ? u[i - 1] : 0.0, up = i < 4 ? u[i + 1] : 0.0;
+        T.r[i] = um * u[i] - u[i] * up + 0.1 * u[i] + 0.01 * x[0];
+        T.dr[i][i] = um - up + 0.1;
+        if (i > 0) T.dr[i][i - 1] = u[i];
+        if (i < 4) T.dr[i][i + 1] = -u[i];
+      }
     }
   };
 } // namespace adrh
