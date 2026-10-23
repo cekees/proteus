@@ -747,3 +747,32 @@ def test_close_leaves_a_single_document(tmp_path):
     datadir = run_ranks(tmp_path, 1, global_sync=False)
     text = open(os.path.join(datadir, "mpitest.ymf"), encoding="utf-8").read()
     assert "\n---\n" not in text
+
+
+def test_an_ymf_without_append_step_costs_the_document_not_the_run(tmp_path):
+    """proteus and ymf move independently, so the skew has to be survivable.
+
+    ``append_step`` arrived in ymf after this writer was written, and the
+    import of it used to sit outside the guard -- which turned "your live
+    document is stale" into an exception out of the middle of a timestep.
+    CI caught it honestly: three legs of one run resolved ``ymf@main`` five
+    minutes before the merge that added the function. Any user whose ymf
+    predates it would have hit the same thing.
+    """
+    import types
+    import proteus.Archiver as AR
+    import ymf.archive
+
+    live = types.SimpleNamespace(dataDir=str(tmp_path), filename="skew",
+                                 global_sync=True, _liveYmfStarted=False,
+                                 _liveYmfWarned=False)
+    step = [(0, "Grid", 0.0, [{"topology": {}, "geometry": {}}])]
+
+    saved = ymf.archive.append_step
+    del ymf.archive.append_step
+    try:
+        AR.AR_base._appendLiveStep(live, step)   # must not raise
+    finally:
+        ymf.archive.append_step = saved
+
+    assert live._liveYmfWarned, "the failure has to be reported, not hidden"

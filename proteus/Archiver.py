@@ -452,14 +452,15 @@ class AR_base(object):
         no such care, since each ends with the document-end marker that
         tells a reader it is complete.
 
-        Failures are logged and swallowed. The authoritative document is
-        still written at close from the HDF5 file, and the steps already in
-        the archive matter more than this one.
+        Failures are logged and swallowed, the import among them: an ymf
+        too old to have ``append_step`` should cost the run its live
+        document, not the run. The authoritative document is still written
+        at close from the HDF5 file, and the steps already in the archive
+        matter more than this one.
         """
-        from ymf.archive import append_step, new_domain, write_ymf
-
         path = os.path.join(self.dataDir, self.filename + ".ymf")
         try:
+            from ymf.archive import append_step, new_domain, write_ymf
             if not self._liveYmfStarted:
                 tmp = path + ".writing"
                 write_ymf(new_domain(live_steps[0][1]), tmp)
