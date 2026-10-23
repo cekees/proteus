@@ -33,8 +33,8 @@ def indentXML(elem, level=0):
 #: point numbering of quadrature, DG and particle meshes -- as opposed to a
 #: mesh's own connectivity, whose dtype comes from the mesh. The writers
 #: build those arrays with it and declare them with it, so the two cannot
-#: disagree.
-GENERATED_INDEX_DTYPE = numpy.dtype('i')
+#: disagree. It is the mesh index type, proteus_index_t.
+from .cmeshTools import INDEX_DTYPE as GENERATED_INDEX_DTYPE
 
 def xdmf_number_type(*arrays):
     """``{"DataType": ..., "Precision": ...}`` for a DataItem holding ``arrays``.
