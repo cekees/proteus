@@ -1,6 +1,9 @@
 """Fixtures for the multilevel tests."""
+import contextlib
+import fcntl
 import os
 import subprocess
+import tempfile
 import time
 
 import pytest
@@ -20,21 +23,72 @@ os.environ.setdefault('PRTE_MCA_rmaps_default_mapping_policy', ':oversubscribe')
 os.environ.setdefault('OMPI_MCA_pml', 'ob1')
 
 
-@pytest.hookimpl(tryfirst=True)  # before xdist turns the group marks into the '@group' part of the test id
-def pytest_collection_modifyitems(config, items):
-    """Keep the multilevel tests on one pytest-xdist worker (CI runs ``-n auto --dist loadgroup``).
+# How the MPI jobs these tests launch share the machine under pytest-xdist (CI runs
+# ``-n auto --dist loadgroup``). PROTEUS_TEST_MPI picks: 'slots' (default), 'group' or 'none'.
+#
+# One worker per core, each launching its own 2-4 rank job, puts several times more busy-polling
+# MPI processes on a runner than it has cores: on the 4-core macOS Intel runner 4-rank tests that
+# take seconds on an idle machine took up to 17 minutes and four hit their 300 s limit.
+#   slots: a cross-process counting semaphore over MPI *ranks*. A launch holds as many slots as it
+#          has ranks (``mpiexec -n N``) while it runs, and there are PROTEUS_TEST_MPI_SLOTS of them
+#          (default: twice the core count). Jobs that fit together still run side by side, and the
+#          machine is never more than 2x oversubscribed. On 4 cores pinned, 91 of these tests ran
+#          in 63 s with no cap, 72 s at 2x, 107 s at 1x and 139 s on one worker (MPICH, Linux).
+#   group: every test in this directory on one xdist worker, so at most one job at a time. The
+#          setting that fixed the Intel runner, kept as the fallback.
+#   none:  no limit.
+_MODE = os.environ.get('PROTEUS_TEST_MPI', 'slots')
+_SLOTS = max(1, int(os.environ.get('PROTEUS_TEST_MPI_SLOTS', 2 * (os.cpu_count() or 2))))
+_SLOT_DIR = os.path.join(tempfile.gettempdir(), 'proteus_mpi_slots_%d' % os.getuid())
 
-    Most of them launch 2-4 MPI ranks. One worker per core each launching its own
-    4-rank job puts several times more busy-polling processes on the runner than it
-    has cores: on the 4-core macOS Intel runner 4-rank tests that take seconds
-    elsewhere took up to 17 minutes and four timed out at their 300 s limit, while
-    the same directory run sequentially (as it was before the suite went to xdist)
-    took minutes. One group means one worker, so at most one of these MPI jobs runs
-    at a time, next to the single-process tests on the other workers."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    for item in items:
-        if str(getattr(item, 'path', item.fspath)).startswith(here + os.sep):
-            item.add_marker(pytest.mark.xdist_group('multilevel-mpi'))
+
+def _ranks(cmd):
+    """The rank count of an ``mpiexec -n N ...`` command, or None for anything else."""
+    try:
+        if os.path.basename(str(cmd[0])) not in ('mpiexec', 'mpirun', 'mpiexec.hydra'):
+            return None
+        for i, arg in enumerate(cmd[1:-1], 1):
+            if arg in ('-n', '-np', '--np'):
+                return int(cmd[i + 1])
+    except (TypeError, IndexError, ValueError):
+        return None
+    return 1
+
+
+@contextlib.contextmanager
+def _rank_slots(n):
+    """Hold n of the machine's rank slots (all of them if n exceeds them) until the block ends.
+
+    Slots are flock'd files, so a killed worker (``--forked`` children, a timeout) frees its
+    slots with its process. Only one launch at a time collects slots, under the gate lock, so two
+    launches that each hold some and wait for more cannot deadlock."""
+    n = min(n, _SLOTS)
+    os.makedirs(_SLOT_DIR, exist_ok=True)
+    held = []
+    with open(os.path.join(_SLOT_DIR, 'gate'), 'w') as gate:
+        fcntl.flock(gate, fcntl.LOCK_EX)
+        try:
+            while len(held) < n:
+                for k in range(_SLOTS):
+                    if len(held) == n:
+                        break
+                    f = open(os.path.join(_SLOT_DIR, 'slot%d' % k), 'w')
+                    try:
+                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        held.append(f)
+                    except OSError:
+                        f.close()
+                if len(held) < n:
+                    time.sleep(0.05)
+        except BaseException:
+            for f in held:
+                f.close()
+            raise
+    try:
+        yield
+    finally:
+        for f in held:
+            f.close()
 
 
 # mpiexec itself sometimes fails to start on a CI runner: PMIx cannot find a network interface for a
@@ -45,19 +99,36 @@ _LAUNCH_FAILURE = 'ptl_tool: problems getting address'
 
 
 @pytest.fixture(autouse=True)
-def _retry_a_launch_that_never_started(monkeypatch):
+def _launch_policy(monkeypatch):
+    """Every ``subprocess.run`` of an mpiexec from these tests: hold its rank slots while it runs
+    (mode 'slots') and launch again, up to three times, if it never started."""
     run = subprocess.run
 
-    def run_with_retry(cmd, *args, **kwargs):
+    def launch(cmd, *args, **kwargs):
+        ranks = _ranks(cmd) if _MODE == 'slots' else None
         for attempt in range(3):
-            result = run(cmd, *args, **kwargs)
+            if ranks is None:
+                result = run(cmd, *args, **kwargs)
+            else:
+                with _rank_slots(ranks):
+                    result = run(cmd, *args, **kwargs)
             err = getattr(result, 'stderr', None)
             if (result.returncode == 0 or not isinstance(err, str) or _LAUNCH_FAILURE not in err
                     or attempt == 2):
                 return result
             time.sleep(3.0 * (attempt + 1))
-    monkeypatch.setattr(subprocess, 'run', run_with_retry)
+    monkeypatch.setattr(subprocess, 'run', launch)
     yield
+
+
+@pytest.hookimpl(tryfirst=True)  # before xdist turns the group marks into the '@group' part of the test id
+def pytest_collection_modifyitems(config, items):
+    if _MODE != 'group':
+        return
+    here = os.path.dirname(os.path.abspath(__file__))
+    for item in items:
+        if str(getattr(item, 'path', item.fspath)).startswith(here + os.sep):
+            item.add_marker(pytest.mark.xdist_group('multilevel-mpi'))
 
 
 def pytest_configure(config):
