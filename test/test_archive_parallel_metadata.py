@@ -109,9 +109,11 @@ RANK_SCRIPT = textwrap.dedent(
         if global_sync:
             ar.write_topology(grid, "Triangle", n_elements_global,
                               [n_elements_global, 3],
-                              "elements_t%d" % tCount, "elements%d" % tCount)
+                              "elements_t%d" % tCount, "elements%d" % tCount,
+                              dtype="i")
             ar.write_geometry(grid, [n_nodes_global, 3],
-                              "nodes_t%d" % tCount, "nodes%d" % tCount)
+                              "nodes_t%d" % tCount, "nodes%d" % tCount,
+                              dtype="d")
             ar.write_field(grid, "u", np.arange(n_nodes, dtype="d"), tCount,
                            dimensions=[n_nodes_global],
                            sync_offsets=node_offsets,
@@ -119,10 +121,10 @@ RANK_SCRIPT = textwrap.dedent(
         else:
             ar.write_topology(grid, "Triangle", n_elements, [n_elements, 3],
                               "elements_p%d_t%d" % (rank, tCount),
-                              "elements%d" % tCount)
+                              "elements%d" % tCount, dtype="i")
             ar.write_geometry(grid, [n_nodes, 3],
                               "nodes_p%d_t%d" % (rank, tCount),
-                              "nodes%d" % tCount)
+                              "nodes%d" % tCount, dtype="d")
             ar.write_field(grid, "u", np.arange(n_nodes, dtype="d"), tCount,
                            dimensions=[n_nodes])
         ar.sync()

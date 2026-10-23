@@ -40,12 +40,10 @@ class AV_base(object):
         #write the attribute
         attribute = SubElement(self.arGrid,"Attribute",{"Name":name,
                                                         "AttributeType":"Scalar",
-                                                        "Precision":"8",
                                                         "Center":"Grid"})
         values    = SubElement(attribute,"DataItem",
                                {"Format":"XML",
-                                "DataType":"Float",
-                                "Precision":"8",
+                                **Archiver.xdmf_number_type(numpy.asarray(u)),
                                 "Dimensions":"1"})
         values.text = str(u)
     def calculate_init(self):

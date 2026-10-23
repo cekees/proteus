@@ -1027,13 +1027,12 @@ class Mesh(object):
                                        "NumberOfElements":"%i" % (self.globalMesh.nElements_global,)})
                 elements = SubElement(topology,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
+                                       **xdmf_number_type(self.globalMesh.nodeNumbering_subdomain2global),
                                        "Dimensions":"%i %i" % (self.globalMesh.nElements_global,self.nNodes_element)})
                 geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes    = SubElement(geometry,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
+                                       **xdmf_number_type(self.nodeArray),
                                        "Dimensions":"%i %i" % (self.globalMesh.nNodes_global,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+name+str(tCount)
@@ -1055,13 +1054,12 @@ class Mesh(object):
                                        "NumberOfElements":"%i" % (self.nElements_owned,)})
                 elements = SubElement(topology,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
+                                       **xdmf_number_type(self.elementNodesArray),
                                        "Dimensions":"%i %i" % (self.nElements_owned,self.nNodes_element)})
                 geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes    = SubElement(geometry,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
+                                       **xdmf_number_type(self.nodeArray),
                                        "Dimensions":"%i %i" % (self.nNodes_global,3)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+str(ar.comm.rank())+name+str(tCount)
@@ -1087,13 +1085,12 @@ class Mesh(object):
                                      "NumberOfElements":"%i" % (self.nElementBoundaries_global,)})
                 ebelements = SubElement(ebtopology,"DataItem",
                                     {"Format":ar.dataItemFormat,
-                                     "DataType":"Int",
+                                     **xdmf_number_type(self.elementBoundaryNodesArray),
                                      "Dimensions":"%i %i" % (self.nElementBoundaries_global,self.nNodes_elementBoundary)})
                 ebgeometry = SubElement(self.arEBGrid,"Geometry",{"Type":"XYZ"})
                 ebnodes    = SubElement(ebgeometry,"DataItem",
                                     {"Format":ar.dataItemFormat,
-                                     "DataType":"Float",
-                                     "Precision":"8",
+                                     **xdmf_number_type(self.nodeArray),
                                      "Dimensions":"%i %i" % (self.nNodes_global,3)})
                 if ar.hdfFile is not None:
                     ebelements.text = ar.hdfFilename+":/elementBoundaries"+str(ar.comm.rank())+name+str(tCount)
@@ -1116,8 +1113,7 @@ class Mesh(object):
                                          "Center":"Node"})
                 nodeMap = SubElement(nodeMapAtt,"DataItem",
                                      {"Format":ar.dataItemFormat,
-                                      "DataType":"Int",
-                                      "Precision":"4",
+                                      **xdmf_number_type(self.globalMesh.nodeNumbering_subdomain2global),
                                       "Dimensions":"%i" % (self.nNodes_global,)})
                 elemMapAtt = SubElement(self.arGrid,"Attribute",
                                         {"Name":"CellMapL2G",
@@ -1125,8 +1121,7 @@ class Mesh(object):
                                          "Center":"Cell"})
                 elemMap = SubElement(elemMapAtt,"DataItem",
                                      {"Format":ar.dataItemFormat,
-                                      "DataType":"Int",
-                                      "Precision":"4",
+                                      **xdmf_number_type(self.globalMesh.elementNumbering_subdomain2global),
                                       "Dimensions":"%i" % (self.nElements_owned,)})
 
                 if ar.hdfFile is not None:
@@ -1150,14 +1145,14 @@ class Mesh(object):
                                                                         "Center":"Node"})
                 nodeMaterialTypesValues = SubElement(nodeMaterialTypes,"DataItem",
                                                      {"Format":ar.dataItemFormat,
-                                                      "DataType":"Int",
+                                                      **xdmf_number_type(self.nodeMaterialTypes),
                                                       "Dimensions":"%i" % (self.globalMesh.nNodes_global,)})
                 elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
                                                                            "AttributeType":"Scalar",
                                                                            "Center":"Cell"})
                 elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
                                                         {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
+                                                         **xdmf_number_type(self.elementMaterialTypes),
                                                          "Dimensions":"%i" % (self.globalMesh.nElements_global,)})
                 if EB:
                     ebnodeMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"ebnodeMaterialTypes",
@@ -1165,14 +1160,14 @@ class Mesh(object):
                                                                           "Center":"Node"})
                     ebnodeMaterialTypesValues = SubElement(ebnodeMaterialTypes,"DataItem",
                                                        {"Format":ar.dataItemFormat,
-                                                        "DataType":"Int",
+                                                        **xdmf_number_type(self.nodeMaterialTypes),
                                                         "Dimensions":"%i" % (self.globalMesh.nNodes_global,)})
                     elementBoundaryMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"elementBoundaryMaterialTypes",
                                                                                              "AttributeType":"Scalar",
                                                                                              "Center":"Cell"})
                     elementBoundaryMaterialTypesValues = SubElement(elementBoundaryMaterialTypes,"DataItem",
                                                           {"Format":ar.dataItemFormat,
-                                                           "DataType":"Int",
+                                                           **xdmf_number_type(self.elementBoundaryMaterialTypes),
                                                            "Dimensions":"%i" % (self.globalMesh.nElementBoundaries_global,)})
                 if ar.hdfFile is not None:
                     nodeMaterialTypesValues.text = ar.hdfFilename+":/"+"nodeMaterialTypes"+"_t"+str(tCount)
@@ -1191,14 +1186,14 @@ class Mesh(object):
                                                                         "Center":"Node"})
                 nodeMaterialTypesValues = SubElement(nodeMaterialTypes,"DataItem",
                                                      {"Format":ar.dataItemFormat,
-                                                      "DataType":"Int",
+                                                      **xdmf_number_type(self.nodeMaterialTypes),
                                                       "Dimensions":"%i" % (self.nNodes_global,)})
                 elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
                                                                            "AttributeType":"Scalar",
                                                                            "Center":"Cell"})
                 elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
                                                         {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
+                                                         **xdmf_number_type(self.elementMaterialTypes),
                                                          "Dimensions":"%i" % (self.nElements_owned,)})
                 if EB:
                     ebnodeMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"ebnodeMaterialTypes",
@@ -1206,14 +1201,14 @@ class Mesh(object):
                                                                           "Center":"Node"})
                     ebnodeMaterialTypesValues = SubElement(ebnodeMaterialTypes,"DataItem",
                                                        {"Format":ar.dataItemFormat,
-                                                        "DataType":"Int",
+                                                        **xdmf_number_type(self.nodeMaterialTypes),
                                                         "Dimensions":"%i" % (self.nNodes_global,)})
                     elementBoundaryMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"elementBoundaryMaterialTypes",
                                                                                              "AttributeType":"Scalar",
                                                                                              "Center":"Cell"})
                     elementBoundaryMaterialTypesValues = SubElement(elementBoundaryMaterialTypes,"DataItem",
                                                           {"Format":ar.dataItemFormat,
-                                                           "DataType":"Int",
+                                                           **xdmf_number_type(self.elementBoundaryMaterialTypes),
                                                            "Dimensions":"%i" % (self.nElementBoundaries_global,)})
                 if ar.hdfFile is not None:
                     nodeMaterialTypesValues.text = ar.hdfFilename+":/"+"nodeMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
@@ -4518,14 +4513,13 @@ class Mesh2DM(Mesh):
                                        "NumberOfElements":"%i" % (self.globalMesh.nElements_global,)})
                 elements = SubElement(topology,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
+                                       **xdmf_number_type(self.globalMesh.nodeNumbering_subdomain2global),
                                        "Dimensions":"%i %i" % (self.globalMesh.nElements_global,
                                                                self.nNodes_element)})
                 geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes    = SubElement(geometry,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
+                                       **xdmf_number_type(self.nodeArray),
                                        "Dimensions":"%i %i" % (self.globalMesh.nNodes_global,3)})
                 #material types
                 elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
@@ -4533,7 +4527,7 @@ class Mesh2DM(Mesh):
                                                                            "Center":"Cell"})
                 elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
                                                         {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
+                                                         **xdmf_number_type(self.elementMaterialTypes),
                                                          "Dimensions":"%i" % (self.globalMesh.nElements_global,)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+name+str(tCount)
@@ -4559,13 +4553,12 @@ class Mesh2DM(Mesh):
                                        "NumberOfElements":"%i" % (self.nElements_owned,)})
                 elements = SubElement(topology,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
+                                       **xdmf_number_type(self.elementNodesArray),
                                        "Dimensions":"%i %i" % (self.nElements_owned,self.nNodes_element)})
                 geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes    = SubElement(geometry,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
+                                       **xdmf_number_type(self.nodeArray),
                                        "Dimensions":"%i %i" % (self.nNodes_global,3)})
                 #material types
                 elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
@@ -4573,7 +4566,7 @@ class Mesh2DM(Mesh):
                                                                            "Center":"Cell"})
                 elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
                                                         {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
+                                                         **xdmf_number_type(self.elementMaterialTypes),
                                                          "Dimensions":"%i" % (self.nElements_owned,)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+str(ar.comm.rank())+name+str(tCount)
@@ -4873,14 +4866,13 @@ class Mesh3DM(Mesh):
                                        "NumberOfElements":"%i" % (self.globalMesh.nElements_global,)})
                 elements = SubElement(topology,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
+                                       **xdmf_number_type(self.globalMesh.nodeNumbering_subdomain2global),
                                        "Dimensions":"%i %i" % (self.globalMesh.nElements_global,
                                                                self.nNodes_element)})
                 geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes    = SubElement(geometry,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
+                                       **xdmf_number_type(self.nodeArray),
                                        "Dimensions":"%i %i" % (self.globalMesh.nNodes_global,3)})
                 #material types
                 elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
@@ -4888,7 +4880,7 @@ class Mesh3DM(Mesh):
                                                                            "Center":"Cell"})
                 elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
                                                         {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
+                                                         **xdmf_number_type(self.elementMaterialTypes),
                                                          "Dimensions":"%i" % (self.globalMesh.nElements_global,)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+name+str(tCount)
@@ -4917,13 +4909,12 @@ class Mesh3DM(Mesh):
                                        "NumberOfElements":"%i" % (self.nElements_owned,)})
                 elements = SubElement(topology,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
+                                       **xdmf_number_type(self.elementNodesArray),
                                        "Dimensions":"%i %i" % (self.nElements_owned,self.nNodes_element)})
                 geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
                 nodes    = SubElement(geometry,"DataItem",
                                       {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
+                                       **xdmf_number_type(self.nodeArray),
                                        "Dimensions":"%i %i" % (self.nNodes_global,3)})
                 #material types
                 elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
@@ -4931,7 +4922,7 @@ class Mesh3DM(Mesh):
                                                                            "Center":"Cell"})
                 elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
                                                         {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
+                                                         **xdmf_number_type(self.elementMaterialTypes),
                                                          "Dimensions":"%i" % (self.nElements_owned,)})
                 if ar.hdfFile is not None:
                     elements.text = ar.hdfFilename+":/elements"+str(ar.comm.rank())+name+str(tCount)
