@@ -141,4 +141,34 @@ namespace adrh
       T.r[0] = -bw * std::cos(arg) - kappa * ww * std::sin(arg);
     }
   };
+
+  // Transient linear advection-diffusion-reaction with constant coefficients, u_t + div(b u - kappa grad u) + c u = 0
+  // (proteus's LinearVADR_ConstantCoefficients with M = 1, A = kappa I, B = b, C = c), in nS dimensions.
+  template <int nS_>
+  struct TransientLinearADR : DenseMasks
+  {
+    static constexpr int nc = 1, nSpace = nS_;
+    static constexpr bool has_hamiltonian = false;
+    static constexpr bool da_nz(int, int, int) { return false; }
+    double b[3], kappa, c;
+    TransientLinearADR(const double *b_, double kappa_, double c_) : kappa(kappa_), c(c_)
+    {
+      for (int I = 0; I < 3; ++I) b[I] = I < nS_ ? b_[I] : 0.0;
+    }
+    void evaluate(double, const double[3], const double u[1], const double[1][nS_], Terms<1, nS_> &T) const
+    {
+      T.m[0] = u[0];
+      T.dm[0][0] = 1.0;
+      T.phi[0] = u[0];
+      T.dphi[0][0] = 1.0;
+      for (int I = 0; I < nS_; ++I)
+      {
+        T.f[0][I] = b[I] * u[0];
+        T.df[0][0][I] = b[I];
+        T.a[0][0][I][I] = kappa;
+      }
+      T.r[0] = c * u[0];
+      T.dr[0][0] = c;
+    }
+  };
 } // namespace adrh

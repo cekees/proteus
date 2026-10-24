@@ -317,4 +317,66 @@ namespace adrh
       }
     }
   };
+
+  // The Gaussian of proteus's LinearADR_Decay_DiracIC (c = 0: LinearAD_DiracIC), the exact solution of
+  // u_t + div(b u - a grad u) + c u = 0 with Dirac initial data on the whole space:
+  //     u = u0 exp(-|y|^2 / (4 a t)) / (4 pi a t)^(nS/2) exp(-c t),   y = x - x0 - b t,   t = T + tStart,
+  // and u = 0 where the exponent exceeds 100, as proteus's uOfXT has it; grad u = -u y / (2 a t).
+  template <int nS>
+  struct DiracExact
+  {
+    double b[3], a, c, tStart, u0, x0[3];
+    DiracExact(const double *b_, double a_, double c_, double tStart_, double u0_, const double *x0_)
+        : a(a_), c(c_), tStart(tStart_), u0(u0_)
+    {
+      for (int I = 0; I < 3; ++I) { b[I] = I < nS ? b_[I] : 0.0; x0[I] = I < nS ? x0_[I] : 0.0; }
+    }
+    double value(const double x[3], double T) const
+    {
+      const double t = T + tStart;
+      double yy = 0.0;
+      for (int I = 0; I < nS; ++I) { const double y = x[I] - x0[I] - b[I] * t; yy += y * y; }
+      const double arg = yy / (4.0 * a * t);
+      if (arg > 100.0) return 0.0;
+      return u0 * std::exp(-arg) / std::pow(4.0 * a * M_PI * t, 0.5 * nS) * std::exp(-c * t);
+    }
+    void gradient(const double x[3], double T, double g[3]) const
+    {
+      const double t = T + tStart, u = value(x, T);
+      for (int I = 0; I < 3; ++I) g[I] = (I < nS) ? -u * (x[I] - x0[I] - b[I] * t) / (2.0 * a * t) : 0.0;
+    }
+  };
+
+  // The BC functor fed by an exact solution (value and gradient at (x, t)) of a problem with advection b and an
+  // isotropic diffusion kappa. The kind of each face comes from an array, as for SineBC: 1 = Flux (diffusive flux
+  // given), 2 = Flux with the advective flux (b.n) u given too, 3 = WeakDirichlet, 4 = Robin alpha u + beta q.n = g.
+  template <int nS, class Exact>
+  struct ExactBC
+  {
+    Exact exact;
+    double b[3], kappa, alpha, beta;
+    const int *faceKind;
+    ExactBC(const Exact &exact_, const double *b_, double kappa_, const int *faceKind_, double alpha_ = 1.0, double beta_ = 1.0)
+        : exact(exact_), kappa(kappa_), alpha(alpha_), beta(beta_), faceKind(faceKind_)
+    {
+      for (int I = 0; I < 3; ++I) b[I] = I < nS ? b_[I] : 0.0;
+    }
+    void evaluate(double t, const double x[3], const double n[3], int F, FaceBC<1> &B) const
+    {
+      const double ue = exact.value(x, t);
+      double g[3];
+      exact.gradient(x, t, g);
+      double gradn = 0.0, bn = 0.0;
+      for (int I = 0; I < nS; ++I) { gradn += g[I] * n[I]; bn += b[I] * n[I]; }
+      const double qn = -kappa * gradn;
+      switch (faceKind[F])
+      {
+      case 1: B.kind[0] = Flux; B.gdiff[0] = qn; break;
+      case 2: B.kind[0] = Flux; B.gdiff[0] = qn; B.hasAdv[0] = true; B.fadv[0] = bn * ue; break;
+      case 3: B.kind[0] = WeakDirichlet; B.gD[0] = ue; break;
+      case 4: B.kind[0] = Flux; B.gdiff[0] = (alpha * ue + beta * qn) / beta; B.dgdiff[0] = -alpha / beta; break;
+      default: B.kind[0] = Strong;
+      }
+    }
+  };
 } // namespace adrh
