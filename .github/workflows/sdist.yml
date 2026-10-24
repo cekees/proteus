@@ -67,6 +67,12 @@ jobs:
             os: macos-15-intel
             python: "3.12.5"
             env_file: environment-openmpi-dev.yml
+            # This runner is shared and slow: a suite that takes 15 min on
+            # Linux has taken 2 h 15 min here, and the tests' subprocess
+            # timeouts (sized for a workstation) then report hangs that were
+            # not. A fixed scale, since the load average on a shared VM says
+            # little about the slice this job gets.
+            timeout_scale: "3"
           # These two ran without PUMI/Chrono while conda-forge lacked the binaries
           # and while pychrono crashed on osx-arm64. Both reasons are gone: scorec
           # 4.2.1 and pychrono 10.0.0 are published for linux-64, osx-64,
@@ -221,6 +227,12 @@ jobs:
           # inheriting it aborted in leggauss at collection on arm64 macOS.)
           export OPENBLAS_NUM_THREADS=1
           export OMP_NUM_THREADS=1
+          # The tests' subprocess timeouts, scaled for the runner (see
+          # test/conftest.py: a number, or auto for the load average per
+          # core); and the Python stack of any crash, in the workers and in
+          # every interpreter a test launches.
+          export PROTEUS_TEST_TIMEOUT_SCALE="${{ matrix.leg.timeout_scale || 'auto' }}"
+          export PYTHONFAULTHANDLER=1
           # conda-forge's MPICH runs over libfabric (ch4:ofi), and on macOS
           # libfabric picks its "sockets" provider, whose two connection
           # threads (sock_conn_listener_thread, sock_ep_cm_thread) busy-poll

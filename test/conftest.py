@@ -58,19 +58,110 @@ def mpi_launch_never_started(result):
             and any(text in err for text in MPI_LAUNCH_FAILURES))
 
 
+# A helper that has finished its work can still die at interpreter exit -- a SIGSEGV or SIGABRT
+# in the teardown of PETSc, MPI or an extension, after its last line of output -- and on the
+# macOS Intel runner it does, intermittently (test_parallel_space_multigrid's helper printed its
+# complete RESULT line and then "exited on signal 11"). Such a launch is run once more; if the
+# second attempt also dies, the test fails as it would have. Every relaunch is reported as a
+# RuntimeWarning naming the command and the signal, so the count stays visible in the summary
+# rather than vanishing into a green run, and the launched interpreters run with
+# PYTHONFAULTHANDLER=1 so a crash prints the Python stack it happened in.
+CRASH_SIGNALS = ('SIGSEGV', 'SIGABRT', 'SIGBUS', 'SIGILL', 'SIGFPE')
+CRASH_MESSAGES = ('exited on signal', 'Segmentation fault', 'Bus error', 'Abort trap')
+
+
+def died_by_signal(result):
+    """The signal name a ``subprocess.CompletedProcess`` died by, or None."""
+    import signal
+    rc = result.returncode
+    number = -rc if rc < 0 else rc - 128 if 128 < rc < 160 else None
+    if number is not None:
+        try:
+            name = signal.Signals(number).name
+        except ValueError:
+            name = None
+        if name in CRASH_SIGNALS:
+            return name
+    err = getattr(result, 'stderr', None)
+    if isinstance(err, bytes):
+        err = err.decode(errors='replace')
+    if rc != 0 and isinstance(err, str) and any(text in err for text in CRASH_MESSAGES):
+        return 'a signal (see stderr)'
+    return None
+
+
+def scaled_timeout(timeout):
+    """``timeout`` scaled for the machine, by PROTEUS_TEST_TIMEOUT_SCALE.
+
+    The timeouts the tests give their subprocesses are sized for an idle workstation. A CI
+    runner that is starved -- the 4-core macOS Intel runner took 2 h 15 min for a suite that
+    takes 15 min on Linux, and a 4-rank launch inside it hit its 300 s budget -- needs more,
+    and a timeout that fires there reports a hang that was not one. The scale is a number, or
+    ``auto``: the one-minute load average per core, clamped to [1, 4], read at launch.
+    """
+    if timeout is None:
+        return None
+    setting = os.environ.get('PROTEUS_TEST_TIMEOUT_SCALE', '1').strip().lower()
+    if setting == 'auto':
+        try:
+            load = os.getloadavg()[0] / max(os.cpu_count() or 1, 1)
+        except (OSError, AttributeError):
+            load = 1.0
+        scale = min(max(load, 1.0), 4.0)
+    else:
+        try:
+            scale = float(setting)
+        except ValueError:
+            scale = 1.0
+    return timeout * scale
+
+
+def launched_environment(env):
+    """The environment a test's subprocess runs in: the caller's, with faulthandler on."""
+    env = dict(os.environ if env is None else env)
+    env.setdefault('PYTHONFAULTHANDLER', '1')
+    return env
+
+
 @pytest.fixture(autouse=True)
 def _retry_an_mpi_launch_that_never_started(monkeypatch):
-    """Every ``subprocess.run`` from a test: launch again, up to three times in all, if an mpiexec
-    never started (MPI_LAUNCH_FAILURES). The pause before a relaunch is
-    PROTEUS_TEST_MPI_RETRY_DELAY seconds (default 3), doubled before the last attempt."""
+    """Every ``subprocess.run`` from a test, hardened for a shared runner:
+
+    * launched again, up to three times in all, if an mpiexec never started
+      (MPI_LAUNCH_FAILURES); the pause before a relaunch is PROTEUS_TEST_MPI_RETRY_DELAY
+      seconds (default 3), doubled before the last attempt;
+    * launched once more, with a RuntimeWarning, if it died by a signal (died_by_signal);
+    * its ``timeout`` scaled by PROTEUS_TEST_TIMEOUT_SCALE (scaled_timeout);
+    * run with PYTHONFAULTHANDLER=1 (launched_environment).
+    """
+    import warnings
     run = subprocess.run
 
     def run_with_retry(cmd, *args, **kwargs):
-        for attempt in range(3):
+        if 'timeout' in kwargs:
+            kwargs['timeout'] = scaled_timeout(kwargs['timeout'])
+        kwargs['env'] = launched_environment(kwargs.get('env'))
+        crashed_once = False
+        attempt = 0
+        while True:
             result = run(cmd, *args, **kwargs)
-            if attempt == 2 or not mpi_launch_never_started(result):
-                return result
-            time.sleep(float(os.environ.get('PROTEUS_TEST_MPI_RETRY_DELAY', 3.0)) * (attempt + 1))
+            if mpi_launch_never_started(result) and attempt < 2:
+                time.sleep(float(os.environ.get('PROTEUS_TEST_MPI_RETRY_DELAY', 3.0)) * (attempt + 1))
+                attempt += 1
+                continue
+            signal_name = died_by_signal(result)
+            if signal_name is not None and not crashed_once:
+                crashed_once = True
+                warnings.warn(
+                    'relaunching %s: it died by %s (exit status %d); the launched interpreter '
+                    'ran with PYTHONFAULTHANDLER=1, so its stderr holds the Python stack if the '
+                    'crash was in Python: %s'
+                    % (' '.join(str(c) for c in cmd), signal_name, result.returncode,
+                       (result.stderr if isinstance(result.stderr, str) else '')[-1500:]),
+                    RuntimeWarning, stacklevel=2)
+                time.sleep(float(os.environ.get('PROTEUS_TEST_MPI_RETRY_DELAY', 3.0)))
+                continue
+            return result
     monkeypatch.setattr(subprocess, 'run', run_with_retry)
 
 

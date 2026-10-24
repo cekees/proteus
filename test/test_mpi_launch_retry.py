@@ -5,6 +5,7 @@ A fake launcher stands in for mpiexec: it counts its calls in a file, fails the 
 root conftest wraps every ``subprocess.run`` from a test, so calling it here goes
 through the retry.
 """
+import os
 import subprocess
 import sys
 import textwrap
@@ -99,3 +100,89 @@ def test_a_launch_whose_stderr_is_not_captured_is_not_launched_again(tmp_path, m
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     assert result.returncode == 14
     assert int(counter.read_text()) == 1
+
+
+# --------------------------------------------------------------------------
+# the rest of the launch policy: a crash at exit, the timeout scale, faulthandler
+# --------------------------------------------------------------------------
+
+CRASHING_LAUNCHER = textwrap.dedent('''\
+    import os, signal, sys
+    counter, fail = sys.argv[1], int(sys.argv[2])
+    calls = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
+    with open(counter, 'w') as f:
+        f.write(str(calls))
+    print('RESULT finished on call', calls, flush=True)
+    if calls <= fail:
+        # the work is done and printed; the interpreter dies on the way out
+        os.kill(os.getpid(), signal.SIGSEGV)
+    ''')
+
+
+@pytest.fixture
+def crashing_launch(tmp_path, monkeypatch):
+    monkeypatch.setenv('PROTEUS_TEST_MPI_RETRY_DELAY', '0')
+    script = tmp_path / 'crashing.py'
+    script.write_text(CRASHING_LAUNCHER)
+    counter = tmp_path / 'calls'
+
+    def _launch(fail):
+        result = subprocess.run([sys.executable, str(script), str(counter), str(fail)],
+                                capture_output=True, text=True)
+        return result, int(counter.read_text())
+    return _launch
+
+
+def test_a_crash_at_exit_is_launched_once_more_and_reported(crashing_launch):
+    with pytest.warns(RuntimeWarning, match='died by SIGSEGV'):
+        result, calls = crashing_launch(1)
+    assert result.returncode == 0 and 'finished on call 2' in result.stdout
+    assert calls == 2
+
+
+def test_a_crash_that_repeats_fails(crashing_launch):
+    with pytest.warns(RuntimeWarning, match='died by SIGSEGV'):
+        result, calls = crashing_launch(10)
+    assert result.returncode != 0 and calls == 2
+
+
+def test_a_launchers_signal_report_counts_as_a_crash():
+    import conftest  # the root conftest, as a module
+    fake = subprocess.CompletedProcess(['mpiexec'], 139, '',
+                                       'prterun noticed that process rank 0 exited on signal 11 '
+                                       '(Segmentation fault: 11).')
+    assert conftest.died_by_signal(fake) is not None
+    assert conftest.died_by_signal(subprocess.CompletedProcess(['x'], -11, '', '')) == 'SIGSEGV'
+    assert conftest.died_by_signal(subprocess.CompletedProcess(['x'], 1, '', 'AssertionError')) is None
+    assert conftest.died_by_signal(subprocess.CompletedProcess(['x'], 0, '', '')) is None
+
+
+def test_the_timeout_is_scaled_for_a_slow_runner(monkeypatch):
+    monkeypatch.setenv('PROTEUS_TEST_TIMEOUT_SCALE', '3')
+    # 1.2 s of sleep against a 0.5 s timeout: only the scale (1.5 s) lets it finish
+    result = subprocess.run([sys.executable, '-c', 'import time; time.sleep(1.2)'],
+                            timeout=0.5, capture_output=True)
+    assert result.returncode == 0
+
+
+def test_the_scale_is_at_least_one_and_at_most_four(monkeypatch):
+    import conftest
+    monkeypatch.setenv('PROTEUS_TEST_TIMEOUT_SCALE', 'auto')
+    monkeypatch.setattr(conftest.os, 'getloadavg', lambda: (0.0, 0.0, 0.0))
+    assert conftest.scaled_timeout(10) == 10
+    monkeypatch.setattr(conftest.os, 'getloadavg', lambda: (1e6, 0.0, 0.0))
+    assert conftest.scaled_timeout(10) == 40
+    monkeypatch.setenv('PROTEUS_TEST_TIMEOUT_SCALE', 'not a number')
+    assert conftest.scaled_timeout(10) == 10
+    assert conftest.scaled_timeout(None) is None
+
+
+def test_the_launched_interpreter_runs_with_faulthandler(monkeypatch):
+    monkeypatch.delenv('PYTHONFAULTHANDLER', raising=False)
+    probe = [sys.executable, '-c', 'import os; print(os.environ.get("PYTHONFAULTHANDLER"), '
+                                   'os.environ.get("MARKER"))']
+    assert subprocess.run(probe, capture_output=True, text=True).stdout.split() == ['1', 'None']
+    # a caller's own environment is kept, and gains the setting
+    result = subprocess.run(probe, capture_output=True, text=True,
+                            env={'PATH': os.environ.get('PATH', ''), 'MARKER': 'kept'})
+    assert result.stdout.split() == ['1', 'kept']
