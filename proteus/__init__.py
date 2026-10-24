@@ -35,6 +35,12 @@ import sys as _sys
 if _sys.platform == "darwin":
     _os.environ.setdefault("FI_PROVIDER", "tcp")
 
+# Under MPI, one thread per rank for the BLAS and OpenMP runtimes numpy brings in,
+# unless the user set the variables (proteus/_threads.py).  Without MPI nothing
+# changes.  The variables are read when numpy is imported, so this comes first.
+from . import _threads
+_threads.apply_defaults(_threads.launched_size())
+
 __version__ = '2.0.0.dev'
 
 #: What ``from proteus import *`` binds. It is that surface, not an
