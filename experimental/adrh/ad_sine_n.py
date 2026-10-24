@@ -1,4 +1,4 @@
-"""Numerics for ad_sine_p.py: P1 Galerkin on regular triangles or tetrahedra, direct solve, no stabilization."""
+"""Numerics for ad_sine_p.py: P1 or P2 Galerkin on regular triangles or tetrahedra, direct solve, no stabilization."""
 import os
 from proteus import *
 from proteus.default_n import *
@@ -6,7 +6,8 @@ from ad_sine_p import *
 
 timeIntegration = NoIntegration
 nDTout = 1
-femSpaces = {0: C0_AffineLinearOnSimplexWithNodalBasis}
+femSpaces = {0: {'p1': C0_AffineLinearOnSimplexWithNodalBasis,
+                 'p2': C0_AffineQuadraticOnSimplexWithNodalBasis}[SPACE]}
 QORDER = int(os.environ.get('AD_QORDER', '4'))
 elementQuadrature = SimplexGaussQuadrature(nd, QORDER)
 elementBoundaryQuadrature = SimplexGaussQuadrature(nd - 1, QORDER)

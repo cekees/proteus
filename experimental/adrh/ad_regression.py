@@ -1,8 +1,8 @@
 """Advection-diffusion regression: ADRH engine vs the Proteus model (ad_sine_p/n.py) vs the exact solution.
 
 Steady div(b u - kappa grad u) + d(x) = 0 on the unit square or cube, exact solution sin(omega.x + omega0) (the
-verified AnalyticalSolutions.LinearADR_Sine with c = 0), P1 Galerkin on regular triangles (AD_ND=2) or tetrahedra
-(AD_ND=3, the default). The engine builds the element and exterior-face residual and Jacobian; the driver
+verified AnalyticalSolutions.LinearADR_Sine with c = 0), P1 (AD_SPACE=p1, the default) or P2 (AD_SPACE=p2) Galerkin on
+regular triangles (AD_ND=2) or tetrahedra (AD_ND=3, the default). The engine builds the element and exterior-face residual and Jacobian; the driver
 assembles, imposes any strong Dirichlet rows and solves with scipy. Checks:
 
   1. engine and Proteus solve the same discrete problem: nodal solutions agree to solver round-off.
@@ -17,10 +17,10 @@ assembles, imposes any strong Dirichlet rows and solves with scipy. Checks:
        iipg, nipg, sipg  Dirichlet data everywhere, imposed weakly: upwinded advective flux against f(g), diffusive flux
                          with penalty C/h (2, 10, 100) and the NIPG/SIPG adjoint term (the engine's WeakDirichlet kind
                          against Proteus's Advection_DiagonalUpwind_Diffusion_*_exterior);
-  2. both converge to the exact solution at the P1 rates (L2 ~ h^2, max-norm ~ h^2);
+  2. both converge to the exact solution at the space's rates (P1: L2 ~ h^2; P2: L2 ~ h^3);
   3. the exact solution fed through the engine's residual is small and shrinks with h (consistency).
 
-usage: [AD_ND=2|3] [AD_BC=mode] python ad_regression.py [nn ...]        default 5 9 17
+usage: [AD_ND=2|3] [AD_SPACE=p1|p2] [AD_BC=mode] python ad_regression.py [nn ...]        default 5 9 17
 """
 import os
 import sys
@@ -40,7 +40,10 @@ from proteus.iproteus import opts as runopts
 
 ND = int(os.environ.get('AD_ND', '3'))
 os.environ['AD_ND'] = str(ND)
-nD = ND + 1                                                       # nodes per element
+SPACE = os.environ.get('AD_SPACE', 'p1')
+os.environ['AD_SPACE'] = SPACE
+nV = ND + 1                                                       # vertices per element
+nD = {'p1': nV, 'p2': nV * (nV + 1) // 2}[SPACE]                  # dofs per element
 b = np.array([1.0, 0.5, 0.25])[:ND]; kappa = 0.2; omega = np.array([3.0, 2.0, 4.0])[:ND]; omega0 = 0.3
 order = 4
 os.environ.setdefault('AD_QORDER', str(order))
@@ -63,6 +66,8 @@ for mode in WEAK:
 
 
 def proteus_solution(nn):
+    """Proteus's solution: the dof vector, the coordinates of every global dof (vertices, then P2 edge midpoints),
+    the element-to-global dof map (nE, nD) whose first nV columns are the element's vertices."""
     os.environ['AD_NN'] = str(nn)
     for m in ('ad_sine_p', 'ad_sine_n'):
         sys.modules.pop(m, None)
@@ -73,21 +78,26 @@ def proteus_solution(nn):
     ns = NumericalSolution.NS_base(so, [p], [n], so.sList, runopts)
     ns.calculateSolution('adsine')
     lm = ns.modelList[0].levelModelList[-1]
-    return np.array(lm.u[0].dof), np.array(lm.mesh.nodeArray), np.array(lm.mesh.elementNodesArray)
+    dofMap = lm.u[0].femSpace.dofMap
+    l2g = np.array(dofMap.l2g)
+    dofx = np.array(dofMap.lagrangeNodesArray) if hasattr(dofMap, 'lagrangeNodesArray') else np.array(lm.mesh.nodeArray)
+    assert np.array_equal(l2g[:, :nV], lm.mesh.elementNodesArray)
+    return np.array(lm.u[0].dof), dofx, l2g
 
 
-def plane_faces(nodes, conn, axis, value):
-    """Element faces (element, local face = the opposite node) whose nodes all lie on the plane x[axis] = value.
-    Per plane, because a face with its nodes on two different planes is an interior face."""
-    on = np.abs(nodes[conn][:, :, axis] - value) < 1e-12                       # (nE, nD)
+def plane_faces(nodes, l2g, axis, value):
+    """Element faces (element, local face = the opposite vertex) whose vertices all lie on the plane x[axis] = value.
+    Per plane, because a face with its vertices on two different planes is an interior face."""
+    on = np.abs(nodes[l2g[:, :nV]][:, :, axis] - value) < 1e-12                # (nE, nV)
     return np.nonzero(on.sum(axis=1)[:, None] - on.astype(int) == ND)
 
 
 def engine_solution(nodes, conn):
+    """nodes: the coordinates of every global dof; conn: the element-to-dof map (nE, nD)."""
     nE, nN = len(conn), len(nodes)
     xn = np.ascontiguousarray(nodes[conn])                                      # (nE, nD, 3): Proteus keeps 3 coordinates
     u0 = np.zeros((nE, 1, nD))
-    R, J = adrh_proto.advection_diffusion_sine(ND, b, kappa, omega, omega0, xn, u0, qp, qw)
+    R, J = adrh_proto.advection_diffusion_sine(ND, SPACE, b, kappa, omega, omega0, xn, u0, qp, qw)
     rows = np.repeat(conn, nD, axis=1).ravel(); cols = np.tile(conn, (1, nD)).ravel()
     K = sp.coo_matrix((J[:, 0, :, 0, :].ravel(), (rows, cols)), shape=(nN, nN)).tocsr()
     rhs = -np.bincount(conn.ravel(), weights=R[:, 0, :].ravel(), minlength=nN)
@@ -99,14 +109,15 @@ def engine_solution(nodes, conn):
         fe, fk, kind = (np.concatenate(a) for a in (fe, fk, kind))
         pc, pp, sig = WEAK.get(BC, (2.0, 1.0, 0.0))
         face_conn = conn[fe]
-        Rf, Jf = adrh_proto.advection_diffusion_sine_faces(ND, b, kappa, omega, omega0, np.ascontiguousarray(fk, dtype='i'),
+        Rf, Jf = adrh_proto.advection_diffusion_sine_faces(ND, SPACE, b, kappa, omega, omega0,
+                                                           np.ascontiguousarray(fk, dtype='i'),
                                                            np.ascontiguousarray(kind, dtype='i'),
                                                            np.ascontiguousarray(nodes[face_conn]), np.zeros((len(fe), 1, nD)),
                                                            qpf, qwf, pc, pp, sig, ROBIN_ALPHA, ROBIN_BETA)
         rows_f = np.repeat(face_conn, nD, axis=1).ravel(); cols_f = np.tile(face_conn, (1, nD)).ravel()
         K = K + sp.coo_matrix((Jf[:, 0, :, 0, :].ravel(), (rows_f, cols_f)), shape=(nN, nN)).tocsr()
         rhs = rhs - np.bincount(face_conn.ravel(), weights=Rf[:, 0, :].ravel(), minlength=nN)
-    # the nodes whose rows the driver replaces by the Dirichlet value
+    # the dofs whose rows the driver replaces by the Dirichlet value (Proteus: every Lagrange node getDBC accepts)
     X = nodes[:, :ND]
     lo, hi = X.min(axis=1) < 1e-12, X.max(axis=1) > 1 - 1e-12
     if BC in WEAK:
@@ -125,28 +136,31 @@ def engine_solution(nodes, conn):
     return u, xn, R, J
 
 
+W_BASIS = adrh_proto.basis_values(ND, SPACE, qp)[0]                  # (nQ, nD) the space's basis at the quadrature points
+LAM = np.column_stack([1 - qp.sum(axis=1), qp])                      # (nQ, nV) barycentric: the (affine) geometry
+
+
 def errors(u, nodes, conn, xn):
-    # L2 error by the engine's quadrature, with u_h interpolated barycentrically at the points
-    lam = np.column_stack([1 - qp.sum(axis=1), qp])
-    uh = u[conn] @ lam.T                                              # (nE, nQ)
-    xq = np.einsum('qb,ebi->eqi', lam, xn)
-    vol = np.abs(np.linalg.det(xn[:, 1:, :ND] - xn[:, :1, :ND]))      # the reference weights carry the 1/d!
+    # L2 error by the engine's quadrature, with u_h interpolated by the space's basis at the points
+    uh = u[conn] @ W_BASIS.T                                          # (nE, nQ)
+    xq = np.einsum('qb,ebi->eqi', LAM, xn[:, :nV])
+    vol = np.abs(np.linalg.det(xn[:, 1:nV, :ND] - xn[:, :1, :ND]))    # the reference weights carry the 1/d!
     l2 = np.sqrt(np.sum(vol[:, None] * qw[None, :] * (uh - exact(xq)) ** 2))
     return l2, np.abs(u - exact(nodes)).max()
 
 
 sizes = [int(a) for a in sys.argv[1:]] or [5, 9, 17]
 prev = None
-print("AD_ND=%d AD_BC=%s" % (ND, BC))
+print("AD_ND=%d AD_SPACE=%s AD_BC=%s" % (ND, SPACE, BC))
 print("%4s %9s %12s %12s %14s %14s %9s %9s %14s" % ("nn", "elements", "|eng-prot|", "eng-vs-ex L2", "prot-vs-ex L2", "eng max err", "L2 rate", "max rate", "res(exact) inf"))
 for nn in sizes:
-    up, nodes, conn = proteus_solution(nn)
+    up, nodes, conn = proteus_solution(nn)                           # nodes = every dof's coordinates
     ue, xn, R, J = engine_solution(nodes, conn)
     l2e, mxe = errors(ue, nodes, conn, xn)
     l2p, mxp = errors(up, nodes, conn, xn)
-    # the exact solution through the engine: element residual of u_exact at the interior nodes (no boundary terms)
+    # the exact solution through the engine: element residual of u_exact at the interior dofs (no boundary terms)
     uex = exact(nodes)[conn][:, None, :]
-    Rx = adrh_proto.advection_diffusion_sine(ND, b, kappa, omega, omega0, xn, np.ascontiguousarray(uex), qp, qw)[0]
+    Rx = adrh_proto.advection_diffusion_sine(ND, SPACE, b, kappa, omega, omega0, xn, np.ascontiguousarray(uex), qp, qw)[0]
     X = nodes[:, :ND]
     interior = (X.min(axis=1) > 1e-12) & (X.max(axis=1) < 1 - 1e-12)
     resid = np.abs(np.bincount(conn.ravel(), weights=Rx[:, 0, :].ravel(), minlength=len(nodes))[interior]).max()
