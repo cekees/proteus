@@ -77,9 +77,14 @@ def test_poissons_equation_source_is_the_laplacian(nd):
 def test_dirac_ic_satisfies_the_advection_diffusion_equation(n, b):
     a = 0.02
     s = AS.LinearAD_DiracIC(n=n, b=np.array(b), a=a, tStart=0.3, u0=0.7, x0=np.array([0.1, 0.0, 0.0]))
+    # its own generator: the module's is shared, so where it stands depends on which tests this xdist worker
+    # ran before, and with 40 draws a 3-D peak this narrow left only 4 above the cutoff on one CI run
+    local = np.random.default_rng(1000 + n)
     checked = 0
-    for _ in range(40):
-        x = np.zeros(3); x[:n] = rng.uniform(-0.2, 1.0, n); T = rng.uniform(0.1, 0.4)
+    for _ in range(4000):
+        if checked == 8:
+            break
+        x = np.zeros(3); x[:n] = local.uniform(-0.2, 1.0, n); T = local.uniform(0.1, 0.4)
         u = s.uOfXT(x, T)
         if u < 1e-3:
             continue
