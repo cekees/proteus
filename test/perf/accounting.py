@@ -48,15 +48,61 @@ def record_pass(key, dt, nb):
     s[2] += nb
 
 
+class PerfGate(object):
+    """Counts hardware events around one named pass, under ``perf stat --control``.
+
+    ``perf stat`` over a whole run counts the build, the solve and the Python between
+    kernels along with the kernel; the FLOP rate of *one pass* needs the counters on only
+    while that pass runs. ``perf stat -D -1 --control fifo:CTL,ACK`` starts with counting
+    off and obeys ``enable``/``disable`` written to CTL, answering ``ack`` on ACK. Set
+    ``PROTEUS_PERF_CTL`` and ``PROTEUS_PERF_ACK`` to the two fifos and ``PROTEUS_PERF_PASS``
+    to a substring of the pass name (``updateDiffusionJacobian_weak_sd``); the gate then
+    counts every call of the matching passes and records how many it counted. perf's
+    totals divided by :attr:`calls` are the events per call. Off unless all three are set.
+    """
+    def __init__(self):
+        self.pattern = os.environ.get('PROTEUS_PERF_PASS')
+        self.ctl = self.ack = None
+        self.calls = 0
+        if self.pattern and os.environ.get('PROTEUS_PERF_CTL') and os.environ.get('PROTEUS_PERF_ACK'):
+            self.ctl = open(os.environ['PROTEUS_PERF_CTL'], 'w', buffering=1)
+            self.ack = open(os.environ['PROTEUS_PERF_ACK'], 'r')
+
+    def matches(self, key):
+        return self.ctl is not None and self.pattern in key
+
+    def _send(self, word):
+        self.ctl.write(word + '\n')
+        self.ctl.flush()
+        self.ack.readline()
+
+    def enable(self):
+        self._send('enable')
+        self.calls += 1
+
+    def disable(self):
+        self._send('disable')
+
+
+perf_gate = PerfGate()
+
+
 def wrap_pass(f, key):
     """A timed, byte-counted version of the callable ``f``."""
+    gated = perf_gate.matches(key)
+
     def wrapper(*args, **kwargs):
         nb = nbytes_of(args, kwargs)
+        if gated:
+            perf_gate.enable()
         t = perf_counter()
         try:
             return f(*args, **kwargs)
         finally:
-            record_pass(key, perf_counter() - t, nb)
+            dt = perf_counter() - t
+            if gated:
+                perf_gate.disable()
+            record_pass(key, dt, nb)
     wrapper.__name__ = getattr(f, '__name__', key)
     return wrapper
 
