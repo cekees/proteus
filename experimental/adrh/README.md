@@ -7,7 +7,12 @@ target. Design: `ADRH_ENGINE_DESIGN.md` (kept beside the campaign notes).
 
 * `adrh.h` – the `Terms<nc,nS>` interface and `elementKernel` (geometry, u and grad u, coefficient
   evaluation and the weak form, residual and Jacobian, all inside the element loop; nothing stored
-  per quadrature point).
+  per quadrature point). P1 simplices with the affine map, the first version of the kernel.
+* `spaces.h`, `engine.h` – Lagrange spaces (`P1Simplex`, `P2Simplex`, `Q1Cube`, in 2 and 3 dimensions) and the
+  space-generic `elementKernelSpace`: a space gives basis values and reference gradients at a reference point,
+  the map from a face's coordinates to the element's, each face's outward reference normal and vertices; the
+  geometry is isoparametric through the same basis at every quadrature point (`PointGeometry`), affine for the
+  simplices, trilinear for hexahedra. The masked weak form is the one of `masked.h`.
 * `coefficients.h` – hand-written functors in generated form: `Poisson3D` (test/ci/poisson_3d_p)
   and `Coupled2`, a two-component system with every term nonlinear.
 * `module.cpp`, `build.sh` – pybind11 module (`sh build.sh` inside the proteus environment).
@@ -29,16 +34,19 @@ against 0.39 s for the Python path's kernels alone with its quadrature arrays al
   coupled system 2.1x, Poisson 1.3x; with all-true masks the unrolled kernel costs the same as the runtime loops, so the gain
   is all sparsity.
 * `ad_regression.py` – steady advection-diffusion with the manufactured sine solution
-  (`AnalyticalSolutions.LinearADR_Sine`, c = 0) on regular triangles (`AD_ND=2`) or tets (`AD_ND=3`): the engine, a plain
-  Proteus model (`ad_sine_p.py`, `ad_sine_n.py`) and the exact solution. Engine and Proteus nodal solutions agree to solver
-  round-off (< 5e-14) in every boundary mode and both dimensions; L2 error rates 1.85-2.00.
+  (`AnalyticalSolutions.LinearADR_Sine`, c = 0) on regular triangles / tets (`AD_SPACE=p1`, `p2`) or quadrilaterals /
+  hexahedra (`q1`), in `AD_ND=2` or 3 dimensions: the engine, a plain Proteus model (`ad_sine_p.py`, `ad_sine_n.py`) and the
+  exact solution. Engine and Proteus nodal solutions agree to solver round-off (< 5e-14) in every boundary mode, space and
+  dimension (42 runs); L2 error rates 2 for P1 and Q1, 3 for P2.
 
 ## Boundary conditions (`boundary.h`)
 
-`exteriorFaceKernel` adds the exterior-face terms per face (residual and Jacobian, scattered by the driver), for
-segments of triangles and triangles of tetrahedra (`Coefficients::nSpace` = 2 or 3). A BC functor says, per component
-and boundary quadrature point, which of three kinds applies; each is the engine's version of a Proteus exterior
-numerical-flux treatment, and `ad_regression.py` compares against that treatment (`AD_BC=`, in 2D and 3D):
+`exteriorFaceKernel` adds the exterior-face terms per face (residual and Jacobian, scattered by the driver), for any
+of the spaces (its third template parameter; default P1): segments and triangles of simplices, edges of quadrilaterals,
+quadrilaterals of hexahedra, all through the space's own face map and normal. A BC functor says, per component and
+boundary quadrature point, which of three kinds applies; each is the engine's version of a Proteus exterior
+numerical-flux treatment, and `ad_regression.py` compares against that treatment (`AD_BC=`, in 2D and 3D, for
+`AD_SPACE=p1|p2|q1`):
 
 | kind | what it does | Proteus equivalent | `AD_BC` |
 |---|---|---|---|
@@ -49,4 +57,4 @@ numerical-flux treatment, and `ad_regression.py` compares against that treatment
 The header's comment says where the engine deliberately differs from Proteus (the adjoint's tensor contraction, da/du in
 the Jacobian); neither shows with an isotropic constant diffusion tensor.
 
-Design, decisions and numbers: `ADRH_ENGINE_DESIGN.md` (kept beside the campaign notes, sections 11-15).
+Design, decisions and numbers: `ADRH_ENGINE_DESIGN.md` (kept beside the campaign notes, sections 11-17).

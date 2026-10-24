@@ -38,12 +38,13 @@
 // but its diffusive-flux Jacobian carries the da term like the element kernel. The regressions have an
 // isotropic, constant a, where none of this shows.
 //
-// Output is per face (not scattered): Rf (nF, nc, nD) and Jf (nF, nc, nD, nc, nD), nD = nS + 1; the driver
-// adds them to the element rows of the face's element.
+// Output is per face (not scattered): Rf (nF, nc, nDOF) and Jf (nF, nc, nDOF, nc, nDOF); the driver adds them
+// to the element rows of the face's element.
 #pragma once
 #include <cmath>
 #include <cstring>
 #include "masked.h"
+#include "spaces.h"
 
 namespace adrh
 {
@@ -77,97 +78,66 @@ namespace adrh
     static WeakDirichletParams SIPG() { return {100.0, 1.0, 1.0}; }
   };
 
-  // The boundary kernel. bc.evaluate(t, x, n, F, FaceBC<nc>&) is called per face F and quadrature point;
-  // the face index lets a functor look a per-face kind up. nS = Coefficients::nSpace = 2 or 3.
-  template <class Coefficients, class BC>
+  // The boundary kernel, for any Lagrange Space (spaces.h; the default is P1 on simplices). bc.evaluate(t, x, n, F,
+  // FaceBC<nc>&) is called per face F and quadrature point; the face index lets a functor look a per-face kind up.
+  // Geometry (basis, gradients, outward normal, face measure) comes from the space's isoparametric map at each
+  // face quadrature point, so the same code serves segments, triangles and, with a hexahedral space, quadrilaterals.
+  template <class Coefficients, class BC, class Space = P1Simplex<Coefficients::nSpace>>
   void exteriorFaceKernel(const Coefficients &C, const BC &bc, const WeakDirichletParams &wd,
                           int nF, int nQf,
-                          const int *faceLocal,            // (nF) local face index k = the opposite node
-                          const double *xn,                // (nF, nS+1, 3) coordinates of the face's element
-                          const double *u,                 // (nF, nc, nS+1) the element's dofs
+                          const int *faceLocal,            // (nF) local face index k (simplices: the opposite vertex)
+                          const double *xn,                // (nF, nDOF, 3) DOF node coordinates of the face's element
+                          const double *u,                 // (nF, nc, nDOF) the element's dofs
                           const double *qpf, const double *qwf,   // (nQf, nS-1), (nQf): quadrature on the reference face
                           double t, double *Rf, double *Jf)
   {
     using Co = Coefficients;
-    constexpr int nc = Co::nc, nS = Co::nSpace, nD = nS + 1, nFN = nS;   // nFN = nodes of a face
-    static_assert(nS == 2 || nS == 3, "segments of triangles or triangles of tetrahedra");
+    constexpr int nc = Co::nc, nS = Co::nSpace, nD = Space::nDOF;
+    static_assert(Space::nS == nS, "space dimension");
+    PointGeometry<Space> G;
+    Terms<nc, nS> T, Tb;
     for (int F = 0; F < nF; ++F)
     {
       const double *X = xn + F * nD * 3;
       const int k = faceLocal[F];
-      int fn[nFN], m = 0;
-      for (int b = 0; b < nD; ++b)
-        if (b != k) fn[m++] = b;
-      // outward unit normal and the face measure factor len (|edge| in 2D, |e1 x e2| = 2 area in 3D)
-      double nrm[3] = {0.0, 0.0, 0.0}, len;
-      if constexpr (nS == 3)
-      {
-        double e1[3], e2[3], cr[3];
-        for (int I = 0; I < 3; ++I)
-        {
-          e1[I] = X[fn[1] * 3 + I] - X[fn[0] * 3 + I];
-          e2[I] = X[fn[2] * 3 + I] - X[fn[0] * 3 + I];
-        }
-        cr[0] = e1[1] * e2[2] - e1[2] * e2[1];
-        cr[1] = e1[2] * e2[0] - e1[0] * e2[2];
-        cr[2] = e1[0] * e2[1] - e1[1] * e2[0];
-        len = std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]);
-        for (int I = 0; I < 3; ++I) nrm[I] = cr[I] / len;
-      }
-      else
-      {
-        const double ex = X[fn[1] * 3 + 0] - X[fn[0] * 3 + 0], ey = X[fn[1] * 3 + 1] - X[fn[0] * 3 + 1];
-        len = std::sqrt(ex * ex + ey * ey);
-        nrm[0] = ey / len; nrm[1] = -ex / len;
-      }
-      double out = 0.0;                                   // orient away from the opposite node
-      for (int I = 0; I < nS; ++I) out += nrm[I] * (X[fn[0] * 3 + I] - X[k * 3 + I]);
-      if (out < 0.0) for (int I = 0; I < nS; ++I) nrm[I] = -nrm[I];
-      // face diameter = its longest edge (mesh.cpp computeGeometricInfo_*), for the penalty
+      // face diameter = the longest edge between its vertices (mesh.cpp computeGeometricInfo_*), for the penalty
       double h = 0.0;
-      for (int p = 0; p < nFN; ++p)
-        for (int r = p + 1; r < nFN; ++r)
+      for (int p = 0; p < Space::nFaceVertices; ++p)
+        for (int r = p + 1; r < Space::nFaceVertices; ++r)
         {
+          const int vp = Space::faceVertex(k, p), vr = Space::faceVertex(k, r);
           double d2 = 0.0;
           for (int I = 0; I < 3; ++I)
           {
-            const double d = X[fn[p] * 3 + I] - X[fn[r] * 3 + I];
+            const double d = X[vp * 3 + I] - X[vr * 3 + I];
             d2 += d * d;
           }
           h = std::fmax(h, std::sqrt(d2));
         }
       const double penalty = wd.penalty_constant / std::pow(h, wd.penalty_power);
-      // gradients of the basis and of u on the element (constant for P1)
-      double gw[nD][nS], adet;
-      affineP1<nS>(X, gw, adet);
       const double *ue = u + F * nc * nD;
-      double gu[nc][nS];
-      for (int j = 0; j < nc; ++j)
-        for (int I = 0; I < nS; ++I)
-        {
-          gu[j][I] = 0.0;
-          for (int b = 0; b < nD; ++b) gu[j][I] += ue[j * nD + b] * gw[b][I];
-        }
       double Rloc[nc][nD] = {};
       double Jloc[nc][nD][nc][nD] = {};
-      Terms<nc, nS> T, Tb;
       for (int q = 0; q < nQf; ++q)
       {
-        double w[nD] = {};
-        w[fn[0]] = 1.0;
-        for (int mm = 0; mm < nS - 1; ++mm)
-        {
-          w[fn[mm + 1]] = qpf[q * (nS - 1) + mm];
-          w[fn[0]] -= qpf[q * (nS - 1) + mm];
-        }
-        double x[3] = {0.0, 0.0, 0.0};
-        for (int b = 0; b < nD; ++b)
-          for (int I = 0; I < 3; ++I) x[I] += w[b] * X[b * 3 + I];
-        double uq[nc];
+        double xi[nS];
+        Space::faceToReference(k, qpf + q * (nS - 1), xi);
+        G.compute(X, xi);
+        const double *w = G.w, *x = G.x;
+        const auto &gw = G.gw;
+        double nrm[3], vn;
+        G.faceNormal(k, nrm, vn);
+        const double dS = qwf[q] * vn;
+        double uq[nc], gu[nc][nS];
         for (int j = 0; j < nc; ++j)
         {
           uq[j] = 0.0;
-          for (int b = 0; b < nD; ++b) uq[j] += ue[j * nD + b] * w[b];
+          for (int I = 0; I < nS; ++I) gu[j][I] = 0.0;
+          for (int b = 0; b < nD; ++b)
+          {
+            uq[j] += ue[j * nD + b] * w[b];
+            for (int I = 0; I < nS; ++I) gu[j][I] += ue[j * nD + b] * gw[b][I];
+          }
         }
         FaceBC<nc> B;
         B.reset();
@@ -192,7 +162,6 @@ namespace adrh
             gphi[kk][I] = 0.0;
             for (int j = 0; j < nc; ++j) gphi[kk][I] += T.dphi[kk][j] * gu[j][I];
           }
-        const double dS = qwf[q] * len;
         constexpr_for<0, nc>([&](auto i_) {
           constexpr int i = decltype(i_)::value;
           if (B.kind[i] == Strong) return;
