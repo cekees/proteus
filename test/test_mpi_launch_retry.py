@@ -146,15 +146,15 @@ def test_a_crash_that_repeats_fails(crashing_launch):
     assert result.returncode != 0 and calls == 2
 
 
-def test_a_launchers_signal_report_counts_as_a_crash():
-    import conftest  # the root conftest, as a module
+def test_a_launchers_signal_report_counts_as_a_crash(launch_policy):
+    died_by_signal = launch_policy.died_by_signal
     fake = subprocess.CompletedProcess(['mpiexec'], 139, '',
                                        'prterun noticed that process rank 0 exited on signal 11 '
                                        '(Segmentation fault: 11).')
-    assert conftest.died_by_signal(fake) is not None
-    assert conftest.died_by_signal(subprocess.CompletedProcess(['x'], -11, '', '')) == 'SIGSEGV'
-    assert conftest.died_by_signal(subprocess.CompletedProcess(['x'], 1, '', 'AssertionError')) is None
-    assert conftest.died_by_signal(subprocess.CompletedProcess(['x'], 0, '', '')) is None
+    assert died_by_signal(fake) is not None
+    assert died_by_signal(subprocess.CompletedProcess(['x'], -11, '', '')) == 'SIGSEGV'
+    assert died_by_signal(subprocess.CompletedProcess(['x'], 1, '', 'AssertionError')) is None
+    assert died_by_signal(subprocess.CompletedProcess(['x'], 0, '', '')) is None
 
 
 def test_the_timeout_is_scaled_for_a_slow_runner(monkeypatch):
@@ -165,16 +165,16 @@ def test_the_timeout_is_scaled_for_a_slow_runner(monkeypatch):
     assert result.returncode == 0
 
 
-def test_the_scale_is_at_least_one_and_at_most_four(monkeypatch):
-    import conftest
+def test_the_scale_is_at_least_one_and_at_most_four(monkeypatch, launch_policy):
+    scaled_timeout = launch_policy.scaled_timeout
     monkeypatch.setenv('PROTEUS_TEST_TIMEOUT_SCALE', 'auto')
-    monkeypatch.setattr(conftest.os, 'getloadavg', lambda: (0.0, 0.0, 0.0))
-    assert conftest.scaled_timeout(10) == 10
-    monkeypatch.setattr(conftest.os, 'getloadavg', lambda: (1e6, 0.0, 0.0))
-    assert conftest.scaled_timeout(10) == 40
+    monkeypatch.setattr(launch_policy.os, 'getloadavg', lambda: (0.0, 0.0, 0.0))
+    assert scaled_timeout(10) == 10
+    monkeypatch.setattr(launch_policy.os, 'getloadavg', lambda: (1e6, 0.0, 0.0))
+    assert scaled_timeout(10) == 40
     monkeypatch.setenv('PROTEUS_TEST_TIMEOUT_SCALE', 'not a number')
-    assert conftest.scaled_timeout(10) == 10
-    assert conftest.scaled_timeout(None) is None
+    assert scaled_timeout(10) == 10
+    assert scaled_timeout(None) is None
 
 
 def test_the_launched_interpreter_runs_with_faulthandler(monkeypatch):

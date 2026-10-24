@@ -123,6 +123,15 @@ def launched_environment(env):
     return env
 
 
+@pytest.fixture
+def launch_policy():
+    """The launch policy's pieces, for the tests of it (a conftest is not importable under
+    --import-mode=importlib, so they reach them through this fixture)."""
+    import types
+    return types.SimpleNamespace(scaled_timeout=scaled_timeout, died_by_signal=died_by_signal,
+                                 launched_environment=launched_environment, os=os)
+
+
 @pytest.fixture(autouse=True)
 def _retry_an_mpi_launch_that_never_started(monkeypatch):
     """Every ``subprocess.run`` from a test, hardened for a shared runner:
