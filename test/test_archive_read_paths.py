@@ -5,9 +5,14 @@ child as the Domain, that Domain's last child as the collection, a grid's
 first child as its Time. Those positions are not guaranteed by XDMF:
 ``<Information>`` is legal ahead of ``<Domain>``, a real proteus archive
 commonly carries two grid collections (the linear mesh and a quadratic
-space), and nothing fixes the order of a grid's children. Each of these
-tests puts the thing being looked for somewhere other than the position the
-old code assumed, so a positional reader fails them.
+space), and nothing fixes the order of a grid's children.
+
+The readers now take the archive's own domain dict (what
+``Archiver.readArchiveDomain`` assembles from the ``.h5``), so the
+positional traps are gone with the tree; what these tests pin is the
+lookup by name, the step selection and the dataset references. The
+``gatherArchives`` script still composes ``.xmf`` files, and keeps its
+XML-built fixtures.
 """
 
 import os
@@ -25,9 +30,42 @@ SCRIPTS = os.path.join(REPO_ROOT, "scripts")
 TWO_COLLECTIONS = ("Mesh Spatial_Domain", "Mesh_c0p2_Lagrange")
 
 
+def build_domain(n_steps=2, collections=TWO_COLLECTIONS, rank=0, spatial=False):
+    """An archive domain shaped like proteus's: two spaces, a few steps."""
+    def grid(tn, name=None):
+        g = {}
+        if name is not None:
+            g["name"] = name
+        g["topology"] = {"type": "Triangle", "number_of_elements": 2,
+                         "data_item": {"format": "HDF", "data_type": "Int",
+                                       "precision": 4, "dimensions": [2, 3],
+                                       "data": "f.h5:/e%d_p%d" % (tn, rank)}}
+        g["geometry"] = {"type": "XYZ",
+                         "data_item": {"format": "HDF", "data_type": "Float",
+                                       "precision": 8, "dimensions": [4, 3],
+                                       "data": "f.h5:/n%d_p%d" % (tn, rank)}}
+        g["attributes"] = [{"name": "nodeMaterialTypes", "attribute_type": "Scalar",
+                            "center": "Node",
+                            "data_item": {"format": "HDF", "data_type": "Int",
+                                          "precision": 4, "dimensions": [4],
+                                          "data": "f.h5:/nodeMat%d" % tn}}]
+        return g
+    domain = {"time_collections": []}
+    for name in collections:
+        steps = []
+        for tn in range(n_steps):
+            if spatial:
+                steps.append({"time": float(tn),
+                              "spatial_collection": [grid(tn, "p%d" % r) for r in range(2)]})
+            else:
+                steps.append(dict(time=float(tn), **grid(tn)))
+        domain["time_collections"].append({"name": name, "data": steps})
+    return domain
+
+
 def build_xmf(path, n_steps=2, collections=TWO_COLLECTIONS, rank=0,
               lead_with_information=False, time_last=False):
-    """A per-rank .xmf shaped like proteus's, with optional awkwardness.
+    """A per-rank .xmf shaped like proteus's, for the gatherArchives script.
 
     ``lead_with_information`` puts an <Information> element ahead of
     <Domain>, which XDMF allows and which breaks ``getroot()[-1]``.
@@ -69,107 +107,76 @@ def build_xmf(path, n_steps=2, collections=TWO_COLLECTIONS, rank=0,
 
 
 # --------------------------------------------------------------------------
-# MeshTools.findXMLgridElement
+# MeshTools.findArchiveGrid
 # --------------------------------------------------------------------------
 
 
-def test_the_named_collection_is_found_not_the_last_one(tmp_path):
+def test_the_named_collection_is_found_not_the_last_one():
     """`Domain[-1]` would return the quadratic space, not the base mesh."""
-    from proteus.MeshTools import findXMLgridElement
+    from proteus.MeshTools import findArchiveGrid
 
-    path = build_xmf(str(tmp_path / "a.xmf"))
-    grid = findXMLgridElement(parse(path), MeshTag="Spatial_Domain")
+    grid = findArchiveGrid(build_domain(), MeshTag="Spatial_Domain")
     # the base mesh's connectivity, not the c0p2 space's
-    assert grid.find("Topology").find("DataItem").text.endswith("e1_p0")
-    assert grid.attrib["GridType"] == "Uniform"
+    assert grid["topology"]["data_item"]["data"].endswith("e1_p0")
 
 
-def test_an_information_element_before_domain_is_tolerated(tmp_path):
-    """XDMF permits <Information*> ahead of <Grid+> inside <Xdmf>.
+def test_an_unknown_mesh_tag_falls_back_to_the_first_collection():
+    from proteus.MeshTools import findArchiveGrid
 
-    `getroot()[-1]` happened to work only because nothing was written
-    after <Domain>.
-    """
-    from proteus.MeshTools import findXMLgridElement
-
-    path = build_xmf(str(tmp_path / "a.xmf"), lead_with_information=True)
-    grid = findXMLgridElement(parse(path), MeshTag="Spatial_Domain")
-    assert grid.attrib["GridType"] == "Uniform"
+    grid = findArchiveGrid(build_domain(), MeshTag="NoSuchMesh")
+    assert grid["topology"]["data_item"]["data"].endswith("e1_p0")
 
 
-def test_an_unknown_mesh_tag_falls_back_to_the_first_collection(tmp_path):
-    from proteus.MeshTools import findXMLgridElement
+def test_a_step_can_be_selected_by_index():
+    from proteus.MeshTools import findArchiveGrid
 
-    path = build_xmf(str(tmp_path / "a.xmf"))
-    grid = findXMLgridElement(parse(path), MeshTag="NoSuchMesh")
-    assert grid.attrib["GridType"] == "Uniform"
-
-
-def test_a_step_can_be_selected_by_index(tmp_path):
-    from proteus.MeshTools import findXMLgridElement
-
-    path = build_xmf(str(tmp_path / "a.xmf"), n_steps=3)
-    first = findXMLgridElement(parse(path), id_in_collection=0)
-    last = findXMLgridElement(parse(path), id_in_collection=-1)
-    assert first.find("Topology").find("DataItem").text.endswith("e0_p0")
-    assert last.find("Topology").find("DataItem").text.endswith("e2_p0")
+    domain = build_domain(n_steps=3)
+    first = findArchiveGrid(domain, id_in_collection=0)
+    last = findArchiveGrid(domain, id_in_collection=-1)
+    assert first["topology"]["data_item"]["data"].endswith("e0_p0")
+    assert last["topology"]["data_item"]["data"].endswith("e2_p0")
 
 
-def test_a_spatial_collection_step_resolves_to_a_uniform_grid(tmp_path):
-    """A per-subdomain archive nests Grid(Spatial) > Grid(Uniform)."""
-    from proteus.MeshTools import findXMLgridElement
+def test_a_spatial_collection_step_resolves_to_a_uniform_grid():
+    """A per-subdomain archive holds one grid per rank in each step."""
+    from proteus.MeshTools import findArchiveGrid
 
-    root = Element("Xdmf", {"Version": "2.0"})
-    domain = SubElement(root, "Domain")
-    coll = SubElement(domain, "Grid",
-                      {"Name": "Mesh Spatial_Domain", "GridType": "Collection",
-                       "CollectionType": "Temporal"})
-    spatial = SubElement(coll, "Grid", {"GridType": "Collection",
-                                        "CollectionType": "Spatial"})
-    SubElement(spatial, "Time", {"Value": "0.0", "Name": "0"})
-    for rank in range(2):
-        g = SubElement(spatial, "Grid",
-                       {"GridType": "Uniform", "Name": "p%d" % rank})
-        topo = SubElement(g, "Topology",
-                          {"Type": "Triangle", "NumberOfElements": "2"})
-        SubElement(topo, "DataItem",
-                   {"Format": "HDF", "DataType": "Int",
-                    "Dimensions": "2 3"}).text = "f.h5:/e_p%d" % rank
-    path = str(tmp_path / "s.xmf")
-    with open(path, "wb") as handle:
-        ElementTree(root).write(handle)
+    grid = findArchiveGrid(build_domain(spatial=True))
+    assert grid["name"] == "p0"
+    assert "spatial_collection" not in grid
 
-    grid = findXMLgridElement(parse(path))
-    assert grid.attrib["GridType"] == "Uniform"
-    assert grid.attrib["Name"] == "p0"
+
+def test_an_empty_archive_is_reported():
+    from proteus.MeshTools import findArchiveGrid
+
+    with pytest.raises(AssertionError, match="no time collections"):
+        findArchiveGrid({"time_collections": []})
+    with pytest.raises(AssertionError, match="holds no grids"):
+        findArchiveGrid({"time_collections": [{"name": "Mesh", "data": []}]})
 
 
 # --------------------------------------------------------------------------
-# MeshTools.extractPropertiesFromXdmfGridNode and the DataItem reads
+# MeshTools.extractPropertiesFromGrid and the DataItem reads
 # --------------------------------------------------------------------------
 
 
-def test_grid_properties_are_found_regardless_of_child_order(tmp_path):
-    """`Grid[0]` assumed Time came first; nothing in XDMF says so."""
-    from proteus.MeshTools import extractPropertiesFromXdmfGridNode, findXMLgridElement
+def test_grid_properties_are_found_by_name():
+    from proteus.MeshTools import extractPropertiesFromGrid, findArchiveGrid
 
-    path = build_xmf(str(tmp_path / "a.xmf"), time_last=True)
-    grid = findXMLgridElement(parse(path))
+    grid = findArchiveGrid(build_domain())
     topology, geometry, node_materials, element_materials = \
-        extractPropertiesFromXdmfGridNode(grid)
-    assert topology is not None and topology.tag == "Topology"
-    assert geometry is not None and geometry.tag == "Geometry"
-    assert node_materials is not None
-    assert node_materials.attrib["Name"] == "nodeMaterialTypes"
+        extractPropertiesFromGrid(grid)
+    assert topology["type"] == "Triangle"
+    assert geometry["type"] == "XYZ"
+    assert node_materials["name"] == "nodeMaterialTypes"
     assert element_materials is None       # not written by this fixture
 
 
-def test_a_dataitem_reference_resolves_to_its_dataset_name(tmp_path):
-    from proteus.MeshTools import _dataitem_dataset, findXMLgridElement
+def test_a_dataitem_reference_resolves_to_its_dataset_name():
+    from proteus.MeshTools import _dataitem_dataset, findArchiveGrid
 
-    path = build_xmf(str(tmp_path / "a.xmf"))
-    grid = findXMLgridElement(parse(path))
-    assert _dataitem_dataset(grid.find("Geometry"), "Geometry") == "n1_p0"
+    grid = findArchiveGrid(build_domain())
+    assert _dataitem_dataset(grid["geometry"], "Geometry") == "n1_p0"
 
 
 def test_a_dataset_path_containing_a_colon_survives():
@@ -180,16 +187,17 @@ def test_a_dataset_path_containing_a_colon_survives():
     """
     from proteus.MeshTools import _dataitem_dataset
 
-    geometry = Element("Geometry")
-    SubElement(geometry, "DataItem").text = "out.h5:/group/od:d"
+    geometry = {"type": "XYZ", "data_item": {"data": "out.h5:/group/od:d"}}
     assert _dataitem_dataset(geometry, "Geometry") == "group/od:d"
 
 
-def test_a_missing_dataitem_is_reported(tmp_path):
+def test_a_missing_dataitem_is_reported():
     from proteus.MeshTools import _dataitem_dataset
 
-    with pytest.raises(AssertionError, match="no <DataItem>"):
-        _dataitem_dataset(Element("Geometry"), "Geometry")
+    with pytest.raises(AssertionError, match="no data_item"):
+        _dataitem_dataset({"type": "XYZ"}, "Geometry")
+    with pytest.raises(AssertionError, match="no HDF5 reference"):
+        _dataitem_dataset({"data_item": {"include": "./x.txt"}}, "Geometry")
 
 
 # --------------------------------------------------------------------------

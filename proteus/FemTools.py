@@ -4176,8 +4176,6 @@ class C0_AffineLinearOnSimplexWithNodalBasis(ParametricFiniteElementSpace):
             u.dof[permute] = dataset[numbering[permute].tolist()]
         else:
             u.dof[:] = dataset[:]
-            #numpy.savetxt(ar.textDataDir+"/"+"{0:s}{0:d}".format(u.name, tCount)+".txt",u.dof)
-            #SubElement(values,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"{0:s}{0:d}".format(u.name, tCount)+".txt"})
     def writeVectorFunctionXdmf(self,ar,uList,components,vectorName,tCount=0,init=True):
         #XDMF vectors are always 3-component, so a 1D or 2D problem pads the
         #components it doesn't have with zeros. This was duplicated verbatim

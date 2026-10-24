@@ -7,7 +7,6 @@ Classes for calculating auxiliary variables based on the numerical solution.
 import numpy
 from . import Viewers
 from . import Archiver
-from xml.etree.ElementTree import *
 
 from . import Profiling
 from .Profiling import logEvent
@@ -31,21 +30,19 @@ class AV_base(object):
     def attachAuxiliaryVariables(self,avDict):
         pass
     def writeScalarXdmf(self,u,name):
-        #get the current spatial grid
-        for child in self.ar.domain:
-            if child.tag == "Grid" and child.attrib["Name"] == "Mesh Spatial_Domain":
-                self.arGridCollection = child
-        assert self.arGridCollection is not None
-        self.arGrid = self.arGridCollection[-1]
-        #write the attribute
-        attribute = SubElement(self.arGrid,"Attribute",{"Name":name,
-                                                        "AttributeType":"Scalar",
-                                                        "Center":"Grid"})
-        values    = SubElement(attribute,"DataItem",
-                               {"Format":"XML",
-                                **Archiver.xdmf_number_type(numpy.asarray(u)),
-                                "Dimensions":"1"})
-        values.text = str(u)
+        """Record one number for the step, inline in the archive document."""
+        from ymf.archive import attribute, data_item_for
+        #the current spatial grid
+        self.arGridCollection = self.ar.domain.get("Mesh Spatial_Domain")
+        assert self.arGridCollection is not None, \
+            "no Mesh Spatial_Domain collection; the mesh is archived first"
+        self.arGrid = self.arGridCollection.grid
+        assert self.arGrid is not None, \
+            "Mesh Spatial_Domain has no grid for this step yet"
+        #a grid-centred attribute holding the value itself
+        item = data_item_for(numpy.asarray(u).reshape((1,)), inline=True)
+        self.arGrid["attributes"].append(
+            attribute(name, item, center="Grid", attribute_type="Scalar"))
     def calculate_init(self):
         self.calculate()
     def calculate(self):

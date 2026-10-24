@@ -13,7 +13,6 @@ That pins the format before the solver can produce such arrays, instead of
 finding out afterwards with archives already written.
 """
 import os
-from xml.etree.ElementTree import Element, SubElement
 
 import numpy as np
 import pytest
@@ -58,13 +57,14 @@ def test_a_dtype_with_no_xdmf_type_is_refused_not_guessed():
 def test_topology_and_geometry_cannot_be_written_without_a_type():
     ar = Archiver.AR_base.__new__(Archiver.AR_base)
     ar.dataItemFormat, ar.hdfFile, ar.hdfFilename = "HDF", object(), "out.h5"
-    grid = Element("Grid")
+    grid = Archiver.ArchiveCollection("Mesh").new_grid(0.0, 0)
     with pytest.raises(TypeError):
         ar.write_topology(grid, "Triangle", 2, [2, 3], "elements", "elements")
     with pytest.raises(TypeError):
         ar.write_geometry(grid, [4, 3], "nodes", "nodes")
     item = ar.write_geometry(grid, [4, 3], "nodes", "nodes", dtype="float32")
-    assert (item.get("DataType"), item.get("Precision")) == ("Float", "4")
+    assert (item["data_type"], item["precision"]) == ("Float", 4)
+    assert grid["geometry"]["data_item"] is item
 
 
 # --------------------------------------------------------------------------
@@ -100,9 +100,7 @@ class DGP1DofMap(object):
 @pytest.fixture
 def archive(tmp_path):
     Comm.init()
-    ar = Archiver.XdmfArchive(str(tmp_path), "dtypes", global_sync=False)
-    ar.domain = SubElement(ar.tree.getroot(), "Domain")
-    return ar
+    return Archiver.XdmfArchive(str(tmp_path), "dtypes", global_sync=False)
 
 
 def written_arrays(path):
