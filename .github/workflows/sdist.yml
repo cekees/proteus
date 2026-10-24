@@ -365,7 +365,8 @@ jobs:
           # patch = subprocess), and pytest-cov combines them all.
           COV_ARGS=()
           if [ "${{ matrix.leg.coverage }}" = yes ] && [ "${{ matrix.suite }}" != fsi ]; then
-            COV_ARGS=(--cov=proteus --cov-config=../pyproject.toml
+            # an absolute path: each xdist worker runs in test_output/<worker id>
+            COV_ARGS=(--cov=proteus --cov-config="$GITHUB_WORKSPACE/pyproject.toml"
                       --cov-report=xml:coverage.xml --cov-report=html:htmlcov
                       --cov-report=term-missing:skip-covered)
           fi
