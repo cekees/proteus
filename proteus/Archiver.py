@@ -165,14 +165,68 @@ class AR_base(object):
     chose between one ``.xmf`` and one per rank, gathered at close; the
     HDF5 metadata makes that choice for a reader, and ``global_sync`` is
     what decides the layout of the data.
+
+    **Modes.** One writer, with switches; a ``mode`` names a combination
+    of them (:data:`MODES`), and a switch given explicitly overrides what
+    the mode says:
+
+    ``incremental``
+        append each step to the ``.ymf`` as it is archived (the default),
+        or write the ``.ymf`` only at close, from the HDF5 metadata.
+    ``driver``
+        how the ``.h5`` is used: ``"mpio"`` (the default), every rank
+        writing its part of one file through parallel HDF5; or
+        ``"serial"``, one file that master alone opens and writes, the
+        other ranks sending it their arrays. The serial driver needs no
+        parallel HDF5 and gives the same file; it costs the gather. A
+        serial-driver archive cannot be hot started on several ranks.
+    ``includeLog``
+        carry the run's log, and proteus's version and command line,
+        in the ``.ymf`` under ``extra: proteus``.
+    ``inline``
+        no ``.h5`` at all: the arrays are copied into the ``.ymf``
+        (``values`` on every data item), which is then self-contained.
+        For problems small enough to want that.
+
+    ======================  ===========  ======  ==========  ======
+    mode                    incremental  driver  includeLog  inline
+    ======================  ===========  ======  ==========  ======
+    ``"without-a-net"``     off          mpio    off         off
+    ``"split"`` (default)   on           mpio    off         off
+    ``"kitchen-sink"``      on           mpio    on          off
+    ``"ymf-only"``          on           --      off         on
+    ======================  ===========  ======  ==========  ======
+
+    *Without a net* is the ``.h5`` alone during the run, the ``.ymf``
+    derived from it at close -- and derivable again by ``gatherTimes``,
+    which is the net. *Split* is the ``.h5`` plus a ``.ymf`` that is
+    current at every step; the problem's own ``.ymf`` specification, the
+    third file of that mode, is the ``pro`` command's. *Kitchen sink* adds
+    the log and the run's provenance to the document. *Ymf only* is one
+    file.
     """
+    #: Names for combinations of the switches; see the class docstring.
+    MODES = {
+        "without-a-net": {"incremental": False},
+        "split":         {},
+        "kitchen-sink":  {"includeLog": True},
+        "ymf-only":      {"inline": True},
+    }
+    #: The HDF5 drivers an archive can be opened with.
+    DRIVERS = ("mpio", "serial")
+
     def __init__(self,dataDir,filename,
                  useTextArchive=False,
                  gatherAtClose=True,
                  useGlobalXMF=True,
                  hotStart=False,
                  readOnly=False,
-                 global_sync=True):
+                 global_sync=True,
+                 mode=None,
+                 incremental=None,
+                 driver=None,
+                 includeLog=None,
+                 inline=None):
         comm=Comm.get()
         self.comm=comm
         self.rank = comm.rank()
@@ -186,9 +240,32 @@ class AR_base(object):
         self._liveYmfStarted = False
         self._liveYmfWarned = False
         self.global_sync = global_sync
+        switches = self.resolve_mode(mode, incremental=incremental, driver=driver,
+                                     includeLog=includeLog, inline=inline)
+        self.mode = switches["mode"]
+        self.writeIncrementalYmf = switches["incremental"]
+        self.driver = switches["driver"]
+        self.includeLog = switches["includeLog"]
+        self.inline = switches["inline"]
+        #the arrays of an inline archive, by dataset name, on master; and
+        #the document they are copied into, a step at a time
+        self._inlineArrays = {}
+        self._inlineDomain = None
         comm_world = self.comm.comm.tompi4py()
         self.domain = ArchiveDomain()
-        if not useTextArchive:
+        if self.inline and (hotStart or readOnly):
+            raise ValueError("an inline (ymf-only) archive has no .h5 to hot start from or read")
+        if self.driver == "serial" and self.size > 1 and (hotStart or readOnly):
+            raise ValueError(
+                "a serial-driver archive is written by master alone, so the other "
+                "ranks cannot read it: hot start or read it with the mpio driver")
+        if self.inline:
+            #no file: the "reference" every data item carries is the dataset
+            #name, which allGatherIncremental replaces with the values
+            self.hdfFilename=filename+".h5"
+            self.hdfFile=None
+            self.dataItemFormat="XML"
+        elif not useTextArchive:
             if hotStart:
                 mode = "a"
             elif readOnly:
@@ -196,10 +273,13 @@ class AR_base(object):
             else:
                 mode = "w"
             self.hdfFilename=filename+".h5"
-            self.hdfFile=h5py.File(os.path.join(self.dataDir,self.hdfFilename),
-                                   mode,
-                                   driver="mpio",
-                                   comm = comm_world)
+            path = os.path.join(self.dataDir,self.hdfFilename)
+            if self.driver == "mpio":
+                self.hdfFile=h5py.File(path, mode, driver="mpio", comm = comm_world)
+            elif self.comm.isMaster():
+                self.hdfFile=h5py.File(path, mode)
+            else:
+                self.hdfFile=None
             self.dataItemFormat="HDF"
             if mode == "w":
                 self.comm.barrier()
@@ -216,6 +296,77 @@ class AR_base(object):
             self.dataItemFormat="XML"
         if hotStart and self.hdfFile is not None:
             self._seed_domain()
+
+    @classmethod
+    def resolve_mode(cls, mode=None, **switches):
+        """The switch values a ``mode`` and explicit switches combine to.
+
+        Returns ``{"mode", "incremental", "driver", "includeLog", "inline"}``.
+        A switch passed as something other than None wins over the mode;
+        the mode wins over the defaults (``"split"``'s). An unknown mode
+        or driver is refused by name.
+        """
+        if mode is None:
+            mode = "split"
+        if mode not in cls.MODES:
+            raise ValueError("archive mode %r is not one of %s"
+                             % (mode, ", ".join(sorted(cls.MODES))))
+        resolved = {"incremental": True, "driver": "mpio", "includeLog": False,
+                    "inline": False}
+        resolved.update(cls.MODES[mode])
+        for name, value in switches.items():
+            if name not in resolved:
+                raise TypeError("unknown archive switch %r" % (name,))
+            if value is not None:
+                resolved[name] = value
+        if resolved["driver"] not in cls.DRIVERS:
+            raise ValueError("archive driver %r is not one of %s"
+                             % (resolved["driver"], ", ".join(cls.DRIVERS)))
+        resolved["mode"] = mode
+        return resolved
+
+    @property
+    def writesDatasets(self):
+        """Whether the writers hand their arrays to the archive as datasets.
+
+        True for every HDF5 driver and for an inline archive (whose
+        "datasets" become the values in the document); False only for a
+        text archive, which writes sidecar files itself. The writers used
+        to test ``ar.hdfFile is not None``, which is wrong on the ranks
+        of a serial-driver archive that hold no file.
+        """
+        return self.dataItemFormat == "HDF" or getattr(self, "inline", False)
+
+    def _document_extra(self, with_log):
+        """What the ``.ymf`` carries beside the domain: the run's provenance.
+
+        Always proteus's version, the rank count and the mode -- what any
+        two runs of the same computation share, so the documents of two
+        such runs stay identical. With ``includeLog`` the command line as
+        well, and the run's log (``with_log`` chooses, since the log is
+        only complete at close).
+        """
+        import sys
+        provenance = {"ranks": self.size, "archive_mode": self.mode}
+        try:
+            from proteus import __version__
+            provenance["version"] = str(__version__)
+        except ImportError:
+            pass
+        if self.includeLog:
+            provenance["command"] = " ".join(sys.argv)
+        if with_log and self.includeLog:
+            logFile = Profiling.logFile
+            if logFile is not None and not logFile.closed:
+                logFile.flush()
+                provenance["log_file"] = os.path.basename(logFile.name)
+                try:
+                    with open(logFile.name, "r", errors="replace") as f:
+                        provenance["log"] = f.read()
+                except OSError as error:
+                    provenance["log"] = "could not read %s: %s" % (logFile.name, error)
+        return {"proteus": provenance}
+
     def _seed_domain(self):
         """Give a hot-started run the collections its writers append to.
 
@@ -566,7 +717,8 @@ class AR_base(object):
             from ymf.archive import append_step, new_domain, write_ymf
             if not self._liveYmfStarted:
                 tmp = path + ".writing"
-                write_ymf(new_domain(live_steps[0][1]), tmp)
+                write_ymf(new_domain(live_steps[0][1]), tmp,
+                          extra=self._document_extra(with_log=False))
                 os.replace(tmp, path)
                 self._liveYmfStarted = True
             for _, name, t, grids in live_steps:
@@ -597,7 +749,12 @@ class AR_base(object):
         """
         from ymf.archive import write_ymf
 
-        domain = self.assemble_domain()
+        if self.inline:
+            #an inline archive has no HDF5 metadata: the document was built
+            #a step at a time, values and all
+            domain = self._inlineDomain
+        else:
+            domain = self.assemble_domain()
         #keep the assembled domain: it is the archive's representation, and
         #callers that used to inspect the XML tree want this instead
         self.archived_domain = domain
@@ -608,7 +765,7 @@ class AR_base(object):
                      % (self.filename,))
             return
         ymf_path = os.path.join(self.dataDir, self.filename + ".ymf")
-        write_ymf(domain, ymf_path)
+        write_ymf(domain, ymf_path, extra=self._document_extra(with_log=True))
         logEvent("Wrote YMF archive %s (ymf2xmf %s writes an .xmf for viewers)"
                  % (ymf_path, os.path.basename(ymf_path)))
 
@@ -684,15 +841,24 @@ class AR_base(object):
             t = TemporalGridCollection.time
             TimeAttrib = repr(t)
 
+            #the step's grids, on master: one per rank, or the one global grid
             if not self.global_sync:
                 grid_dicts = comm_world.gather(local_grid)
-                payloads = [dump_grid(g).encode("utf-8")
-                            for g in grid_dicts] if self.comm.isMaster() else []
                 n_rows = self.size
             else:
-                payloads = [dump_grid(local_grid).encode("utf-8")] \
-                    if self.comm.isMaster() else []
+                grid_dicts = [local_grid] if self.comm.isMaster() else None
                 n_rows = 1
+            if self.inline:
+                #no file: master replaces every dataset reference with the
+                #values it was handed and keeps the step in the document
+                if self.comm.isMaster():
+                    grid_dicts = [self._inlineGrid(g) for g in grid_dicts]
+                    self._inlineStep(TemporalGridCollection.name, t, grid_dicts)
+                    live_steps.append((i, TemporalGridCollection.name,
+                                       t, grid_dicts))
+                continue
+            payloads = ([dump_grid(g).encode("utf-8") for g in grid_dicts]
+                        if self.comm.isMaster() else [])
 
             #every rank must create the dataset with the same width, so agree
             #on it collectively. Each rank contributes the length it knows.
@@ -717,10 +883,8 @@ class AR_base(object):
             if self.comm.isMaster() and self.hdfFile is not None:
                 #master already holds this step's grids, so the running
                 #document costs no extra read and no extra parse
-                live_grids = (grid_dicts if not self.global_sync
-                              else [local_grid])
                 live_steps.append((i, TemporalGridCollection.name,
-                                   t, live_grids))
+                                   t, grid_dicts))
         self.n_datasets += 1
         if live_steps and self.writeIncrementalYmf:
             self._appendLiveStep(live_steps)
@@ -731,32 +895,115 @@ class AR_base(object):
         self.allGatherIncremental()
         #the step is stored; drop its grids so the domain stays one step deep
         self.domain.clear_step()
+        #the barriers are collective: every rank takes them, whether or not
+        #it holds the file (with the serial driver only master does)
+        self.comm.barrier()
         if self.hdfFile is not None:
-            self.comm.barrier()
             self.hdfFile.flush()
-            self.comm.barrier()
+        self.comm.barrier()
         logEvent("Done Syncing Archive",level=3)
         logEvent(memory("Syncing Archive"),level=4)
     def create_dataset_async(self,name,data):
+        """Write each rank's own array under its own name.
+
+        With the mpio driver every rank creates every dataset (creation is
+        collective) and fills its own. With the serial driver, or inline,
+        the arrays are gathered to master, which writes (or keeps) them.
+        """
         comm_world = self.comm.comm.tompi4py()
-        metadata = comm_world.allgather((name,data.shape,data.dtype))
-        for i,m in enumerate(metadata):
-            dataset = self.hdfFile.create_dataset(name  = m[0],
-                                                  shape = m[1],
-                                                  dtype = m[2])
-            if i == self.rank:
-                dataset[:] = data
+        if self.driver == "mpio" and not self.inline:
+            metadata = comm_world.allgather((name,data.shape,data.dtype))
+            for i,m in enumerate(metadata):
+                dataset = self.hdfFile.create_dataset(name  = m[0],
+                                                      shape = m[1],
+                                                      dtype = m[2])
+                if i == self.rank:
+                    dataset[:] = data
+            return
+        pieces = comm_world.gather((name, data))
+        if self.comm.isMaster():
+            for piece_name, piece in pieces:
+                self._store(piece_name, numpy.asarray(piece))
     def create_dataset_sync(self,name,offsets,data):
-        try:
-            dataset = self.hdfFile.create_dataset(name  = name,
-                                                  shape = tuple([offsets[-1]]+list(data.shape[1:])),
-                                                  dtype = data.dtype)
-        except:
+        """Write one global array, each rank contributing the slice it owns.
+
+        With the mpio driver the dataset is created collectively and every
+        rank writes its slice. With the serial driver, or inline, the
+        slices are gathered to master and assembled there.
+        """
+        if self.driver == "mpio" and not self.inline:
             try:
-                dataset = self.hdfFile[name]
-            except Exception as e:
-                raise e
-        dataset[offsets[self.rank]:offsets[self.rank+1]] = data
+                dataset = self.hdfFile.create_dataset(name  = name,
+                                                      shape = tuple([offsets[-1]]+list(data.shape[1:])),
+                                                      dtype = data.dtype)
+            except:
+                try:
+                    dataset = self.hdfFile[name]
+                except Exception as e:
+                    raise e
+            dataset[offsets[self.rank]:offsets[self.rank+1]] = data
+            return
+        comm_world = self.comm.comm.tompi4py()
+        pieces = comm_world.gather(data)
+        if self.comm.isMaster():
+            full = numpy.empty(tuple([int(offsets[-1])]+list(data.shape[1:])), data.dtype)
+            for r, piece in enumerate(pieces):
+                full[int(offsets[r]):int(offsets[r+1])] = piece
+            self._store(name, full)
+    def _store(self, name, array):
+        """Master keeps an assembled array: in the file, or for the inline document."""
+        if self.inline:
+            self._inlineArrays[name] = array
+        elif name in self.hdfFile:
+            self.hdfFile[name][...] = array
+        else:
+            self.hdfFile.create_dataset(name, data=array)
+
+    def _inlineGrid(self, grid):
+        """A copy of ``grid`` with every dataset reference replaced by its values.
+
+        The writers describe each array by the dataset name it would have
+        had in the ``.h5``; an inline archive has no ``.h5``, so master
+        swaps the values it was handed (:meth:`_store`) into the document.
+        A reference with no values behind it is a writer that described an
+        array it never wrote, and is refused rather than left dangling.
+        """
+        import copy
+        from ymf.archive import data_item_for
+        g = copy.deepcopy(grid)
+        prefix = self.hdfFilename + ":/"
+
+        def swap(owner):
+            item = owner["data_item"]
+            reference = item.get("data")
+            if reference is None or not reference.startswith(prefix):
+                return
+            name = reference[len(prefix):]
+            if name not in self._inlineArrays:
+                raise RuntimeError(
+                    "inline archive: the document refers to dataset %r but no "
+                    "values were written for it" % (name,))
+            owner["data_item"] = data_item_for(self._inlineArrays[name], inline=True,
+                                               dimensions=item["dimensions"])
+        swap(g["topology"])
+        swap(g["geometry"])
+        for a in g.get("attributes", []):
+            swap(a)
+        return g
+
+    def _inlineStep(self, name, t, grids):
+        """Append one step to the inline document, creating its collection at need."""
+        from ymf.archive import add_collection, add_spatial_step, add_uniform_step, new_domain
+        if self._inlineDomain is None:
+            self._inlineDomain = new_domain(name)
+        elif all(c["name"] != name for c in self._inlineDomain["time_collections"]):
+            add_collection(self._inlineDomain, name)
+        if self.global_sync:
+            g = grids[0]
+            add_uniform_step(self._inlineDomain, t, g["topology"], g["geometry"],
+                             g.get("attributes", []), collection=name)
+        else:
+            add_spatial_step(self._inlineDomain, t, grids, collection=name)
 
     def write_field(self, grid, name, data, tCount,
                     center="Node", rank="Scalar", dimensions=None,
@@ -832,13 +1079,13 @@ class AR_base(object):
         #textDataDir only exists when the archive was opened with
         #useTextArchive=True, so it must not be touched on the HDF5 path
         text_path = ("{0:s}/{1:s}.txt".format(self.textDataDir, text_stem)
-                     if self.hdfFile is None else None)
+                     if not self.writesDatasets else None)
 
         item = data_item_for(
             data,
             data="{0:s}:/{1:s}".format(self.hdfFilename, dataset_name)
-            if self.hdfFile is not None else None,
-            include="./" + text_path if self.hdfFile is None else None,
+            if self.writesDatasets else None,
+            include="./" + text_path if not self.writesDatasets else None,
             dimensions=list(data.shape) if dimensions is None else dimensions,
             #On a genuinely parallel collective write the DataItem
             #describes the assembled global array while `data` is this
@@ -858,7 +1105,7 @@ class AR_base(object):
 
         if not write_data:
             return item
-        if self.hdfFile is not None:
+        if self.writesDatasets:
             if self.global_sync:
                 self.create_dataset_sync(dataset_name,
                                          offsets=sync_offsets,
@@ -927,7 +1174,7 @@ class AR_base(object):
         from ymf.archive import data_item
         dtypes = dtype if isinstance(dtype, tuple) else (dtype,)
         kind = xdmf_number_type(*dtypes)
-        if self.hdfFile is not None:
+        if self.writesDatasets:
             reference = {"data": "{0:s}:/{1:s}".format(self.hdfFilename, dataset)}
         else:
             reference = {"include": "./{0:s}/{1:s}.txt".format(self.textDataDir,
@@ -1099,7 +1346,7 @@ class XdmfWriter(object):
         if self._needsGrid(t):
             Xdmf_NodesPerElement = x.shape[1]
             if ar.global_sync:
-                assert ar.hdfFile is not None, "global_sync not supported with text  heavy data"
+                assert ar.writesDatasets, "global_sync not supported with text  heavy data"
                 Xdmf_NumberOfElements= mesh.globalMesh.nElements_global
                 elements_dataset = 'elements'+spaceSuffix+str(tCount)
                 nodes_dataset    = 'nodes'+spaceSuffix+str(tCount)
@@ -1132,7 +1379,7 @@ class XdmfWriter(object):
                                            data = x[:mesh.nElements_owned].reshape((mesh.nElements_owned*Xdmf_NodesPerElement,3)))
                 else:
                     q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
-                    if ar.hdfFile is not None:
+                    if ar.writesDatasets:
                         ar.create_dataset_async(elements_dataset, data = q_l2g)
                         ar.create_dataset_async(nodes_dataset, data = x.flat[:])
                     else:
@@ -1241,7 +1488,7 @@ class XdmfWriter(object):
             elif spaceDim == 3:
                 Xdmf_ElementTopology = "Tetrahedron"
             if ar.global_sync:
-                assert ar.hdfFile is not None, "Global sync  not implemented for text heavy data"
+                assert ar.writesDatasets, "Global sync  not implemented for text heavy data"
                 n_elements       = mesh.globalMesh.nElements_global
                 elements_dims    = [n_elements, mesh.nNodes_element]
                 nodes_dims       = [dofMap.nDOF_all_processes, 3]
@@ -1284,7 +1531,7 @@ class XdmfWriter(object):
                     for eN in range(mesh.nElements_global):
                         for nN in range(mesh.nNodes_element):
                             dgnodes[dofMap.l2g[eN,nN],:]=mesh.nodeArray[mesh.elementNodesArray[eN,nN]]
-                    if ar.hdfFile is not None:
+                    if ar.writesDatasets:
                         #this will fail if elements_dgp1 already exists
                         ar.create_dataset_async(elements_dataset, data = dofMap.l2g)
                         ar.create_dataset_async(nodes_dataset, data = dgnodes)
@@ -1310,7 +1557,7 @@ class XdmfWriter(object):
             elif spaceDim == 3:
                 Xdmf_ElementTopology = "Tet_10"
             if ar.global_sync:
-                assert ar.hdfFile is not None, "global_sync not implemented for  text heavy data"
+                assert ar.writesDatasets, "global_sync not implemented for  text heavy data"
                 n_elements       = mesh.globalMesh.nElements_global
                 elements_dims    = [n_elements, dofMap.l2g.shape[-1]]
                 nodes_dims       = [dofMap.nDOF_all_processes, 3]
@@ -1353,7 +1600,7 @@ class XdmfWriter(object):
                     for eN in range(mesh.nElements_global):
                         for i in range(dofMap.l2g.shape[1]):
                             dgnodes[dofMap.l2g[eN,i],:]= CGDOFMap.lagrangeNodesArray[CGDOFMap.l2g[eN,i],:]
-                    if ar.hdfFile is not None:
+                    if ar.writesDatasets:
                         ar.create_dataset_async(elements_dataset, data = dofMap.l2g)
                         ar.create_dataset_async(nodes_dataset, data = dgnodes)
                     else:
@@ -1407,7 +1654,7 @@ class XdmfWriter(object):
                               nodes_dataset, nodes_stem,
                               dtype=lagrangeNodesArray)
 
-            if ar.hdfFile is None:
+            if not ar.writesDatasets:
                 assert not ar.global_sync, \
                     "global_sync is not implemented for text heavy data"
                 if init or meshChanged:
@@ -1485,7 +1732,7 @@ class XdmfWriter(object):
                             l2g[8*eN+i,j] = dofs[e2s[i][j]]
             lagrangeNodesArray = dofMap.lagrangeNodesArray
             if ar.global_sync:
-                assert ar.hdfFile is not None, "not implemented  for text heavy data"
+                assert ar.writesDatasets, "not implemented  for text heavy data"
                 n_elements       = mesh.globalMesh.nElements_global*nsubelements
                 elements_dims    = [n_elements, l2g.shape[-1]]
                 nodes_dims       = [dofMap.nDOF_all_processes, lagrangeNodesArray.shape[-1]]
@@ -1516,7 +1763,7 @@ class XdmfWriter(object):
                     ar.create_dataset_sync(nodes_dataset,
                                            offsets = dofMap.dof_offsets_subdomain_owned,
                                            data = lagrangeNodesArray[:dofMap.dof_offsets_subdomain_owned[ar.rank+1]-dofMap.dof_offsets_subdomain_owned[ar.rank]])
-                elif ar.hdfFile is not None:
+                elif ar.writesDatasets:
                     ar.create_dataset_async(elements_dataset, data = l2g)
                     ar.create_dataset_async(nodes_dataset, data = lagrangeNodesArray)
                 else:
@@ -1544,7 +1791,7 @@ class XdmfWriter(object):
             Xdmf_ElementTopology = "Tetrahedron"
         Xdmf_NodesPerElement = spaceDim+1
         if ar.global_sync:
-            assert ar.hdfFile is not None, "global_sync not implemented for text heavy data"
+            assert ar.writesDatasets, "global_sync not implemented for text heavy data"
             Xdmf_NumberOfElements= mesh.globalMesh.nElements_global
             elements_dataset = 'elements'+spaceSuffix+str(tCount)
             nodes_dataset    = 'nodes'+spaceSuffix+str(tCount)
@@ -1575,7 +1822,7 @@ class XdmfWriter(object):
                 ar.create_dataset_sync(nodes_dataset,
                                        offsets = mesh.globalMesh.elementOffsets_subdomain_owned*Xdmf_NodesPerElement,
                                        data = dgnodes)
-        elif ar.hdfFile is not None:
+        elif ar.writesDatasets:
             if init or meshChanged:
                 dg_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
                 ar.create_dataset_async(elements_dataset, data = dg_l2g)
@@ -1759,7 +2006,7 @@ class XdmfWriter(object):
         if self._needsGrid(t):
             Xdmf_NodesPerElement = interpolationPoints.shape[1]
             if ar.global_sync:
-                assert ar.hdfFile is not None, "global_sync not implementedf or text heavy data"
+                assert ar.writesDatasets, "global_sync not implementedf or text heavy data"
                 Xdmf_NumberOfElements= mesh.globalMesh.nElements_global
                 elements_dataset = 'elements'+spaceSuffix+str(tCount)
                 nodes_dataset    = 'nodes'+spaceSuffix+str(tCount)
@@ -1790,7 +2037,7 @@ class XdmfWriter(object):
                                            data = interpolationPoints[:mesh.nElements_owned])
                 else:
                     q_l2g = numpy.arange(Xdmf_NumberOfElements*Xdmf_NodesPerElement,dtype=GENERATED_INDEX_DTYPE).reshape((Xdmf_NumberOfElements,Xdmf_NodesPerElement))
-                    if ar.hdfFile is not None:
+                    if ar.writesDatasets:
                         ar.create_dataset_async(elements_dataset, data = q_l2g)
                         ar.create_dataset_async(nodes_dataset, data = interpolationPoints.flat[:])
                     else:
@@ -1871,7 +2118,7 @@ class XdmfWriter(object):
                     Xdmf_ElementTopology = "Tetrahedron"
             #the spatial mesh's own datasets are reused; nothing is written here
             if ar.global_sync:
-                assert ar.hdfFile is not None, "global_sync not implemented  for text heavy data"
+                assert ar.writesDatasets, "global_sync not implemented  for text heavy data"
                 elements_dataset = 'elements'+meshSpaceSuffix+str(tCount)
                 nodes_dataset    = 'nodes'+meshSpaceSuffix+str(tCount)
                 elements_dtype   = mesh.globalMesh.nodeNumbering_subdomain2global
@@ -1947,7 +2194,7 @@ class XdmfWriter(object):
             Xdmf_NodesPerElement = spaceDim+1 #just handle vertices for now
             Xdmf_NumberOfNodes   = mesh.nNodes_global
             if  ar.global_sync:
-                assert ar.hdfFile is not None, "global_sync not implemented for text heavy data"
+                assert ar.writesDatasets, "global_sync not implemented for text heavy data"
                 Xdmf_NumberOfElements= mesh.globalMesh.nElements_global
                 elements_dataset = 'elements'+spaceSuffix+str(tCount)
                 nodes_dataset    = 'nodes'+spaceSuffix+str(tCount)
@@ -1974,7 +2221,7 @@ class XdmfWriter(object):
                     ar.create_dataset_sync(nodes_dataset,
                                            offsets = mesh.globalMesh.nodeOffsets_subdomain_owned,
                                            data = mesh.nodeArray)
-                elif ar.hdfFile is not None:
+                elif ar.writesDatasets:
                     ar.create_dataset_async(elements_dataset, data = mesh.elementNodesArray)
                     ar.create_dataset_async(nodes_dataset, data = mesh.nodeArray)
                 else:
@@ -2066,7 +2313,7 @@ class XdmfWriter(object):
             if init or meshChanged:
                 q_l2g = numpy.arange(nPoints*Xdmf_NodesPerElement,
                                      dtype=GENERATED_INDEX_DTYPE).reshape((nPoints,Xdmf_NodesPerElement))
-                if ar.hdfFile is not None:
+                if ar.writesDatasets:
                     ar.create_dataset_async(elements_dataset, data = q_l2g)
                     ar.create_dataset_async(nodes_dataset, data = x.flat[:])
                 else:

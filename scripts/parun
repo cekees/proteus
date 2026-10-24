@@ -160,6 +160,18 @@ parser.add_option("-n","--no_global_sync",
                   dest="global_sync",
                   action="store_false",
                   help="""don't use a single hdf5 archive""")
+parser.add_option("--archive-mode",
+                  dest="archiveMode",
+                  type="choice",
+                  choices=["without-a-net", "split", "kitchen-sink", "ymf-only"],
+                  default=None,
+                  help="""what the archive writes: without-a-net (the .h5 alone during the run, the .ymf at close), split (the .h5 and a .ymf kept current at every step; the default), kitchen-sink (split, plus the log and the run's provenance in the .ymf), ymf-only (no .h5: the arrays go in the .ymf)""")
+parser.add_option("--archive-driver",
+                  dest="archiveDriver",
+                  type="choice",
+                  choices=["mpio", "serial"],
+                  default=None,
+                  help="""how the .h5 is written: mpio (every rank, through parallel HDF5; the default) or serial (master alone, the other ranks sending it their arrays; needs no parallel HDF5)""")
 parser.add_option("-H","--hotStart",
                   dest="hotStart",
                   action="store_true",

@@ -71,8 +71,15 @@ RANK_SCRIPT = textwrap.dedent(
     from proteus import Archiver
 
     hot = os.environ.get("HOT_START") == "1"
+    if os.environ.get("WITH_LOG") == "1":
+        from proteus import Profiling
+        Profiling.procID = rank
+        Profiling.openLog("mpitest.log", 3, logLocation=datadir)
+        Profiling.logEvent("a line of the run's log")
     ar = Archiver.XdmfArchive(datadir, "mpitest", global_sync=global_sync,
-                              hotStart=hot)
+                              hotStart=hot,
+                              mode=os.environ.get("MODE") or None,
+                              driver=os.environ.get("DRIVER") or None)
     if os.environ.get("NO_INCREMENTAL") == "1":
         ar.writeIncrementalYmf = False
     if hot:
@@ -97,7 +104,15 @@ RANK_SCRIPT = textwrap.dedent(
     node_offsets = np.concatenate(
         ([0], np.cumsum(comm_world.allgather(n_nodes)))).astype("i")
     n_nodes_global = int(node_offsets[-1])
-    n_elements_global = int(sum(comm_world.allgather(n_elements)))
+    element_offsets = np.concatenate(
+        ([0], np.cumsum(comm_world.allgather(n_elements)))).astype("i")
+    n_elements_global = int(element_offsets[-1])
+    # this rank's mesh arrays: a triangle per element over the first nodes,
+    # and nodes on a line, so every rank's piece is distinguishable
+    elements = np.array([[i % n_nodes, (i + 1) % n_nodes, (i + 2) % n_nodes]
+                         for i in range(n_elements)], dtype="i")
+    nodes = np.zeros((n_nodes, 3), "d")
+    nodes[:, 0] = node_offsets[rank] + np.arange(n_nodes)
 
     times = [1.0] if hot else [0.0, 0.5]
     for tCount, t in enumerate(times, start=ar.n_datasets):
@@ -110,6 +125,11 @@ RANK_SCRIPT = textwrap.dedent(
             ar.write_geometry(grid, [n_nodes_global, 3],
                               "nodes_t%d" % tCount, "nodes%d" % tCount,
                               dtype="d")
+            # the mesh arrays, as a mesh writer writes them on init
+            ar.create_dataset_sync("elements_t%d" % tCount, offsets=element_offsets,
+                                   data=elements + node_offsets[rank])
+            ar.create_dataset_sync("nodes_t%d" % tCount, offsets=node_offsets,
+                                   data=nodes)
             ar.write_field(grid, "u", np.arange(n_nodes, dtype="d"), tCount,
                            dimensions=[n_nodes_global],
                            sync_offsets=node_offsets,
@@ -121,6 +141,8 @@ RANK_SCRIPT = textwrap.dedent(
             ar.write_geometry(grid, [n_nodes, 3],
                               "nodes_p%d_t%d" % (rank, tCount),
                               "nodes%d" % tCount, dtype="d")
+            ar.create_dataset_async("elements_p%d_t%d" % (rank, tCount), data=elements)
+            ar.create_dataset_async("nodes_p%d_t%d" % (rank, tCount), data=nodes)
             ar.write_field(grid, "u", np.arange(n_nodes, dtype="d"), tCount,
                            dimensions=[n_nodes])
         ar.sync()
@@ -140,17 +162,21 @@ RANK_SCRIPT = textwrap.dedent(
 
 
 def run_ranks(tmp_path, n_ranks, global_sync, hot_start=False,
-              skip_close=False, incremental=True):
+              skip_close=False, incremental=True, mode=None, driver=None,
+              with_log=False, name="archive"):
     """Run the rank script under mpiexec (or directly for one rank).
 
     ``hot_start`` continues the archive an earlier call wrote, for one
-    more step, the way a hot-started run does.
+    more step, the way a hot-started run does. ``mode`` and ``driver`` are
+    the archive's; ``with_log`` opens a proteus log first, as a run does.
     """
-    datadir = str(tmp_path / "archive")
+    datadir = str(tmp_path / name)
     env = dict(os.environ, GLOBAL_SYNC="1" if global_sync else "0",
                DATADIR=datadir, HOT_START="1" if hot_start else "0",
                SKIP_CLOSE="1" if skip_close else "0",
-               NO_INCREMENTAL="0" if incremental else "1")
+               NO_INCREMENTAL="0" if incremental else "1",
+               MODE=mode or "", DRIVER=driver or "",
+               WITH_LOG="1" if with_log else "0")
     # More ranks than cores (3 on a 2-core CI runner): Open MPI refuses
     # unless told it may oversubscribe -- OMPI_MCA_* for Open MPI 4,
     # PRTE_MCA_* for Open MPI 5's PRRTE launcher. MPICH oversubscribes by
@@ -772,3 +798,154 @@ def test_an_ymf_without_append_step_costs_the_document_not_the_run(tmp_path):
         ymf.archive.append_step = saved
 
     assert live._liveYmfWarned, "the failure has to be reported, not hidden"
+
+
+# --------------------------------------------------------------------------
+# the modes: one writer, switches, four names
+# --------------------------------------------------------------------------
+
+
+def test_the_modes_are_combinations_of_the_switches():
+    from proteus.Archiver import AR_base
+
+    assert AR_base.resolve_mode() == AR_base.resolve_mode("split")
+    assert AR_base.resolve_mode("without-a-net")["incremental"] is False
+    assert AR_base.resolve_mode("kitchen-sink")["includeLog"] is True
+    assert AR_base.resolve_mode("ymf-only")["inline"] is True
+    # an explicit switch wins over the mode
+    assert AR_base.resolve_mode("without-a-net", incremental=True)["incremental"] is True
+    assert AR_base.resolve_mode("split", driver="serial")["driver"] == "serial"
+    with pytest.raises(ValueError, match="archive mode 'belt-and-braces'"):
+        AR_base.resolve_mode("belt-and-braces")
+    with pytest.raises(ValueError, match="archive driver 'core'"):
+        AR_base.resolve_mode(driver="core")
+
+
+def datasets_of(datadir):
+    """Every array in the archive's .h5, by name, for comparing layouts."""
+    with h5py.File(os.path.join(datadir, "mpitest.h5"), "r") as f:
+        return {k: f[k][()] for k in f if f[k].dtype.kind != "S"}
+
+
+@pytest.mark.parametrize("n_ranks", [1, 2, 3])
+@pytest.mark.parametrize("global_sync", [True, False])
+def test_the_serial_driver_writes_the_file_the_mpio_driver_writes(tmp_path, n_ranks, global_sync):
+    """Master alone writes, the others send; the archive is the same."""
+    mpio = run_ranks(tmp_path, n_ranks, global_sync, driver="mpio", name="mpio")
+    serial = run_ranks(tmp_path, n_ranks, global_sync, driver="serial", name="serial")
+    a, b = datasets_of(mpio), datasets_of(serial)
+    assert sorted(a) == sorted(b)
+    for name in a:
+        np.testing.assert_array_equal(a[name], b[name], err_msg=name)
+    from ymf.archive import read_ymf
+    assert read_ymf(os.path.join(mpio, "mpitest.ymf"))[0] == \
+        read_ymf(os.path.join(serial, "mpitest.ymf"))[0]
+
+
+def test_a_serial_driver_archive_cannot_be_hot_started_in_parallel(tmp_path):
+    run_ranks(tmp_path, 2, global_sync=True, driver="serial")
+    with pytest.raises(AssertionError, match="written by master alone"):
+        run_ranks(tmp_path, 2, global_sync=True, driver="serial", hot_start=True)
+
+
+def test_without_a_net_is_the_h5_alone_until_close(tmp_path):
+    """Mode 1: nothing but the .h5 during the run; the .ymf derived at close.
+
+    And derivable again: the document close writes is, byte for byte,
+    the one readArchiveDomain rebuilds from the .h5, which is the net.
+    """
+    from ymf.archive import write_ymf
+    from proteus.Archiver import readArchiveDomain
+
+    datadir = run_ranks(tmp_path, 2, global_sync=False, mode="without-a-net",
+                        skip_close=True, name="killed")
+    assert not os.path.exists(os.path.join(datadir, "mpitest.ymf"))
+    datadir = run_ranks(tmp_path, 2, global_sync=False, mode="without-a-net")
+    written = open(os.path.join(datadir, "mpitest.ymf")).read()
+    rebuilt_path = tmp_path / "rebuilt.ymf"
+    write_ymf(readArchiveDomain("mpitest", datadir), rebuilt_path,
+              extra=_extra_of(written))
+    assert rebuilt_path.read_text() == written
+
+
+def _extra_of(text):
+    import yaml
+    return yaml.safe_load(text).get("extra")
+
+
+def test_the_kitchen_sink_carries_the_log_and_the_provenance(tmp_path):
+    from ymf.archive import read_ymf
+
+    datadir = run_ranks(tmp_path, 2, global_sync=True, mode="kitchen-sink", with_log=True)
+    _, extra = read_ymf(os.path.join(datadir, "mpitest.ymf"))
+    provenance = extra["proteus"]
+    assert provenance["archive_mode"] == "kitchen-sink"
+    assert provenance["ranks"] == 2
+    assert "command" in provenance and "version" in provenance
+    assert provenance["log_file"] == "mpitest.log"
+    assert "a line of the run's log" in provenance["log"]
+
+
+def test_split_carries_the_provenance_but_not_the_log(tmp_path):
+    from ymf.archive import read_ymf
+
+    datadir = run_ranks(tmp_path, 1, global_sync=True, with_log=True)
+    _, extra = read_ymf(os.path.join(datadir, "mpitest.ymf"))
+    assert extra["proteus"]["archive_mode"] == "split"
+    # neither the log nor the command line: two runs of the same
+    # computation (pro run and parun, say) leave identical documents
+    assert "log" not in extra["proteus"] and "command" not in extra["proteus"]
+
+
+def test_the_running_document_already_names_the_run(tmp_path):
+    """The header written at the first step carries the provenance, so a
+    killed run's document still says what wrote it."""
+    from ymf.archive import read_ymf
+
+    datadir = run_ranks(tmp_path, 1, global_sync=True, skip_close=True)
+    _, extra = read_ymf(os.path.join(datadir, "mpitest.ymf"))
+    assert extra["proteus"]["ranks"] == 1
+
+
+@pytest.mark.parametrize("n_ranks", [1, 2])
+@pytest.mark.parametrize("global_sync", [True, False])
+def test_ymf_only_is_one_self_contained_file(tmp_path, n_ranks, global_sync):
+    """Mode 4: no .h5; every array is in the document, and equals what the
+    mpio archive wrote to its .h5."""
+    from ymf.archive import load_array, read_ymf
+
+    reference = datasets_of(run_ranks(tmp_path, n_ranks, global_sync, name="h5"))
+    datadir = run_ranks(tmp_path, n_ranks, global_sync, mode="ymf-only", name="inline")
+    assert sorted(os.listdir(datadir)) == ["mpitest.ymf"]
+    domain, extra = read_ymf(os.path.join(datadir, "mpitest.ymf"))
+    (collection,) = domain["time_collections"]
+    assert len(collection["data"]) == 2
+    seen = 0
+    for step in collection["data"]:
+        for grid in step.get("spatial_collection", [step]):
+            for owner in [grid["topology"], grid["geometry"]] + grid["attributes"]:
+                item = owner["data_item"]
+                assert item["format"] == "XML" and "values" in item and "data" not in item
+            # the field of this grid is sized by its geometry
+            n_nodes = grid["geometry"]["data_item"]["dimensions"][0]
+            u = load_array(grid["attributes"][0]["data_item"])
+            assert u.shape == (n_nodes,)
+            seen += 1
+    assert seen == 2 * (1 if global_sync else n_ranks)
+    # the same values as the .h5 archive: compare the field at the last step
+    last = collection["data"][-1]
+    grids = last.get("spatial_collection", [last])
+    for r, grid in enumerate(grids):
+        key = "u_t1" if global_sync else "u_p%d_t1" % r
+        np.testing.assert_array_equal(load_array(grid["attributes"][0]["data_item"]),
+                                      reference[key])
+
+
+def test_ymf_only_streams_its_steps_too(tmp_path):
+    """The inline document is appended a step at a time like any other."""
+    from ymf.archive import read_ymf
+
+    datadir = run_ranks(tmp_path, 1, global_sync=True, mode="ymf-only", skip_close=True)
+    domain, _ = read_ymf(os.path.join(datadir, "mpitest.ymf"))
+    assert len(domain["time_collections"][0]["data"]) == 2
+    assert "values" in domain["time_collections"][0]["data"][1]["geometry"]["data_item"]

@@ -152,6 +152,7 @@ class NS_base(object):  # (HasTraits):
             self.femSpaceWritten={}
             tmp  = Archiver.XdmfArchive(opts.dataDir,so.name,useTextArchive=opts.useTextArchive,
                                         gatherAtClose=opts.gatherArchive,hotStart=opts.hotStart,
+                                        mode=getattr(opts,'archiveMode',None),driver=getattr(opts,'archiveDriver',None),
                                         useGlobalXMF=(not opts.subdomainArchives),
                                         global_sync=opts.global_sync)
             if self.fastArchive==True:
@@ -160,10 +161,12 @@ class NS_base(object):  # (HasTraits):
                 self.ar = dict([(i,tmp) for i in range(len(self.pList))])
         elif len(self.pList) == 1:
             self.ar = {0:Archiver.XdmfArchive(opts.dataDir,so.name,useTextArchive=opts.useTextArchive,
-                                              gatherAtClose=opts.gatherArchive,hotStart=opts.hotStart)} #reuse so.name if possible
+                                              gatherAtClose=opts.gatherArchive,hotStart=opts.hotStart,
+                                        mode=getattr(opts,'archiveMode',None),driver=getattr(opts,'archiveDriver',None))} #reuse so.name if possible
         else:
             self.ar = dict([(i,Archiver.XdmfArchive(opts.dataDir,p.name,useTextArchive=opts.useTextArchive,
-                                                    gatherAtClose=opts.gatherArchive,hotStart=opts.hotStart)) for i,p in enumerate(self.pList)])
+                                                    gatherAtClose=opts.gatherArchive,hotStart=opts.hotStart,
+                                        mode=getattr(opts,'archiveMode',None),driver=getattr(opts,'archiveDriver',None))) for i,p in enumerate(self.pList)])
         #by default do not save quadrature point info
         self.archive_q                 = dict([(i,False) for i in range(len(self.pList))]);
         self.archive_ebq_global        = dict([(i,False) for i in range(len(self.pList))]);

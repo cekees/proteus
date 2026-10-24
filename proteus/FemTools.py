@@ -4165,7 +4165,7 @@ class C0_AffineLinearOnSimplexWithNodalBasis(ParametricFiniteElementSpace):
             ar.write_field(self.mesh.arGrid, u.name, u.dof, tCount,
                            dimensions=[self.mesh.nNodes_global])
     def readFunctionXdmf(self,ar,u,tCount=0):
-        assert ar.hdfFile is not None, \
+        assert ar.writesDatasets, \
             "hot start needs an HDF5 archive; a text archive holds no readable field data"
         dataset = ar.field_dataset(u.name, tCount)
         if ar.global_sync:
