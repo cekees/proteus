@@ -57,6 +57,12 @@ jobs:
             os: ubuntu-latest
             python: "3.12.5"
             env_file: environment-openmpi-dev.yml
+            # This leg runs the suite under coverage (pyproject.toml,
+            # [tool.coverage]) and keeps coverage.xml and the HTML report as
+            # the job's artifacts: what the suite exercises of the proteus
+            # package, so code nothing runs is visible. One leg, since
+            # measuring slows the run and the answer is the same on all.
+            coverage: "yes"
           # This leg's python matches the pin in the environment files, so it is the
           # one that tests the committed lock verbatim; the others relax it.
           - name: linux-64 / py3.13 (locked)
@@ -352,12 +358,23 @@ jobs:
             test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_sdf
             test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_ball
           )
+          # Under coverage on the leg that asks for it: the installed proteus
+          # package is what runs, and [tool.coverage.paths] reports it as the
+          # checkout's files. Every interpreter the tests start (parun, the
+          # helpers under mpiexec) measures itself too ([tool.coverage.run]
+          # patch = subprocess), and pytest-cov combines them all.
+          COV_ARGS=()
+          if [ "${{ matrix.leg.coverage }}" = yes ] && [ "${{ matrix.suite }}" != fsi ]; then
+            COV_ARGS=(--cov=proteus --cov-config=../pyproject.toml
+                      --cov-report=xml:coverage.xml --cov-report=html:htmlcov
+                      --cov-report=term-missing:skip-covered)
+          fi
           if [ "${{ matrix.suite }}" = fsi ]; then
             python -m pytest -v -n 2 --dist load --import-mode=importlib \
               --durations=5 "${FSI_IBM_TESTS[@]/#/../}"
           else
             python -m pytest -v -n auto --dist loadgroup --import-mode=importlib \
-              --durations=30 "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" \
+              --durations=30 "${COV_ARGS[@]}" "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" \
               "${FSI_IBM_TESTS[@]/#/--deselect=}" ../test
           fi
 
@@ -365,3 +382,13 @@ jobs:
         if: always()
         shell: bash
         run: cat "$RUNNER_TEMP/runner_load.txt" || true
+
+      - name: Keep the coverage report
+        if: always() && matrix.leg.coverage == 'yes' && matrix.suite != 'fsi'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.leg.os }}-py${{ matrix.leg.python }}
+          path: |
+            test_output/coverage.xml
+            test_output/htmlcov
+          if-no-files-found: warn
