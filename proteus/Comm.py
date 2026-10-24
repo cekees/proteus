@@ -22,9 +22,16 @@ from .Profiling import logEvent
 
 # Special workaround for broken MPI on certain Cray systems
 from . import config
+from . import _threads
 mpi_preload_libs=[]
 for lib in config.PROTEUS_PRELOAD_LIBS:
     mpi_preload_libs.append(ctypes.CDLL(lib,mode=ctypes.RTLD_GLOBAL))
+
+# One thread per rank under MPI.  import proteus already did this when the launcher announces
+# its size; this covers a launcher that does not, and numpy imported before proteus.
+_thread_warning = _threads.after_mpi_init(MPI.COMM_WORLD.Get_size())
+if _thread_warning:
+    logEvent(_thread_warning, 0)
 
 comm = None
 argv = sys.argv

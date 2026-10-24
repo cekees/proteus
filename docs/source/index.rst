@@ -86,6 +86,18 @@ XDMF view of it first::
 
 and open the resulting .xmf.
 
+Threads and MPI
+---------------
+
+Run under MPI with more than one rank, Proteus gives each rank one thread: it sets
+``OMP_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``, ``MKL_NUM_THREADS`` and ``VECLIB_MAXIMUM_THREADS``
+to 1 (``proteus/_threads.py``), because one rank per core is how a node is filled and
+OpenBLAS would otherwise start a thread per core in every rank. A value you set yourself
+is kept, so ``OMP_NUM_THREADS=4 mpiexec -n 8 parun ...`` runs eight ranks of four threads.
+A serial run is not touched and uses whatever threads the libraries choose. The variables
+are read when numpy is imported: import ``proteus`` before numpy, or install
+``threadpoolctl``, which lets Proteus limit libraries that are already loaded.
+
 .. _capabilities-sec:
 
 Capabilities
