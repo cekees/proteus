@@ -1,5 +1,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
+#include <type_traits>
 #include "coefficients.h"
 #include "boundary.h"
 
@@ -50,23 +51,42 @@ py::tuple runMasked(const C &coef, Arr xn, Arr u, py::object uold, Arr qp, Arr q
 
 PYBIND11_MODULE(adrh_proto, m)
 {
-  // flux faces of the advection-diffusion sine problem: advective outflow f(u).n plus the prescribed diffusive flux
-  m.def("advection_diffusion_sine_flux_faces", [](Arr b, double kappa, Arr omega, double omega0, py::array_t<int, py::array::c_style | py::array::forcecast> faceLocal,
-                                                   Arr xn, Arr u, Arr qpf, Arr qwf) {
-    adrh::AdvectionDiffusionSine c(b.data(), kappa, omega.data(), omega0);
-    adrh::SineDiffusiveFlux bc(kappa, omega.data(), omega0);
-    const int nF = xn.shape(0), nQf = qwf.shape(0);
-    py::array_t<double> Rf({nF, 1, 4}), Jf({nF, 1, 4, 1, 4});
-    {
-      py::gil_scoped_release release;
-      adrh::exteriorFluxFaceKernel<adrh::AdvectionDiffusionSine, adrh::SineDiffusiveFlux>(
-          c, bc, nF, nQf, faceLocal.data(), xn.data(), u.data(), qpf.data(), qwf.data(), 0.0, Rf.mutable_data(), Jf.mutable_data());
-    }
-    return py::make_tuple(Rf, Jf);
+  // exterior faces of the advection-diffusion sine problem in nd = 2 (segments) or 3 (triangles) dimensions;
+  // faceKind (nF) per face: 1 = flux face (diffusive flux given, advection by the interior value on outflow),
+  // 2 = flux face with the advective flux given too, 3 = weak Dirichlet (penalty_constant / h^penalty_power,
+  // adjoint sigma: 0 IIPG, -1 NIPG, +1 SIPG), 4 = Robin alpha u + beta q.n = g with (alpha, beta) given
+  m.def("advection_diffusion_sine_faces", [](int nd, Arr b, double kappa, Arr omega, double omega0,
+                                              py::array_t<int, py::array::c_style | py::array::forcecast> faceLocal,
+                                              py::array_t<int, py::array::c_style | py::array::forcecast> faceKind,
+                                              Arr xn, Arr u, Arr qpf, Arr qwf,
+                                              double penalty_constant, double penalty_power, double sigma,
+                                              double robin_alpha, double robin_beta) {
+    auto run = [&](auto dim) {
+      constexpr int nS = decltype(dim)::value;
+      adrh::AdvectionDiffusionSine<nS> c(b.data(), kappa, omega.data(), omega0);
+      adrh::SineBC<nS> bc(b.data(), kappa, omega.data(), omega0, faceKind.data(), robin_alpha, robin_beta);
+      adrh::WeakDirichletParams wd{penalty_constant, penalty_power, sigma};
+      const int nF = xn.shape(0), nQf = qwf.shape(0);
+      py::array_t<double> Rf({nF, 1, nS + 1}), Jf({nF, 1, nS + 1, 1, nS + 1});
+      {
+        py::gil_scoped_release release;
+        adrh::exteriorFaceKernel<adrh::AdvectionDiffusionSine<nS>, adrh::SineBC<nS>>(
+            c, bc, wd, nF, nQf, faceLocal.data(), xn.data(), u.data(), qpf.data(), qwf.data(), 0.0,
+            Rf.mutable_data(), Jf.mutable_data());
+      }
+      return py::make_tuple(Rf, Jf);
+    };
+    if (nd == 2) return run(std::integral_constant<int, 2>{});
+    return run(std::integral_constant<int, 3>{});
   });
-  m.def("advection_diffusion_sine", [](Arr b, double kappa, Arr omega, double omega0, Arr xn, Arr u, Arr qp, Arr qw) {
-    adrh::AdvectionDiffusionSine c(b.data(), kappa, omega.data(), omega0);
-    return runMasked<adrh::AdvectionDiffusionSine, 3>(c, xn, u, py::none(), qp, qw, 0.0, 0.0);
+  m.def("advection_diffusion_sine", [](int nd, Arr b, double kappa, Arr omega, double omega0, Arr xn, Arr u, Arr qp, Arr qw) {
+    if (nd == 2)
+    {
+      adrh::AdvectionDiffusionSine<2> c(b.data(), kappa, omega.data(), omega0);
+      return runMasked<adrh::AdvectionDiffusionSine<2>, 2>(c, xn, u, py::none(), qp, qw, 0.0, 0.0);
+    }
+    adrh::AdvectionDiffusionSine<3> c(b.data(), kappa, omega.data(), omega0);
+    return runMasked<adrh::AdvectionDiffusionSine<3>, 3>(c, xn, u, py::none(), qp, qw, 0.0, 0.0);
   });
   m.def("poisson3d_masked", [](Arr xn, Arr u, Arr qp, Arr qw) {
     return runMasked<adrh::Poisson3D, 3>(adrh::Poisson3D(), xn, u, py::none(), qp, qw, 0.0, 0.0);

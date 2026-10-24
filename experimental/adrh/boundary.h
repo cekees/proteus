@@ -1,17 +1,45 @@
-// Exterior-face terms of the weak form for P1 simplices (tetrahedra), as a separate kernel.
+// Exterior-face terms of the weak form for P1 simplices (segments of triangles, triangles of tetrahedra),
+// as a separate kernel.
 //
 // The Galerkin form integrated by parts leaves, on every exterior face,
-//     + integral over the face of  F . n  w  dS,   F = f(u) - a grad(phi)   (the total flux),
-// which proteus adds to the element residual as (advectiveFlux + diffusiveFlux) w dS. A face carries
-// one of the following (the BC functor says which, per face and quadrature point):
-//   strong Dirichlet: nothing here, the unknown is removed or its row replaced by the driver;
-//   flux face: the advective flux is the interior one, f(u) . n (outflow; the engine does not yet
-//     look at inflow), and the diffusive flux is prescribed, g = -a grad u . n, a function of x, t and n.
-// Weak Dirichlet (SIPG/IIPG penalty and adjoint terms) and upwinding against a prescribed inflow value are
-// the next steps; they are further BC functor kinds, not changes of this structure.
+//     + integral over the face of  F . n  w  dS,   F = f(u) - sum_k a^{ik} grad phi^k   (the total flux),
+// which proteus adds to the element residual as (advectiveFlux + diffusiveFlux) w dS
+// (femIntegrals.c updateExteriorElementBoundaryFlux). What stands in for F . n at a boundary quadrature
+// point is decided per component by the BC functor, one of the kinds below. The structure follows
+// proteus's exterior numerical flux classes (NumericalFlux.py, numericalFlux.c) so the two can be
+// compared term by term:
 //
-// Output is per face (not scattered): Rf (nF, nc, nD) and Jf (nF, nc, nD, nc, nD); the driver adds
-// them to the element rows of the face's element.
+//   Strong         nothing here; the driver removes the unknown or replaces its row
+//                  (StrongDirichletFactory, or numericalFluxType=None).
+//   Flux           the total flux is given. Diffusive part: g = -a grad u . n, prescribed (a
+//                  diffusiveFluxBoundaryCondition), optionally affine in the trace, g0 + dg u (RobinFactory:
+//                  alpha u + beta q.n = g gives q.n = g/beta - (alpha/beta) u, with the Jacobian -alpha/beta).
+//                  Advective part: prescribed where a value is given (an advectiveFluxBoundaryCondition; no
+//                  Jacobian, as proteus zeroes dadvectiveFlux_left there); where none is, the interior flux
+//                  f(u) . n on outflow (df . n >= 0) and ZERO on inflow, which is what StrongDirichlet's
+//                  'outFlow' does (calculateExteriorNumericalAdvectiveFlux_NoBC drops the inflow flux).
+//   WeakDirichlet  the value g_D is imposed weakly, as Advection_DiagonalUpwind_Diffusion_{IIPG,NIPG,SIPG}_exterior
+//                  do. Advective part: upwinded between f(u) . n and f(g_D) . n by the signs of df(u) . n and
+//                  df(g_D) . n (calculateExteriorNumericalAdvectiveFlux: a shock speed decides the mixed case, a
+//                  transonic rarefaction is averaged), with a Jacobian only where the interior flux is taken.
+//                  Diffusive part: -a grad phi . n + (C / h^p) (u - g_D), h the face diameter (its longest
+//                  edge; the edge itself in 2D); C, p = 2, 1 for IIPG, 10, 1 for NIPG, 100, 1 for SIPG. Adjoint part
+//                  (sigma = 0 IIPG, -1 NIPG, +1 SIPG): - sigma (u - g_D) (a^T n) . grad w dS, residual and Jacobian.
+//
+// nc > 1: the kind is per component i. The diffusive part of component i sums over the potentials k with
+// a^{ik} nonzero; penalty and adjoint are on the jump of u_k against g_D[k], and zero where component k is
+// not itself WeakDirichlet (proteus: bc_u is u where no Dirichlet value is set). The upwind decision uses
+// df^{ii}, as proteus does; the Jacobian of the interior flux uses the whole row df^{ij}.
+//
+// Two places where the engine is not proteus, on purpose: (1) proteus's adjoint
+// (femIntegrals.c updateExteriorElementBoundaryDiffusionAdjoint) contracts the tensor as
+// sum_{I,J} n_I a_{JI} grad w_I, the column sums of a, which equals (a^T n) . grad w only for a diagonal a;
+// the engine uses (a^T n) . grad w. (2) proteus's Jacobian of the adjoint ignores da/du; so does the engine's,
+// but its diffusive-flux Jacobian carries the da term like the element kernel. The regressions have an
+// isotropic, constant a, where none of this shows.
+//
+// Output is per face (not scattered): Rf (nF, nc, nD) and Jf (nF, nc, nD, nc, nD), nD = nS + 1; the driver
+// adds them to the element rows of the face's element.
 #pragma once
 #include <cmath>
 #include <cstring>
@@ -19,48 +47,97 @@
 
 namespace adrh
 {
-  // A flux boundary condition: g_i = prescribed diffusive flux of component i, -a grad u . n
+  enum BCKind : int { Strong = 0, Flux = 1, WeakDirichlet = 2 };
+
+  // What the BC functor fills in at one boundary quadrature point, per component.
   template <int nc>
-  struct FluxValues
+  struct FaceBC
   {
-    double g[nc];
-    void zero() { std::memset(g, 0, sizeof(g)); }
+    int kind[nc];
+    double gD[nc];       // WeakDirichlet: the Dirichlet value
+    double gdiff[nc];    // Flux: the prescribed diffusive flux -a grad u . n at u = 0 (0 = no diffusive flux),
+    double dgdiff[nc];   //       plus dgdiff * u_i (Robin); 0 for a flux that does not depend on the trace
+    bool hasAdv[nc];     // Flux: whether the advective flux is prescribed too,
+    double fadv[nc];     //       and its value f . n
+    void reset()
+    {
+      for (int i = 0; i < nc; ++i)
+      {
+        kind[i] = Strong; gD[i] = 0.0; gdiff[i] = 0.0; dgdiff[i] = 0.0; hasAdv[i] = false; fadv[i] = 0.0;
+      }
+    }
   };
 
+  // Penalty and adjoint parameters of the weak Dirichlet kinds (proteus's defaults per class).
+  struct WeakDirichletParams
+  {
+    double penalty_constant, penalty_power, sigma;
+    static WeakDirichletParams IIPG() { return {2.0, 1.0, 0.0}; }
+    static WeakDirichletParams NIPG() { return {10.0, 1.0, -1.0}; }
+    static WeakDirichletParams SIPG() { return {100.0, 1.0, 1.0}; }
+  };
+
+  // The boundary kernel. bc.evaluate(t, x, n, F, FaceBC<nc>&) is called per face F and quadrature point;
+  // the face index lets a functor look a per-face kind up. nS = Coefficients::nSpace = 2 or 3.
   template <class Coefficients, class BC>
-  void exteriorFluxFaceKernel(const Coefficients &C, const BC &bc, int nF, int nQf,
-                              const int *faceLocal,            // (nF) local face index k = the opposite node
-                              const double *xn,                // (nF, 4, 3) coordinates of the face's element
-                              const double *u,                 // (nF, nc, 4) the element's dofs
-                              const double *qpf, const double *qwf,   // face quadrature on the reference triangle
-                              double t, double *Rf, double *Jf)
+  void exteriorFaceKernel(const Coefficients &C, const BC &bc, const WeakDirichletParams &wd,
+                          int nF, int nQf,
+                          const int *faceLocal,            // (nF) local face index k = the opposite node
+                          const double *xn,                // (nF, nS+1, 3) coordinates of the face's element
+                          const double *u,                 // (nF, nc, nS+1) the element's dofs
+                          const double *qpf, const double *qwf,   // (nQf, nS-1), (nQf): quadrature on the reference face
+                          double t, double *Rf, double *Jf)
   {
     using Co = Coefficients;
-    constexpr int nc = Co::nc, nS = 3, nD = 4;
-    static_assert(Co::nSpace == 3, "tetrahedra");
+    constexpr int nc = Co::nc, nS = Co::nSpace, nD = nS + 1, nFN = nS;   // nFN = nodes of a face
+    static_assert(nS == 2 || nS == 3, "segments of triangles or triangles of tetrahedra");
     for (int F = 0; F < nF; ++F)
     {
       const double *X = xn + F * nD * 3;
       const int k = faceLocal[F];
-      int fn[3], m = 0;
+      int fn[nFN], m = 0;
       for (int b = 0; b < nD; ++b)
         if (b != k) fn[m++] = b;
-      double e1[3], e2[3], cr[3];
-      for (int I = 0; I < 3; ++I)
+      // outward unit normal and the face measure factor len (|edge| in 2D, |e1 x e2| = 2 area in 3D)
+      double nrm[3] = {0.0, 0.0, 0.0}, len;
+      if constexpr (nS == 3)
       {
-        e1[I] = X[fn[1] * 3 + I] - X[fn[0] * 3 + I];
-        e2[I] = X[fn[2] * 3 + I] - X[fn[0] * 3 + I];
+        double e1[3], e2[3], cr[3];
+        for (int I = 0; I < 3; ++I)
+        {
+          e1[I] = X[fn[1] * 3 + I] - X[fn[0] * 3 + I];
+          e2[I] = X[fn[2] * 3 + I] - X[fn[0] * 3 + I];
+        }
+        cr[0] = e1[1] * e2[2] - e1[2] * e2[1];
+        cr[1] = e1[2] * e2[0] - e1[0] * e2[2];
+        cr[2] = e1[0] * e2[1] - e1[1] * e2[0];
+        len = std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]);
+        for (int I = 0; I < 3; ++I) nrm[I] = cr[I] / len;
       }
-      cr[0] = e1[1] * e2[2] - e1[2] * e2[1];
-      cr[1] = e1[2] * e2[0] - e1[0] * e2[2];
-      cr[2] = e1[0] * e2[1] - e1[1] * e2[0];
-      const double len = std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]);
-      double nrm[3] = {cr[0] / len, cr[1] / len, cr[2] / len};
+      else
+      {
+        const double ex = X[fn[1] * 3 + 0] - X[fn[0] * 3 + 0], ey = X[fn[1] * 3 + 1] - X[fn[0] * 3 + 1];
+        len = std::sqrt(ex * ex + ey * ey);
+        nrm[0] = ey / len; nrm[1] = -ex / len;
+      }
       double out = 0.0;                                   // orient away from the opposite node
-      for (int I = 0; I < 3; ++I) out += nrm[I] * (X[fn[0] * 3 + I] - X[k * 3 + I]);
-      if (out < 0.0) for (int I = 0; I < 3; ++I) nrm[I] = -nrm[I];
-      // gradients of u on the element are constant; the coefficient functor wants grad u (unused by the
-      // flux terms here but part of its interface), so compute them from the element's affine map
+      for (int I = 0; I < nS; ++I) out += nrm[I] * (X[fn[0] * 3 + I] - X[k * 3 + I]);
+      if (out < 0.0) for (int I = 0; I < nS; ++I) nrm[I] = -nrm[I];
+      // face diameter = its longest edge (mesh.cpp computeGeometricInfo_*), for the penalty
+      double h = 0.0;
+      for (int p = 0; p < nFN; ++p)
+        for (int r = p + 1; r < nFN; ++r)
+        {
+          double d2 = 0.0;
+          for (int I = 0; I < 3; ++I)
+          {
+            const double d = X[fn[p] * 3 + I] - X[fn[r] * 3 + I];
+            d2 += d * d;
+          }
+          h = std::fmax(h, std::sqrt(d2));
+        }
+      const double penalty = wd.penalty_constant / std::pow(h, wd.penalty_power);
+      // gradients of the basis and of u on the element (constant for P1)
       double gw[nD][nS], adet;
       affineP1<nS>(X, gw, adet);
       const double *ue = u + F * nc * nD;
@@ -73,13 +150,16 @@ namespace adrh
         }
       double Rloc[nc][nD] = {};
       double Jloc[nc][nD][nc][nD] = {};
-      Terms<nc, nS> T;
+      Terms<nc, nS> T, Tb;
       for (int q = 0; q < nQf; ++q)
       {
-        double w[nD] = {0.0, 0.0, 0.0, 0.0};
-        w[fn[0]] = 1.0 - qpf[q * 2] - qpf[q * 2 + 1];
-        w[fn[1]] = qpf[q * 2];
-        w[fn[2]] = qpf[q * 2 + 1];
+        double w[nD] = {};
+        w[fn[0]] = 1.0;
+        for (int mm = 0; mm < nS - 1; ++mm)
+        {
+          w[fn[mm + 1]] = qpf[q * (nS - 1) + mm];
+          w[fn[0]] -= qpf[q * (nS - 1) + mm];
+        }
         double x[3] = {0.0, 0.0, 0.0};
         for (int b = 0; b < nD; ++b)
           for (int I = 0; I < 3; ++I) x[I] += w[b] * X[b * 3 + I];
@@ -89,28 +169,147 @@ namespace adrh
           uq[j] = 0.0;
           for (int b = 0; b < nD; ++b) uq[j] += ue[j * nD + b] * w[b];
         }
+        FaceBC<nc> B;
+        B.reset();
+        bc.evaluate(t, x, nrm, F, B);
+        bool anyWeak = false;
+        for (int i = 0; i < nc; ++i) anyWeak = anyWeak || (B.kind[i] == WeakDirichlet);
         zeroMasked<Co>(T);
         C.evaluate(t, x, uq, gu, T);
-        FluxValues<nc> g;
-        g.zero();
-        bc.diffusiveFlux(t, x, nrm, g.g);
+        // the boundary state: g_D where a component is WeakDirichlet, the interior value elsewhere
+        double ub[nc];
+        for (int j = 0; j < nc; ++j) ub[j] = (B.kind[j] == WeakDirichlet) ? B.gD[j] : uq[j];
+        if (anyWeak)
+        {
+          zeroMasked<Co>(Tb);
+          C.evaluate(t, x, ub, gu, Tb);
+        }
+        // grad phi^k = sum_j dphi[k][j] grad u_j
+        double gphi[nc][nS];
+        for (int kk = 0; kk < nc; ++kk)
+          for (int I = 0; I < nS; ++I)
+          {
+            gphi[kk][I] = 0.0;
+            for (int j = 0; j < nc; ++j) gphi[kk][I] += T.dphi[kk][j] * gu[j][I];
+          }
         const double dS = qwf[q] * len;
         constexpr_for<0, nc>([&](auto i_) {
           constexpr int i = decltype(i_)::value;
-          double Fn = g.g[i];
+          if (B.kind[i] == Strong) return;
+          double Fn = 0.0;                 // the flux . n at this point
+          double dFn[nc] = {};             // d Fn / d u_j, the part that multiplies w_b (no gradients)
+          // advective part
           if constexpr (Co::has_advection && Co::f_nz(i))
-            for (int I = 0; I < 3; ++I) Fn += T.f[i][I] * nrm[I];
-          for (int a = 0; a < nD; ++a) Rloc[i][a] += dS * Fn * w[a];
-          constexpr_for<0, nc>([&](auto j_) {
-            constexpr int j = decltype(j_)::value;
-            if constexpr (Co::has_advection && Co::df_nz(i, j))
+          {
+            double fl = 0.0, dl = 0.0;
+            for (int I = 0; I < nS; ++I) fl += T.f[i][I] * nrm[I];
+            if constexpr (Co::df_nz(i, i))
+              for (int I = 0; I < nS; ++I) dl += T.df[i][i][I] * nrm[I];
+            bool interior = false, prescribed = false;
+            if (B.kind[i] == Flux)
             {
-              double dfn = 0.0;
-              for (int I = 0; I < 3; ++I) dfn += T.df[i][j][I] * nrm[I];
-              for (int a = 0; a < nD; ++a)
-                for (int b = 0; b < nD; ++b) Jloc[i][a][j][b] += dS * dfn * w[b] * w[a];
+              if (B.hasAdv[i]) { prescribed = true; Fn += B.fadv[i]; }
+              else interior = (dl >= 0.0);           // inflow without a value: dropped, as proteus does
             }
-          });
+            else                                     // WeakDirichlet: upwind against f(g_D)
+            {
+              double fr = 0.0, dr = 0.0;
+              for (int I = 0; I < nS; ++I) fr += Tb.f[i][I] * nrm[I];
+              if constexpr (Co::df_nz(i, i))
+                for (int I = 0; I < nS; ++I) dr += Tb.df[i][i][I] * nrm[I];
+              if (dl >= 0.0 && dr >= 0.0) interior = true;
+              else if (dl <= 0.0 && dr <= 0.0) interior = false;
+              else if (dl >= 0.0 && dr <= 0.0)
+              {
+                const double uj = ub[i] - uq[i], fj = fr - fl;
+                const double s = (std::fabs(uj) > std::fabs(fj) * 1.0e-16) ? fj / uj : 0.0;
+                interior = (s >= 0.0);
+              }
+              else
+              {                                      // transonic rarefaction: proteus averages the two
+                Fn += 0.5 * (fl + fr);
+                prescribed = true;                   // and takes half the interior speed as the Jacobian
+                constexpr_for<0, nc>([&](auto j_) {
+                  constexpr int j = decltype(j_)::value;
+                  if constexpr (Co::df_nz(i, j))
+                    for (int I = 0; I < nS; ++I) dFn[j] += 0.5 * T.df[i][j][I] * nrm[I];
+                });
+              }
+              if (!prescribed && !interior) Fn += fr;
+            }
+            if (interior)
+            {
+              Fn += fl;
+              constexpr_for<0, nc>([&](auto j_) {
+                constexpr int j = decltype(j_)::value;
+                if constexpr (Co::df_nz(i, j))
+                  for (int I = 0; I < nS; ++I) dFn[j] += T.df[i][j][I] * nrm[I];
+              });
+            }
+          }
+          // diffusive part
+          if constexpr (Co::has_diffusion)
+          {
+            if (B.kind[i] == Flux)
+            {
+              Fn += B.gdiff[i] + B.dgdiff[i] * uq[i];
+              dFn[i] += B.dgdiff[i];
+            }
+            else
+            {
+              constexpr_for<0, nc>([&](auto k_) {
+                constexpr int kk = decltype(k_)::value;
+                if constexpr (Co::a_nz(i, kk))
+                {
+                  double an[nS];                     // (a^{ik})^T n
+                  for (int J = 0; J < nS; ++J)
+                  {
+                    an[J] = 0.0;
+                    for (int I = 0; I < nS; ++I) an[J] += nrm[I] * T.a[i][kk][I][J];
+                  }
+                  const double jump = uq[kk] - ub[kk];   // zero unless component kk is WeakDirichlet
+                  double qn = 0.0;
+                  for (int J = 0; J < nS; ++J) qn -= an[J] * gphi[kk][J];
+                  Fn += qn + penalty * jump;
+                  // Jacobian of -n . a grad phi^k + penalty (u_k - g) and of the adjoint, which carry grad w_b
+                  constexpr_for<0, nc>([&](auto j_) {
+                    constexpr int j = decltype(j_)::value;
+                    for (int b = 0; b < nD; ++b)
+                    {
+                      double d = 0.0;
+                      if constexpr (Co::dphi_nz(kk, j))
+                        for (int J = 0; J < nS; ++J) d -= an[J] * T.dphi[kk][j] * gw[b][J];
+                      if constexpr (Co::da_nz(i, kk, j))
+                        for (int I = 0; I < nS; ++I)
+                          for (int J = 0; J < nS; ++J) d -= nrm[I] * T.da[i][kk][j][I][J] * gphi[kk][J] * w[b];
+                      if (j == kk) d += penalty * w[b];
+                      for (int a = 0; a < nD; ++a) Jloc[i][a][j][b] += dS * d * w[a];
+                    }
+                  });
+                  if (wd.sigma != 0.0)
+                  {
+                    for (int a = 0; a < nD; ++a)
+                    {
+                      double angw = 0.0;
+                      for (int J = 0; J < nS; ++J) angw += an[J] * gw[a][J];
+                      Rloc[i][a] -= dS * wd.sigma * jump * angw;
+                      if (B.kind[kk] == WeakDirichlet)
+                        for (int b = 0; b < nD; ++b) Jloc[i][a][kk][b] -= dS * wd.sigma * w[b] * angw;
+                    }
+                  }
+                }
+              });
+            }
+          }
+          for (int a = 0; a < nD; ++a)
+          {
+            Rloc[i][a] += dS * Fn * w[a];
+            constexpr_for<0, nc>([&](auto j_) {
+              constexpr int j = decltype(j_)::value;
+              if (dFn[j] != 0.0)
+                for (int b = 0; b < nD; ++b) Jloc[i][a][j][b] += dS * dFn[j] * w[b] * w[a];
+            });
+          }
         });
       }
       std::memcpy(Rf + F * nc * nD, Rloc, sizeof(Rloc));
@@ -118,19 +317,35 @@ namespace adrh
     }
   }
 
-  // g = -kappa grad(u_exact) . n for u_exact = sin(omega.x + omega0): the flux of the sine solution's diffusion
-  struct SineDiffusiveFlux
+  // Boundary data of the sine solution u = sin(omega.x + omega0) for the regression, in nS dimensions. The kind
+  // of each face comes from an array: 1 = Flux (diffusive flux given; advection leaves by the interior value,
+  // inflow dropped), 2 = Flux with the advective flux (b.n) u given too, 3 = WeakDirichlet with u given,
+  // 4 = Robin alpha u + beta q.n = g with g from the exact solution; anything else = Strong.
+  template <int nS>
+  struct SineBC
   {
-    double kappa, omega[3], omega0;
-    SineDiffusiveFlux(double kappa_, const double *omega_, double omega0_) : kappa(kappa_), omega0(omega0_)
+    double b[3], kappa, omega[3], omega0, alpha, beta;
+    const int *faceKind;
+    SineBC(const double *b_, double kappa_, const double *omega_, double omega0_, const int *faceKind_,
+           double alpha_ = 1.0, double beta_ = 1.0)
+        : kappa(kappa_), omega0(omega0_), alpha(alpha_), beta(beta_), faceKind(faceKind_)
     {
-      for (int I = 0; I < 3; ++I) omega[I] = omega_[I];
+      for (int I = 0; I < 3; ++I) { b[I] = I < nS ? b_[I] : 0.0; omega[I] = I < nS ? omega_[I] : 0.0; }
     }
-    void diffusiveFlux(double, const double x[3], const double n[3], double *g) const
+    void evaluate(double, const double x[3], const double n[3], int F, FaceBC<1> &B) const
     {
-      double arg = omega0, wn = 0.0;
-      for (int I = 0; I < 3; ++I) { arg += omega[I] * x[I]; wn += omega[I] * n[I]; }
-      g[0] = -kappa * wn * std::cos(arg);
+      double arg = omega0, wn = 0.0, bn = 0.0;
+      for (int I = 0; I < nS; ++I) { arg += omega[I] * x[I]; wn += omega[I] * n[I]; bn += b[I] * n[I]; }
+      const double ue = std::sin(arg), qn = -kappa * wn * std::cos(arg);   // exact u and -kappa grad u . n
+      switch (faceKind[F])
+      {
+      case 1: B.kind[0] = Flux; B.gdiff[0] = qn; break;
+      case 2: B.kind[0] = Flux; B.gdiff[0] = qn; B.hasAdv[0] = true; B.fadv[0] = bn * ue; break;
+      case 3: B.kind[0] = WeakDirichlet; B.gD[0] = ue; break;
+      case 4:                                                                 // g = alpha u_exact + beta q_exact
+        B.kind[0] = Flux; B.gdiff[0] = (alpha * ue + beta * qn) / beta; B.dgdiff[0] = -alpha / beta; break;
+      default: B.kind[0] = Strong;
+      }
     }
   };
 } // namespace adrh
