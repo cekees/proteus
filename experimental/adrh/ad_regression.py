@@ -1,8 +1,9 @@
 """Advection-diffusion regression: ADRH engine vs the Proteus model (ad_sine_p/n.py) vs the exact solution.
 
 Steady div(b u - kappa grad u) + d(x) = 0 on the unit square or cube, exact solution sin(omega.x + omega0) (the
-verified AnalyticalSolutions.LinearADR_Sine with c = 0), P1 (AD_SPACE=p1, the default) or P2 (AD_SPACE=p2) Galerkin on
-regular triangles (AD_ND=2) or tetrahedra (AD_ND=3, the default). The engine builds the element and exterior-face residual and Jacobian; the driver
+verified AnalyticalSolutions.LinearADR_Sine with c = 0), Galerkin with P1 (AD_SPACE=p1, the default) or P2 (p2) on
+regular triangles / tetrahedra, or Q1 (q1) on regular quadrilaterals / hexahedra, in AD_ND=2 or 3 (the default)
+dimensions. The engine builds the element and exterior-face residual and Jacobian; the driver
 assembles, imposes any strong Dirichlet rows and solves with scipy. Checks:
 
   1. engine and Proteus solve the same discrete problem: nodal solutions agree to solver round-off.
@@ -17,10 +18,10 @@ assembles, imposes any strong Dirichlet rows and solves with scipy. Checks:
        iipg, nipg, sipg  Dirichlet data everywhere, imposed weakly: upwinded advective flux against f(g), diffusive flux
                          with penalty C/h (2, 10, 100) and the NIPG/SIPG adjoint term (the engine's WeakDirichlet kind
                          against Proteus's Advection_DiagonalUpwind_Diffusion_*_exterior);
-  2. both converge to the exact solution at the space's rates (P1: L2 ~ h^2; P2: L2 ~ h^3);
+  2. both converge to the exact solution at the space's rates (P1, Q1: L2 ~ h^2; P2: L2 ~ h^3);
   3. the exact solution fed through the engine's residual is small and shrinks with h (consistency).
 
-usage: [AD_ND=2|3] [AD_SPACE=p1|p2] [AD_BC=mode] python ad_regression.py [nn ...]        default 5 9 17
+usage: [AD_ND=2|3] [AD_SPACE=p1|p2|q1] [AD_BC=mode] python ad_regression.py [nn ...]        default 5 9 17
 """
 import os
 import sys
@@ -42,14 +43,14 @@ ND = int(os.environ.get('AD_ND', '3'))
 os.environ['AD_ND'] = str(ND)
 SPACE = os.environ.get('AD_SPACE', 'p1')
 os.environ['AD_SPACE'] = SPACE
-nV = ND + 1                                                       # vertices per element
-nD = {'p1': nV, 'p2': nV * (nV + 1) // 2}[SPACE]                  # dofs per element
+nD, nV, FACE_VERTICES = adrh_proto.space_info(ND, SPACE)          # dofs and vertices per element; each face's vertices
 b = np.array([1.0, 0.5, 0.25])[:ND]; kappa = 0.2; omega = np.array([3.0, 2.0, 4.0])[:ND]; omega0 = 0.3
 order = 4
 os.environ.setdefault('AD_QORDER', str(order))
-quad = Quadrature.SimplexGaussQuadrature(ND, order)
+Gauss = Quadrature.CubeGaussQuadrature if SPACE == 'q1' else Quadrature.SimplexGaussQuadrature   # as ad_sine_n.py
+quad = Gauss(ND, order)
 qp = np.array([list(p)[:ND] for p in quad.points]); qw = np.array(quad.weights)
-quadf = Quadrature.SimplexGaussQuadrature(ND - 1, order)
+quadf = Gauss(ND - 1, order)
 qpf = np.array([list(p)[:ND - 1] for p in quadf.points]); qwf = np.array(quadf.weights)
 # the verified exact solution (LinearADR_Sine with c = 0), on points with any leading shape and 2 or 3 coordinates
 exact = lambda X: np.sin(X[..., :ND] @ omega + omega0)
@@ -86,10 +87,11 @@ def proteus_solution(nn):
 
 
 def plane_faces(nodes, l2g, axis, value):
-    """Element faces (element, local face = the opposite vertex) whose vertices all lie on the plane x[axis] = value.
+    """Element faces (element, local face index of the space) whose vertices all lie on the plane x[axis] = value.
     Per plane, because a face with its vertices on two different planes is an interior face."""
     on = np.abs(nodes[l2g[:, :nV]][:, :, axis] - value) < 1e-12                # (nE, nV)
-    return np.nonzero(on.sum(axis=1)[:, None] - on.astype(int) == ND)
+    on_face = np.stack([on[:, fv].all(axis=1) for fv in FACE_VERTICES], axis=1)  # (nE, nFaces)
+    return np.nonzero(on_face)
 
 
 def engine_solution(nodes, conn):
@@ -137,15 +139,13 @@ def engine_solution(nodes, conn):
 
 
 W_BASIS = adrh_proto.basis_values(ND, SPACE, qp)[0]                  # (nQ, nD) the space's basis at the quadrature points
-LAM = np.column_stack([1 - qp.sum(axis=1), qp])                      # (nQ, nV) barycentric: the (affine) geometry
 
 
 def errors(u, nodes, conn, xn):
-    # L2 error by the engine's quadrature, with u_h interpolated by the space's basis at the points
+    # L2 error by the engine's quadrature and geometry, with u_h interpolated by the space's basis at the points
     uh = u[conn] @ W_BASIS.T                                          # (nE, nQ)
-    xq = np.einsum('qb,ebi->eqi', LAM, xn[:, :nV])
-    vol = np.abs(np.linalg.det(xn[:, 1:nV, :ND] - xn[:, :1, :ND]))    # the reference weights carry the 1/d!
-    l2 = np.sqrt(np.sum(vol[:, None] * qw[None, :] * (uh - exact(xq)) ** 2))
+    xq, adet = adrh_proto.quadrature_geometry(ND, SPACE, xn, qp)      # (nE, nQ, 3), (nE, nQ)
+    l2 = np.sqrt(np.sum(adet * qw[None, :] * (uh - exact(xq)) ** 2))
     return l2, np.abs(u - exact(nodes)).max()
 
 

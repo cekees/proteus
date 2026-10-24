@@ -14,7 +14,7 @@ from proteus.default_p import *
 from proteus.TransportCoefficients import TC_base
 
 nd = int(os.environ.get('AD_ND', '3'))
-SPACE = os.environ.get('AD_SPACE', 'p1')          # p1 or p2 Lagrange, see ad_sine_n.py
+SPACE = os.environ.get('AD_SPACE', 'p1')          # p1, p2 (simplices) or q1 (cubes) Lagrange, see ad_sine_n.py
 x0 = (0.0,) * nd
 L = (1.0,) * nd
 domain = None

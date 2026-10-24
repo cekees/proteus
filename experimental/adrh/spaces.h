@@ -152,3 +152,61 @@ namespace adrh
     }
   };
 } // namespace adrh
+
+namespace adrh
+{
+  // Trilinear (bilinear) Lagrange on proteus's reference cube [-1, 1]^nS, nodes in proteus's order
+  // (ReferenceCube.nodeList): 2D (-,-), (+,-), (+,+), (-,+); 3D the same square at xi_2 = -1 then at +1.
+  // Faces are numbered k = 2 I + side: xi_I = -1 (side 0) or +1 (side 1); a face's own coordinates are the other
+  // reference coordinates in increasing order, on [-1, 1]^(nS-1) like proteus's CubeGaussQuadrature(nS - 1).
+  template <int nS_>
+  struct Q1Cube
+  {
+    static constexpr int nS = nS_, nDOF = 1 << nS_, nVertices = nDOF, nFaces = 2 * nS_, nFaceVertices = 1 << (nS_ - 1);
+    static_assert(nS_ == 2 || nS_ == 3, "quadrilaterals or hexahedra");
+    // the sign of node b's reference coordinate I
+    static constexpr double sgn(int b, int I)
+    {
+      const int q = b % 4;
+      if (I == 0) return (q == 1 || q == 2) ? 1.0 : -1.0;
+      if (I == 1) return (q >= 2) ? 1.0 : -1.0;
+      return (b >= 4) ? 1.0 : -1.0;
+    }
+    static void basis(const double *xi, double *w, double (*gw)[nS_])
+    {
+      constexpr double scale = 1.0 / nDOF;
+      for (int b = 0; b < nDOF; ++b)
+      {
+        double f[nS_];
+        for (int I = 0; I < nS_; ++I) f[I] = 1.0 + sgn(b, I) * xi[I];
+        w[b] = scale;
+        for (int I = 0; I < nS_; ++I) w[b] *= f[I];
+        for (int I = 0; I < nS_; ++I)
+        {
+          gw[b][I] = scale * sgn(b, I);
+          for (int J = 0; J < nS_; ++J)
+            if (J != I) gw[b][I] *= f[J];
+        }
+      }
+    }
+    static int faceVertex(int k, int m)
+    {
+      const int I = k / 2;
+      const double side = (k % 2) ? 1.0 : -1.0;
+      int seen = 0;
+      for (int b = 0; b < nDOF; ++b)
+        if (sgn(b, I) == side && seen++ == m) return b;
+      return -1;
+    }
+    static void faceToReference(int k, const double *eta, double *xi)
+    {
+      const int I = k / 2;
+      int m = 0;
+      for (int J = 0; J < nS_; ++J) xi[J] = (J == I) ? ((k % 2) ? 1.0 : -1.0) : eta[m++];
+    }
+    static void referenceNormal(int k, double *n)
+    {
+      for (int J = 0; J < nS_; ++J) n[J] = (J == k / 2) ? ((k % 2) ? 1.0 : -1.0) : 0.0;
+    }
+  };
+} // namespace adrh

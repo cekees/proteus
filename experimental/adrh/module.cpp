@@ -60,7 +60,9 @@ py::tuple dispatchSpace(int nd, const std::string &space, F &&f)
   if (nd == 3 && space == "p1") return f(adrh::P1Simplex<3>{});
   if (nd == 2 && space == "p2") return f(adrh::P2Simplex<2>{});
   if (nd == 3 && space == "p2") return f(adrh::P2Simplex<3>{});
-  throw std::invalid_argument("no space '" + space + "' in " + std::to_string(nd) + "D (p1, p2; nd 2 or 3)");
+  if (nd == 2 && space == "q1") return f(adrh::Q1Cube<2>{});
+  if (nd == 3 && space == "q1") return f(adrh::Q1Cube<3>{});
+  throw std::invalid_argument("no space '" + space + "' in " + std::to_string(nd) + "D (p1, p2, q1; nd 2 or 3)");
 }
 
 PYBIND11_MODULE(adrh_proto, m)
@@ -108,6 +110,34 @@ PYBIND11_MODULE(adrh_proto, m)
                                                                       R.mutable_data(), J.mutable_data());
       }
       return py::make_tuple(R, J);
+    });
+  });
+  // (nDOF, nVertices, faces (nFaces, nFaceVertices) as local vertex numbers) of a space
+  m.def("space_info", [](int nd, const std::string &space) {
+    return dispatchSpace(nd, space, [&](auto spaceTag) {
+      using S = decltype(spaceTag);
+      py::array_t<int> faces({(int)S::nFaces, (int)S::nFaceVertices});
+      for (int k = 0; k < S::nFaces; ++k)
+        for (int m = 0; m < S::nFaceVertices; ++m) faces.mutable_data()[k * S::nFaceVertices + m] = S::faceVertex(k, m);
+      return py::make_tuple((int)S::nDOF, (int)S::nVertices, faces);
+    });
+  });
+  // the space's isoparametric geometry at reference points: x (nE, nQ, 3) and |det J| (nE, nQ), for the driver's norms
+  m.def("quadrature_geometry", [](int nd, const std::string &space, Arr xn, Arr xi) {
+    return dispatchSpace(nd, space, [&](auto spaceTag) {
+      using S = decltype(spaceTag);
+      constexpr int nS = S::nS, nD = S::nDOF;
+      const int nE = xn.shape(0), nQ = xi.shape(0);
+      py::array_t<double> x({nE, nQ, 3}), adet({nE, nQ});
+      adrh::PointGeometry<S> G;
+      for (int e = 0; e < nE; ++e)
+        for (int q = 0; q < nQ; ++q)
+        {
+          G.compute(xn.data() + e * nD * 3, xi.data() + q * nS);
+          for (int I = 0; I < 3; ++I) x.mutable_data()[(e * nQ + q) * 3 + I] = G.x[I];
+          adet.mutable_data()[e * nQ + q] = G.adet;
+        }
+      return py::make_tuple(x, adet);
     });
   });
   // basis values of the space at reference points xi (nQ, nd): (nQ, nDOF), for the driver's error norms
