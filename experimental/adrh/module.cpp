@@ -140,6 +140,52 @@ PYBIND11_MODULE(adrh_proto, m)
       return py::make_tuple(x, adet);
     });
   });
+  // transient linear ADR u_t + div(b u - kappa grad u) + c u = 0, backward Euler: element residual and Jacobian at
+  // time t with the step dt and the old solution uold (nE, nc, nDOF)
+  m.def("transient_adr", [](int nd, const std::string &space, Arr b, double kappa, double c,
+                             Arr xn, Arr u, Arr uold, Arr qp, Arr qw, double t, double dt) {
+    return dispatchSpace(nd, space, [&](auto spaceTag) {
+      using S = decltype(spaceTag);
+      constexpr int nS = S::nS, nD = S::nDOF;
+      adrh::TransientLinearADR<nS> co(b.data(), kappa, c);
+      const int nE = xn.shape(0), nQ = qw.shape(0);
+      py::array_t<double> R({nE, 1, nD}), J({nE, 1, nD, 1, nD});
+      {
+        py::gil_scoped_release release;
+        adrh::elementKernelSpace<adrh::TransientLinearADR<nS>, S>(co, nE, nQ, xn.data(), u.data(), uold.data(),
+                                                                  qp.data(), qw.data(), t, dt,
+                                                                  R.mutable_data(), J.mutable_data());
+      }
+      return py::make_tuple(R, J);
+    });
+  });
+  // its exterior faces at time t, with the boundary data from the Dirac-IC Gaussian (tStart, u0, x0) and the
+  // same face kinds as advection_diffusion_sine_faces
+  m.def("transient_adr_faces", [](int nd, const std::string &space, Arr b, double kappa, double c,
+                                   double tStart, double u0, Arr x0,
+                                   py::array_t<int, py::array::c_style | py::array::forcecast> faceLocal,
+                                   py::array_t<int, py::array::c_style | py::array::forcecast> faceKind,
+                                   Arr xn, Arr u, Arr qpf, Arr qwf, double t,
+                                   double penalty_constant, double penalty_power, double sigma,
+                                   double robin_alpha, double robin_beta) {
+    return dispatchSpace(nd, space, [&](auto spaceTag) {
+      using S = decltype(spaceTag);
+      constexpr int nS = S::nS, nD = S::nDOF;
+      adrh::TransientLinearADR<nS> co(b.data(), kappa, c);
+      adrh::DiracExact<nS> exact(b.data(), kappa, c, tStart, u0, x0.data());
+      adrh::ExactBC<nS, adrh::DiracExact<nS>> bc(exact, b.data(), kappa, faceKind.data(), robin_alpha, robin_beta);
+      adrh::WeakDirichletParams wd{penalty_constant, penalty_power, sigma};
+      const int nF = xn.shape(0), nQf = qwf.shape(0);
+      py::array_t<double> Rf({nF, 1, nD}), Jf({nF, 1, nD, 1, nD});
+      {
+        py::gil_scoped_release release;
+        adrh::exteriorFaceKernel<adrh::TransientLinearADR<nS>, adrh::ExactBC<nS, adrh::DiracExact<nS>>, S>(
+            co, bc, wd, nF, nQf, faceLocal.data(), xn.data(), u.data(), qpf.data(), qwf.data(), t,
+            Rf.mutable_data(), Jf.mutable_data());
+      }
+      return py::make_tuple(Rf, Jf);
+    });
+  });
   // basis values of the space at reference points xi (nQ, nd): (nQ, nDOF), for the driver's error norms
   m.def("basis_values", [](int nd, const std::string &space, Arr xi) {
     return dispatchSpace(nd, space, [&](auto spaceTag) {

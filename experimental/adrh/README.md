@@ -57,4 +57,21 @@ numerical-flux treatment, and `ad_regression.py` compares against that treatment
 The header's comment says where the engine deliberately differs from Proteus (the adjoint's tensor contraction, da/du in
 the Jacobian); neither shows with an isotropic constant diffusion tensor.
 
-Design, decisions and numbers: `ADRH_ENGINE_DESIGN.md` (kept beside the campaign notes, sections 11-17).
+## Time integration (`ad_dirac_regression.py`)
+
+The element kernel's mass term is backward Euler, `(m(u) - m(u_old)) / dt`, with the coefficients evaluated at the old
+state. `ad_dirac_regression.py` steps the transient linear ADR equation `u_t + div(b u - kappa grad u) + c u = 0`
+(`TransientLinearADR`, Proteus's `LinearVADR_ConstantCoefficients`) from the Dirac-IC Gaussian
+(`AnalyticalSolutions.LinearADR_Decay_DiracIC`, verified in #90) in fixed steps, with the boundary data from the exact
+solution at time t through `ExactBC<DiracExact>` in any of the seven `AD_BC` modes, against Proteus's `BackwardEuler` +
+`FixedStep` (`ad_dirac_p.py`, `ad_dirac_n.py`) and against the exact solution. `regression_common.py` holds what the two
+drivers share. Engine and Proteus agree to round-off (< 1e-13) in every space, dimension and mode; the error against the
+exact solution converges at rate 1 in dt and saturates at the time error in h, as backward Euler should.
+
+One Proteus behaviour had to be mimicked for that agreement (`AD_FIRST_STEP=proteus`): Proteus's old mass for the *first*
+step is taken from a residual evaluation made after the strongly imposed Dirichlet dofs were already set to their
+values at t_1 (`NumericalSolution.calculateSolution`: `initialize_dt_model`, then `getResidual`, then
+`stepController.initializeTimeHistory`), so in step one the boundary dofs have no time derivative. The effect is
+O(dt^2) and local to the boundary-adjacent rows; later steps are right. The engine's default keeps the true old state.
+
+Design, decisions and numbers: `ADRH_ENGINE_DESIGN.md` (kept beside the campaign notes, sections 11-18).
