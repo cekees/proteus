@@ -71,8 +71,10 @@ def test_a_subprocess_measures_itself(tmp_path):
         parallel = true
         patch = subprocess
         """))
-    env = dict(os.environ, PYTHONPATH=str(tmp_path), COVERAGE_RCFILE=str(rc))
-    env.pop("COVERAGE_PROCESS_START", None)
+    # a clean environment for the nested run: under pytest-cov (the CI coverage leg) this process carries COV_CORE_*
+    # and COVERAGE_* settings that would send the nested run's data to the outer measurement and leave nothing to report
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("COV_CORE", "COVERAGE"))}
+    env.update(PYTHONPATH=str(tmp_path), COVERAGE_RCFILE=str(rc))
     ran = subprocess.run([sys.executable, "-m", "coverage", "run", str(parent)],
                          cwd=str(tmp_path), capture_output=True, text=True, env=env)
     assert ran.returncode == 0, ran.stdout + ran.stderr
