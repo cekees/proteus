@@ -142,6 +142,8 @@ def main(argv):
               'dof_global': dof, 'ceilings': ceilings,
               't_build': ph['build']['seconds'], 't_solve': ph['solve']['seconds'],
               'phases': ph, 'passes': {'%s | %s' % k: v for k, v in ps.items()}}
+    if rank == 0 and acc.perf_gate.ctl is not None:
+        print("PERFGATE pass=%s calls_counted=%d" % (acc.perf_gate.pattern, acc.perf_gate.calls))
     if rank == 0:
         report(result, ph, ps)
         out = opts['out'] or 'model_baseline_%s_%s_%d.json' % (
