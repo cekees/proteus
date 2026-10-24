@@ -31,7 +31,10 @@ import scipy.sparse.linalg as spl
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import adrh_proto
+import importlib
+import adrh_proto                                    # the exterior-face kernels are host-only
+# the element kernel: the host prototype, or the Kokkos port (ADRH_MODULE=adrh_kokkos, see build_kokkos.sh)
+engine = importlib.import_module(os.environ.get('ADRH_MODULE', 'adrh_proto'))
 from proteus import Comm
 Comm.init()
 from proteus import default_s, default_so, NumericalSolution, Quadrature
@@ -87,7 +90,7 @@ def engine_solution(nodes, conn):
     nE, nN = len(conn), len(nodes)
     xn = np.ascontiguousarray(nodes[conn])                                      # (nE, nD, 3): Proteus keeps 3 coordinates
     u0 = np.zeros((nE, 1, nD))
-    R, J = adrh_proto.advection_diffusion_sine(ND, b, kappa, omega, omega0, xn, u0, qp, qw)
+    R, J = engine.advection_diffusion_sine(ND, b, kappa, omega, omega0, xn, u0, qp, qw)
     rows = np.repeat(conn, nD, axis=1).ravel(); cols = np.tile(conn, (1, nD)).ravel()
     K = sp.coo_matrix((J[:, 0, :, 0, :].ravel(), (rows, cols)), shape=(nN, nN)).tocsr()
     rhs = -np.bincount(conn.ravel(), weights=R[:, 0, :].ravel(), minlength=nN)
@@ -146,7 +149,7 @@ for nn in sizes:
     l2p, mxp = errors(up, nodes, conn, xn)
     # the exact solution through the engine: element residual of u_exact at the interior nodes (no boundary terms)
     uex = exact(nodes)[conn][:, None, :]
-    Rx = adrh_proto.advection_diffusion_sine(ND, b, kappa, omega, omega0, xn, np.ascontiguousarray(uex), qp, qw)[0]
+    Rx = engine.advection_diffusion_sine(ND, b, kappa, omega, omega0, xn, np.ascontiguousarray(uex), qp, qw)[0]
     X = nodes[:, :ND]
     interior = (X.min(axis=1) > 1e-12) & (X.max(axis=1) < 1 - 1e-12)
     resid = np.abs(np.bincount(conn.ravel(), weights=Rx[:, 0, :].ravel(), minlength=len(nodes))[interior]).max()
