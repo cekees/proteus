@@ -24,9 +24,13 @@ LAUNCHER = _threads.LAUNCHER_SIZE_VARIABLES
 
 
 def clean_environment(**extra):
-    """This process's environment without thread settings or launcher announcements."""
+    """This process's environment without thread settings or launcher size announcements.
+
+    Only the announcements: the MPI runtime's own configuration (OMPI_MCA_*, which CI uses to keep Open MPI off UCX)
+    has to reach the ranks, or they fail to start.
+    """
     env = {k: v for k, v in os.environ.items()
-           if k not in VARIABLES and k not in LAUNCHER and not k.startswith(("OMPI_", "PMIX_", "PMI_"))}
+           if k not in VARIABLES and k not in LAUNCHER and not k.startswith("OMPI_COMM_WORLD")}
     env.update(extra)
     return env
 
