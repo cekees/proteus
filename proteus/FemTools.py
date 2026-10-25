@@ -7145,6 +7145,8 @@ class BatchedBC(object):
     def __call__(self,x,t):
         return self.batched(numpy.reshape(x,(1,3)),t)[0]
 batchedBC = BatchedBC
+def _zeroAdvectiveFlux(x,t):
+    return 0.0
 class FluxBoundaryConditions(object):
     """Generating class for the fluxBoundaryConditions dictionaries.
 
@@ -7203,6 +7205,31 @@ class FluxBoundaryConditions(object):
                             self.diffusiveFluxBoundaryConditionsDictDict[ck][(ebNE,k)] = g
             #k
         #ebNE
+        if getAdvectiveFluxBoundaryConditions is not None:
+            self._noAdvectiveFluxOnRankInterfaces(mesh,nElementBoundaryQuadraturePoints_elementBoundary)
+    def _noAdvectiveFluxOnRankInterfaces(self,mesh,nQuadraturePoints):
+        """Specify a zero advective flux on the faces shared with another rank.
+
+        On a partitioned mesh those faces are exterior faces of the subdomain
+        but interior to the global mesh, so they carry no boundary term. A
+        kernel that finds neither a Dirichlet value nor a flux there takes its
+        open-boundary branch (outflow flux u*b.n, inflow zero), which is
+        one-sided: the two ranks' terms do not cancel and the answer depends
+        on the partition. Specifying a zero flux reuses the kernels' existing
+        prescribed-flux branch, so no kernel changes; the model loops that read
+        this dictionary set the flag and the value, and OneLevelTransport
+        zeroes the numerical flux and its Jacobian at the same entries. These
+        entries replace anything the user's function returned for these faces;
+        they are the faces whose material type is 0, see
+        :func:`proteus.MeshTools.rankInterfaceExteriorMask`. Serial runs have
+        no mask and are untouched.
+        """
+        mask = rankInterfaceExteriorMask(mesh)
+        if mask is None:
+            return
+        for ebNE in np.nonzero(mask)[0]:
+            for k in range(nQuadraturePoints):
+                self.advectiveFluxBoundaryConditionsDict[(int(ebNE),k)] = _zeroAdvectiveFlux
     def _groups(self,name,conditions):
         """The conditions split into one-point-at-a-time ones and BatchedBC groups, kept until
         the dictionary changes size."""
