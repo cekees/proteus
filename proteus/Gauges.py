@@ -22,11 +22,13 @@ from proteus import Profiling
 
 
 def _checkFields(fields):
-    """Returns fields as a tuple of names, rejecting a bare string that
-    would otherwise be iterated one character at a time."""
-    if isinstance(fields, str) or not hasattr(fields, '__iter__'):
-        raise ValueError("gauge fields must be a tuple or list of field names, "
-                         "not %r (a one-field tuple needs a trailing comma: ('u',))" % (fields,))
+    """Returns fields as a tuple of names.  A bare string is one field
+    name: ('u') is just 'u', and iterating it per character would turn
+    'u0' into the fields 'u' and '0'."""
+    if isinstance(fields, str):
+        return (fields,)
+    if not hasattr(fields, '__iter__'):
+        raise ValueError("gauge fields must be a tuple or list of field names, not %r" % (fields,))
     return tuple(fields)
 
 def _checkPoint(point):

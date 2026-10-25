@@ -327,10 +327,12 @@ def test_gauge_rejects_non_finite_location():
     with pytest.raises(ValueError, match="finite"):
         PointGauges(gauges=((('u0',), ((0, float('nan'), 0),)),))
 
-def test_gauge_rejects_string_field_list():
-    # ('u0') is a string, which would be iterated as the fields 'u' and '0'
+def test_gauge_bare_string_is_one_field():
+    # ('u0') is the string 'u0', which used to be iterated as the fields 'u' and '0'
+    g = PointGauges(gauges=((('u0'), ((0, 0, 0),)),))
+    assert list(g.fields) == ['u0']
     with pytest.raises(ValueError, match="fields"):
-        PointGauges(gauges=((('u0'), ((0, 0, 0),)),))
+        PointGauges(gauges=((3, ((0, 0, 0),)),))
 
 def test_gauge_rejects_bad_sample_rate_and_active_time():
     pts = ((('u0',), ((0, 0, 0),)),)
