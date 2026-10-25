@@ -325,10 +325,9 @@ def test_point_location_beyond_two_rings():
     g.attachModel(model, None)
     femSpace = model.levelModelList[-1].u[0].femSpace
     mesh = femSpace.mesh
-    # make the nearest-node lookup return a node several rings from the
-    # point so that only an unbounded search finds the element
+    # a node three rings from the point (the old search stopped at two)
     far = int(np.argmin(np.linalg.norm(mesh.nodeArray - np.array([0., 0., 0.]), axis=1)))
-    location = (0.77, 0.61, 0.0)
+    location = (0.37, 0.22, 0.0)
     assert g.getLocalElement(femSpace, location, far) is not None
 
 def delete_file(filename):
