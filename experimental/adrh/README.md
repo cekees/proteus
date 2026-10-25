@@ -179,11 +179,11 @@ creation, GAMG setup and solve.
   On the device side they are 10% of the time, and about 0.1% of the total.
 * **The ceiling is the host side, as the baseline predicted.** Assembly is 45% of a one-thread solve at 6 M tets (the baseline's 19 to 51%). Taking it to zero bounds the speedup at
   8.64 / 4.77 = 1.81x; the GPU reaches 1.76x and 96 CPU threads 1.66x. **Device assembly with a host solve is not better than 96 threads of
-  Kokkos assembly by more than 6%**, although the GPU is 1.6x faster on assembly alone (0.053 + 0.006 against 0.085 s). On this card (weak double precision) the GPU is not
+  Kokkos assembly by more than 6%**, although the GPU is 1.4x faster on assembly alone (0.053 + 0.006 against 0.085 s). On this card (weak double precision) the GPU is not
   where the gain is; a data-center GPU would assemble faster but cannot move the ceiling.
 * **What dominates afterwards is host work that is not the solver's arithmetic**: GAMG setup (2.7 s) and solve (2.0 s), and 0.17 s of Dirichlet rows plus
   copying the CSR into PETSc, which is 30 times the device transfer. Wrapping the arrays without a copy, and imposing the rows on the device, are cheap wins but
-  worth 2% of the total.
+  worth 3.5% of the total.
 * **Verdict for decision (6): stage 1 is not worth building as a product.** It is a measurement that bounds the gain at 1.8x and ties a threaded CPU. The device
   pays only when the matrix stays on the device: stage 2 (PETSc CUDA vectors and matrices, `MatSetValuesCOO` fed with the device values, a device
   preconditioner), which needs a CUDA PETSc.
@@ -192,8 +192,8 @@ creation, GAMG setup and solve.
 
 **A trap in the Python module with a device build.** Kokkos initializes its OpenMP host space with every hardware thread by default, next to CUDA. Those idle threads
 slowed the single-core PETSc solve on the same machine by 45% (2.63 s against 1.83 s at 6 M tets, 0.54 against 0.31 s at 1.3 M): `KOKKOS_NUM_THREADS=1` restores it (0.315 s).
-A threaded CPU build also slowed the host solve by 6 to 20% (0.349 and 0.374 s against 0.309 s at 1.3 M tets) while its pool of threads stayed active;
-`OMP_WAIT_POLICY=passive` trimmed that to 0.349 s at load 25. Set both in any run that mixes a threaded Kokkos phase with a serial host phase.
+A threaded CPU build also slowed the host solve by 8 to 21% (0.349 and 0.374 s against 0.309 s at 1.3 M tets; 1.98 and 2.10 against 1.83 s at 6 M), so the 12- and 96-thread rows above carry that;
+`OMP_WAIT_POLICY=passive` trimmed the 96-thread solve from 0.370 to 0.349 s at 1.3 M tets (load 25). Set both in any run that mixes a threaded Kokkos phase with a serial host phase.
 
 Building the Python module for CUDA needs Kokkos as shared libraries (`-DBUILD_SHARED_LIBS=ON`; the static install cannot be linked into an extension) and the same
 nvcc flags as the benchmark plus `-shared -Xcompiler -fPIC` with pybind11's and Python's include paths; at run time `libcudart` must be on `LD_LIBRARY_PATH`.
