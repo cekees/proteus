@@ -12,7 +12,7 @@ namespace adrh
     // only diffusion (a, phi = u) and the source r are present
     static constexpr bool has_mass = false, has_advection = false, has_hamiltonian = false;
     static constexpr bool dr_nz(int, int) { return false; }  // r does not depend on u
-    void evaluate(double, const double x[3], const double u[1], const double gu[1][3], Terms<1, 3> &T) const
+    ADRH_FN void evaluate(double, const double x[3], const double u[1], const double gu[1][3], Terms<1, 3> &T) const
     {
       T.phi[0] = u[0];
       T.dphi[0][0] = 1.0;
@@ -37,7 +37,7 @@ namespace adrh
     static constexpr bool dphi_nz(int k, int j) { return k == j; }
     static constexpr bool H_nz(int i) { return i == 0; }
     static constexpr bool dH_nz(int i, int j) { return i == 0; }
-    void evaluate(double t, const double x[3], const double u[2], const double gu[2][3], Terms<2, 3> &T) const
+    ADRH_FN void evaluate(double t, const double x[3], const double u[2], const double gu[2][3], Terms<2, 3> &T) const
     {
       const double u0 = u[0], u1 = u[1];
       // mass
@@ -87,7 +87,7 @@ namespace adrh
     static constexpr bool H_nz(int i) { return !UseMasks; }
     static constexpr bool dH_nz(int i, int j) { return !UseMasks; }
     static constexpr bool dr_nz(int i, int j) { return !UseMasks || (i - j >= -1 && i - j <= 1); }
-    void evaluate(double, const double x[3], const double u[5], const double gu[5][3], Terms<5, 3> &T) const
+    ADRH_FN void evaluate(double, const double x[3], const double u[5], const double gu[5][3], Terms<5, 3> &T) const
     {
       const double v[3] = {1.0, 0.5, 0.25};
       for (int i = 0; i < 5; ++i)
@@ -121,12 +121,12 @@ namespace adrh
     static constexpr bool da_nz(int, int, int) { return false; }  // a does not depend on u
     static constexpr bool dr_nz(int, int) { return false; }       // nor does the source
     double b[3], kappa, omega[3], omega0;
-    AdvectionDiffusionSine(const double *b_, double kappa_, const double *omega_, double omega0_)
+    ADRH_FN AdvectionDiffusionSine(const double *b_, double kappa_, const double *omega_, double omega0_)
         : kappa(kappa_), omega0(omega0_)
     {
       for (int I = 0; I < 3; ++I) { b[I] = I < nS_ ? b_[I] : 0.0; omega[I] = I < nS_ ? omega_[I] : 0.0; }
     }
-    void evaluate(double, const double x[3], const double u[1], const double gu[1][nS_], Terms<1, nS_> &T) const
+    ADRH_FN void evaluate(double, const double x[3], const double u[1], const double gu[1][nS_], Terms<1, nS_> &T) const
     {
       T.phi[0] = u[0];
       T.dphi[0][0] = 1.0;

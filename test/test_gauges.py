@@ -330,6 +330,58 @@ def test_point_location_beyond_two_rings():
     location = (0.37, 0.22, 0.0)
     assert g.getLocalElement(femSpace, location, far) is not None
 
+def count_gauge_rows(filename):
+    return len(parse_gauge_output_times(filename))
+
+def parse_gauge_output_times(filename):
+    with open(filename) as f:
+        f.readline()
+        return [float(line.split(',')[0]) for line in f if line.strip()]
+
+def sampled_times(sampleRate, time_list, activeTime=None, filename='test_gauge_sampling.csv'):
+    silent_rm(filename)
+    g = PointGauges(gauges=((('u0',), ((0.5, 0.5, 0.5),)),),
+                    sampleRate=sampleRate, activeTime=activeTime, fileName=filename)
+    run_gauge(g, time_list)
+    Comm.get().barrier()
+    times = parse_gauge_output_times(filename)
+    delete_file(filename)
+    return times
+
+def test_sample_rate_equal_to_step_is_not_dropped_by_roundoff():
+    # erdc#1276: with sampleRate == dt every step must be sampled; i*dt
+    # accumulates roundoff that made `time < last_output + sampleRate` skip
+    # roughly one step in ten
+    dt = 0.1
+    time_list = [i*dt for i in range(40)]
+    times = sampled_times(dt, time_list)
+    assert len(times) == len(time_list)
+    npt.assert_allclose(times, time_list)
+
+def test_sample_rate_is_anchored_to_a_grid():
+    # erdc#1276: sampling every ceil(sampleRate/dt) steps quantizes the
+    # effective rate (dt=0.03, sampleRate=0.1 gave 0.12), so asking for a
+    # higher rate had no effect until it crossed a multiple of dt.  The
+    # k-th sample must be the first step at or after t0 + k*sampleRate.
+    dt, rate = 0.03, 0.1
+    time_list = [i*dt for i in range(101)]
+    times = np.asarray(sampled_times(rate, time_list))
+    expected = [time_list[0]]
+    for k in range(1, 30):
+        due = k*rate
+        expected.append(next(t for t in time_list if t >= due - 1e-9))
+    npt.assert_allclose(times[:len(expected)], expected)
+    # mean interval matches the requested one to within a step, not 20% off
+    assert abs((times[-1] - times[0])/(len(times) - 1) - rate) < dt/10
+
+def test_sample_rate_larger_than_run_gives_single_sample():
+    times = sampled_times(10.0, [0.0, 1.0, 2.0])
+    assert times == [0.0]
+
+def test_sample_rate_respects_active_time():
+    times = sampled_times(0.5, [0.25*i for i in range(21)], activeTime=(1.0, 3.0))
+    npt.assert_allclose(times, [1.0, 1.5, 2.0, 2.5, 3.0])
+
 def delete_file(filename):
     if os.path.exists(filename):
         try:

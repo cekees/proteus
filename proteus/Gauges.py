@@ -158,10 +158,14 @@ class Gauges(AV_base):
                            end time for which the point gauge is
                            active.
         :param sampleRate: The intervals at which samples should be
-                           measured.  Note that this is a rough lower
-                           bound, and that the gauge values could be
-                           computed less frequently depending on the
-                           time integrator.  The default value of zero
+                           measured.  Samples are anchored to the grid
+                           t0 + k*sampleRate, where t0 is the first
+                           sample, and each is taken at the first time
+                           step at or after its grid time, so the mean
+                           interval is sampleRate but individual
+                           intervals can be up to one time step longer.
+                           A sampleRate below the time step samples
+                           every step.  The default value of zero
                            computes the gauge values at every time
                            step.
         :param fileName: The name of the file to serialize results to.
@@ -185,6 +189,8 @@ class Gauges(AV_base):
         self.files = {}
         self.outputWriterReady = False
         self.last_output = None
+        self.first_output = None
+        self.next_output = None
         self.pointGaugeMats = []
         self.field_ids = []
         self.dofsVecs = []
@@ -749,6 +755,32 @@ class Gauges(AV_base):
             # disable this for better performance, but risk of data loss on crashes
             self.file.flush()
         self.last_output = time
+        self.advanceSampleGrid(time)
+
+    def sampleDue(self, time):
+        """ Returns True if a sample should be written at the given time.
+
+        Samples are anchored to the grid first_output + k*sampleRate and
+        each is taken at the first step at or after its grid time, so the
+        mean sampling interval is sampleRate however it relates to the
+        time step.  Comparing against last_output + sampleRate instead
+        quantizes the interval to a multiple of the step and, through
+        roundoff in the sum, skips samples whose grid time equals a step.
+        """
+
+        if self.next_output is None:
+            return True
+        return time >= self.next_output - 1e-9 * max(self.sampleRate, abs(time))
+
+    def advanceSampleGrid(self, time):
+        """ Moves next_output to the first grid time after the sample taken at time"""
+
+        if self.first_output is None:
+            self.first_output = time
+        if self.sampleRate > 0:
+            k = np.floor((time - self.first_output) / self.sampleRate
+                         + 1e-9) + 1
+            self.next_output = self.first_output + k * self.sampleRate
 
     def calculate(self):
         """ Computes current gauge values, updates open output files
@@ -764,7 +796,7 @@ class Gauges(AV_base):
             return
 
         # check that gauge is ready to be sampled again
-        if self.last_output is not None and time < self.last_output + self.sampleRate:
+        if not self.sampleDue(time):
             return
 
         for m, dofsVec, gaugesVec in zip(self.pointGaugeMats, self.dofsVecs, self.pointGaugeVecs):
