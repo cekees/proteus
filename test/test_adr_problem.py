@@ -1070,6 +1070,34 @@ def test_advection_along_a_rank_interface_is_untouched(tmp_path):
 
 
 @pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("flux", [
+    "Advection_DiagonalUpwind",
+    "Advection_DiagonalUpwind_IIPG_exterior",
+    "Advection_DiagonalUpwind_Diffusion_IIPG_exterior",
+    "Advection_DiagonalUpwind_Diffusion_SIPG_exterior",
+    "Advection_DiagonalUpwind_Diffusion_NIPG_exterior"])
+@pytest.mark.parametrize("advonly", [0, 1])
+def test_weak_advective_flux_classes_agree_with_serial_across_a_rank_cut(flux, advonly, tmp_path):
+    """The CG weak-boundary upwind classes need no rank-interface mask.
+
+    Measured rather than assumed (C0, F1): with advection across the pinned
+    cut, an element partition with no overlap, these classes give the serial
+    answer to rounding, with diffusion and with pure advection (Dirichlet on
+    the inflow side only, free outflow, so the cut carries both inflow and
+    outflow faces). Their exterior advective flux is nonzero on the interface
+    faces, but the two ranks' terms there cancel in the assembled residual.
+    StrongDirichlet's NoBC kernel does not cancel, which is why it needed #76.
+    The test is here so that stays true.
+    """
+    kw = dict(FLUX=flux, ADVONLY=advonly or "")
+    serial = _adv_partition_run(1, tmp_path, **kw)
+    parallel = _adv_partition_run(2, tmp_path, **kw)
+    assert parallel["interfaces"] > 0, parallel
+    numpy.testing.assert_allclose(float(parallel["L2_u"]), float(serial["L2_u"]),
+                                  rtol=1e-8)
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
 @pytest.mark.parametrize("bdir", ["x", "y"])
 def test_dg_gives_the_serial_answer_on_several_ranks(bdir, tmp_path):
     """DG needs every face neighbour of an owned element on the rank.
