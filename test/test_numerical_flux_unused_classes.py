@@ -35,3 +35,15 @@ def test_unused_class_is_not_refused_on_one_rank(monkeypatch):
 def test_a_class_in_use_is_not_refused(monkeypatch):
     with pytest.raises(AttributeError):
         _build(NumericalFlux.StrongDirichlet, monkeypatch, 2)
+
+
+def test_the_mprans_ncls_flux_subclass_is_not_refused(monkeypatch):
+    """It subclasses HamiltonJacobi_DiagonalLesaintRaviart, which is refused, but by
+    exact name: NCLS computes its exterior flux in its own kernel and runs in parallel."""
+    from proteus.mprans import NCLS
+    assert issubclass(NCLS.NumericalFlux, NumericalFlux.HamiltonJacobi_DiagonalLesaintRaviart)
+    assert "NumericalFlux" not in NumericalFlux.UNUSED_FLUX_CLASSES_REFUSED_IN_PARALLEL
+    monkeypatch.setattr(Comm, "get", lambda: _Comm(2))
+    obj = NCLS.NumericalFlux.__new__(NCLS.NumericalFlux)
+    with pytest.raises(AttributeError):         # past the guard, then needed a model
+        NumericalFlux.NF_base.__init__(obj, None, None, None, None)
