@@ -14,6 +14,37 @@ from .EGeometry import enorm
 #  ? allow flux bc's to have type flags too?
 #
 #
+#: Flux classes that no model, test or document in this repository uses (checked
+#: 2026-10-25, boundary-condition pathways sweep). Nothing has run them on a
+#: partitioned mesh, and the exterior flux several of them apply to the faces
+#: between ranks is not known to be right there, so they refuse to be built on
+#: more than one rank. To be deleted in 2.0.
+UNUSED_FLUX_CLASSES_REFUSED_IN_PARALLEL = frozenset([
+    "Advection_DiagonalUpwind_Diffusion_LDG",
+    "Advection_DiagonalUpwind_exterior",
+    "Advection_Diagonal_average",
+    "ConstantAdvection_Diffusion_IIPG_exterior",
+    "ConstantAdvection_Diffusion_NIPG_exterior",
+    "ConvexOneSonicPointNumericalFlux",
+    "Curvature_exterior",
+    "DarcyFCFF_IIPG_exterior",
+    "DarcyFCPP_IIPG_exterior",
+    "DarcyFC_IIPG_exterior",
+    "DarcySplitPressure_IIPG_exterior",
+    "HamiltonJacobi_DiagonalChengShu",
+    "HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_IIPG",
+    "HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_SIPG_exterior",
+    "HamiltonJacobi_Pressure_DiagonalLesaintRaviart_Diffusion_SIPG_exterior",
+    "MixedDarcy_exterior",
+    "RusanovLDG",
+    "RusanovNumericalFlux_Diagonal",
+    "RusanovNumericalFlux_Diagonal_Diffusion_IIPG",
+    "StokesP_Advection_DiagonalUpwind_Diffusion_IIPG_exterior",
+    "Stokes_Advection_DiagonalUpwind_Diffusion_IIPG_exterior",
+    "Stress_SIPG_exterior",
+])
+
+
 class NF_base(object):
     useWeakDirichletConditions=True
     useStrongDirichletConstraints=False
@@ -56,6 +87,16 @@ class NF_base(object):
                  getPeriodicBoundaryConditions=None,
                  parallelPeriodic=False):
         import copy
+        name = type(self).__name__
+        if name in UNUSED_FLUX_CLASSES_REFUSED_IN_PARALLEL:
+            from . import Comm
+            comm = Comm.get()
+            if comm is not None and comm.size() > 1:
+                raise NotImplementedError(
+                    "%s has not been used or tested on a partitioned mesh (it is "
+                    "unused in this repository and is scheduled for removal in 2.0); "
+                    "run it on one rank, or use a flux class listed in the tests"
+                    % name)
         self.hasInterior=NF_base.hasInterior
         self.includeBoundaryAdjoint=False
         self.includeBoundaryAdjointInteriorOnly=False # tjp added

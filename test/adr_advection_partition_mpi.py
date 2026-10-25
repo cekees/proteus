@@ -9,6 +9,8 @@ only shows when the cut is across the flow:
     -div(a grad u) + div(b u) = r   on the unit square, u = x^2 + y^2, a = I,
     b = (1, 0) or (0, 1), Dirichlet all round so the solution is pinned.
 
+SPACE=DG runs the same problem in DG (with the partition ADRProblem picks).
+
 With ``b = (1, 0)`` and the contiguous-index partition that
 ``-mat_partitioning_type current`` gives, the cut runs along the flow, every
 interface face has ``b.n == 0``, and a spurious boundary flux there is zero
@@ -48,10 +50,13 @@ problem = {
     "exact": {"u": "x**2 + y**2"},
 }
 
-_, p, n, system = ADRProblem.setup(problem, {"u": ("CG", 1)}, cells, name="adr_adv_part")
-n.parallelPartitioningType = getattr(MeshTools.MeshParallelPartitioningTypes,
-                                     os.environ.get("PART_TYPE", "element"))
-n.nLayersOfOverlapForParallel = int(os.environ.get("NLAYERS", "0"))
+_, p, n, system = ADRProblem.setup(problem, {"u": (os.environ.get("SPACE", "CG"), 1)}, cells, name="adr_adv_part")
+# an empty PART_TYPE / NLAYERS leaves what ADRProblem.setup chose
+if os.environ.get("PART_TYPE", "element"):
+    n.parallelPartitioningType = getattr(MeshTools.MeshParallelPartitioningTypes,
+                                         os.environ.get("PART_TYPE", "element"))
+if os.environ.get("NLAYERS", "0"):
+    n.nLayersOfOverlapForParallel = int(os.environ.get("NLAYERS", "0"))
 so = defaults.System_base(name="adr_adv_part", pnList=[(p, n)], sList=[default_s])
 so.tnList = system["tnList"]
 ns = NumericalSolution.NS_base(so, [p], [n], so.sList, opts)

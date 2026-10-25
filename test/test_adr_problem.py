@@ -1069,6 +1069,24 @@ def test_advection_along_a_rank_interface_is_untouched(tmp_path):
                                   rtol=1e-8)
 
 
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("bdir", ["x", "y"])
+def test_dg_gives_the_serial_answer_on_several_ranks(bdir, tmp_path):
+    """DG needs every face neighbour of an owned element on the rank.
+
+    ADRProblem used to leave the default partition, node with one layer of
+    overlap, which does not provide that: the missing neighbours' faces were
+    assembled as domain boundary and 16x16 Poisson went from 1.0e-03 on one
+    rank to 1.3e-01 on two, with or without advection. The partition is left
+    as ADRProblem.setup chose it (empty PART_TYPE / NLAYERS).
+    """
+    kw = dict(SPACE="DG", PART_TYPE="", NLAYERS="", BDIR=bdir)
+    serial = _adv_partition_run(1, tmp_path, **kw)
+    parallel = _adv_partition_run(2, tmp_path, **kw)
+    numpy.testing.assert_allclose(float(parallel["L2_u"]), float(serial["L2_u"]),
+                                  rtol=1e-6)
+
+
 def test_parallel_periodic_is_chosen_by_rank_count_space_and_advection():
     problem = {"periodic": [{"component": "u"}],
                "adr": {"equations": [{"component": "u", "diffusion": {}}]}}

@@ -707,6 +707,15 @@ def numerics(problem, spaces, cells, time=None, quadrature_order=None,
         n.numericalFluxType = NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG_exterior \
             if all(f == "CG" for f, _ in spaces.values()) else \
             NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG
+        # A DG face term couples an element to its face neighbour, so every
+        # face neighbour of an owned element has to be on the rank. Node
+        # partitioning with one layer of overlap (the default) does not do
+        # that; the missing neighbours' faces are assembled as domain
+        # boundary and the answer depends on the rank count (1.0e-3 serial,
+        # 1.3e-1 on 2 ranks, 16x16 Poisson). An element partition with one
+        # layer does.
+        n.parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.element
+        n.nLayersOfOverlapForParallel = 1
     stabilization = check_stabilization(problem, stabilization)
     if stabilization == "supg/pspg":
         from proteus import SubgridError
