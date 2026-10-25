@@ -113,11 +113,16 @@ Results (`reports/adrh_kokkos_2026-10-24/` beside the campaign notes; nn = 31, n
 | ceds-model, Kokkos OpenMP, 96 threads (-march=native), nn = 61 | 5.7 / 8.0 | 8.3 / 10.4 | 31 / 34 | 52 / 64 |
 | ceds-model, one RTX 6000 Ada, nn = 61 | 8.8 / 10.8 | 8.3 / 10.3 | 41 / 53 | 158 / 200 |
 
-* **The port is the prototype.** The Kokkos element kernel reproduces the host kernel bit for bit on the CPU, for all four functors;
-  `adrh_kokkos` against `adrh_proto`: 16 of 18 arrays bitwise equal and the other two (the unmasked runtime-loop kernel, which the
-  Kokkos module aliases to the masked one) within 2.2e-16. Against Proteus: element residual and Jacobian 8.6e-16 and 6.0e-16
-  (`compare_with_python.py`); the advection-diffusion regression in 2D and 3D and in all seven boundary treatments agrees with the Proteus model
-  to 1.2e-14 or better, with the L2 rates of the host module (1.85 to 2.00).
+* **The port is the prototype.** The Kokkos element kernel reproduces the host `elementKernelMasked` bit for bit on the CPU, for all
+  four functors. `adrh_kokkos` against `adrh_proto` (`golden.py against adrh_kokkos`): 14 of 18 arrays bitwise equal, the other
+  four within 3.1e-16: the unmasked runtime-loop kernel, which the Kokkos module aliases to the masked one, and the 2-D
+  advection-diffusion arrays, which the host module now computes with the spaces kernel (`engine.h`) rather than the masked
+  P1 kernel. Against Proteus: element residual and Jacobian 8.6e-16 and 6.0e-16 (`compare_with_python.py`); the advection-diffusion
+  regression (`ADRH_MODULE=adrh_kokkos AD_SPACE=p1 python ad_regression.py`) in 2D and 3D and all seven boundary treatments agrees with the
+  Proteus model to 1.2e-14 or better, with the L2 rates of the host module (1.85 to 2.00).
+* **Scope.** The Kokkos port is of the P1 simplex kernel (`masked.h`). The Lagrange-space kernel (`engine.h`, P2 and Q1,
+  isoparametric geometry at every point) and the transient driver are not ported; the module raises `NotImplementedError` for
+  `AD_SPACE=p2|q1`. Its per-element body would be extracted the same way (`elementMaskedOne` is the template).
 * **Colored assembly is the same bits at every thread count**: 1, 4, 12, 16 on the Mac; 1, 24, 96 on ceds-model; repeated GPU runs
   and both GPUs. It matches a serial scatter to 7e-16 (summation order).
 * **Scaling is near-linear in cores** for the element kernel: 11 to 11.6x at 12 threads (the M4 Max has 12 performance cores;
