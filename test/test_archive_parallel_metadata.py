@@ -17,6 +17,7 @@ Run directly (``pytest``) they cover the serial path; the MPI cases
 re-invoke themselves through ``mpiexec`` as subprocesses.
 """
 
+from proteus.Archiver import archive_collections
 import os
 import shutil
 import subprocess
@@ -220,7 +221,7 @@ def read_domain(datadir):
 
 def test_serial_per_rank_archive_is_written_as_ymf(tmp_path):
     domain = read_domain(run_ranks(tmp_path, 1, global_sync=False))
-    (collection,) = domain["time_collections"]
+    (collection,) = archive_collections(domain)
     assert collection["name"] == "Mesh Spatial_Domain"
     assert len(collection["data"]) == 2
     assert [s["time"] for s in collection["data"]] == [0.0, 0.5]
@@ -228,7 +229,7 @@ def test_serial_per_rank_archive_is_written_as_ymf(tmp_path):
 
 def test_serial_global_sync_archive_has_uniform_steps(tmp_path):
     domain = read_domain(run_ranks(tmp_path, 1, global_sync=True))
-    (collection,) = domain["time_collections"]
+    (collection,) = archive_collections(domain)
     for step in collection["data"]:
         assert "spatial_collection" not in step
         assert step["topology"]["type"] == "Triangle"
@@ -304,7 +305,7 @@ def test_a_future_version_marker_is_refused(tmp_path):
 @pytest.mark.parametrize("n_ranks", [2, 3])
 def test_every_rank_contributes_a_grid_to_each_step(tmp_path, n_ranks):
     domain = read_domain(run_ranks(tmp_path, n_ranks, global_sync=False))
-    (collection,) = domain["time_collections"]
+    (collection,) = archive_collections(domain)
     assert len(collection["data"]) == 2
     for step in collection["data"]:
         subs = step["spatial_collection"]
@@ -324,7 +325,7 @@ def test_differently_sized_ranks_are_not_truncated(tmp_path, n_ranks):
     others and their topology counts would come back wrong or unparseable.
     """
     domain = read_domain(run_ranks(tmp_path, n_ranks, global_sync=False))
-    (collection,) = domain["time_collections"]
+    (collection,) = archive_collections(domain)
     for step in collection["data"]:
         counts = [g["topology"]["number_of_elements"]
                   for g in step["spatial_collection"]]
@@ -380,7 +381,7 @@ def test_global_sync_hides_the_decomposition(tmp_path, n_ranks):
     grids -- carrying the global counts.
     """
     domain = read_domain(run_ranks(tmp_path, n_ranks, global_sync=True))
-    (collection,) = domain["time_collections"]
+    (collection,) = archive_collections(domain)
     expected_nodes = sum(6 + r for r in range(n_ranks))
     expected_elements = sum(4 + r for r in range(n_ranks))
     for step in collection["data"]:
@@ -565,7 +566,7 @@ def test_the_domain_can_be_read_from_the_h5_alone(tmp_path, global_sync):
     datadir = run_ranks(tmp_path, 1, global_sync=global_sync)
     os.remove(os.path.join(datadir, "mpitest.ymf"))
     domain = readArchiveDomain("mpitest", dataDir=datadir)
-    (collection,) = domain["time_collections"]
+    (collection,) = archive_collections(domain)
     assert len(collection["data"]) == 2
     # the recorded layout decides the shape, not a caller's guess
     has_spatial = "spatial_collection" in collection["data"][0]
@@ -592,7 +593,7 @@ def test_gather_times_rebuilds_both_sidecars_from_the_h5(tmp_path):
     from ymf.archive import read_ymf
 
     domain, _ = read_ymf(os.path.join(datadir, "mpitest_complete.ymf"))
-    assert len(domain["time_collections"][0]["data"]) == 2
+    assert len(archive_collections(domain)[0]["data"]) == 2
     from xml.etree.ElementTree import parse
 
     root = parse(os.path.join(datadir, "mpitest_complete.xmf")).getroot()
@@ -607,7 +608,7 @@ def test_gather_times_can_truncate_while_rebuilding(tmp_path):
     from ymf.archive import read_ymf
 
     domain, _ = read_ymf(os.path.join(datadir, "mpitest_complete.ymf"))
-    assert len(domain["time_collections"][0]["data"]) == 1
+    assert len(archive_collections(domain)[0]["data"]) == 1
 
 
 def test_gather_times_needs_no_xmf_to_seed_from(tmp_path):
@@ -659,7 +660,7 @@ def test_a_hot_start_continues_the_archive_from_the_h5_alone(tmp_path,
     """
     datadir = run_ranks(tmp_path, 1, global_sync=global_sync)
     run_ranks(tmp_path, 1, global_sync=global_sync, hot_start=True)
-    (collection,) = read_domain(datadir)["time_collections"]
+    (collection,) = archive_collections(read_domain(datadir))
     assert [step["time"] for step in collection["data"]] == [0.0, 0.5, 1.0]
     assert sorted(os.listdir(datadir)) == ["mpitest.h5", "mpitest.ymf"]
 
@@ -668,7 +669,7 @@ def test_a_hot_start_continues_the_archive_from_the_h5_alone(tmp_path,
 def test_a_parallel_hot_start_continues_the_archive(tmp_path):
     datadir = run_ranks(tmp_path, 2, global_sync=False)
     run_ranks(tmp_path, 2, global_sync=False, hot_start=True)
-    (collection,) = read_domain(datadir)["time_collections"]
+    (collection,) = archive_collections(read_domain(datadir))
     assert [step["time"] for step in collection["data"]] == [0.0, 0.5, 1.0]
 
 
@@ -687,7 +688,7 @@ def test_an_interrupted_run_still_leaves_a_readable_document(tmp_path):
     document is already there and already correct.
     """
     datadir = run_ranks(tmp_path, 1, global_sync=False, skip_close=True)
-    (collection,) = read_domain(datadir)["time_collections"]
+    (collection,) = archive_collections(read_domain(datadir))
     assert [s["time"] for s in collection["data"]] == [0.0, 0.5]
 
 
@@ -732,7 +733,7 @@ def test_the_running_document_agrees_for_both_layouts(tmp_path, global_sync):
 def test_the_running_document_holds_every_ranks_grid(tmp_path, n_ranks):
     """Only master writes it, but it must describe the whole decomposition."""
     datadir = run_ranks(tmp_path, n_ranks, global_sync=False, skip_close=True)
-    (collection,) = read_domain(datadir)["time_collections"]
+    (collection,) = archive_collections(read_domain(datadir))
     assert len(collection["data"]) == 2
     for step in collection["data"]:
         subs = step["spatial_collection"]
@@ -918,7 +919,7 @@ def test_ymf_only_is_one_self_contained_file(tmp_path, n_ranks, global_sync):
     datadir = run_ranks(tmp_path, n_ranks, global_sync, mode="ymf-only", name="inline")
     assert sorted(os.listdir(datadir)) == ["mpitest.ymf"]
     domain, extra = read_ymf(os.path.join(datadir, "mpitest.ymf"))
-    (collection,) = domain["time_collections"]
+    (collection,) = archive_collections(domain)
     assert len(collection["data"]) == 2
     seen = 0
     for step in collection["data"]:
@@ -947,5 +948,5 @@ def test_ymf_only_streams_its_steps_too(tmp_path):
 
     datadir = run_ranks(tmp_path, 1, global_sync=True, mode="ymf-only", skip_close=True)
     domain, _ = read_ymf(os.path.join(datadir, "mpitest.ymf"))
-    assert len(domain["time_collections"][0]["data"]) == 2
-    assert "values" in domain["time_collections"][0]["data"][1]["geometry"]["data_item"]
+    assert len(archive_collections(domain)[0]["data"]) == 2
+    assert "values" in archive_collections(domain)[0]["data"][1]["geometry"]["data_item"]

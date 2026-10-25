@@ -24,6 +24,7 @@ These tests are cheap and shallow on purpose. The point is that each call
 path executes at all.
 """
 
+from proteus.Archiver import archive_collections
 import os
 import sys
 
@@ -291,7 +292,7 @@ def test_clearh5_truncates_every_collection(tmp_path, monkeypatch, clearh5_modul
     from ymf.archive import read_ymf
 
     domain, _ = read_ymf("run_clean.ymf")
-    assert [(c["name"], len(c["data"])) for c in domain["time_collections"]] == [
+    assert [(c["name"], len(c["data"])) for c in archive_collections(domain)] == [
         ("Mesh Spatial_Domain", 3), ("Mesh_c0p2_Lagrange", 3)]
 
 
@@ -319,7 +320,7 @@ def test_clearh5_leaves_no_dangling_reference(tmp_path, monkeypatch,
 
     domain, _ = read_ymf("run_clean.ymf")
     with h5py.File("run_clean.h5", "r") as f:
-        for collection in domain["time_collections"]:
+        for collection in archive_collections(domain):
             for step in collection["data"]:
                 for grid in step.get("spatial_collection", [step]):
                     nodes = [grid["topology"], grid["geometry"]]
