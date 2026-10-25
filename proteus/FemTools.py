@@ -7145,7 +7145,8 @@ class BatchedBC(object):
     def __call__(self,x,t):
         return self.batched(numpy.reshape(x,(1,3)),t)[0]
 batchedBC = BatchedBC
-def _zeroAdvectiveFlux(x,t):
+def _zeroAdvectiveFlux(x,t,n=None):
+    # RANS2P calls its advective flux conditions as g(x,t,n)
     return 0.0
 class FluxBoundaryConditions(object):
     """Generating class for the fluxBoundaryConditions dictionaries.

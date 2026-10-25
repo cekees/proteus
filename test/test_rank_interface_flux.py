@@ -16,7 +16,9 @@ import sys
 import numpy
 import pytest
 
-HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vof_partition_mpi.py")
+HERE = os.path.dirname(os.path.abspath(__file__))
+HELPER = os.path.join(HERE, "vof_partition_mpi.py")
+STEP_HELPER = os.path.join(HERE, "rans2p_step_partition_mpi.py")
 
 
 def _mpiexec():
@@ -31,7 +33,7 @@ def _mpiexec():
 MPIEXEC = _mpiexec()
 
 
-def _run(ranks, cwd, **overrides):
+def _run(ranks, cwd, helper=None, **overrides):
     """One run of vof_partition_mpi.py, with the partition pinned.
 
     -mat_partitioning_type current keeps the contiguous initial partition, the
@@ -47,8 +49,9 @@ def _run(ranks, cwd, **overrides):
     env["PYTHONPATH"] = os.pathsep.join(
         [p for p in sys.path if p] + [env.get("PYTHONPATH", "")]).strip(os.pathsep)
     env.update({k: str(v) for k, v in overrides.items()})
-    argv = [sys.executable, HELPER] if ranks == 1 else \
-        [MPIEXEC, "-n", str(ranks), sys.executable, HELPER]
+    helper = helper or HELPER
+    argv = [sys.executable, helper] if ranks == 1 else \
+        [MPIEXEC, "-n", str(ranks), sys.executable, helper]
     out = subprocess.run(argv, capture_output=True, text=True, timeout=900, env=env,
                          cwd=str(cwd))
     assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
@@ -61,19 +64,37 @@ def _run(ranks, cwd, **overrides):
 
 
 @pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
-def test_vof_on_an_element_partition_without_overlap_gives_the_serial_answer(tmp_path):
+@pytest.mark.parametrize("model", ["VOF", "VOF3P"])
+def test_vof_on_an_element_partition_without_overlap_gives_the_serial_answer(model, tmp_path):
     """Mass used to leave through the cut: 2.9e-02 on two ranks against 4.5e-02 on one."""
-    serial = _run(1, tmp_path)
+    serial = _run(1, tmp_path, MODEL=model)
     assert serial["interfaces"] == 0
-    parallel = _run(2, tmp_path)
+    parallel = _run(2, tmp_path, MODEL=model)
     assert parallel["interfaces"] > 0, parallel
     numpy.testing.assert_allclose(parallel["mass"], serial["mass"], rtol=1e-8)
     numpy.testing.assert_allclose(parallel["l2"], serial["l2"], rtol=1e-8)
 
 
 @pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
-def test_vof_with_one_layer_of_overlap_is_unchanged(tmp_path):
+@pytest.mark.parametrize("model", ["VOF", "VOF3P"])
+def test_vof_with_one_layer_of_overlap_is_unchanged(model, tmp_path):
     """The control: with overlap the cut faces are ghost-layer faces and already harmless."""
-    serial = _run(1, tmp_path)
-    parallel = _run(2, tmp_path, NLAYERS=1)
+    serial = _run(1, tmp_path, MODEL=model)
+    parallel = _run(2, tmp_path, MODEL=model, NLAYERS=1)
     numpy.testing.assert_allclose(parallel["mass"], serial["mass"], rtol=1e-8)
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+def test_rans2p_step_on_an_element_partition_without_overlap_gives_the_serial_answer(tmp_path):
+    """RANS2P skips faces with material type below 1 in its own exterior loop, so the
+    faces between ranks never reach its open-boundary branch. Not a given for the other
+    kernels (VOF has no such guard); this keeps the guard honest."""
+    pytest.importorskip("petsc4py")
+    from petsc4py import PETSc
+    if not PETSc.Sys.hasExternalPackage("superlu_dist"):
+        pytest.skip("needs superlu_dist")
+    serial = _run(1, tmp_path, helper=STEP_HELPER)
+    parallel = _run(2, tmp_path, helper=STEP_HELPER)
+    assert parallel["interfaces"] > 0, parallel
+    for key in ("p2", "ps", "u2", "us", "v2", "vs"):
+        numpy.testing.assert_allclose(parallel[key], serial[key], rtol=1e-6, atol=1e-10, err_msg=key)

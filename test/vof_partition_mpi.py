@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""A VOF blob advected across a rank cut; prints its mass and L2 norm.
+"""A VOF (or, MODEL=VOF3P, VOF3P) blob advected across a rank cut; prints its mass and L2 norm.
 
 Run by ``test_rank_interface_flux.py`` under ``mpiexec`` to compare a partitioned
 run against a serial one. mprans VOF is a C++ kernel with its own exterior loop,
@@ -26,7 +26,8 @@ from proteus import (Domain, MeshTools, NumericalSolution, StepControl, TimeInte
                      default_s, default_so, defaults)
 from proteus.FemTools import C0_AffineLinearOnSimplexWithNodalBasis
 from proteus.iproteus import opts
-from proteus.mprans import VOF
+import importlib
+VOF = importlib.import_module("proteus.mprans." + os.environ.get("MODEL", "VOF"))
 from proteus.NonlinearSolvers import Newton
 from proteus.LinearAlgebraTools import SparseMatrix
 from proteus.LinearSolvers import KSP_petsc4py
