@@ -15,7 +15,8 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import adrh_proto
+import importlib
+adrh_proto = importlib.import_module(os.environ.get("ADRH_MODULE", "adrh_proto"))   # or adrh_kokkos
 
 from proteus import Comm
 Comm.init()

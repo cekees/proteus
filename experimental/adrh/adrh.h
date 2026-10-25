@@ -7,6 +7,7 @@
 #pragma once
 #include <cmath>
 #include <cstring>
+#include "portable.h"
 
 namespace adrh
 {
@@ -20,19 +21,23 @@ namespace adrh
     double a[nc][nc][nS][nS], da[nc][nc][nc][nS][nS];   // a^{ik}, d a^{ik}/du_j
     double H[nc], dH[nc][nc][nS];                       // Hamiltonian, d/d(grad u_j)
     double r[nc], dr[nc][nc];                           // reaction, d/du_j
-    void zero() { std::memset(this, 0, sizeof(*this)); }
+    ADRH_FN void zero()
+    {
+      double *p = reinterpret_cast<double *>(this);   // all members are doubles
+      for (unsigned k = 0; k < sizeof(*this) / sizeof(double); ++k) p[k] = 0.0;
+    }
   };
 
   // Geometry of an affine P1 simplex: physical gradients of the basis (constant on the element) and |det J|.
   template <int nS>
-  inline void affineP1(const double *X, double gw[nS + 1][nS], double &adet)
+  ADRH_FN void affineP1(const double *X, double gw[nS + 1][nS], double &adet)
   {
     constexpr int nD = nS + 1;
     double Jm[nS][nS], Ji[nS][nS], det = 0.0;
     for (int I = 0; I < nS; ++I)
       for (int K = 0; K < nS; ++K)
         Jm[I][K] = X[(K + 1) * 3 + I] - X[0 * 3 + I];
-    if (nS == 2)
+    if constexpr (nS == 2)
     {
       det = Jm[0][0] * Jm[1][1] - Jm[0][1] * Jm[1][0];
       Ji[0][0] = Jm[1][1] / det; Ji[0][1] = -Jm[0][1] / det;
