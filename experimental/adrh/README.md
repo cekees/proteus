@@ -149,3 +149,53 @@ nvcc_wrapper -O3 -std=c++20 -arch=sm_89 -fopenmp --extended-lambda --expt-relaxe
 with Kokkos built from source for the card (`-DKokkos_ENABLE_CUDA=ON -DKokkos_ENABLE_CUDA_LAMBDA=ON -DKokkos_ARCH_ADA89=ON`,
 17 seconds): conda-forge's CUDA builds of Kokkos have no sm86 or sm89. The headers compile unchanged under nvcc 13.4; no
 device-specific code was added.
+
+## Stage-1 device assembly, measured end to end (`ad_solve_device.py`)
+
+Roster C19 decision (6): assemble on the device and solve on the host, and see what the copies cost. `adrh_kokkos.AdSineAssembler3D`
+holds a tetrahedral mesh in the Kokkos execution space (coloring and block-CSR pattern built once on the host) and returns the
+global residual and the CSR Jacobian of the 3-D steady advection-diffusion problem, timing the host-to-device copy of the nodal
+vector, the assembly (best of 5) and the device-to-host copy. `ad_solve_device.py` imposes the Dirichlet rows on the host and solves
+with PETSc (GMRES, GAMG, rtol 1e-10, one rank), against the manufactured solution of `ad_regression.py`. `--check` compares the
+device system with the host engine's element kernel and a numpy scatter (residual 2.6e-16, Jacobian 5.6e-16 at nn=9, 3.7e-16 at nn=17); the maximum
+error against the exact solution reproduces the regression's (6.240e-02 at nn=9, 1.575e-02 at nn=17) and is the same on the CPU and the GPU.
+
+`ceds-model`, seconds, 3-D cube split into Kuhn tetrahedra, one PETSc rank for the host side. The first three rows ran with the machine
+quiet (load about 2); the GPU row was repeated with one host thread (`KOKKOS_NUM_THREADS=1`) at load 25 (see below). `host` is Dirichlet rows, PETSc matrix
+creation, GAMG setup and solve.
+
+| tets | assembly on | assemble | copies | host | total | vs 1 thread |
+|---|---|---|---|---|---|---|
+| 1.3 M | 1 thread | 0.792 | 0.001 | 0.876 | 1.669 | 1.00x |
+| | 12 threads | 0.064 | 0.000 | 0.944 | 1.008 | 1.66x |
+| | 96 threads | 0.016 | 0.000 | 0.995 | 1.011 | 1.65x |
+| | one RTX 6000 Ada | 0.014 | 0.002 | 0.904 | 0.919 | 1.82x |
+| 6.0 M | 1 thread | 3.865 | 0.007 | 4.770 | 8.642 | 1.00x |
+| | 12 threads | 0.505 | 0.002 | 4.959 | 5.465 | 1.58x |
+| | 96 threads | 0.085 | 0.001 | 5.125 | 5.211 | 1.66x |
+| | one RTX 6000 Ada | 0.053 | 0.006 | 4.852 | 4.911 | 1.76x |
+
+* **The copies are not the cost.** The 15.2 M-entry matrix and the residual come back in 5.4 ms (about 23 GB/s); sending the nodal vector takes 0.4 ms.
+  On the device side they are 10% of the time, and about 0.1% of the total.
+* **The ceiling is the host side, as the baseline predicted.** Assembly is 45% of a one-thread solve at 6 M tets (the baseline's 19 to 51%). Taking it to zero bounds the speedup at
+  8.64 / 4.77 = 1.81x; the GPU reaches 1.76x and 96 CPU threads 1.66x. **Device assembly with a host solve is not better than 96 threads of
+  Kokkos assembly by more than 6%**, although the GPU is 1.6x faster on assembly alone (0.053 + 0.006 against 0.085 s). On this card (weak double precision) the GPU is not
+  where the gain is; a data-center GPU would assemble faster but cannot move the ceiling.
+* **What dominates afterwards is host work that is not the solver's arithmetic**: GAMG setup (2.7 s) and solve (2.0 s), and 0.17 s of Dirichlet rows plus
+  copying the CSR into PETSc, which is 30 times the device transfer. Wrapping the arrays without a copy, and imposing the rows on the device, are cheap wins but
+  worth 2% of the total.
+* **Verdict for decision (6): stage 1 is not worth building as a product.** It is a measurement that bounds the gain at 1.8x and ties a threaded CPU. The device
+  pays only when the matrix stays on the device: stage 2 (PETSc CUDA vectors and matrices, `MatSetValuesCOO` fed with the device values, a device
+  preconditioner), which needs a CUDA PETSc.
+* **Caveat, and it matters for a node.** This is one rank. A node with 96 cores and 2 GPUs running a rank per GPU leaves 94 cores idle for the solve; the CPU path
+  uses all 96 for both. Stage 1 therefore compares against the threaded assembly only when the solve is also threaded or the host has cores to spare per GPU.
+
+**A trap in the Python module with a device build.** Kokkos initializes its OpenMP host space with every hardware thread by default, next to CUDA. Those idle threads
+slowed the single-core PETSc solve on the same machine by 45% (2.63 s against 1.83 s at 6 M tets, 0.54 against 0.31 s at 1.3 M): `KOKKOS_NUM_THREADS=1` restores it (0.315 s).
+A threaded CPU build also slowed the host solve by 6 to 20% (0.349 and 0.374 s against 0.309 s at 1.3 M tets) while its pool of threads stayed active;
+`OMP_WAIT_POLICY=passive` trimmed that to 0.349 s at load 25. Set both in any run that mixes a threaded Kokkos phase with a serial host phase.
+
+Building the Python module for CUDA needs Kokkos as shared libraries (`-DBUILD_SHARED_LIBS=ON`; the static install cannot be linked into an extension) and the same
+nvcc flags as the benchmark plus `-shared -Xcompiler -fPIC` with pybind11's and Python's include paths; at run time `libcudart` must be on `LD_LIBRARY_PATH`.
+Raw results: `reports/adrh_kokkos_solve_2026-10-25/` beside the campaign notes.
+
