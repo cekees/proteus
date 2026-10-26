@@ -271,6 +271,16 @@ class Gauges(AV_base):
         containing a location is not always in the star of the nearest
         node (or of its neighbors) on graded or skewed meshes.
 
+        .. figure:: /_generated/point_location_rings.svg
+           :width: 100%
+
+           The first three layers of the search on a 2D mesh.  Red
+           nodes have their elements searched in that layer (black
+           edges); their new neighbors (black dots) are the red nodes of
+           the next layer, and grey edges were searched already.  The
+           search stops at the first element containing the location,
+           and gives up after maxRings further layers.
+
         Returns None if location is not on any elements owned by this
         process
 
