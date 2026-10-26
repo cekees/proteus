@@ -75,3 +75,127 @@ values at t_1 (`NumericalSolution.calculateSolution`: `initialize_dt_model`, the
 O(dt^2) and local to the boundary-adjacent rows; later steps are right. The engine's default keeps the true old state.
 
 Design, decisions and numbers: `ADRH_ENGINE_DESIGN.md` (kept beside the campaign notes, sections 11-18).
+
+## Kokkos port (threads and devices)
+
+Decision (cekees, 2026-10-24): the generated kernels get on-node threads and devices in 2.0.0, in Kokkos, with element
+coloring for the assembly's scatter (`ADRH_ENGINE_DESIGN.md` section 19, roster C19).
+
+* `portable.h` – `ADRH_FN` is `KOKKOS_INLINE_FUNCTION` when `ADRH_USE_KOKKOS` is defined and `inline` otherwise, so the
+  headers are the host prototype's and the device kernel's, one source. Nothing else in the kernel changed.
+* `masked.h` – the body of the element loop is now `elementMaskedOne` (one element: coordinates and DOF values in, R and J
+  out); `elementKernelMasked` is the loop over it. **It and the compile-time loop helpers are `always_inline`**: left to the
+  compiler's heuristics, a helper (`constexpr_for` with its lambdas) stayed a real call whenever the kernel was reached through a member
+  function (a Kokkos functor), which pushes every array of the element into memory. The Poisson kernel ran 3.2 times
+  slower there (815 against 250 ns per element) than in a plain loop; Kokkos was not the cause. With the fix the host prototype itself is
+  faster: masked coupled system 3.4 to 1.3 microseconds per element, masked five-component chain 6.6 to 2.5, the same chain
+  with all-true masks 146 to 52 (`compare_masks.py`).
+* `kokkos_kernel.h` – `elementKernelKokkos` (one Kokkos iteration per element, R and J stored, the prototype's interface) and
+  the fused `assembleColored`: a greedy node-sharing coloring (`colorElements`, 30 colors on the cube's tetrahedra), a block-CSR
+  Jacobian pattern (`buildBlockCsr`), and one launch per color in which a thread computes its element and adds it to the global residual and
+  Jacobian. Elements of one color share no node, so there are no atomics and the sums happen in the same order every run.
+* `bench_kokkos.cpp` – the four functors on a structured tetrahedral mesh (`nn` nodes per edge; 31 is 162,000 tets): host prototype,
+  Kokkos element kernel, colored assembly, with the differences and a checksum of the assembled bits.
+* `module_kokkos.cpp` – `adrh_kokkos`, the host module's calling convention over the Kokkos kernel (masked kernel only), so the
+  existing checks run on it: `ADRH_MODULE=adrh_kokkos python compare_with_python.py | ad_regression.py`; `golden.py` compares
+  any two builds (`golden.py against adrh_kokkos`; `golden.py save|compare` brackets a change to the host kernel).
+* `build_kokkos.sh` – CPU build in a conda environment with `kokkos`; the CUDA recipe is in the design note.
+
+Results (`reports/adrh_kokkos_2026-10-24/` beside the campaign notes; nn = 31, ns per element, element kernel / colored assembly):
+
+| | Poisson | AD sine | coupled 2 | chain 5 |
+|---|---|---|---|---|
+| Mac M4 Max, host prototype, 1 thread | 238 | 277 | 1,322 | 2,408 |
+| Mac, Kokkos OpenMP, 1 thread | 230 / 251 | 273 / 291 | 1,313 / 1,448 | 2,404 / 2,863 |
+| Mac, Kokkos OpenMP, 12 threads | 21 / 35 | 24 / 37 | 118 / 136 | 213 / 272 |
+| ceds-model Zen 4, host prototype, 1 thread (g++ -O3) | 578 | 554 | 3,274 | 5,382 |
+| ceds-model, Kokkos OpenMP, 96 threads (g++ -O3) | 11 / 16 | 10 / 16 | 52 / 60 | 90 / 105 |
+| ceds-model, Kokkos OpenMP, 96 threads (-march=native), nn = 61 | 5.7 / 8.0 | 8.3 / 10.4 | 31 / 34 | 52 / 64 |
+| ceds-model, one RTX 6000 Ada, nn = 61 | 8.8 / 10.8 | 8.3 / 10.3 | 41 / 53 | 158 / 200 |
+
+* **The port is the prototype.** The Kokkos element kernel reproduces the host `elementKernelMasked` bit for bit on the CPU, for all
+  four functors. `adrh_kokkos` against `adrh_proto` (`golden.py against adrh_kokkos`): 14 of 18 arrays bitwise equal, the other
+  four within 3.1e-16: the unmasked runtime-loop kernel, which the Kokkos module aliases to the masked one, and the 2-D
+  advection-diffusion arrays, which the host module now computes with the spaces kernel (`engine.h`) rather than the masked
+  P1 kernel. Against Proteus: element residual and Jacobian 8.6e-16 and 6.0e-16 (`compare_with_python.py`); the advection-diffusion
+  regression (`ADRH_MODULE=adrh_kokkos AD_SPACE=p1 python ad_regression.py`) in 2D and 3D and all seven boundary treatments agrees with the
+  Proteus model to 1.2e-14 or better, with the L2 rates of the host module (1.85 to 2.00).
+* **Scope.** The Kokkos port is of the P1 simplex kernel (`masked.h`). The Lagrange-space kernel (`engine.h`, P2 and Q1,
+  isoparametric geometry at every point) and the transient driver are not ported; the module raises `NotImplementedError` for
+  `AD_SPACE=p2|q1`. Its per-element body would be extracted the same way (`elementMaskedOne` is the template).
+* **Colored assembly is the same bits at every thread count**: 1, 4, 12, 16 on the Mac; 1, 24, 96 on ceds-model; repeated GPU runs
+  and both GPUs. It matches a serial scatter to 7e-16 (summation order).
+* **Scaling is near-linear in cores** for the element kernel: 11 to 11.6x at 12 threads (the M4 Max has 12 performance cores;
+  16 threads, adding the efficiency cores, does not help), 52 to 63x at 96 threads on the Zen 4 node. The fused scatter costs
+  7 to 19% more on one thread and 14 to 66% more on 12 to 96 threads, most for the small kernels, where the 30 launches and the
+  scattered writes are a larger share.
+* **The GPU is not faster than the CPU node here.** One RTX 6000 Ada matches 96 Zen 4 cores on Poisson and the coupled system and is 3x
+  slower on the five-component chain (the per-thread arrays are large). That card's double precision rate is a small fraction of its
+  single precision rate (spec sheet, not measured here); it is a functional test platform for the device path, not a guide to a data-center GPU.
+* **Bitwise results across platforms depend on fused multiply-add.** With contraction on, the CPU native build, the CPU generic
+  build and the GPU give three different answers. With it off (`-ffp-contract=off`, `nvcc --fmad=false`) Apple arm64, x86-64 scalar and AVX2,
+  and the GPU give **identical bits for the Poisson and five-component chain kernels** (residual and Jacobian), and identical Jacobians for
+  all four. The residuals of the two kernels that call `sin` differ in the last bit between the C libraries and CUDA's. So
+  `ymf_run --check`-style reproducibility needs the generated kernels built with contraction off, and either no transcendental functions
+  in the reproducible path or one implementation of them.
+
+## Building the CUDA benchmark
+
+```
+nvcc_wrapper -O3 -std=c++20 -arch=sm_89 -fopenmp --extended-lambda --expt-relaxed-constexpr \
+  -I$KOKKOS/include bench_kokkos.cpp -o bench_kokkos_cuda -L$KOKKOS/lib -lkokkoscore -lkokkossimd -lhwloc -lcuda
+```
+
+with Kokkos built from source for the card (`-DKokkos_ENABLE_CUDA=ON -DKokkos_ENABLE_CUDA_LAMBDA=ON -DKokkos_ARCH_ADA89=ON`,
+17 seconds): conda-forge's CUDA builds of Kokkos have no sm86 or sm89. The headers compile unchanged under nvcc 13.4; no
+device-specific code was added.
+
+## Stage-1 device assembly, measured end to end (`ad_solve_device.py`)
+
+Roster C19 decision (6): assemble on the device and solve on the host, and see what the copies cost. `adrh_kokkos.AdSineAssembler3D`
+holds a tetrahedral mesh in the Kokkos execution space (coloring and block-CSR pattern built once on the host) and returns the
+global residual and the CSR Jacobian of the 3-D steady advection-diffusion problem, timing the host-to-device copy of the nodal
+vector, the assembly (best of 5) and the device-to-host copy. `ad_solve_device.py` imposes the Dirichlet rows on the host and solves
+with PETSc (GMRES, GAMG, rtol 1e-10, one rank), against the manufactured solution of `ad_regression.py`. `--check` compares the
+device system with the host engine's element kernel and a numpy scatter (residual 2.6e-16, Jacobian 5.6e-16 at nn=9, 3.7e-16 at nn=17); the maximum
+error against the exact solution reproduces the regression's (6.240e-02 at nn=9, 1.575e-02 at nn=17) and is the same on the CPU and the GPU.
+
+`ceds-model`, seconds, 3-D cube split into Kuhn tetrahedra, one PETSc rank for the host side. The first three rows ran with the machine
+quiet (load about 2); the GPU row was repeated with one host thread (`KOKKOS_NUM_THREADS=1`) at load 25 (see below). `host` is Dirichlet rows, PETSc matrix
+creation, GAMG setup and solve.
+
+| tets | assembly on | assemble | copies | host | total | vs 1 thread |
+|---|---|---|---|---|---|---|
+| 1.3 M | 1 thread | 0.792 | 0.001 | 0.876 | 1.669 | 1.00x |
+| | 12 threads | 0.064 | 0.000 | 0.944 | 1.008 | 1.66x |
+| | 96 threads | 0.016 | 0.000 | 0.995 | 1.011 | 1.65x |
+| | one RTX 6000 Ada | 0.014 | 0.002 | 0.904 | 0.919 | 1.82x |
+| 6.0 M | 1 thread | 3.865 | 0.007 | 4.770 | 8.642 | 1.00x |
+| | 12 threads | 0.505 | 0.002 | 4.959 | 5.465 | 1.58x |
+| | 96 threads | 0.085 | 0.001 | 5.125 | 5.211 | 1.66x |
+| | one RTX 6000 Ada | 0.053 | 0.006 | 4.852 | 4.911 | 1.76x |
+
+* **The copies are not the cost.** The 15.2 M-entry matrix and the residual come back in 5.4 ms (about 23 GB/s); sending the nodal vector takes 0.4 ms.
+  On the device side they are 10% of the time, and about 0.1% of the total.
+* **The ceiling is the host side, as the baseline predicted.** Assembly is 45% of a one-thread solve at 6 M tets (the baseline's 19 to 51%). Taking it to zero bounds the speedup at
+  8.64 / 4.77 = 1.81x; the GPU reaches 1.76x and 96 CPU threads 1.66x. **Device assembly with a host solve is not better than 96 threads of
+  Kokkos assembly by more than 6%**, although the GPU is 1.4x faster on assembly alone (0.053 + 0.006 against 0.085 s). On this card (weak double precision) the GPU is not
+  where the gain is; a data-center GPU would assemble faster but cannot move the ceiling.
+* **What dominates afterwards is host work that is not the solver's arithmetic**: GAMG setup (2.7 s) and solve (2.0 s), and 0.17 s of Dirichlet rows plus
+  copying the CSR into PETSc, which is 30 times the device transfer. Wrapping the arrays without a copy, and imposing the rows on the device, are cheap wins but
+  worth 3.5% of the total.
+* **Verdict for decision (6): stage 1 is not worth building as a product.** It is a measurement that bounds the gain at 1.8x and ties a threaded CPU. The device
+  pays only when the matrix stays on the device: stage 2 (PETSc CUDA vectors and matrices, `MatSetValuesCOO` fed with the device values, a device
+  preconditioner), which needs a CUDA PETSc.
+* **Caveat, and it matters for a node.** This is one rank. A node with 96 cores and 2 GPUs running a rank per GPU leaves 94 cores idle for the solve; the CPU path
+  uses all 96 for both. Stage 1 therefore compares against the threaded assembly only when the solve is also threaded or the host has cores to spare per GPU.
+
+**A trap in the Python module with a device build.** Kokkos initializes its OpenMP host space with every hardware thread by default, next to CUDA. Those idle threads
+slowed the single-core PETSc solve on the same machine by 45% (2.63 s against 1.83 s at 6 M tets, 0.54 against 0.31 s at 1.3 M): `KOKKOS_NUM_THREADS=1` restores it (0.315 s).
+A threaded CPU build also slowed the host solve by 8 to 21% (0.349 and 0.374 s against 0.309 s at 1.3 M tets; 1.98 and 2.10 against 1.83 s at 6 M), so the 12- and 96-thread rows above carry that;
+`OMP_WAIT_POLICY=passive` trimmed the 96-thread solve from 0.370 to 0.349 s at 1.3 M tets (load 25). Set both in any run that mixes a threaded Kokkos phase with a serial host phase.
+
+Building the Python module for CUDA needs Kokkos as shared libraries (`-DBUILD_SHARED_LIBS=ON`; the static install cannot be linked into an extension) and the same
+nvcc flags as the benchmark plus `-shared -Xcompiler -fPIC` with pybind11's and Python's include paths; at run time `libcudart` must be on `LD_LIBRARY_PATH`.
+Raw results: `reports/adrh_kokkos_solve_2026-10-25/` beside the campaign notes.
+

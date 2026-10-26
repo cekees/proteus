@@ -2,6 +2,7 @@ from math import ceil, sqrt, pow
 import os
 import numpy as np
 import numpy.testing as npt
+import pytest
 
 from proteus import (Comm,
                      Domain,
@@ -290,6 +291,114 @@ def test_line_gauge_output():
     assert correct_gauge_names == gauge_names
     npt.assert_allclose(correct_data, data)
     delete_file(filename)
+
+
+# erdc#221: bad inputs must fail early with a message that names the problem
+
+def test_point_gauge_accepts_lists():
+    filename = 'test_gauge_lists.csv'
+    silent_rm(filename)
+    g = PointGauges(gauges=((['u0'], [[0, 0, 0], [1, 1, 1]]),),
+                    fileName=filename)
+    run_gauge(g, [0.0, 1.0])
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    npt.assert_allclose(data, [[0., 0., 111.], [1., 0., 222.]])
+    delete_file(filename)
+
+def test_point_gauge_rejects_2d_point():
+    with pytest.raises(ValueError, match="3"):
+        PointGauges(gauges=((('u0',), ((0.5, 0.5),)),))
+
+def test_line_gauges_reject_2d_endpoints():
+    for cls in (LineGauges, LineIntegralGauges):
+        with pytest.raises(ValueError, match="3"):
+            cls(gauges=((('u0',), (((0, 0), (1, 1)),)),))
+
+def test_line_gauge_rejects_wrong_endpoint_count():
+    with pytest.raises(ValueError, match="endpoint"):
+        LineGauges(gauges=((('u0',), (((0, 0, 0), (1, 1, 1), (2, 2, 2)),)),))
+
+def test_line_gauge_rejects_zero_length_line():
+    with pytest.raises(ValueError, match="zero length"):
+        LineIntegralGauges(gauges=((('u0',), (((0, 0, 0), (0, 0, 0)),)),))
+
+def test_gauge_rejects_non_finite_location():
+    with pytest.raises(ValueError, match="finite"):
+        PointGauges(gauges=((('u0',), ((0, float('nan'), 0),)),))
+
+def test_gauge_bare_string_is_one_field():
+    # ('u0') is the string 'u0', which used to be iterated as the fields 'u' and '0'
+    g = PointGauges(gauges=((('u0'), ((0, 0, 0),)),))
+    assert list(g.fields) == ['u0']
+    with pytest.raises(ValueError, match="fields"):
+        PointGauges(gauges=((3, ((0, 0, 0),)),))
+
+def test_gauge_rejects_bad_sample_rate_and_active_time():
+    pts = ((('u0',), ((0, 0, 0),)),)
+    with pytest.raises(ValueError, match="sampleRate"):
+        PointGauges(gauges=pts, sampleRate=-1.0)
+    with pytest.raises(ValueError, match="activeTime"):
+        PointGauges(gauges=pts, activeTime=(2.0, 1.0))
+    with pytest.raises(ValueError, match="activeTime"):
+        PointGauges(gauges=pts, activeTime=(1.0,))
+
+def test_gauge_unknown_field_names_the_field():
+    g = PointGauges(gauges=((('nope',), ((0, 0, 0),)),))
+    with pytest.raises(ValueError, match="nope.*u0"):
+        run_gauge(g, [0.0])
+
+def count_gauge_rows(filename):
+    return len(parse_gauge_output_times(filename))
+
+def parse_gauge_output_times(filename):
+    with open(filename) as f:
+        f.readline()
+        return [float(line.split(',')[0]) for line in f if line.strip()]
+
+def sampled_times(sampleRate, time_list, activeTime=None, filename='test_gauge_sampling.csv'):
+    silent_rm(filename)
+    g = PointGauges(gauges=((('u0',), ((0.5, 0.5, 0.5),)),),
+                    sampleRate=sampleRate, activeTime=activeTime, fileName=filename)
+    run_gauge(g, time_list)
+    Comm.get().barrier()
+    times = parse_gauge_output_times(filename)
+    delete_file(filename)
+    return times
+
+def test_sample_rate_equal_to_step_is_not_dropped_by_roundoff():
+    # erdc#1276: with sampleRate == dt every step must be sampled; i*dt
+    # accumulates roundoff that made `time < last_output + sampleRate` skip
+    # roughly one step in ten
+    dt = 0.1
+    time_list = [i*dt for i in range(40)]
+    times = sampled_times(dt, time_list)
+    assert len(times) == len(time_list)
+    npt.assert_allclose(times, time_list)
+
+def test_sample_rate_is_anchored_to_a_grid():
+    # erdc#1276: sampling every ceil(sampleRate/dt) steps quantizes the
+    # effective rate (dt=0.03, sampleRate=0.1 gave 0.12), so asking for a
+    # higher rate had no effect until it crossed a multiple of dt.  The
+    # k-th sample must be the first step at or after t0 + k*sampleRate.
+    dt, rate = 0.03, 0.1
+    time_list = [i*dt for i in range(101)]
+    times = np.asarray(sampled_times(rate, time_list))
+    expected = [time_list[0]]
+    for k in range(1, 30):
+        due = k*rate
+        expected.append(next(t for t in time_list if t >= due - 1e-9))
+    npt.assert_allclose(times[:len(expected)], expected)
+    # mean interval matches the requested one to within a step, not 20% off
+    assert abs((times[-1] - times[0])/(len(times) - 1) - rate) < dt/10
+
+def test_sample_rate_larger_than_run_gives_single_sample():
+    times = sampled_times(10.0, [0.0, 1.0, 2.0])
+    assert times == [0.0]
+
+def test_sample_rate_respects_active_time():
+    times = sampled_times(0.5, [0.25*i for i in range(21)], activeTime=(1.0, 3.0))
+    npt.assert_allclose(times, [1.0, 1.5, 2.0, 2.5, 3.0])
 
 def delete_file(filename):
     if os.path.exists(filename):

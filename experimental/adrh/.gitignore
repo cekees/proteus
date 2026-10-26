@@ -3,3 +3,4 @@
 *.xmf
 *.log
 __pycache__/
+bench_kokkos_*
