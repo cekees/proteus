@@ -8,15 +8,20 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
+#include <chrono>
 #include <cstdlib>
+#include <memory>
 #include <string>
+#include <vector>
 #include <type_traits>
 
 #include "kokkos_kernel.h"
+#include "quad_tet4.h"
 
 namespace py = pybind11;
 using Arr = py::array_t<double, py::array::c_style | py::array::forcecast>;
 using Mem = Kokkos::DefaultExecutionSpace::memory_space;
+using IArr = py::array_t<int, py::array::c_style | py::array::forcecast>;
 using HostView = Kokkos::View<double *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 
 namespace
@@ -51,6 +56,88 @@ namespace
     return py::make_tuple(R, J);
   }
 
+
+  double now()
+  {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+
+  // Colored assembly of the 3-D steady advection-diffusion problem (AdvectionDiffusionSine) on a tetrahedral mesh held in
+  // the Kokkos execution space: the coloring and block-CSR pattern are built once on the host, the nodal coordinates and
+  // quadrature live on the device, and assemble() returns the global residual and the CSR values to the host, timing the
+  // host-to-device copy of the nodal vector, the assembly (best of `repeats`) and the device-to-host copy separately.
+  // close() releases the device memory; call it before the interpreter exits (Kokkos is finalized at exit).
+  class AdSineAssembler3D
+  {
+  public:
+    AdSineAssembler3D(Arr X, IArr conn, Arr qp, Arr qw)
+    {
+      nNodes_ = (int)X.shape(0);
+      nE_ = (int)conn.shape(0);
+      nQ_ = (int)qw.shape(0);
+      std::vector<int> c(conn.data(), conn.data() + conn.size());
+      const double t0 = now();
+      M_ = adrh::makeColoredMesh(nNodes_, nE_, 4, c, rowptr_, colidx_);
+      tSetup_ = now() - t0;
+      dX_ = up(X); dqp_ = up(qp); dqw_ = up(qw);
+      dU_ = adrh::DView<double>("U", nNodes_);
+      dUold_ = adrh::DView<double>("Uold", 0);
+      dRg_ = adrh::DView<double>("Rg", nNodes_);
+      dJv_ = adrh::DView<double>("Jv", colidx_.size());
+    }
+    py::dict assemble(Arr b, double kappa, Arr omega, double omega0, Arr U, int repeats)
+    {
+      adrh::AdvectionDiffusionSine<3> coef(b.data(), kappa, omega.data(), omega0);
+      py::array_t<double> R(nNodes_), Jv((py::ssize_t)colidx_.size());
+      double tH2D, tAsm = 1e30, tD2H;
+      {
+        py::gil_scoped_release release;
+        double t0 = now();
+        Kokkos::deep_copy(dU_, HostView(const_cast<double *>(U.data()), U.size()));
+        Kokkos::fence();
+        tH2D = now() - t0;
+        for (int r = 0; r < repeats; ++r)
+        {
+          t0 = now();
+          adrh::assembleColored<adrh::AdvectionDiffusionSine<3>, 3>(coef, M_, nQ_, dX_, dU_, dUold_, dqp_, dqw_, 0.0, 0.0,
+                                                                    dRg_, dJv_);
+          tAsm = std::min(tAsm, now() - t0);
+        }
+        t0 = now();
+        Kokkos::deep_copy(HostView(R.mutable_data(), R.size()), dRg_);
+        Kokkos::deep_copy(HostView(Jv.mutable_data(), Jv.size()), dJv_);
+        Kokkos::fence();
+        tD2H = now() - t0;
+      }
+      py::dict d;
+      d["R"] = R; d["values"] = Jv;
+      d["t_h2d"] = tH2D; d["t_assemble"] = tAsm; d["t_d2h"] = tD2H;
+      return d;
+    }
+    py::array_t<int> indptr() const { return toArr(rowptr_); }
+    py::array_t<int> indices() const { return toArr(colidx_); }
+    int nColors() const { return M_.nColors; }
+    double tSetup() const { return tSetup_; }
+    void close()
+    {
+      M_ = adrh::ColoredMesh();
+      dX_ = dqp_ = dqw_ = dU_ = dUold_ = dRg_ = dJv_ = adrh::DView<double>();
+    }
+
+  private:
+    static py::array_t<int> toArr(const std::vector<int> &v)
+    {
+      py::array_t<int> a((py::ssize_t)v.size());
+      std::copy(v.begin(), v.end(), a.mutable_data());
+      return a;
+    }
+    int nNodes_ = 0, nE_ = 0, nQ_ = 0;
+    double tSetup_ = 0.0;
+    adrh::ColoredMesh M_;
+    std::vector<int> rowptr_, colidx_;
+    adrh::DView<double> dX_, dqp_, dqw_, dU_, dUold_, dRg_, dJv_;
+  };
+
   void finalize()
   {
     if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
@@ -66,6 +153,24 @@ PYBIND11_MODULE(adrh_kokkos, m)
     Kokkos::initialize(settings);
     py::module_::import("atexit").attr("register")(py::cpp_function(&finalize));
   }
+  py::class_<AdSineAssembler3D>(m, "AdSineAssembler3D")
+      .def(py::init<Arr, IArr, Arr, Arr>(), py::arg("X"), py::arg("conn"), py::arg("qp"), py::arg("qw"))
+      .def("assemble", &AdSineAssembler3D::assemble, py::arg("b"), py::arg("kappa"), py::arg("omega"), py::arg("omega0"),
+           py::arg("U"), py::arg("repeats") = 3)
+      .def_property_readonly("indptr", &AdSineAssembler3D::indptr)
+      .def_property_readonly("indices", &AdSineAssembler3D::indices)
+      .def_property_readonly("n_colors", &AdSineAssembler3D::nColors)
+      .def_property_readonly("t_setup", &AdSineAssembler3D::tSetup)
+      .def("close", &AdSineAssembler3D::close);
+  m.def("quad_tet4", [] {
+    py::array_t<double> qp({adrh::quad_tet4::n, 3}), qw(adrh::quad_tet4::n);
+    for (int q = 0; q < adrh::quad_tet4::n; ++q)
+    {
+      qw.mutable_data()[q] = adrh::quad_tet4::weights[q];
+      for (int d = 0; d < 3; ++d) qp.mutable_data()[q * 3 + d] = adrh::quad_tet4::points[q][d];
+    }
+    return py::make_tuple(qp, qw);
+  });
   m.def("kokkos_info", [] {
     py::dict d;
     d["space"] = std::string(Kokkos::DefaultExecutionSpace::name());

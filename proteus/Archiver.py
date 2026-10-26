@@ -495,7 +495,7 @@ class AR_base(object):
         if domain is None:
             return []
         times = []
-        for collection in domain.get("time_collections", []):
+        for collection in archive_collections(domain):
             for step in collection["data"]:
                 times.append(step["time"])
             #every collection covers the same instants, so one is enough
@@ -1182,6 +1182,31 @@ class AR_base(object):
         return data_item([int(d) for d in dimensions],
                          data_type=kind["DataType"],
                          precision=int(kind["Precision"]), **reference)
+
+def archive_collections(domain):
+    """A domain's spaces as ``[{"name", "data": [step, ...]}]``, in either format.
+
+    ymf's archive format 1 holds one time collection per space
+    (``time_collections``); format 2 holds one list of instants with the
+    spaces inside each (``times``). Readers that think one space at a time
+    use this and work with a ymf of either kind. A format 1 domain is
+    returned as it is; a format 2 one is turned into the same shape, the
+    grids shared, not copied. Spaces come out in the order they first
+    appear.
+    """
+    if not domain:
+        return []
+    if "times" not in domain:
+        return domain.get("time_collections", [])
+    order, steps = [], {}
+    for instant in domain["times"]:
+        for name, space in instant["spaces"].items():
+            if name not in steps:
+                order.append(name)
+                steps[name] = []
+            steps[name].append(dict(space, time=instant["time"]))
+    return [{"name": name, "data": steps[name]} for name in order]
+
 
 def readArchiveDomain(filename, dataDir='.'):
     """The ymf domain of an existing archive, read from its HDF5 file.
