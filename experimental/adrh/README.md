@@ -225,7 +225,7 @@ use between runs), best of two runs of each layout (the two agree within 1 to 3%
 
 * **Threads do as well as ranks for the assembly and for nothing else.** Assembly time does not depend on the layout (0.054 s at 6 M tets from 96 x 1 to 4 x 24; the 1 x 96 layout is 20% slower), as in
   the assembly benchmark. Everything that follows it is one core per rank: the matrix exchange (building and inserting the COO arrays), the GAMG setup and the
-  solve. With `T` threads per rank the other `T - 1` cores idle through them, so the total grows with `T`. At the layouts in the table the assembly is 19% of the total at 96 x 1 and 1.2% at 4 x 24.
+  solve. With `T` threads per rank the other `T - 1` cores idle through them, so the total grows with `T`. At the layouts in the table the assembly is 19% of the total at 96 x 1, 3% at 4 x 24 and 1.2% at 1 x 96.
 * **For this solver stack the answer to decision (3) is a rank per core.** The cost of `T = 2` is 10 to 20%, of `T = 4` 39 to 58%, of `T = 8` about a factor 2. This is a statement about PETSc's MPI-only
   solvers and a serial matrix exchange. It would change with a threaded or device-resident solve, which is the case for stage 2, not for threads on a CPU node.
 * **Memory is not a reason, on this evidence.** Total resident memory falls from 13.9 GB (96 x 1) to 1.8 GB (1 x 96) at 6 M tets, but 7.8 GB of the 13.9 is the 81 MB each rank carries after importing
