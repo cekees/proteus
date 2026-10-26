@@ -156,3 +156,39 @@ def test_kappa_residual_on_two_ranks_is_the_serial_residual(tmp_path):
     assert max(abs(serial[k] - parallel[k]) for k in serial) < 1e-12
     control = _ncls_residual(2, tmp_path / "3", "same", helper=KAPPA_HELPER, NOZERO=1)
     assert max(abs(serial[k] - control[k]) for k in serial) > 1e-3
+
+
+RANS3PF_HELPER = os.path.join(HERE, "rans3pf_partition_mpi.py")
+
+
+def _rans3pf(ranks, cwd, **overrides):
+    env = dict(os.environ, OMP_NUM_THREADS="1", PART_TYPE="element", NLAYERS="0", NSTEPS="3",
+               PETSC_OPTIONS="-mat_partitioning_type current -rans2p_ksp_type preonly "
+                             "-rans2p_pc_type lu -rans2p_pc_factor_mat_solver_type mumps "
+                             "-phi_ksp_type gmres -phi_ksp_rtol 1e-14 -phi_ksp_atol 1e-14 "
+                             "-phi_pc_type jacobi -phi_ksp_max_it 5000 -pressure_ksp_type preonly "
+                             "-pressure_pc_type lu -pressure_pc_factor_mat_solver_type mumps")
+    env.setdefault("FI_PROVIDER", "tcp")
+    env.setdefault("OMPI_MCA_rmaps_base_oversubscribe", "1")
+    env.setdefault("PRTE_MCA_rmaps_default_mapping_policy", ":oversubscribe")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [p for p in sys.path if p] + [env.get("PYTHONPATH", "")]).strip(os.pathsep)
+    env.update({k: str(v) for k, v in overrides.items()})
+    argv = [sys.executable, RANS3PF_HELPER] if ranks == 1 else         [MPIEXEC, "-n", str(ranks), sys.executable, RANS3PF_HELPER]
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=1800, env=env, cwd=str(cwd))
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    line = [l for l in out.stdout.splitlines() if l.startswith("RESULT")][0]
+    return numpy.array([float(v) for v in line.split()[1:3]])
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+def test_rans3pf_projection_scheme_on_two_ranks_gives_the_serial_answer(tmp_path):
+    """Momentum flux on the rank cut: 2.4706e-03 on two ranks without the zero-flux entry,
+    2.4886e-03 with it and on one rank."""
+    for d in ("1", "2", "3"):
+        (tmp_path / d).mkdir()
+    serial = _rans3pf(1, tmp_path / "1")
+    parallel = _rans3pf(2, tmp_path / "2")
+    numpy.testing.assert_allclose(parallel, serial, rtol=1e-8)
+    control = _rans3pf(2, tmp_path / "3", NOZERO=1)
+    assert abs(control[0] - serial[0]) > 1e-3 * abs(serial[0])
