@@ -56,14 +56,26 @@ def _run(ranks, cwd, **overrides):
 
 
 @pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
-def test_duct_runs_on_two_ranks_and_matches_the_converged_serial_answer(tmp_path):
-    """The serial answer at the file's tolerance is not converged (u2 is 10% off the
-    tight one), so the reference is a serial run with a tight Newton tolerance; the
-    parallel run at the file's tolerance lands within 1e-3 of it."""
+@pytest.mark.parametrize("tight", [0, 1])
+def test_duct_on_two_ranks_matches_serial_at_the_same_newton_tolerance(tight, tmp_path):
+    """tight=0 is the file's Newton tolerance (1e-8), where neither run is converged: the
+    serial answer is 10% off the tight one, and the two ranks must stop where one does.
+    tight=1 is 1e-13, where both must reach the same converged answer.
+
+    Before the Newton fix the tight two-rank run did not: the first residual of each solve was
+    handed to the linear solver before the ranks' contributions at shared dofs were summed, so
+    every first step was off by 20-50%, the pressure came out as +-1e-10 noise where the serial
+    one is 1e-24, and the run ended after three steps. (The loose run only looked right: its
+    extra Newton iterations happened to land on the converged answer.)
+    """
     from petsc4py import PETSc
     if not PETSc.Sys.hasExternalPackage("superlu_dist"):
         pytest.skip("needs superlu_dist")
-    reference = _run(1, tmp_path, TIGHT=1)
-    parallel = _run(2, tmp_path)
-    numpy.testing.assert_allclose(parallel["u2"], reference["u2"], rtol=1e-3)
-    numpy.testing.assert_allclose(parallel["us"], reference["us"], rtol=1e-3)
+    kw = {"TIGHT": 1} if tight else {}
+    serial = _run(1, tmp_path, **kw)
+    parallel = _run(2, tmp_path, **kw)
+    rtol = 1e-5 if tight else 3e-2
+    numpy.testing.assert_allclose(parallel["u2"], serial["u2"], rtol=rtol)
+    numpy.testing.assert_allclose(parallel["us"], serial["us"], rtol=rtol)
+    # the pressure is ~1e-20 in the sum of squares; the broken run had 1e-12
+    assert parallel["p2"] < 1e-18, parallel
