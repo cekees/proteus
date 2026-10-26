@@ -321,7 +321,7 @@ boundary value.
   engine has no stabilization yet, so those are not compared. Faces through `bindElement` (a layered boundary element) are implemented but not exercised by a test.
 
 **Richards as a kernel benchmark** (`bench_kokkos.cpp`: unsaturated, backward Euler mass term, four materials in stripes by element number, so `bindElement` runs on every element of every backend with no data pointer): the van Genuchten-Mualem law
-calls `pow` and `sqrt` at every quadrature point, so it costs about three times the advection-diffusion kernel per element on one core (P1: 1,490 ns against 485 for `ad_sine`) and is the first benchmark where the GPU beats the 96-core node.
+calls `pow` and `sqrt` at every quadrature point, so it costs about three times the advection-diffusion kernel per element on one core (P1: 1,490 ns against 485 for `ad_sine`) and the GPU's element kernel is 1.2 times faster than the 96-core node on P1 and level with it on P2 (its colored assembly is behind the node at 162,000 elements and level at 1.3 M, where the launches fill the card).
 ns per element, element kernel / colored assembly, `ceds-model` (one machine, a few percent of the cores busy with another session's job during these runs):
 
 | kernel | M4, 12 threads | host, 1 core | 96 threads, nn = 31 | RTX 6000 Ada, nn = 31 | 96 threads, nn = 61 | RTX 6000 Ada, nn = 61 |
