@@ -14,6 +14,8 @@
 #include <Kokkos_Core.hpp>
 
 #include <chrono>
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -296,6 +298,117 @@ static void runCase(const char *name, const C &coef, const Tets &m, const std::v
               (unsigned long long)fnv(Rg), (unsigned long long)fnv(Jv));
 }
 
+
+// ---- exterior faces ---------------------------------------------------------------------------------------------
+
+// 3-point rule on the reference triangle (area 1/2) and 3 x 3 Gauss on [-1, 1]^2: the face quadratures of tetrahedra and hexahedra
+static void faceQuadrature(bool cube, std::vector<double> &qp, std::vector<double> &qw)
+{
+  if (!cube)
+  {
+    const double p[3][2] = {{1.0 / 6.0, 1.0 / 6.0}, {2.0 / 3.0, 1.0 / 6.0}, {1.0 / 6.0, 2.0 / 3.0}};
+    for (int q = 0; q < 3; ++q) { qp.push_back(p[q][0]); qp.push_back(p[q][1]); qw.push_back(1.0 / 6.0); }
+    return;
+  }
+  const double g[3] = {-std::sqrt(0.6), 0.0, std::sqrt(0.6)}, w[3] = {5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0};
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) { qp.push_back(g[i]); qp.push_back(g[j]); qw.push_back(w[i] * w[j]); }
+}
+
+// The sine problem's faces of one space on a mesh: the kernel per face against the host, and the colored scatter of the faces into
+// the global residual and block values against a serial scatter of the host results.
+template <class Space>
+static void runFaceCase(const char *name, const Tets &m, int repeats)
+{
+  using Co = AdvectionDiffusionSine<3>;
+  using BC = SineBC<3>;
+  constexpr int nD = Space::nDOF, nc = 1, nSv = Space::nFaceVertices;
+  const double b[3] = {1.0, 0.5, 0.25}, om[3] = {3.0, 2.0, 4.0};
+  const Co coef(b, 0.2, om, 0.3);
+  const WeakDirichletParams wd = WeakDirichletParams::SIPG();
+  std::vector<double> qpf, qwf;
+  faceQuadrature(Space::nVertices == 8, qpf, qwf);
+  const int nQf = (int)qwf.size();
+
+  // exterior faces: those that belong to one element only
+  std::map<std::array<int, 4>, int> count;
+  auto key = [&](int e, int k) {
+    std::array<int, 4> a = {-1, -1, -1, -1};
+    for (int v = 0; v < nSv; ++v) a[v] = m.conn[e * nD + Space::faceVertex(k, v)];
+    std::sort(a.begin(), a.begin() + nSv);
+    return a;
+  };
+  for (int e = 0; e < m.nE; ++e)
+    for (int k = 0; k < Space::nFaces; ++k) ++count[key(e, k)];
+  std::vector<int> faceElem, faceLocal;
+  for (int e = 0; e < m.nE; ++e)
+    for (int k = 0; k < Space::nFaces; ++k)
+      if (count[key(e, k)] == 1) { faceElem.push_back(e); faceLocal.push_back(k); }
+  const int nF = (int)faceElem.size();
+  std::vector<int> faceKind(nF);
+  for (int F = 0; F < nF; ++F) faceKind[F] = 1 + F % 4;      // flux, flux with advection, weak Dirichlet, Robin
+
+  std::vector<double> U(m.nNodes);
+  uint64_t s = 88172645463325252ULL;
+  for (auto &v : U) { s ^= s << 13; s ^= s >> 7; s ^= s << 17; v = 0.2 + 0.8 * ((s >> 11) * (1.0 / 9007199254740992.0)); }
+  std::vector<double> xn((size_t)nF * nD * 3), ue((size_t)nF * nD);
+  for (int F = 0; F < nF; ++F)
+    for (int a = 0; a < nD; ++a)
+    {
+      const int n = m.conn[faceElem[F] * nD + a];
+      for (int d = 0; d < 3; ++d) xn[((size_t)F * nD + a) * 3 + d] = m.X[n * 3 + d];
+      ue[(size_t)F * nD + a] = U[n];
+    }
+
+  // host reference
+  std::vector<double> Rref((size_t)nF * nD), Jref((size_t)nF * nD * nD);
+  const BC hostBC(b, 0.2, om, 0.3, faceKind.data(), 0.7, 0.4);
+  const double tHost = best(repeats > 2 ? 2 : repeats, [&] {
+    exteriorFaceKernel<Co, BC, Space>(coef, hostBC, wd, nF, nQf, faceLocal.data(), xn.data(), ue.data(), qpf.data(), qwf.data(), 0.0,
+                                     Rref.data(), Jref.data());
+  });
+
+  // Kokkos, per face
+  DView<int> dkind = toDevice("kind", faceKind), dlocal = toDevice("local", faceLocal);
+  DView<double> dxn = toDevice("xn", xn), due = toDevice("ue", ue), dqp = toDevice("qpf", qpf), dqw = toDevice("qwf", qwf);
+  DView<double> dR("Rf", Rref.size()), dJ("Jf", Jref.size());
+  const BC devBC(b, 0.2, om, 0.3, dkind.data(), 0.7, 0.4);
+  auto run1 = [&] { exteriorFaceKernelKokkos<Co, BC, Space>(coef, devBC, wd, nF, nQf, dlocal, dxn, due, dqp, dqw, 0.0, dR, dJ); };
+  run1();
+  const double tK = best(repeats, run1);
+  std::vector<double> Rk = toHost(dR), Jk = toHost(dJ);
+  const bool bitwise = Rk == Rref && Jk == Jref;
+
+  // the colored scatter of the faces into the global system, against a serial scatter in face order
+  std::vector<int> rowptr, colidx;
+  ColoredMesh M = makeColoredMesh(m.nNodes, m.nE, nD, m.conn, rowptr, colidx);
+  ColoredFaces CF = makeColoredFaces(M, faceElem, faceLocal);
+  std::vector<int> blockOf = toHost(M.blockOf);
+  std::vector<double> Rg_ref(m.nNodes, 0.0), Jv_ref(M.nBlocks, 0.0);
+  for (int F = 0; F < nF; ++F)
+    for (int a = 0; a < nD; ++a)
+    {
+      const int n = m.conn[faceElem[F] * nD + a];
+      Rg_ref[n] += Rref[(size_t)F * nD + a];
+      for (int bb = 0; bb < nD; ++bb) Jv_ref[blockOf[((size_t)faceElem[F] * nD + a) * nD + bb]] += Jref[((size_t)F * nD + a) * nD + bb];
+    }
+  DView<double> dX = toDevice("X", m.X), dU = toDevice("U", U), dRg("Rg", m.nNodes), dJv("Jv", M.nBlocks);
+  auto run2 = [&] {
+    Kokkos::deep_copy(dRg, 0.0); Kokkos::deep_copy(dJv, 0.0);
+    assembleFacesColored<Co, BC, Space>(coef, devBC, wd, M, CF, nQf, dX, dU, dqp, dqw, 0.0, dRg, dJv);
+  };
+  run2();
+  const double tC = best(repeats, run2);
+  std::vector<double> Rg = toHost(dRg), Jv = toHost(dJv);
+
+  std::printf("%-26s %-7s thr=%-3d faces=%-7d | face kernel %7.1f ns/face (host serial %7.1f, x%.1f) vs host: R %.1e J %.1e %s"
+              " | colored faces %7.1f ns/face (%d passes) vs serial scatter: R %.1e J %.1e  checksum %016llx %016llx\n",
+              name, Kokkos::DefaultExecutionSpace::name(), (int)Kokkos::DefaultExecutionSpace().concurrency(), nF, 1e9 * tK / nF,
+              1e9 * tHost / nF, tHost / tK, relDiff(Rk, Rref), relDiff(Jk, Jref), bitwise ? "bitwise" : "       ", 1e9 * tC / nF,
+              (int)(M.nColors * std::max(CF.nRank, 1)), relDiff(Rg, Rg_ref), relDiff(Jv, Jv_ref), (unsigned long long)fnv(Rg),
+              (unsigned long long)fnv(Jv));
+}
+
 int main(int argc, char **argv)
 {
   Kokkos::initialize(argc, argv);
@@ -327,6 +440,9 @@ int main(int argc, char **argv)
       runCase<AD, KindSpace<AD, Q1Cube<3>>>("ad_sine Q1 hex (space kernel)", ad, mh, cqp, cqw, false, repeats);
       runCase<Coupled2, KindSpace<Coupled2, P2Simplex<3>>>("coupled2 P2 (space kernel)", Coupled2(), m2, tqp, tqw, true, repeats);
       runCase<Coupled2, KindSpace<Coupled2, Q1Cube<3>>>("coupled2 Q1 hex (space kernel)", Coupled2(), mh, cqp, cqw, true, repeats);
+      runFaceCase<P1Simplex<3>>("faces P1 (sine, 4 kinds)", m, repeats);
+      runFaceCase<P2Simplex<3>>("faces P2 (sine, 4 kinds)", m2, repeats);
+      runFaceCase<Q1Cube<3>>("faces Q1 hex (sine, 4 kinds)", mh, repeats);
     }
   }
   Kokkos::finalize();

@@ -24,6 +24,7 @@ two agree to round-off either way. Checks:
 usage: [AD_ND=2|3] [AD_SPACE=p1|p2|q1] [AD_BC=mode] [AD_NSTEPS=n] [AD_FIRST_STEP=proteus] python ad_dirac_regression.py [nn ...]
        AD_SWEEP=dt [AD_NN=nn] python ad_dirac_regression.py [nsteps ...]        (the dt sweep at one mesh)
 """
+import importlib
 import os
 import sys
 
@@ -52,6 +53,10 @@ def exact(X, T):
                     * np.exp(-c * t))
 
 
+# the kernels: the host engine, or the Kokkos port (ADRH_MODULE=adrh_kokkos)
+engine = importlib.import_module(os.environ.get('ADRH_MODULE', 'adrh_proto'))
+
+
 def engine_solution(nodes, conn, nsteps):
     nE, nN = len(conn), len(nodes)
     dt = T_END / nsteps
@@ -65,13 +70,13 @@ def engine_solution(nodes, conn, nsteps):
         if step == 1 and FIRST_STEP == 'proteus':
             u = u.copy(); u[onb] = exact(nodes, t)[onb]                # Proteus's first m_last: Dirichlet dofs at t_1
         uold = np.ascontiguousarray(u[conn][:, None, :])
-        R, J = adrh_proto.transient_adr(ND, SPACE, b, kappa, c, xn, zeros, uold, qp, qw, t, dt)
+        R, J = engine.transient_adr(ND, SPACE, b, kappa, c, xn, zeros, uold, qp, qw, t, dt)
         K, rhs = assemble(conn, R, J, nN)
         if faces is not None:
             fe, fk, kind = faces
             face_conn = conn[fe]
             pc, pp, sig = WEAK_PARAMS
-            Rf, Jf = adrh_proto.transient_adr_faces(ND, SPACE, b, kappa, c, tStart, u0, xc, fk, kind,
+            Rf, Jf = engine.transient_adr_faces(ND, SPACE, b, kappa, c, tStart, u0, xc, fk, kind,
                                                     np.ascontiguousarray(nodes[face_conn]), np.zeros((len(fe), 1, nD)),
                                                     qpf, qwf, t, pc, pp, sig, ROBIN_ALPHA, ROBIN_BETA)
             Kf, rhs_f = assemble(face_conn, Rf, Jf, nN)
