@@ -41,6 +41,24 @@ def clearh5(filename, dataDir='.', addname="_clean", tCount=None,
     domain, extra = read_ymf(source_base + ".ymf")
 
     kept_datasets = set()
+
+    def keep(step):
+        for grid in step.get("spatial_collection", [step]):
+            for node in (grid["topology"], grid["geometry"]):
+                kept_datasets.add(_dataset_of(node["data_item"]))
+            for attribute in grid.get("attributes", []):
+                kept_datasets.add(_dataset_of(attribute["data_item"]))
+
+    if "times" in domain:
+        # ymf archive format 2: the spaces are inside each instant, so the
+        # truncation is of instants
+        dropped = len(domain["times"]) - len(domain["times"][:tCount])
+        if dropped:
+            print("dropping %d instant(s) past %d" % (dropped, tCount))
+        domain["times"] = domain["times"][:tCount]
+        for instant in domain["times"]:
+            for space in instant["spaces"].values():
+                keep(space)
     for collection in domain.get("time_collections", []):
         steps = collection["data"][:tCount]
         dropped = len(collection["data"]) - len(steps)
@@ -49,11 +67,7 @@ def clearh5(filename, dataDir='.', addname="_clean", tCount=None,
                   % (collection["name"], dropped, tCount))
         collection["data"] = steps
         for step in steps:
-            for grid in step.get("spatial_collection", [step]):
-                for node in (grid["topology"], grid["geometry"]):
-                    kept_datasets.add(_dataset_of(node["data_item"]))
-                for attribute in grid.get("attributes", []):
-                    kept_datasets.add(_dataset_of(attribute["data_item"]))
+            keep(step)
     kept_datasets.discard(None)
 
     out_base = os.path.join(dataDir, filename + addname)
