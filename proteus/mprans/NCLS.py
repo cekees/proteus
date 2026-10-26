@@ -1019,6 +1019,32 @@ class LevelModel(OneLevelTransport):
         if self.globalResidualDummy is not None:
             self.getResidual(self.free_u, self.globalResidualDummy)
 
+    def ebqe_rd_u_for_kernel(self):
+        """The redistanced level set on the exterior faces, as the kernel should see it.
+
+        On a face with no Dirichlet condition the kernel's exterior flux is
+        -flow*(u - rd_u) where the flow is inward, and 0 where it is outward.
+        That is the right boundary treatment on a domain boundary. On a face
+        shared with another rank (an exterior face of the subdomain that is
+        interior to the global mesh) the neighbour's outward side contributes
+        nothing, so the term does not cancel and pulls u toward the
+        redistanced value there, which differs from u. Use the current u on
+        those faces so the term is zero, as it is in serial.
+        """
+        rd = self.coefficients.ebqe_rd_u
+        mask = proteus.MeshTools.rankInterfaceExteriorMask(self.mesh)
+        if mask is None or not mask.any():
+            return rd
+        faces = np.nonzero(mask)[0]
+        ebN = self.mesh.exteriorElementBoundariesArray[faces]
+        eN = self.mesh.elementBoundaryElementsArray[ebN, 0]
+        ebN_local = self.mesh.elementBoundaryLocalElementBoundariesArray[ebN, 0]
+        dofs = self.u[0].femSpace.dofMap.l2g[eN]
+        psi = self.u[0].femSpace.psi_trace[ebN_local]
+        rd = rd.copy()
+        rd[faces] = np.einsum('fkj,fj->fk', psi, self.u[0].dof[dofs])
+        return rd
+
     def getResidual(self, u, r):
         import pdb
         import copy
@@ -1249,7 +1275,7 @@ class LevelModel(OneLevelTransport):
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
         argsDict["ebqe_velocity_ext"] = self.coefficients.ebqe_v
         argsDict["isDOFBoundary_u"] = self.numericalFlux.isDOFBoundary[0]
-        argsDict["ebqe_rd_u_ext"] = self.coefficients.ebqe_rd_u
+        argsDict["ebqe_rd_u_ext"] = self.ebqe_rd_u_for_kernel()
         argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u', 0)]
         argsDict["ebqe_u"] = self.ebqe[('u', 0)]
         argsDict["ebqe_grad_u"] = self.ebqe[('grad(u)', 0)]
@@ -1368,7 +1394,7 @@ class LevelModel(OneLevelTransport):
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
         argsDict["ebqe_velocity_ext"] = self.coefficients.ebqe_v
         argsDict["isDOFBoundary_u"] = self.numericalFlux.isDOFBoundary[0]
-        argsDict["ebqe_rd_u_ext"] = self.coefficients.ebqe_rd_u
+        argsDict["ebqe_rd_u_ext"] = self.ebqe_rd_u_for_kernel()
         argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u', 0)]
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0, 0)]
         argsDict["he"] = self.mesh.h
@@ -1432,7 +1458,7 @@ class LevelModel(OneLevelTransport):
         argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
         argsDict["ebqe_velocity_ext"] = self.coefficients.ebqe_v
         argsDict["isDOFBoundary_u"] = self.numericalFlux.isDOFBoundary[0]
-        argsDict["ebqe_rd_u_ext"] = self.coefficients.ebqe_rd_u
+        argsDict["ebqe_rd_u_ext"] = self.ebqe_rd_u_for_kernel()
         argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u', 0)]
         argsDict["csrColumnOffsets_eb_u_u"] = self.csrColumnOffsets_eb[(0, 0)]
         argsDict["PURE_BDF"] = self.coefficients.PURE_BDF

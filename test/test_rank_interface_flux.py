@@ -98,3 +98,43 @@ def test_rans2p_step_on_an_element_partition_without_overlap_gives_the_serial_an
     assert parallel["interfaces"] > 0, parallel
     for key in ("p2", "ps", "u2", "us", "v2", "vs"):
         numpy.testing.assert_allclose(parallel[key], serial[key], rtol=1e-6, atol=1e-10, err_msg=key)
+
+
+NCLS_HELPER = os.path.join(HERE, "ncls_partition_mpi.py")
+
+
+def _ncls_residual(ranks, cwd, rd):
+    """The NCLS residual by node (summed over ranks), for the same state on any partition."""
+    env = dict(os.environ, OMP_NUM_THREADS="1", RD=rd,
+               PETSC_OPTIONS="-mat_partitioning_type current")
+    env.setdefault("FI_PROVIDER", "tcp")
+    env.setdefault("OMPI_MCA_rmaps_base_oversubscribe", "1")
+    env.setdefault("PRTE_MCA_rmaps_default_mapping_policy", ":oversubscribe")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [p for p in sys.path if p] + [env.get("PYTHONPATH", "")]).strip(os.pathsep)
+    argv = [sys.executable, NCLS_HELPER] if ranks == 1 else \
+        [MPIEXEC, "-n", str(ranks), sys.executable, NCLS_HELPER]
+    out = subprocess.run(argv, capture_output=True, text=True, timeout=900, env=env,
+                         cwd=str(cwd))
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    total = {}
+    for r in range(ranks):
+        d = numpy.load(os.path.join(str(cwd), "res_rank%d_of%d.npz" % (r, ranks)))
+        for xy, v in zip(numpy.round(d["xy"], 9), d["r"]):
+            total[tuple(xy)] = total.get(tuple(xy), 0.0) + v
+    return total
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("rd", ["same", "perturbed"])
+def test_ncls_residual_on_two_ranks_is_the_serial_residual(rd, tmp_path):
+    """With a redistanced field unlike u, the inflow term -flow*(u - rd_u) on the
+    faces between ranks was applied once, uncancelled: 21 nodes on the cut off by
+    1.2e-2 against a residual of 1.6e-2."""
+    (tmp_path / "1").mkdir()
+    (tmp_path / "2").mkdir()
+    serial = _ncls_residual(1, tmp_path / "1", rd)
+    parallel = _ncls_residual(2, tmp_path / "2", rd)
+    assert set(serial) == set(parallel)
+    diff = max(abs(serial[k] - parallel[k]) for k in serial)
+    assert diff < 1e-12, diff
