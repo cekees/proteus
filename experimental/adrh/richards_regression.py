@@ -33,7 +33,7 @@ sys.path.insert(0, HERE)
 engine = importlib.import_module(os.environ.get('ADRH_MODULE', 'adrh_proto'))
 from proteus import Quadrature
 
-CSV = os.path.join(HERE, '..', '..', 'test', 'richards', 'comparison_files', 'richards_test_1.csv')
+CSV = os.environ.get('RICHARDS_CSV', os.path.join(HERE, '..', '..', 'test', 'richards', 'comparison_files', 'richards_test_1.csv'))
 
 # the deck's parameters, computed as the deck computes them
 viscosity, density, gravity = 8.9e-4, 998.2, 9.8

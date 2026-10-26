@@ -14,7 +14,7 @@
 
 namespace adrh
 {
-  ADRH_FN inline void vgmWetting(double psiC, double alpha, double n_vg, double thetaR, double thetaSR, double &thetaW,
+  ADRH_FN void vgmWetting(double psiC, double alpha, double n_vg, double thetaR, double thetaSR, double &thetaW,
                                  double &DthetaW_DpsiC, double &KWr, double &DKWr_DpsiC)
   {
     const double m_vg = 1.0 - 1.0 / n_vg;
@@ -92,7 +92,7 @@ namespace adrh
     static constexpr bool has_hamiltonian = false, has_reaction = false;
     int nMaterials;
     double alpha[maxMaterials], n_vg[maxMaterials], thetaR[maxMaterials], thetaSR[maxMaterials], Ks[maxMaterials][3], g[3], rho, rho0, beta;
-    const int *material;     // (nE) the material number of each element; must be valid where the kernel runs
+    const int *material;     // (nE) the material number of each element, valid where the kernel runs; null: element number modulo the materials
     ADRH_FN RichardsMaterials(int nMaterials_, const double *alpha_, const double *n_, const double *thetaR_, const double *thetaSR_,
                               const double *Ks_, const double *g_, const int *material_, double rho_ = 1.0, double beta_ = 0.0,
                               double rho0_ = 1.0)
@@ -108,7 +108,7 @@ namespace adrh
     }
     ADRH_FN RichardsVGM<nS_> bindElement(int eN) const
     {
-      const int m = material[eN];
+      const int m = material ? material[eN] : eN % nMaterials;     // no table: stripes, materials in turn by element number (benchmarks)
       return RichardsVGM<nS_>(alpha[m], n_vg[m], thetaR[m], thetaSR[m], Ks[m], g, rho, beta, rho0);
     }
     // used only if something calls the functor without binding an element: the first material

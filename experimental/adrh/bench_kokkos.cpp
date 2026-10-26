@@ -26,6 +26,7 @@
 
 #include "kokkos_kernel.h"
 #include "quad_tet4.h"
+#include "richards.h"
 
 using namespace adrh;
 
@@ -216,7 +217,7 @@ static double best(int repeats, F f)
 
 template <class C, class Kind>
 static void runCase(const char *name, const C &coef, const Tets &m, const std::vector<double> &qp, const std::vector<double> &qw,
-                    bool unsteady, int repeats)
+                    bool unsteady, int repeats, double uScale = 1.0, double uShift = 0.0)
 {
   constexpr int nD = Kind::nD, nc = C::nc;
   const int nE = m.nE, nQ = (int)qw.size();
@@ -225,7 +226,7 @@ static void runCase(const char *name, const C &coef, const Tets &m, const std::v
   // nodal values, deterministic in [0.2, 1]
   std::vector<double> U(m.nNodes * nc), Uo(unsteady ? m.nNodes * nc : 0);
   uint64_t s = 88172645463325252ULL;
-  auto rnd = [&]() { s ^= s << 13; s ^= s >> 7; s ^= s << 17; return 0.2 + 0.8 * ((s >> 11) * (1.0 / 9007199254740992.0)); };
+  auto rnd = [&]() { s ^= s << 13; s ^= s >> 7; s ^= s << 17; return uShift + uScale * (0.2 + 0.8 * ((s >> 11) * (1.0 / 9007199254740992.0))); };
   for (auto &v : U) v = rnd();
   for (auto &v : Uo) v = rnd();
 
@@ -440,6 +441,16 @@ int main(int argc, char **argv)
       runCase<AD, KindSpace<AD, Q1Cube<3>>>("ad_sine Q1 hex (space kernel)", ad, mh, cqp, cqw, false, repeats);
       runCase<Coupled2, KindSpace<Coupled2, P2Simplex<3>>>("coupled2 P2 (space kernel)", Coupled2(), m2, tqp, tqw, true, repeats);
       runCase<Coupled2, KindSpace<Coupled2, Q1Cube<3>>>("coupled2 Q1 hex (space kernel)", Coupled2(), mh, cqp, cqw, true, repeats);
+      // Richards' equation (VGM, four materials in stripes by element number), unsaturated, with the mass term: pow and sqrt at every point
+      {
+        using Rc = RichardsMaterials<3>;
+        const double alpha[4] = {3.35, 1.0, 2.0, 0.8}, nvg[4] = {2.0, 1.6, 2.5, 1.4}, thR[4] = {0.102, 0.08, 0.05, 0.1};
+        const double thSR[4] = {0.266, 0.35, 0.4, 0.3}, Ks[12] = {7.967, 7.967, 7.967, 0.05, 0.05, 0.05, 2.0, 2.0, 2.0, 0.5, 0.5, 0.5};
+        const double g[3] = {0.0, 0.0, -1.0};
+        const Rc rich(4, alpha, nvg, thR, thSR, Ks, g, nullptr);
+        runCase<Rc, KindSpace<Rc, P1Simplex<3>>>("richards P1 (4 materials)", rich, m, tqp, tqw, true, repeats, -10.0, 0.0);
+        runCase<Rc, KindSpace<Rc, P2Simplex<3>>>("richards P2 (4 materials)", rich, cubeTetsP2(nn), tqp, tqw, true, repeats, -10.0, 0.0);
+      }
       runFaceCase<P1Simplex<3>>("faces P1 (sine, 4 kinds)", m, repeats);
       runFaceCase<P2Simplex<3>>("faces P2 (sine, 4 kinds)", m2, repeats);
       runFaceCase<Q1Cube<3>>("faces Q1 hex (sine, 4 kinds)", mh, repeats);

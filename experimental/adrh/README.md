@@ -320,3 +320,16 @@ boundary value.
 * **Not covered.** The saved profiles for the other decks come from stabilized schemes (entropy viscosity, FCT), which proteus uses because plain Galerkin does not run the HYDRUS and Szymkiewicz cases; the
   engine has no stabilization yet, so those are not compared. Faces through `bindElement` (a layered boundary element) are implemented but not exercised by a test.
 
+**Richards as a kernel benchmark** (`bench_kokkos.cpp`: unsaturated, backward Euler mass term, four materials in stripes by element number, so `bindElement` runs on every element of every backend with no data pointer): the van Genuchten-Mualem law
+calls `pow` and `sqrt` at every quadrature point, so it costs about three times the advection-diffusion kernel per element on one core (P1: 1,490 ns against 485 for `ad_sine`) and is the first benchmark where the GPU beats the 96-core node.
+ns per element, element kernel / colored assembly, `ceds-model` (one machine, a few percent of the cores busy with another session's job during these runs):
+
+| kernel | M4, 12 threads | host, 1 core | 96 threads, nn = 31 | RTX 6000 Ada, nn = 31 | 96 threads, nn = 61 | RTX 6000 Ada, nn = 61 |
+|---|---|---|---|---|---|---|
+| Richards P1 | 185 / 226 | 1,490 | 30.5 / 36.2 | 24.7 / 81.7 | 28.8 / 32.2 | 24.5 / 28.8 |
+| Richards P2 | 497 / 726 | 4,138 | 86.4 / 101.1 | 74.5 / 252.6 | 69.7 / 83.5 | 68.8 / 109.8 |
+
+The Kokkos kernel is bitwise the host's on the CPU for both; the GPU differs from the host by up to 2e-14 (multiply-add fusing and the device `pow`). Unlike the advection-diffusion kernels, **with contraction off the
+Richards residual and Jacobian are not bitwise equal CPU to GPU** (`pow` and `sqrt` of the retention curve: any libm call in a Jacobian is a cross-platform bit difference, as found for the face penalty).
+The Celia column runs on the GPU module as well and matches proteus's saved profiles to 3.3e-13, and the layered column reproduces the CPU errors exactly.
+
