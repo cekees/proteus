@@ -21,6 +21,44 @@ from proteus.MeshTools import triangleVerticesToNormals, tetrahedronVerticesToNo
 from proteus import Profiling
 
 
+def _checkFields(fields):
+    """Returns fields as a tuple of names.  A bare string is one field
+    name: ('u') is just 'u', and iterating it per character would turn
+    'u0' into the fields 'u' and '0'."""
+    if isinstance(fields, str):
+        return (fields,)
+    if not hasattr(fields, '__iter__'):
+        raise ValueError("gauge fields must be a tuple or list of field names, not %r" % (fields,))
+    return tuple(fields)
+
+def _checkPoint(point):
+    """Returns point as a 3-tuple of finite floats (so lists work as
+    dictionary keys), or raises ValueError."""
+    try:
+        coords = tuple(float(c) for c in point)
+    except (TypeError, ValueError):
+        raise ValueError("gauge location %r must be a sequence of 3 numbers" % (point,))
+    if len(coords) != 3:
+        raise ValueError("gauge location %r has %d coordinates, expected 3 "
+                         "(x, y, z), also for 2D problems: use z = 0" % (point, len(coords)))
+    if not all(np.isfinite(coords)):
+        raise ValueError("gauge location %r must be finite" % (point,))
+    return coords
+
+def _checkLine(line):
+    """Returns line as a pair of 3-tuples, or raises ValueError."""
+    try:
+        endpoints = tuple(line)
+    except TypeError:
+        raise ValueError("gauge line %r must be a pair of endpoints" % (line,))
+    if len(endpoints) != 2:
+        raise ValueError("gauge line %r has %d endpoints, expected 2" % (line, len(endpoints)))
+    start, end = _checkPoint(endpoints[0]), _checkPoint(endpoints[1])
+    if start == end:
+        raise ValueError("gauge line %r has zero length" % (line,))
+    return start, end
+
+
 def PointGauges(gauges, activeTime=None, sampleRate=0, fileName='point_gauges.csv'):
     """Create a set of point gauges that will automatically be serialized
     as CSV data to the requested file.
@@ -58,10 +96,12 @@ def PointGauges(gauges, activeTime=None, sampleRate=0, fileName='point_gauges.cs
 
     for gauge in gauges:
         gauge_fields, gauge_points = gauge
+        gauge_fields = _checkFields(gauge_fields)
         for field in gauge_fields:
             if field not in fields:
                 fields.append(field)
         for point in gauge_points:
+            point = _checkPoint(point)
             # initialize new dictionary of information at this location
             if point not in points:
                 l_d = {'fields': set()}
@@ -91,10 +131,11 @@ def LineGauges(gauges, activeTime=None, sampleRate=0, fileName='line_gauges.csv'
     fields = list()
     for gauge in gauges:
         gauge_fields, gauge_lines = gauge
+        gauge_fields = _checkFields(gauge_fields)
         for field in gauge_fields:
             if field not in fields:
                 fields.append(field)
-        lines.extend(product(gauge_fields, gauge_lines))
+        lines.extend(product(gauge_fields, [_checkLine(line) for line in gauge_lines]))
 
     return Gauges(fields, activeTime, sampleRate, fileName, lines=lines)
 
@@ -117,10 +158,11 @@ def LineIntegralGauges(gauges, activeTime=None, sampleRate=0, fileName='line_int
     fields = list()
     for gauge in gauges:
         gauge_fields, gauge_lines = gauge
+        gauge_fields = _checkFields(gauge_fields)
         for field in gauge_fields:
             if field not in fields:
                 fields.append(field)
-        lines.extend(product(gauge_fields, gauge_lines))
+        lines.extend(product(gauge_fields, [_checkLine(line) for line in gauge_lines]))
 
     return Gauges(fields, activeTime, sampleRate, fileName, lines=lines, integrate=True)
 
@@ -178,6 +220,13 @@ class Gauges(AV_base):
 
         AV_base.__init__(self)
 
+        if not (np.isfinite(sampleRate) and sampleRate >= 0):
+            raise ValueError("sampleRate must be a finite number >= 0, got %r" % (sampleRate,))
+        if activeTime is not None:
+            if len(activeTime) != 2 or not activeTime[0] <= activeTime[1]:
+                raise ValueError("activeTime must be (start, end) with start <= end, got %r"
+                                 % (activeTime,))
+
         self.fields = fields
         self.activeTime = activeTime
         self.sampleRate = sampleRate
@@ -213,37 +262,52 @@ class Gauges(AV_base):
         comm = Comm.get().comm.tompi4py()
         return comm.rank, nearest_node_kdtree, nearest_node_distance_kdtree
 
-    def getLocalElement(self, femSpace, location, node):
+    def getLocalElement(self, femSpace, location, node, maxRings=5):
         """Given a location and its nearest node, determine if it is on a
         local element.
+
+        Elements are searched in rings of node-neighbors growing out
+        from the nearest node, up to maxRings deep.  The element
+        containing a location is not always in the star of the nearest
+        node (or of its neighbors) on graded or skewed meshes.
+
+        .. figure:: /_generated/point_location_rings.svg
+           :width: 100%
+
+           The first three layers of the search on a 2D mesh.  Red
+           nodes have their elements searched in that layer (black
+           edges); their new neighbors (black dots) are the red nodes of
+           the next layer, and grey edges were searched already.  The
+           search stops at the first element containing the location,
+           and gives up after maxRings further layers.
 
         Returns None if location is not on any elements owned by this
         process
 
         """
 
-        # search elements that contain the nearest node
-        patchBoundaryNodes=set()
-        checkedElements=[]
-        for eOffset in range(femSpace.mesh.nodeElementOffsets[node], femSpace.mesh.nodeElementOffsets[node + 1]):
-            eN = femSpace.mesh.nodeElementsArray[eOffset]
-            checkedElements.append(eN)
-            patchBoundaryNodes|=set(femSpace.mesh.elementNodesArray[eN])
-            # evaluate the inverse map for element eN
-            xi = femSpace.elementMaps.getInverseValue(eN, location)
-            # query whether xi lies within the reference element
-            if femSpace.elementMaps.referenceElement.onElement(xi):
-                return eN
-        for node in patchBoundaryNodes:
-            for eOffset in range(femSpace.mesh.nodeElementOffsets[node], femSpace.mesh.nodeElementOffsets[node + 1]):
-                eN = femSpace.mesh.nodeElementsArray[eOffset]
-                if eN not in checkedElements:
-                    checkedElements.append(eN)
+        mesh = femSpace.mesh
+        checkedElements = set()
+        checkedNodes = set()
+        ring = {node}
+        for depth in range(maxRings + 1):
+            nextRing = set()
+            for n in ring:
+                checkedNodes.add(n)
+                for eOffset in range(mesh.nodeElementOffsets[n], mesh.nodeElementOffsets[n + 1]):
+                    eN = mesh.nodeElementsArray[eOffset]
+                    if eN in checkedElements:
+                        continue
+                    checkedElements.add(eN)
                     # evaluate the inverse map for element eN
                     xi = femSpace.elementMaps.getInverseValue(eN, location)
                     # query whether xi lies within the reference element
                     if femSpace.elementMaps.referenceElement.onElement(xi):
                         return eN
+                    nextRing.update(mesh.elementNodesArray[eN])
+            ring = nextRing - checkedNodes
+            if not ring:
+                break
         # no elements found
         return None
 
@@ -298,6 +362,8 @@ class Gauges(AV_base):
         else:
             # just use nearest node for now if we're given a point outside the domain.
             # the ideal thing would be to find the element with the nearest face
+            logEvent("WARNING: gauge location [%g %g %g] is not on any local element; "
+                     "using the value at its nearest node %d" % (location[0], location[1], location[2], node), 1)
             m[quantity_id, node] = 1
 
 
@@ -528,7 +594,7 @@ class Gauges(AV_base):
         this could be optimized
         """
 
-        eps = 1e-4
+        eps = 1e-9
 
         comm = Comm.get().comm.tompi4py()
 
@@ -579,7 +645,7 @@ class Gauges(AV_base):
                 msg = "Segmented line %s different from original length by ratio %e\n segments: %s" % (
                     str(endpoints), err, str(selected_segments))
                 logEvent(msg, 3)
-                if err > 10*eps:
+                if err > 1e-6:
                     raise FloatingPointError(msg)
 
         logEvent("Selected segments: %s" % str(selected_segments), 9)
@@ -666,6 +732,9 @@ class Gauges(AV_base):
         self.u = model.levelModelList[-1].u
         self.timeIntegration = model.levelModelList[-1].timeIntegration
         for field in self.fields:
+            if field not in self.fieldNames:
+                raise ValueError("gauge field %r is not a variable of this model; "
+                                 "available fields: %s" % (field, list(self.fieldNames)))
             field_id = self.fieldNames.index(field)
             self.field_ids.append(field_id)
         self.nodes_kdtree = spatial.cKDTree(model.levelModelList[-1].mesh.nodeArray)

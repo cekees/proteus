@@ -2,6 +2,7 @@ from math import ceil, sqrt, pow
 import os
 import numpy as np
 import numpy.testing as npt
+import pytest
 
 from proteus import (Comm,
                      Domain,
@@ -30,7 +31,7 @@ def build1DMesh(p, nnx):
                                         parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
 def build2DMesh(p, nnx, nny):
     return MeshTools.MultilevelTriangularMesh(nnx,nny,1,
-                                              p.domain.x[0], p.domain.x[1], 1.0,
+                                              p.domain.x[0], p.domain.x[1], 0.0,
                                               p.domain.L[0], p.domain.L[1], 1.0,
                                               refinementLevels=1,
                                               nLayersOfOverlap=0,
@@ -44,7 +45,7 @@ def build3DMesh(p, nnx, nny, nnz):
                                                nLayersOfOverlap=0,
                                                parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
 
-def gauge_setup(nd, total_nodes=None):
+def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transform=None):
     comm = Comm.get()
 
     #Simplified Physics
@@ -75,18 +76,28 @@ def gauge_setup(nd, total_nodes=None):
     if p.nd == 1:
         mlMesh = build1DMesh(p, total_nodes+1)
     elif p.nd == 2:
-        nnx = nny = int(ceil(sqrt(total_nodes)))+1
+        if nnx is None:
+            nnx = int(ceil(sqrt(total_nodes)))+1
+        if nny is None:
+            nny = int(ceil(sqrt(total_nodes)))+1
         mlMesh = build2DMesh(p, nnx, nny)
     elif p.nd == 3:
-        nnx = nny = nnz = int(ceil(pow(total_nodes, 1.0/3.0)))+1
+        if nnx is None:
+            nnx = int(ceil(pow(total_nodes, 1.0/3.0)))+1
+        if nny is None:
+            nny = int(ceil(pow(total_nodes, 1.0/3.0)))+1
+        if nnz is None:
+            nnz = int(ceil(pow(total_nodes, 1.0/3.0)))+1
         mlMesh = build3DMesh(p, nnx, nny, nnz)
+    if mesh_transform is not None:
+        mesh_transform(mlMesh.meshList[-1].nodeArray)
 
     model = Transport.MultilevelTransport(p, n, mlMesh)
 
     return model, p.initialConditions
 
-def run_gauge(p, time_list, nd=3, total_nodes=None):
-    model, initialConditions = gauge_setup(nd, total_nodes)
+def run_gauge(p, time_list, nd=3, total_nodes=None, **mesh_options):
+    model, initialConditions = gauge_setup(nd, total_nodes, **mesh_options)
 
     p.attachModel(model, None)
 
@@ -291,6 +302,88 @@ def test_line_gauge_output():
     npt.assert_allclose(correct_data, data)
     delete_file(filename)
 
+
+def test_line_integral_gauge_fine_mesh():
+    # erdc#224: elements shorter than 1e-4 of the line length defeated the
+    # absolute tolerances in pruneDuplicateSegments
+    filename = 'test_line_integral_fine.csv'
+    silent_rm(filename)
+    lines = (((0, 0.5, 0), (1, 0.5, 0)),)
+    l = LineIntegralGauges(gauges=((('u0',), lines),), fileName=filename)
+    run_gauge(l, [0.0, 1.0], nd=2, nnx=20001, nny=3)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    # u = x + 10 y at t = 0, doubled at t = 1: integral over [0,1] at y=.5
+    npt.assert_allclose(data[:, 1], [5.5, 11.0], rtol=1e-10)
+    delete_file(filename)
+
+def test_point_location_beyond_two_rings():
+    # erdc#426: getLocalElement only searched the star of the nearest node
+    # and one ring around it, and fell back to the nearest node's value
+    # (wrong, silently) when the containing element was farther out
+    model, ic = gauge_setup(2, 100)
+    g = PointGauges(gauges=((('u0',), ((0.5, 0.5, 0),)),))
+    g.attachModel(model, None)
+    femSpace = model.levelModelList[-1].u[0].femSpace
+    mesh = femSpace.mesh
+    # a node three rings from the point (the old search stopped at two)
+    far = int(np.argmin(np.linalg.norm(mesh.nodeArray - np.array([0., 0., 0.]), axis=1)))
+    location = (0.37, 0.22, 0.0)
+    assert g.getLocalElement(femSpace, location, far) is not None
+# erdc#221: bad inputs must fail early with a message that names the problem
+
+def test_point_gauge_accepts_lists():
+    filename = 'test_gauge_lists.csv'
+    silent_rm(filename)
+    g = PointGauges(gauges=((['u0'], [[0, 0, 0], [1, 1, 1]]),),
+                    fileName=filename)
+    run_gauge(g, [0.0, 1.0])
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    npt.assert_allclose(data, [[0., 0., 111.], [1., 0., 222.]])
+    delete_file(filename)
+
+def test_point_gauge_rejects_2d_point():
+    with pytest.raises(ValueError, match="3"):
+        PointGauges(gauges=((('u0',), ((0.5, 0.5),)),))
+
+def test_line_gauges_reject_2d_endpoints():
+    for cls in (LineGauges, LineIntegralGauges):
+        with pytest.raises(ValueError, match="3"):
+            cls(gauges=((('u0',), (((0, 0), (1, 1)),)),))
+
+def test_line_gauge_rejects_wrong_endpoint_count():
+    with pytest.raises(ValueError, match="endpoint"):
+        LineGauges(gauges=((('u0',), (((0, 0, 0), (1, 1, 1), (2, 2, 2)),)),))
+
+def test_line_gauge_rejects_zero_length_line():
+    with pytest.raises(ValueError, match="zero length"):
+        LineIntegralGauges(gauges=((('u0',), (((0, 0, 0), (0, 0, 0)),)),))
+
+def test_gauge_rejects_non_finite_location():
+    with pytest.raises(ValueError, match="finite"):
+        PointGauges(gauges=((('u0',), ((0, float('nan'), 0),)),))
+
+def test_gauge_bare_string_is_one_field():
+    # ('u0') is the string 'u0', which used to be iterated as the fields 'u' and '0'
+    g = PointGauges(gauges=((('u0'), ((0, 0, 0),)),))
+    assert list(g.fields) == ['u0']
+    with pytest.raises(ValueError, match="fields"):
+        PointGauges(gauges=((3, ((0, 0, 0),)),))
+
+def test_gauge_rejects_bad_sample_rate_and_active_time():
+    pts = ((('u0',), ((0, 0, 0),)),)
+    with pytest.raises(ValueError, match="sampleRate"):
+        PointGauges(gauges=pts, sampleRate=-1.0)
+    with pytest.raises(ValueError, match="activeTime"):
+        PointGauges(gauges=pts, activeTime=(2.0, 1.0))
+    with pytest.raises(ValueError, match="activeTime"):
+        PointGauges(gauges=pts, activeTime=(1.0,))
+
+def test_gauge_unknown_field_names_the_field():
+    g = PointGauges(gauges=((('nope',), ((0, 0, 0),)),))
+    with pytest.raises(ValueError, match="nope.*u0"):
+        run_gauge(g, [0.0])
 
 def count_gauge_rows(filename):
     return len(parse_gauge_output_times(filename))
