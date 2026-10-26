@@ -494,6 +494,8 @@ class AR_base(object):
             else getattr(self, "archived_domain", None)
         if domain is None:
             return []
+        if "times" in domain:
+            return [instant["time"] for instant in domain["times"]]
         times = []
         for collection in archive_collections(domain):
             for step in collection["data"]:
@@ -520,8 +522,8 @@ class AR_base(object):
         Returns ``None`` when there is no HDF5 metadata to assemble from,
         which is the text-archive case.
         """
-        from ymf.archive import (add_collection, add_spatial_step,
-                                 add_uniform_step, load_grid, new_domain)
+        from ymf.archive import (add_spatial_step, add_uniform_step,
+                                 load_grid, new_domain)
 
         if self.hdfFile is None:
             return None
@@ -546,27 +548,37 @@ class AR_base(object):
         recorded = self.hdfFile.attrs.get(self.GLOBAL_SYNC_ATTR)
         global_sync = self.global_sync if recorded is None else bool(int(recorded))
 
-        domain = None
-        for ci, collection_name in enumerate(collection_names):
-            if domain is None:
-                domain = new_domain(collection_name)
-            else:
-                add_collection(domain, collection_name)
-            keys = datasets.get(collection_name)
-            step = 0
-            while n_steps is None or step < n_steps:
+        #Time outside, space inside: walk the steps outermost, and let each
+        #collection's grid join the instant at its time (add_*_step with a
+        #collection name does that). A collection that is missing a step --
+        #one first archived late -- is simply absent from that instant.
+        domain = new_domain()
+        live = {name: True for name in collection_names}
+        seen = set()
+        step = 0
+        while n_steps is None or step < n_steps:
+            found = False
+            for collection_name in collection_names:
+                if not live[collection_name]:
+                    continue
+                keys = datasets.get(collection_name)
                 if keys is not None:
                     if step >= len(keys):
-                        break
+                        live[collection_name] = False
+                        continue
                     dataset_name = keys[step]
                 else:
                     dataset_name = self._metadata_dataset_name(
                         collection_name, step)
                     if dataset_name not in self.hdfFile:
-                        if n_steps is None:
-                            break      # discovered the end
-                        step += 1
+                        #Discovering the end of a collection that has had steps
+                        #ends it; one that has not had any yet is waiting for
+                        #its first (a space first archived late).
+                        if n_steps is None and collection_name in seen:
+                            live[collection_name] = False
                         continue       # writer knows the count; tolerate a gap
+                found = True
+                seen.add(collection_name)
                 grid_array = self.hdfFile[dataset_name]
                 if version == 1:
                     t, grids, step_is_global = self._v1_grids(grid_array)
@@ -579,12 +591,16 @@ class AR_base(object):
                     #one already-global grid: its pieces are the archive
                     g = grids[0]
                     add_uniform_step(domain, t, g["topology"], g["geometry"],
-                                     g.get("attributes", []), collection=ci)
+                                     g.get("attributes", []),
+                                     collection=collection_name)
                 else:
                     #one grid per rank, presented as a single instant
-                    add_spatial_step(domain, t, grids, collection=ci)
-                step += 1
-        return domain
+                    add_spatial_step(domain, t, grids,
+                                     collection=collection_name)
+            if n_steps is None and not found:
+                break
+            step += 1
+        return domain if collection_names else None
 
     def _v1_grids(self, grid_array):
         """Read one step out of a version 1 (XDMF fragment) archive.
@@ -694,7 +710,7 @@ class AR_base(object):
     def _appendLiveStep(self, live_steps):
         """Append this timestep to the running document.
 
-        One record per collection, appended and flushed. Master already
+        One record for the instant, appended and flushed. Master already
         holds the grids, so this costs no HDF5 read and no YAML parse, and
         because it appends rather than rewrites it costs the same whether
         the archive holds ten steps or ten thousand.
@@ -717,19 +733,28 @@ class AR_base(object):
             from ymf.archive import append_step, new_domain, write_ymf
             if not self._liveYmfStarted:
                 tmp = path + ".writing"
-                write_ymf(new_domain(live_steps[0][1]), tmp,
+                write_ymf(new_domain(), tmp,
                           extra=self._document_extra(with_log=False))
                 os.replace(tmp, path)
                 self._liveYmfStarted = True
+            #One record per instant: every space archived at this time, so a
+            #run killed here has the whole instant or none of it.
+            instants = []
             for _, name, t, grids in live_steps:
                 if self.global_sync:
                     g = grids[0]
-                    step = {"time": t, "topology": g["topology"],
-                            "geometry": g["geometry"],
-                            "attributes": g.get("attributes", [])}
+                    space = {"topology": g["topology"],
+                             "geometry": g["geometry"],
+                             "attributes": g.get("attributes", [])}
                 else:
-                    step = {"time": t, "spatial_collection": grids}
-                append_step(path, name, step)
+                    space = {"spatial_collection": grids}
+                if instants and instants[-1]["time"] == t \
+                        and name not in instants[-1]["spaces"]:
+                    instants[-1]["spaces"][name] = space
+                else:
+                    instants.append({"time": t, "spaces": {name: space}})
+            for instant in instants:
+                append_step(path, instant)
         except Exception as error:
             if not self._liveYmfWarned:
                 self._liveYmfWarned = True
@@ -993,11 +1018,9 @@ class AR_base(object):
 
     def _inlineStep(self, name, t, grids):
         """Append one step to the inline document, creating its collection at need."""
-        from ymf.archive import add_collection, add_spatial_step, add_uniform_step, new_domain
+        from ymf.archive import add_spatial_step, add_uniform_step, new_domain
         if self._inlineDomain is None:
-            self._inlineDomain = new_domain(name)
-        elif all(c["name"] != name for c in self._inlineDomain["time_collections"]):
-            add_collection(self._inlineDomain, name)
+            self._inlineDomain = new_domain()
         if self.global_sync:
             g = grids[0]
             add_uniform_step(self._inlineDomain, t, g["topology"], g["geometry"],
