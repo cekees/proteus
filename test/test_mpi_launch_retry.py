@@ -157,12 +157,23 @@ def test_a_launchers_signal_report_counts_as_a_crash(launch_policy):
     assert died_by_signal(subprocess.CompletedProcess(['x'], 0, '', '')) is None
 
 
-def test_the_timeout_is_scaled_for_a_slow_runner(monkeypatch):
+def test_the_timeout_is_scaled_for_a_slow_runner(monkeypatch, launch_policy):
+    # Not by running something slow against a short timeout: that depends on how long an
+    # interpreter takes to start, which on a loaded runner is the very thing that varies
+    # (it failed there with 0.3 s of margin). The wrapper is handed a stand-in for
+    # subprocess.run and asked what timeout it passed on.
     monkeypatch.setenv('PROTEUS_TEST_TIMEOUT_SCALE', '3')
-    # 1.2 s of sleep against a 0.5 s timeout: only the scale (1.5 s) lets it finish
-    result = subprocess.run([sys.executable, '-c', 'import time; time.sleep(1.2)'],
-                            timeout=0.5, capture_output=True)
-    assert result.returncode == 0
+    seen = {}
+
+    def stand_in(cmd, *args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, b'', b'')
+
+    launch_policy.retrying_run(stand_in)(['x'], timeout=0.5)
+    assert seen['timeout'] == 1.5
+    seen.clear()
+    launch_policy.retrying_run(stand_in)(['x'])
+    assert 'timeout' not in seen          # none given, none invented
 
 
 def test_the_scale_is_at_least_one_and_at_most_four(monkeypatch, launch_policy):

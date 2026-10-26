@@ -12,6 +12,7 @@ fabricate them and push them through the real writers and a real archive.
 That pins the format before the solver can produce such arrays, instead of
 finding out afterwards with archives already written.
 """
+from proteus.Archiver import archive_collections
 import os
 
 import numpy as np
@@ -110,7 +111,7 @@ def written_arrays(path):
 
 
 def items_of(domain):
-    for collection in domain["time_collections"]:
+    for collection in archive_collections(domain):
         for step in collection["data"]:
             for grid in step.get("spatial_collection", [step]):
                 yield grid["topology"]["data_item"]
