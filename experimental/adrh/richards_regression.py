@@ -15,7 +15,10 @@ Proteus stops its Newton iteration when the 2-norm of the residual is below nl_a
 leaves an error of 1e-7 to 4e-6 in the pressure head. The engine reproduces the saved profiles to round-off (about 2.5e-13) when it stops by the
 same rule (the default); converged to 1e-12 it differs from them by exactly that tolerance error, and the second line printed says so.
 
-usage: [ADRH_MODULE=adrh_kokkos] python richards_regression.py [--bc weak|strong] [--nn 41] [--steps 1000]
+usage: [ADRH_MODULE=adrh_kokkos] python richards_regression.py [--bc weak|strong] [--stabilize] [--nn 41] [--steps 1000]
+
+--stabilize replaces the consistent mass by the lumped mass and adds the discrete upwinding of lowOrder.h: a different scheme from every saved
+column, so it is checked for its bounds (the pressure head stays between the initial and the boundary data) and compared with them.
 """
 import argparse
 import csv
@@ -45,37 +48,56 @@ PONDING, BOTTOM, T_END = -0.75, -10.0, 1.0
 
 
 class Column:
-    def __init__(self, nn, bc='weak'):
+    def __init__(self, nn, bc='weak', stabilize=False):
         self.nn = nn
         self.bc = bc
+        self.stabilize = stabilize
         self.x = np.linspace(0.0, 1.0, nn)
         self.conn = np.stack([np.arange(nn - 1), np.arange(1, nn)], axis=1)
         self.xn = np.zeros((nn - 1, 2, 3)); self.xn[:, :, 0] = self.x[self.conn]
         quad = Quadrature.SimplexGaussQuadrature(1, 3)
         self.qp = np.array([list(p)[:1] for p in quad.points]); self.qw = np.array(quad.weights)
         self.fixed = np.array([0, nn - 1])
+        if stabilize:                                           # tridiagonal pattern and its transpose map, once
+            P = sp.diags([np.ones(nn - 1), np.ones(nn), np.ones(nn - 1)], [-1, 0, 1], format='csr'); P.sort_indices()
+            self.indptr, self.indices = P.indptr.astype('i'), P.indices.astype('i')
+            self.tpos = engine.transpose_map(self.indptr, self.indices)
         # the two boundary faces: the bottom point is the left vertex (local face 1) of element 0, the top the right vertex (face 0)
         # of the last element; a face of a segment has no quadrature coordinates
         self.faceElem = np.array([0, nn - 2]); self.faceLocal = np.array([1, 0], dtype='i')
         self.gD = np.array([BOTTOM, PONDING]); self.qpf = np.zeros((1, 0)); self.qwf = np.array([1.0])
 
+    def material_args(self):
+        return (np.array([ALPHA]), np.array([N_VG]), np.array([THETA_R]), np.array([THETA_S - THETA_R]), np.array([[KS]]),
+                np.array([-1.0]), 1.0, 0.0, np.zeros(self.nn - 1, dtype="i"))
+
     def system(self, u, uold, t, dt):
         ue = u[self.conn].reshape(-1, 1, 2); uo = uold[self.conn].reshape(-1, 1, 2)
-        R, J = engine.richards_vgm(1, "p1", np.array([ALPHA]), np.array([N_VG]), np.array([THETA_R]), np.array([THETA_S - THETA_R]),
-                                   np.array([[KS]]), np.array([-1.0]), 1.0, 0.0, np.zeros(self.nn - 1, dtype="i"), self.xn, ue, uo, self.qp, self.qw, t, dt)
+        mat = self.material_args()
+        # the spatial operator alone when stabilizing (the mass is lumped separately), else the engine's full element kernel
+        R, J = engine.richards_vgm(1, "p1", *mat[:4], mat[4], mat[5], mat[6], mat[7], mat[8], self.xn, ue, uo, self.qp, self.qw, t,
+                                   0.0 if self.stabilize else dt)
         n = self.nn
         rows = np.repeat(self.conn, 2, axis=1).ravel(); cols = np.tile(self.conn, (1, 2)).ravel()
         A = sp.coo_matrix((J.reshape(-1, 2, 2).ravel(), (rows, cols)), shape=(n, n)).tocsr()
         r = np.zeros(n); np.add.at(r, self.conn.ravel(), R.reshape(-1, 2).ravel())
         if self.bc == 'weak':
             ef = self.conn[self.faceElem]
-            Rf, Jf = engine.richards_vgm_faces(1, "p1", np.array([ALPHA]), np.array([N_VG]), np.array([THETA_R]), np.array([THETA_S - THETA_R]),
-                                               np.array([[KS]]), np.array([-1.0]), 1.0, 0.0, np.zeros(self.nn - 1, dtype="i"),
-                                               self.faceElem.astype("i"), self.faceLocal, self.gD, self.xn[self.faceElem], u[ef].reshape(-1, 1, 2), self.qpf, self.qwf,
-                                               t, 100.0, 1.0)
+            Rf, Jf = engine.richards_vgm_faces(1, "p1", *mat[:4], mat[4], mat[5], mat[6], mat[7], mat[8],
+                                               self.faceElem.astype("i"), self.faceLocal, self.gD, self.xn[self.faceElem],
+                                               u[ef].reshape(-1, 1, 2), self.qpf, self.qwf, t, 100.0, 1.0)
             np.add.at(r, ef.ravel(), Rf.reshape(-1, 2).ravel())
             rows = np.repeat(ef, 2, axis=1).ravel(); cols = np.tile(ef, (1, 2)).ravel()
             A = A + sp.coo_matrix((Jf.reshape(-1, 2, 2).ravel(), (rows, cols)), shape=(n, n)).tocsr()
+        if self.stabilize:
+            A.sort_indices()
+            Jv, r = engine.algebraic_dissipation(self.indptr, self.indices, self.tpos, A.data.copy(), u, r)
+            w, m, dm, mold = engine.richards_vgm_lumped(1, "p1", *mat[:4], mat[4], mat[5], mat[6], mat[7], mat[8], self.xn, ue, uo,
+                                                        self.qp, self.qw, t, dt)
+            rm = np.zeros(n); np.add.at(rm, self.conn.ravel(), (w * (m - mold) / dt).ravel())
+            dg = np.zeros(n); np.add.at(dg, self.conn.ravel(), (w * dm / dt).ravel())
+            r = r + rm
+            A = sp.csr_matrix((Jv, self.indices, self.indptr), shape=(n, n)) + sp.diags(dg)
         return r, A
 
     def strong(self, r, A, u):
@@ -132,10 +154,11 @@ def run(col, steps, tol, norm):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--bc', default='weak', choices=['weak', 'strong'])
+    ap.add_argument('--stabilize', action='store_true', help='lumped mass + discrete upwinding (lowOrder.h)')
     ap.add_argument('--nn', type=int, default=41)
     ap.add_argument('--steps', type=int, default=1000)
     a = ap.parse_args()
-    col = Column(a.nn, a.bc)
+    col = Column(a.nn, a.bc, a.stabilize)
     dt = T_END / a.steps
     ref = None
     if a.nn == 41 and a.steps == 1000:
@@ -148,9 +171,15 @@ def main():
         print("%s Dirichlet, Newton stopped at %s: %d steps of %.4g d, %d iterations (%.2f per step), %.1f s with %s" %
               (a.bc, label, a.steps, dt, its, its / a.steps, wall, engine.__name__))
         if ref is not None:
-            for frame, name in ((a.steps // 2, 'stab_0_t500'), (a.steps, 'stab_0_t1000')):
-                d = np.abs(frames[frame] - ref[name])
-                print("    t = %.3f d: against proteus (%s) max |difference| = %.3e at x = %.3f" % (frame * dt, name, d.max(), col.x[d.argmax()]))
+            for frame, tag in ((a.steps // 2, 't500'), (a.steps, 't1000')):
+                if not a.stabilize:
+                    d = np.abs(frames[frame] - ref['stab_0_' + tag])
+                    print("    t = %.3f d: against proteus (stab_0_%s) max |difference| = %.3e at x = %.3f" % (frame * dt, tag, d.max(), col.x[d.argmax()]))
+                else:                                           # a different scheme from every saved column: compare, and check the bounds
+                    u = frames[frame]
+                    print("    t = %.3f d: psi in [%.4f, %.4f] (data: [%.2f, %.2f]); against proteus's  Galerkin %.2e  entropy viscosity %.2e  FCT %.2e (max |diff|)" %
+                          (frame * dt, u.min(), u.max(), BOTTOM, PONDING, np.abs(u - ref['stab_0_' + tag]).max(),
+                           np.abs(u - ref['stab_2_' + tag]).max(), np.abs(u - ref['FCT_' + tag]).max()))
     if ref is None:
         print("  (the saved profiles are for nn = 41 and 1000 steps)")
 

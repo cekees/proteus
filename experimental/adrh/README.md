@@ -333,3 +333,38 @@ The Kokkos kernel is bitwise the host's on the CPU for both; the GPU differs fro
 Richards residual and Jacobian are not bitwise equal CPU to GPU** (`pow` and `sqrt` of the retention curve: any libm call in a Jacobian is a cross-platform bit difference, as found for the face penalty).
 The Celia column runs on the GPU module as well and matches proteus's saved profiles to 3.3e-13, and the layered column reproduces the CPU errors exactly.
 
+## Algebraic stabilization (`lowOrder.h`, `stabilization_test.py`, `stabilization_timing.py`)
+
+Consistent-mass Galerkin is not monotone: a sharp front overshoots and undershoots, which is why proteus runs its HYDRUS and Szymkiewicz Richards decks only with entropy viscosity or FCT.
+`lowOrder.h` adds the algebraic cure that needs only the assembled matrix, so it works for any coefficient functor: a **lumped mass** (`M_L,i (m(u_i) - m(u_old,i)) / dt`, `M_L,i` the integral
+of the basis function; `lumpedMassKernel`, with `bindElement` for materials) and **discrete upwinding of the spatial operator**: for each pair, the symmetric artificial diffusion `d_ij = max(0, J_ij, J_ji)`
+(`J` the Jacobian of the spatial residual), `r_i += sum_j d_ij (u_i - u_j)`, `J_ij -= d_ij`, `J_ii += sum_j d_ij`. The result has no positive off-diagonal, so with the lumped mass it is an M-matrix and satisfies a
+discrete maximum principle. It is the low-order operator of FCT and monolithic limiting: the antidiffusive correction a later limiter adds is the difference to the Galerkin operator over this same pattern and
+transpose map (`buildTransposeMap`). Row-parallel on the execution space, in two passes (`d`, then the rows), each writing only its own row: no race, the result does not depend on the thread count. `D` is
+held fixed in the Jacobian (an approximate Newton step: it converges, not quadratically). One component, P1 and Q1.
+
+* **The pass is exact.** Against a scipy implementation of the formula on the Jacobian of an advection-dominated 3D problem: 1.5e-16 (Jacobian) and 3.4e-16 (residual); 4,128 positive off-diagonals become 0; row sums change by 1e-16;
+  a constant vector's artificial residual is exactly 0. Host, CPU Kokkos and GPU give the same numbers.
+* **A sharp front** (`stabilization_test.py`: `u_t + u_x - 2e-4 u_xx = 0`, step data, cell Peclet number 25, CFL 0.2, backward Euler): consistent-mass Galerkin overshoots to 1.0052 (and undershoots to -1.3e-8); lumping alone is worse, 1.0659;
+  **lumped mass with discrete upwinding stays inside [0, 1] exactly**. It pays in accuracy: the L1 error against the exact erfc solution is 3.9e-2 against Galerkin's 1.4e-2, the smearing of a first-order monotone scheme. Mass is conserved
+  to the same digits (0.495000 against 0.495349).
+* **Richards, the Celia column** (`richards_regression.py --stabilize`): the pressure head stays exactly inside the data's bounds [-10, -0.75] at 12 h and 24 h, where plain Galerkin undershoots to -11.6 and -10.8. The front (psi = -5 m):
+
+| | 12 h | 24 h | lowest psi |
+|---|---|---|---|
+| engine, Galerkin (= proteus, 2.5e-13) | 0.6218 | 0.4373 | -11.60 |
+| **engine, lumped mass + upwinding** | 0.6184 | 0.4324 | -10.00 |
+| proteus, FCT | 0.6147 | 0.4219 | -10.00 |
+| proteus, entropy viscosity | 0.5505 | 0.3565 | -10.00 |
+
+  The algebraic scheme's front is within 0.15 and 0.4 of an element (0.025 m) of proteus's FCT front and does not lag as the entropy viscosity does; 3.5 Newton iterations per step. The profiles are not compared digit for digit
+  (different schemes), and the HYDRUS and Szymkiewicz decks are not run yet.
+* **Cost** (`stabilization_timing.py`, 3D tetrahedra, the pass against the colored assembly that produces its input, `ceds-model`):
+
+| rows | 1 thread | 96 threads | RTX 6000 Ada | transpose map (once, host) |
+|---|---|---|---|---|
+| 227 k | 7.0 ms (assembly 819 ms) | 0.3 ms (13 ms) | 0.6 ms (13.5 ms) | 9 to 19 ms |
+| 1.03 M | 79 ms (3.9 s) | 14.6 ms (65 ms) | 2.3 ms (53 ms) | 41 to 85 ms |
+
+  Two to four percent of the assembly on one thread and on the GPU. At 96 threads it is 23% at 1.03 M rows: the pass is a memory-bound gather over the CSR and scales 5x, not 50x, on the node.
+

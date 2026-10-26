@@ -22,6 +22,7 @@
 #include "coefficients.h"
 #include "engine.h"
 #include "boundary.h"
+#include "lowOrder.h"
 
 namespace adrh
 {
@@ -430,6 +431,70 @@ namespace adrh
                      FaceColorFunctor<Coefficients, BC, Space>{c, bc, wd, nQf, t, M.conn, M.blockOf, CF.order, CF.elem, CF.local,
                                                               X, U, qpf, qwf, Rg, Jv});
     }
+    Kokkos::fence();
+  }
+
+  // ---- algebraic stabilization (lowOrder.h) ------------------------------------------------------------------------------
+
+  // Both passes are row-parallel and write only their own row (pass 1 writes d on the row's entries, pass 2 the row's residual and
+  // values), so there is no race and the result does not depend on the thread count.
+  struct DissipationPass1
+  {
+    DView<const int> rowptr, colidx, tpos;
+    DView<const double> Jv;
+    DView<double> d;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      for (int p = rowptr(i); p < rowptr(i + 1); ++p) d(p) = dissipationEntry(i, p, colidx.data(), tpos.data(), Jv.data());
+    }
+  };
+  struct DissipationPass2
+  {
+    DView<const int> rowptr, colidx;
+    DView<const double> d, u;
+    DView<double> Jv, r;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      applyDissipationRow(i, rowptr.data(), colidx.data(), d.data(), Jv.data(), u.data(), r.data());
+    }
+  };
+
+  inline void algebraicDissipationKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const int> tpos,
+                                         DView<double> Jv, DView<const double> u, DView<double> r)
+  {
+    DView<double> d("dissipation", Jv.extent(0));
+    forEachElement("adrh dissipation pass 1", 0, nRows, DissipationPass1{rowptr, colidx, tpos, Jv, d});
+    Kokkos::fence();
+    forEachElement("adrh dissipation pass 2", 0, nRows, DissipationPass2{rowptr, colidx, d, u, Jv, r});
+    Kokkos::fence();
+  }
+
+  template <class Coefficients, class Space>
+  struct LumpedMassFunctor
+  {
+    static constexpr int nD = Space::nDOF;
+    Coefficients c;
+    int nQ;
+    double t, dt;
+    bool old;
+    DView<const double> xn, u, uold, qp, qw;
+    DView<double> w, m, dm, mold;
+    KOKKOS_INLINE_FUNCTION void operator()(const int e) const
+    {
+      lumpedMassOne<Coefficients, Space>(c, xn.data() + (size_t)e * nD * 3, u.data() + (size_t)e * nD,
+                                         old ? uold.data() + (size_t)e * nD : nullptr, nQ, qp.data(), qw.data(), t, dt,
+                                         w.data() + (size_t)e * nD, m.data() + (size_t)e * nD, dm.data() + (size_t)e * nD,
+                                         mold.data() + (size_t)e * nD, e);
+    }
+  };
+
+  template <class Coefficients, class Space>
+  void lumpedMassKokkos(const Coefficients &c, int nE, int nQ, DView<const double> xn, DView<const double> u, DView<const double> uold,
+                        DView<const double> qp, DView<const double> qw, double t, double dt, DView<double> w, DView<double> m,
+                        DView<double> dm, DView<double> mold)
+  {
+    forEachElement("adrh lumped mass", 0, nE,
+                   LumpedMassFunctor<Coefficients, Space>{c, nQ, t, dt, uold.extent(0) > 0, xn, u, uold, qp, qw, w, m, dm, mold});
     Kokkos::fence();
   }
 } // namespace adrh
