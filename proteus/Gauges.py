@@ -742,6 +742,17 @@ class Gauges(AV_base):
         otherwise miss every element.  Only boundaries aligned with the
         bounding box are caught; further outside, points use their nearest
         node and lines are restricted to the part inside the mesh.
+
+        .. figure:: /_generated/line_gauge_cases.svg
+           :width: 100%
+
+           Line gauges on a 2D mesh.  (1) A line gauge places points
+           (red) where the line crosses element boundaries.  (2) A line
+           outside the mesh by roundoff is snapped onto it.  (3) A line
+           partly outside, and (4) a line over a hole in the mesh, warn
+           and are restricted to the part inside (solid); the dashed
+           part is not gauged and a line integral does not interpolate
+           across it.
         """
         comm = Comm.get().comm.tompi4py()
         nodes = self.vertices
