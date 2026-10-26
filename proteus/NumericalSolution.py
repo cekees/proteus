@@ -515,6 +515,10 @@ class NS_base(object):  # (HasTraits):
                     lm.calculateSolutionAtQuadrature()
             else:
                 logEvent("No initial conditions provided for model "+p.name)
+        for model in self.modelList:
+            for av in self.auxiliaryVariables[model.name]:
+                # auxiliary variables need not derive from AV_base
+                getattr(av, "calculate_initial_solution", lambda: None)()
         if self.opts.hotStart:
             if time >= self.tnList[-1] - 1.0e-5:
                 logEvent("Modifying time interval to be tnList[-1] + tnList since tnList hasn't been modified already")

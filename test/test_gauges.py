@@ -453,3 +453,39 @@ if __name__ == '__main__':
     test_point_gauge_output()
     test_point_gauge_output_2()
     test_line_integral_gauge_output()
+
+def test_first_gauge_row_is_the_initial_condition(tmp_path, monkeypatch):
+    # NumericalSolution used to sample auxiliary variables before the initial
+    # conditions were set, so the t0 row of every gauge file was zeros
+    from proteus import ADRProblem, NumericalSolution, SplitOperator, defaults, default_s, runtime
+    monkeypatch.chdir(tmp_path)
+    problem = {
+        "adr": {"dim": 2, "components": ["u"],
+                "equations": [{
+                    "component": "u",
+                    "mass": {"m": "u", "dm": {"u": "1"}, "depends_on": {"u": "linear"}},
+                    "diffusion": {"u": {"rowptr": [0, 1, 2], "colind": [0, 1],
+                                        "a": ["1.0", "1.0"], "da": {}, "depends_on": {}}},
+                    "reaction": {"r": "4.0 + 4.0*t - x**2 - y**2", "dr": {}, "depends_on": {}}}]},
+        "domain": {"lower": [0.0, 0.0], "upper": [1.0, 1.0]},
+        "time": [0.0, 1.0],
+        "has_mass": True,
+        "dirichlet": [{"component": "u", "region": "all", "where": "x <= tol or y <= tol or y >= 1.0 - tol or x >= 1.0 - tol",
+                       "value": "(x**2 + y**2)*(1.0 + t)"}],
+        "initial": {"u": "x**2 + y**2"},
+        "exact": {"u": "(x**2 + y**2)*(1.0 + t)"},
+    }
+    runtime.start(log=None)
+    problem, pp, nn, system = ADRProblem.setup(problem, {"u": ("CG", 1)}, 8, time={"dt": 0.25})
+    ADRProblem.write_poly(pp)
+    nn.auxiliaryVariables = [PointGauges(gauges=((('u',), ((0.5, 0.5, 0.0),)),), fileName='initial_row.csv')]
+    so = defaults.System_base(name="adr", pnList=[(pp, nn)], sList=[default_s])
+    so.tnList = system["tnList"]
+    so.systemStepControllerType = SplitOperator.Sequential_FixedStep
+    so.dt_system_fixed = system["dt_system_fixed"]
+    ns = NumericalSolution.NS_base(so, [pp], [nn], so.sList, runtime.RunOptions())
+    ns.calculateSolution("adr")
+    names, data = parse_gauge_output('initial_row.csv')
+    data = np.atleast_2d(data)
+    npt.assert_allclose(data[0], [0.0, 0.5], atol=1e-12)
+    npt.assert_allclose(data[-1, 1], 0.5*(1 + data[-1, 0]), rtol=1e-2)

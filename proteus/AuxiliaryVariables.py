@@ -45,6 +45,10 @@ class AV_base(object):
             attribute(name, item, center="Grid", attribute_type="Scalar"))
     def calculate_init(self):
         self.calculate()
+    def calculate_initial_solution(self):
+        """Called once the initial conditions of every model are set (calculate_init
+        is called before, while the solution is still zero)."""
+        pass
     def calculate(self):
         pass
 
