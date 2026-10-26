@@ -541,12 +541,10 @@ def parallel_periodic(problem, spaces, ranks=None):
     degrees of freedom are the mesh nodes. On one rank the serial path
     merges each component's own pairs, in any space.
 
-    And no equation may have an advective term: on a partition without
-    overlap, the faces between ranks are exterior faces of each rank's
-    mesh, and Proteus computes an advective boundary flux on them that does
-    not cancel (non-periodic problems give wrong answers there too, on such
-    a partition; ADRProblem never uses one otherwise). Diffusion computes
-    nothing on a face without a boundary condition, so is unaffected.
+    Advection is allowed: the faces between ranks are exterior faces of each
+    rank's mesh, but the weak upwind fluxes ADRProblem uses give the two
+    ranks equal and opposite interface fluxes, which cancel when the
+    shared dofs are summed (test_adr_problem, advection across a rank cut).
     """
     if not problem.get("periodic"):
         return False
@@ -560,13 +558,6 @@ def parallel_periodic(problem, spaces, ranks=None):
             "(this run has %d ranks, and %s): Proteus's parallel periodic numbering is "
             "nodal and shared by all components; run on one process"
             % (ranks, ", ".join("%s %s%d" % (c, f, o) for c, (f, o) in spaces.items())))
-    advective = [e["component"] for e in problem["adr"]["equations"] if e.get("advection")]
-    if advective:
-        raise ValueError(
-            "periodic conditions on more than one rank are solved without advection "
-            "only for now (this run has %d ranks, and %s advected): on the partition "
-            "they need, Proteus's advective flux across the faces between ranks is "
-            "wrong; run on one process" % (ranks, ", ".join(advective)))
     return True
 
 
