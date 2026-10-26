@@ -276,12 +276,14 @@ PYBIND11_MODULE(adrh_proto, m)
       adrh::antidiffusiveFluxRow(i, indptr.data(), indices.data(), C.data(), S.data(), phi.data(), kr.data(), A.mutable_data());
     return A;
   });
-  m.def("fct_limit_flux", [](IArrL indptr, IArrL indices, IArrL tpos, Arr Mc, Arr A, Arr ML, Arr mL, Arr mold, double dt) {
+  // bounds_old: take the local extrema over mold as well as mL (False: over mL alone, as proteus's FCTStep does when it is not monolithic)
+  m.def("fct_limit_flux", [](IArrL indptr, IArrL indices, IArrL tpos, Arr Mc, Arr A, Arr ML, Arr mL, Arr mold, double dt, bool bounds_old) {
     py::array_t<double> out(mL.size());
-    adrh::fctLimitFlux((int)indptr.size() - 1, indptr.data(), indices.data(), tpos.data(), Mc.data(), A.data(), ML.data(), mL.data(), mold.data(), dt,
-                       out.mutable_data());
+    adrh::fctLimitFlux((int)indptr.size() - 1, indptr.data(), indices.data(), tpos.data(), Mc.data(), A.data(), ML.data(), mL.data(), mold.data(),
+                       bounds_old ? mold.data() : mL.data(), dt, out.mutable_data());
     return out;
-  });
+  }, py::arg("indptr"), py::arg("indices"), py::arg("tpos"), py::arg("Mc"), py::arg("A"), py::arg("ML"), py::arg("mL"), py::arg("mold"), py::arg("dt"),
+     py::arg("bounds_old") = true);
   // ---- algebraic stabilization (lowOrder.h) ----
   m.def("transpose_map", [](py::array_t<int, py::array::c_style | py::array::forcecast> indptr, py::array_t<int, py::array::c_style | py::array::forcecast> indices) {
     const std::vector<int> t = adrh::buildTransposeMap((int)indptr.size() - 1, indptr.data(), indices.data());

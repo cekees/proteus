@@ -7,7 +7,7 @@ edge, F_ij = kr_up c_ij (phi_j - phi_i), c_ij = max(0, -S_ij), S the stiffness K
   1. the stiffness matrices of the element kernel (mode 1: S; mode 2: K_r frozen at the quadrature points) are symmetric with zero row sums;
   2. upwind_flux against a straightforward edge loop in numpy, its Jacobian against finite differences of the residual, and conservation
      (the residual sums to zero and so does every column of the Jacobian);
-  3. the antidiffusive flux is antisymmetric and the FCT built on it keeps the local bounds and the mass M_L u exactly; with the antidiffusion
+  3. the antidiffusive flux is antisymmetric and the FCT built on it keeps the local bounds (over the new and old states, or over the new one alone) and the mass M_L u exactly; with the antidiffusion
      d_ij (v_i - v_j) of the Jacobian-based scheme it gives the same bits as fct_limit.
 
 usage: [ADRH_MODULE=adrh_kokkos] python upwind_test.py
@@ -122,6 +122,13 @@ def test_operator(name, psk, alpha, nvg):
     print("  FCT on the antidiffusive flux: local bounds violated by %.1e, mass M_L m changed by %.1e (relative), moved the low-order state by %.2e" % (
         viol, abs(ML @ (out - mL)) / (ML @ np.abs(mL)), np.abs(out - mL).max()))
     assert viol < 1e-13 and abs(ML @ (out - mL)) < 1e-13 * (ML @ np.abs(mL))
+    # the bounds over the low-order state alone (proteus's FCTStep): tighter, so the correction is smaller
+    outb = engine.fct_limit_flux(indptr, indices, tpos, Mc, A, ML, mL, mold, dt, False)
+    hi2 = np.array([max(mL[j] for j in indices[indptr[i]:indptr[i + 1]]) for i in range(n)])
+    lo2 = np.array([min(mL[j] for j in indices[indptr[i]:indptr[i + 1]]) for i in range(n)])
+    print("  with the bounds over the low-order state alone: violated by %.1e, mass changed by %.1e, moved the state by %.2e" % (
+        max(0.0, (outb - hi2).max(), (lo2 - outb).max()), abs(ML @ (outb - mL)) / (ML @ np.abs(mL)), np.abs(outb - mL).max()))
+    assert max(0.0, (outb - hi2).max(), (lo2 - outb).max()) < 1e-13 and abs(ML @ (outb - mL)) < 1e-13 * (ML @ np.abs(mL))
     # the same limiter with the Jacobian-based antidiffusion d_ij (v_i - v_j) is fct_limit
     d = engine.dissipation_values(indptr, indices, tpos, Jv)
     v = rng.uniform(0, 1, n)

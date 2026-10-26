@@ -78,13 +78,14 @@ CASES = {
 
 
 class Column:
-    def __init__(self, nn, bc='weak', stabilize=False, fct=False, case=None, upwind=False):
+    def __init__(self, nn, bc='weak', stabilize=False, fct=False, case=None, upwind=False, proteus_limiter=False):
         self.case = case = case or CASES['celia']
         self.psk = case.psk
         self.nn = nn
         self.bc = bc
         self.fct = fct
         self.upwind = upwind
+        self.proteus_limiter = proteus_limiter
         stabilize = stabilize or fct or upwind
         self.stabilize = stabilize
         if upwind and bc != 'strong':
@@ -213,7 +214,8 @@ class Column:
         mo = np.zeros(n); np.add.at(mo, self.conn.ravel(), (w * mold).ravel()); mo /= ML
         Mel = engine.consistent_mass(1, "p1", self.xn, self.qp, self.qw)[0]
         Mc = self.pattern_matrix(Mel)
-        mnew = engine.fct_limit_flux(self.indptr, self.indices, self.tpos, Mc.data.copy(), A, ML, mL, mo, dt)
+        # proteus_limiter: the local extrema over the low-order moisture content alone (proteus's non-monolithic FCTStep), not over the old one too
+        mnew = engine.fct_limit_flux(self.indptr, self.indices, self.tpos, Mc.data.copy(), A, ML, mL, mo, dt, not self.proteus_limiter)
         u = self.invert(mnew, uL)
         u[self.fixed] = uL[self.fixed]
         return u, mnew, ML
@@ -294,13 +296,14 @@ def main():
     ap.add_argument('--bc', default='weak', choices=['weak', 'strong'])
     ap.add_argument('--stabilize', action='store_true', help='lumped mass + discrete upwinding (lowOrder.h)')
     ap.add_argument('--upwind', action='store_true', help="proteus's low-order operator: K at the upwind node on the total head, lumped mass, strong Dirichlet (--bc strong)")
+    ap.add_argument('--proteus-limiter', action='store_true', help="with --upwind --fct: take the limiter's local bounds over the low-order moisture content alone, as proteus's FCTStep does")
     ap.add_argument('--fct', action='store_true', help='stabilize, then the FCT limiter on the moisture content')
     ap.add_argument('--nn', type=int, default=None)
     ap.add_argument('--steps', type=int, default=None)
     a = ap.parse_args()
     case = CASES[a.case]
     nn = a.nn or case.nn; steps = a.steps or case.steps
-    col = Column(nn, a.bc, a.stabilize, a.fct, case, a.upwind)
+    col = Column(nn, a.bc, a.stabilize, a.fct, case, a.upwind, a.proteus_limiter)
     dt = case.t_end / steps
     ref = None
     if nn == case.nn and steps == case.steps:

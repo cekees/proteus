@@ -314,12 +314,14 @@ namespace adrh
     }
   }
 
+  // moldFlux: the old state the flux pass differences mL against (delta = mL - moldFlux); moldBounds: the one the local extrema are taken over
+  // together with mL (pass mL itself to take them over the low-order state alone, as proteus's non-monolithic FCTStep does)
   inline void fctLimitFlux(int nRows, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *A, const double *ML,
-                           const double *mL, const double *mold, double dt, double *mOut)
+                           const double *mL, const double *moldFlux, const double *moldBounds, double dt, double *mOut)
   {
     std::vector<double> G(rowptr[nRows]), Rp(nRows), Rm(nRows);
-    for (int i = 0; i < nRows; ++i) fctFluxRowA(i, rowptr, colidx, tpos, Mc, A, mL, mold, dt, G.data());
-    for (int i = 0; i < nRows; ++i) fctBoundsRow(i, rowptr, colidx, G.data(), mL, mold, ML, dt, Rp.data(), Rm.data());
+    for (int i = 0; i < nRows; ++i) fctFluxRowA(i, rowptr, colidx, tpos, Mc, A, mL, moldFlux, dt, G.data());
+    for (int i = 0; i < nRows; ++i) fctBoundsRow(i, rowptr, colidx, G.data(), mL, moldBounds, ML, dt, Rp.data(), Rm.data());
     for (int i = 0; i < nRows; ++i) fctApplyRow(i, rowptr, colidx, G.data(), Rp.data(), Rm.data(), ML, mL, dt, mOut);
   }
 } // namespace adrh

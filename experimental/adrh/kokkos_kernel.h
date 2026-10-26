@@ -614,13 +614,13 @@ namespace adrh
   }
 
   inline void fctLimitFluxKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const int> tpos, DView<const double> Mc,
-                                 DView<const double> A, DView<const double> ML, DView<const double> mL, DView<const double> mold, double dt,
-                                 DView<double> mOut)
+                                 DView<const double> A, DView<const double> ML, DView<const double> mL, DView<const double> moldFlux,
+                                 DView<const double> moldBounds, double dt, DView<double> mOut)
   {
     DView<double> G("fct flux", colidx.extent(0)), Rp("R+", nRows), Rm("R-", nRows);
-    forEachElement("adrh fct pass 1", 0, nRows, FctFluxPassA{rowptr, colidx, tpos, Mc, A, mL, mold, dt, G});
+    forEachElement("adrh fct pass 1", 0, nRows, FctFluxPassA{rowptr, colidx, tpos, Mc, A, mL, moldFlux, dt, G});
     Kokkos::fence();
-    forEachElement("adrh fct pass 2", 0, nRows, FctBoundsPass{rowptr, colidx, G, mL, mold, ML, dt, Rp, Rm});
+    forEachElement("adrh fct pass 2", 0, nRows, FctBoundsPass{rowptr, colidx, G, mL, moldBounds, ML, dt, Rp, Rm});
     Kokkos::fence();
     forEachElement("adrh fct pass 3", 0, nRows, FctApplyPass{rowptr, colidx, G, Rp, Rm, ML, mL, dt, mOut});
     Kokkos::fence();

@@ -11,7 +11,8 @@ conductivity) of every scheme is compared with
 The columns: the largest and the L1 (integral) difference of theta from the reference, and the position of the front (the first place theta falls
 through the middle between the wet boundary value and the driest initial value, scanning down from the wet boundary). The engine schemes are the Galerkin discretization with the consistent mass
 (weak Dirichlet data, as the saved plain-Galerkin columns), the Jacobian-based discrete upwinding of lowOrder.h, and the K-upwinded low-order scheme
-and its FCT correction (strong Dirichlet data, as proteus does for them).
+and its FCT correction (strong Dirichlet data, as proteus does for them), with the limiter's local bounds taken over the new and old low-order moisture
+content (ours) or over the new one alone (proteus's FCTStep).
 
 usage: [ADRH_MODULE=adrh_kokkos] python richards_decks.py [celia|hydrus|szymkiewicz ...] [--refine 8]
 """
@@ -27,6 +28,7 @@ SCHEMES = (  # label, Column keywords, run options
     ('Jacobian upwinding, lumped', dict(bc='weak', stabilize=True)),
     ('K-upwind, lumped', dict(bc='strong', upwind=True)),
     ('K-upwind + FCT', dict(bc='strong', upwind=True, fct=True)),
+    ('K-upwind + FCT, proteus bounds', dict(bc='strong', upwind=True, fct=True, proteus_limiter=True)),
 )
 
 
@@ -78,7 +80,7 @@ def main():
         nn_f = (case.nn - 1) * k + 1
         print("\n=== %s: L = %g m, %d nodes, %d steps of %.4g d; theta front level %.3f; reference %d nodes x %d steps (and %d x %d)" % (
             name, case.L, case.nn, case.steps, case.t_end / case.steps, level, nn_f, case.steps * k, (nn_f - 1) * 2 + 1, case.steps * k * 2))
-        fine, _ = solve(case, nn_f, case.steps * k, case.frames, bc='strong', upwind=True, fct=True)
+        fine, _ = solve(case, nn_f, case.steps * k, case.frames, bc='strong', upwind=True, fct=True)  # the reference keeps the wider bounds
         finer, _ = solve(case, (nn_f - 1) * 2 + 1, case.steps * k * 2, case.frames, bc='strong', upwind=True, fct=True)
         sols = {}
         for label, kw in SCHEMES:
