@@ -494,13 +494,27 @@ class Gauges(AV_base):
                                      'owning_proc': comm.rank}
             new_points[point] = points[point]
 
+        # a segment's start point is the end of the previous segment unless
+        # the line has just come back into the mesh (at its start, or after a hole)
+        direction = np.asarray(endpoints[1], np.double) - np.asarray(endpoints[0], np.double)
+        length = norm(direction)
+        def parameter(point):
+            return np.dot(np.asarray(point, np.double) - endpoints[0], direction)/length**2
+        end_parameters = np.sort([parameter(segment[1]) for segment in line_segments])
+
+        def continuesPreviousSegment(point):
+            t = parameter(point)
+            i = np.searchsorted(end_parameters, t - 1e-9)
+            return i < len(end_parameters) and end_parameters[i] <= t + 1e-9
+
         for segment in line_segments:
             logEvent("Processing segment [ %e %e %e ] to [ %e %e %e ]" % (
                 segment[0][0], segment[0][1], segment[0][2],
                 segment[1][0], segment[1][1], segment[1][2]), 5)
             startPoint, endPoint = segment
-            # only add both sides of segment to line integral gauges and first segment
-            if self.isLineIntegralGauge or all(startPoint == endpoints[0]):
+            # line integral gauges need both sides of every segment, line gauges
+            # only the points where the line enters the mesh
+            if self.isLineIntegralGauge or not continuesPreviousSegment(startPoint):
                 addPoint(points, field, startPoint)
             addPoint(points, field, endPoint)
 

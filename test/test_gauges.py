@@ -45,7 +45,7 @@ def build3DMesh(p, nnx, nny, nnz):
                                                nLayersOfOverlap=0,
                                                parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
 
-def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transform=None):
+def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transform=None, mesh_builder=None):
     comm = Comm.get()
 
     #Simplified Physics
@@ -73,7 +73,9 @@ def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transfo
     if total_nodes is None:
         total_nodes = 2*comm.size()
 
-    if p.nd == 1:
+    if mesh_builder is not None:
+        mlMesh = mesh_builder()
+    elif p.nd == 1:
         mlMesh = build1DMesh(p, total_nodes+1)
     elif p.nd == 2:
         if nnx is None:
@@ -522,3 +524,68 @@ if __name__ == '__main__':
     test_point_gauge_output()
     test_point_gauge_output_2()
     test_line_integral_gauge_output()
+
+def build_turek_cylinder_mesh():
+    """The stored 2D mesh of the flow-around-a-cylinder benchmark: a 2.2 x 0.41
+    channel with a hole of radius 0.1 centered at (0.2, 0.2)."""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'cylinder2D', 'conforming_rans2p', 'mesh_cylinder2D')
+    mesh = MeshTools.TriangularMesh()
+    mesh.generateFromTriangleFiles(filebase=base, base=1)
+    mlMesh = MeshTools.MultilevelTriangularMesh(0, 0, 0, skipInit=True,
+                                                nLayersOfOverlap=0,
+                                                parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
+    mlMesh.generateFromExistingCoarseMesh(mesh, 1, nLayersOfOverlap=0,
+                                          parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
+    return mlMesh
+
+# a line along the channel through the center of the cylinder, with both ends
+# a roundoff outside the inflow and outflow boundaries
+TUREK_LINE = ((-1e-12, 0.2, 0), (2.2 + 1e-12, 0.2, 0))
+
+def test_line_gauge_across_cylinder_hole(monkeypatch):
+    messages = []
+    import proteus.Gauges as G
+    monkeypatch.setattr(G, 'logEvent', lambda msg, level=0: messages.append((level, msg)))
+    filename = 'test_turek_line.csv'
+    silent_rm(filename)
+    l = LineGauges(gauges=((('u0',), (TUREK_LINE,)),), fileName=filename)
+    run_gauge(l, [0.0], nd=2, mesh_builder=build_turek_cylinder_mesh)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    x = np.array([float(n.split('[')[1].split()[0]) for n in names])
+    # snapped onto the inflow and outflow boundaries
+    npt.assert_allclose([x.min(), x.max()], [0.0, 2.2], atol=1e-12)
+    # nothing is gauged inside the hole, and points exist on both sides of it
+    assert not np.any(np.abs(x - 0.2) < 0.09)
+    assert np.any(x < 0.2) and np.any(x > 0.2)
+    # the line is gauged up to the hole on the left and from the hole on the right
+    npt.assert_allclose([x[x < 0.2].max(), x[x > 0.2].min()], [0.1, 0.3], atol=1e-5)
+    # the header prints coordinates to six digits
+    npt.assert_allclose(np.atleast_2d(data)[0, 1:], x + 2.0, atol=1e-4)
+    assert any('outside' in msg and level <= 1 for level, msg in messages)
+
+def test_line_integral_across_cylinder_hole():
+    filename = 'test_turek_line_integral.csv'
+    silent_rm(filename)
+    lg = 'test_turek_line_points.csv'
+    silent_rm(lg)
+    run_gauge(LineGauges(gauges=((('u0',), (TUREK_LINE,)),), fileName=lg),
+              [0.0], nd=2, mesh_builder=build_turek_cylinder_mesh)
+    Comm.get().barrier()
+    names, _ = parse_gauge_output(lg)
+    delete_file(lg)
+    x = np.sort([float(n.split('[')[1].split()[0]) for n in names])
+    # the hole is the one gap between consecutive gauge points that is not a mesh edge crossing
+    gap = np.argmax(np.diff(x))
+    xa, xb = x[gap], x[gap + 1]
+    assert xb - xa > 0.15
+    exact = (2.2**2/2 + 2*2.2) - ((xb**2 - xa**2)/2 + 2*(xb - xa))
+    l = LineIntegralGauges(gauges=((('u0',), (TUREK_LINE,)),), fileName=filename)
+    run_gauge(l, [0.0], nd=2, mesh_builder=build_turek_cylinder_mesh)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    # xa and xb come from a header that prints six digits
+    npt.assert_allclose(np.atleast_2d(data)[0, 1], exact, rtol=1e-5)
