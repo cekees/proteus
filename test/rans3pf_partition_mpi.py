@@ -6,9 +6,9 @@ face with no condition its momentum flux has a one-sided inflow term, and the fa
 neighbour are such faces when the partition has no overlap. FluxBoundaryConditions specifies a zero advective
 flux there; NOZERO=1 turns that off, as a control.
 
-On more than one rank the pressure models are solved with PETSc (the case solves them with SuperLU), and the
-pressure increment, which pins a dof in serial, keeps its constant in the null space instead; the velocity
-does not depend on the pressure increment's constant. Prints RESULT with the L2 norms squared of u and v.
+On more than one rank the pressure models are solved with PETSc (the case solves them with SuperLU). The
+pressure increment pins a dof in serial and keeps its constant in the null space on more than one rank
+(PresInc does that itself); the velocity does not depend on the constant. Prints RESULT with the L2 norms squared of u and v.
 PART_TYPE / NLAYERS pick the partition (mesh and assembly alike); NSTEPS the number of time levels.
 """
 import os, sys
@@ -41,11 +41,6 @@ for p, n in pn:
         n.linearSmoother = None
     n.parallelPartitioningType = ptype; n.nLayersOfOverlapForParallel = nl
     pl.append(p); nl_.append(n)
-if not C.useSuperlu:
-    pc = pressureincrement_p.coefficients
-    pc.fixNullSpace = False
-    pc.nullSpace = 'ConstantComponentsNullSpace'
-    pc.nullSpaceComponents = [0]
 so.tnList = so.tnList[:int(os.environ.get("NSTEPS", "5"))]
 so.name += "_r3"
 ns = proteus.NumericalSolution.NS_base(so, pl, nl_, [default_s]*4, opts)

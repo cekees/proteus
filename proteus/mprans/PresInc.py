@@ -710,6 +710,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.comm = comm
         if comm.size() > 1:
             assert numericalFluxType is not None and numericalFluxType.useWeakDirichletConditions, "You must use a numerical flux to apply weak boundary conditions for parallel runs"
+            if self.coefficients.fixNullSpace:
+                # fixNullSpace pins dof 0 on rank 0 by rewriting its row. Under a
+                # partition without overlap that dof can be shared, and the other
+                # rank adds its partial row back, so the pin is wrong. The
+                # increment is determined up to a constant, which is what the
+                # constant null space of the KSP solve removes.
+                self.coefficients.fixNullSpace = False
+                self.coefficients.nullSpace = 'ConstantComponentsNullSpace'
+                self.coefficients.nullSpaceComponents = [0]
 
         log(memory("stride+offset", "OneLevelTransport"), level=4)
         if numericalFluxType is not None:
