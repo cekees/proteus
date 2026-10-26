@@ -138,6 +138,23 @@ namespace
     adrh::DView<double> dX_, dqp_, dqw_, dU_, dUold_, dRg_, dJv_;
   };
 
+  template <class C, class Space>
+  py::tuple runSpace(const C &coef, Arr xn, Arr u, Arr qp, Arr qw)
+  {
+    constexpr int nc = C::nc, nD = Space::nDOF;
+    const int nE = (int)xn.shape(0), nQ = (int)qw.shape(0);
+    py::array_t<double> R({nE, nc, nD}), J({nE, nc, nD, nc, nD});
+    {
+      py::gil_scoped_release release;
+      adrh::DView<double> dxn = up(xn), du = up(u), dqp = up(qp), dqw = up(qw), duo("uo", 0);
+      adrh::DView<double> dR("R", R.size()), dJ("J", J.size());
+      adrh::elementKernelKokkosSpace<C, Space>(coef, nE, nQ, dxn, du, duo, dqp, dqw, 0.0, 0.0, dR, dJ);
+      Kokkos::deep_copy(HostView(R.mutable_data(), R.size()), dR);
+      Kokkos::deep_copy(HostView(J.mutable_data(), J.size()), dJ);
+    }
+    return py::make_tuple(R, J);
+  }
+
   void finalize()
   {
     if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
@@ -193,12 +210,23 @@ PYBIND11_MODULE(adrh_kokkos, m)
     if (sparse) return run<adrh::Chain5<true>, 3>(adrh::Chain5<true>(), xn, u, uold, qp, qw, t, dt);
     return run<adrh::Chain5<false>, 3>(adrh::Chain5<false>(), xn, u, uold, qp, qw, t, dt);
   });
-  // the host module's signature, with the space; the Kokkos port is of the P1 simplex kernel (masked.h) only
+  // the host module's signature, with the space: p1 runs the affine simplex kernel (masked.h), p2 and q1 the Lagrange-space kernel
+  // (engine.h, isoparametric geometry at every point)
   m.def("advection_diffusion_sine", [](int nd, const std::string &space, Arr b, double kappa, Arr omega, double omega0,
-                                        Arr xn, Arr u, Arr qp, Arr qw) {
+                                        Arr xn, Arr u, Arr qp, Arr qw) -> py::tuple {
+    if (space == "p2" || space == "q1")
+    {
+      auto go = [&](auto tag) -> py::tuple {
+        using S = decltype(tag);
+        adrh::AdvectionDiffusionSine<S::nS> c(b.data(), kappa, omega.data(), omega0);
+        return runSpace<adrh::AdvectionDiffusionSine<S::nS>, S>(c, xn, u, qp, qw);
+      };
+      if (space == "p2") return nd == 2 ? go(adrh::P2Simplex<2>{}) : go(adrh::P2Simplex<3>{});
+      return nd == 2 ? go(adrh::Q1Cube<2>{}) : go(adrh::Q1Cube<3>{});
+    }
     if (space != "p1")
     {
-      PyErr_SetString(PyExc_NotImplementedError, "the Kokkos port covers the P1 simplex kernel; spaces p2 and q1 (engine.h) are not ported");
+      PyErr_SetString(PyExc_ValueError, "space must be p1, p2 or q1");
       throw py::error_already_set();
     }
     if (nd == 2)

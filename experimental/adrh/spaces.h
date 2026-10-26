@@ -14,6 +14,7 @@
 // (nDOF points with 3 coordinates each, as proteus stores them).
 #pragma once
 #include <cmath>
+#include "portable.h"
 
 namespace adrh
 {
@@ -23,7 +24,7 @@ namespace adrh
     static constexpr int nS = nS_, nVertices = nS_ + 1, nFaces = nS_ + 1, nFaceVertices = nS_;
     static_assert(nS_ == 2 || nS_ == 3, "triangles or tetrahedra");
     // barycentric coordinates lambda_0 = 1 - sum xi, lambda_i = xi_{i-1}, and their constant gradients
-    static void bary(const double *xi, double *lam, double (*glam)[nS_])
+    ADRH_FN ADRH_FORCE_INLINE static void bary(const double *xi, double *lam, double (*glam)[nS_])
     {
       lam[0] = 1.0;
       for (int I = 0; I < nS_; ++I) { lam[0] -= xi[I]; glam[0][I] = -1.0; }
@@ -34,10 +35,10 @@ namespace adrh
       }
     }
     // face k is opposite vertex k; its vertices in increasing order
-    static int faceVertex(int k, int m) { return m < k ? m : m + 1; }
+    ADRH_FN static int faceVertex(int k, int m) { return m < k ? m : m + 1; }
     // eta (nS - 1) on the reference (nS-1)-simplex -> xi on face k: lambda_k = 0, lambda_{faceVertex(k,0)} = 1 - sum eta,
     // lambda_{faceVertex(k,m)} = eta_{m-1}
-    static void faceToReference(int k, const double *eta, double *xi)
+    ADRH_FN ADRH_FORCE_INLINE static void faceToReference(int k, const double *eta, double *xi)
     {
       double lam[nS_ + 1];
       lam[k] = 0.0;
@@ -49,7 +50,7 @@ namespace adrh
       }
       for (int i = 1; i <= nS_; ++i) xi[i - 1] = lam[i];
     }
-    static void referenceNormal(int k, double *n)
+    ADRH_FN ADRH_FORCE_INLINE static void referenceNormal(int k, double *n)
     {
       for (int I = 0; I < nS_; ++I) n[I] = (k == 0) ? 1.0 : ((I == k - 1) ? -1.0 : 0.0);
     }
@@ -59,7 +60,7 @@ namespace adrh
   struct P1Simplex : SimplexBase<nS_>
   {
     static constexpr int nDOF = nS_ + 1;
-    static void basis(const double *xi, double *w, double (*gw)[nS_]) { SimplexBase<nS_>::bary(xi, w, gw); }
+    ADRH_FN ADRH_FORCE_INLINE static void basis(const double *xi, double *w, double (*gw)[nS_]) { SimplexBase<nS_>::bary(xi, w, gw); }
   };
 
   // Quadratic Lagrange on simplices, proteus's numbering (QuadraticOnSimplexWithNodalBasis): vertices, then the
@@ -68,10 +69,21 @@ namespace adrh
   struct P2Simplex : SimplexBase<nS_>
   {
     static constexpr int nDOF = (nS_ + 1) * (nS_ + 2) / 2, nEdges = nDOF - nS_ - 1;
-    static constexpr int edges2[3][2] = {{0, 1}, {1, 2}, {0, 2}};
-    static constexpr int edges3[6][2] = {{0, 1}, {1, 2}, {2, 3}, {0, 2}, {1, 3}, {0, 3}};
-    static constexpr int edge(int e, int end) { return nS_ == 2 ? edges2[e][end] : edges3[e][end]; }
-    static void basis(const double *xi, double *w, double (*gw)[nS_])
+    // edge e's end vertices; the table is local so that a device function can index it with a run-time e
+    ADRH_FN static constexpr int edge(int e, int end)
+    {
+      if constexpr (nS_ == 2)
+      {
+        constexpr int edges2[3][2] = {{0, 1}, {1, 2}, {0, 2}};
+        return edges2[e][end];
+      }
+      else
+      {
+        constexpr int edges3[6][2] = {{0, 1}, {1, 2}, {2, 3}, {0, 2}, {1, 3}, {0, 3}};
+        return edges3[e][end];
+      }
+    }
+    ADRH_FN ADRH_FORCE_INLINE static void basis(const double *xi, double *w, double (*gw)[nS_])
     {
       double lam[nS_ + 1], glam[nS_ + 1][nS_];
       SimplexBase<nS_>::bary(xi, lam, glam);
@@ -96,7 +108,7 @@ namespace adrh
     static constexpr int nS = Space::nS, nDOF = Space::nDOF;
     double w[nDOF], gw[nDOF][nS], x[3], Jinv[nS][nS], adet;
     // X: the element's nDOF node coordinates, 3 each
-    void compute(const double *X, const double *xi)
+    ADRH_FN ADRH_FORCE_INLINE void compute(const double *X, const double *xi)
     {
       double gwref[nDOF][nS];
       Space::basis(xi, w, gwref);
@@ -140,7 +152,7 @@ namespace adrh
       }
     }
     // outward unit normal of face k at this point and the face measure per unit face-quadrature weight
-    void faceNormal(int k, double *nrm, double &vn) const
+    ADRH_FN ADRH_FORCE_INLINE void faceNormal(int k, double *nrm, double &vn) const
     {
       double nref[nS];
       Space::referenceNormal(k, nref);
@@ -165,14 +177,14 @@ namespace adrh
     static constexpr int nS = nS_, nDOF = 1 << nS_, nVertices = nDOF, nFaces = 2 * nS_, nFaceVertices = 1 << (nS_ - 1);
     static_assert(nS_ == 2 || nS_ == 3, "quadrilaterals or hexahedra");
     // the sign of node b's reference coordinate I
-    static constexpr double sgn(int b, int I)
+    ADRH_FN static constexpr double sgn(int b, int I)
     {
       const int q = b % 4;
       if (I == 0) return (q == 1 || q == 2) ? 1.0 : -1.0;
       if (I == 1) return (q >= 2) ? 1.0 : -1.0;
       return (b >= 4) ? 1.0 : -1.0;
     }
-    static void basis(const double *xi, double *w, double (*gw)[nS_])
+    ADRH_FN ADRH_FORCE_INLINE static void basis(const double *xi, double *w, double (*gw)[nS_])
     {
       constexpr double scale = 1.0 / nDOF;
       for (int b = 0; b < nDOF; ++b)
@@ -189,7 +201,7 @@ namespace adrh
         }
       }
     }
-    static int faceVertex(int k, int m)
+    ADRH_FN static int faceVertex(int k, int m)
     {
       const int I = k / 2;
       const double side = (k % 2) ? 1.0 : -1.0;
@@ -198,13 +210,13 @@ namespace adrh
         if (sgn(b, I) == side && seen++ == m) return b;
       return -1;
     }
-    static void faceToReference(int k, const double *eta, double *xi)
+    ADRH_FN ADRH_FORCE_INLINE static void faceToReference(int k, const double *eta, double *xi)
     {
       const int I = k / 2;
       int m = 0;
       for (int J = 0; J < nS_; ++J) xi[J] = (J == I) ? ((k % 2) ? 1.0 : -1.0) : eta[m++];
     }
-    static void referenceNormal(int k, double *n)
+    ADRH_FN ADRH_FORCE_INLINE static void referenceNormal(int k, double *n)
     {
       for (int J = 0; J < nS_; ++J) n[J] = (J == k / 2) ? ((k % 2) ? 1.0 : -1.0) : 0.0;
     }

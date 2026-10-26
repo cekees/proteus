@@ -235,3 +235,35 @@ use between runs), best of two runs of each layout (the two agree within 1 to 3%
 
 Raw results and the campaign script: `reports/adrh_kokkos_ranks_2026-10-26/` beside the campaign notes.
 
+## The Lagrange-space kernel under Kokkos (`engine.h`, P1 and P2 simplices, Q1 cubes)
+
+The spaces kernel is ported the way the P1 kernel was: the body of the element loop is `elementSpaceOne` (`engine.h`), `elementKernelSpace` is the loop over it, `spaces.h`
+is `ADRH_FN` throughout (the P2 edge table moved into the function: a device cannot index a host-side `static constexpr` array), and `kokkos_kernel.h` takes an element
+policy (`P1Element`, `SpaceElement`) so that one launch path, one colored assembly and one block-CSR builder serve both: `elementKernelKokkosSpace` and
+`assembleColoredSpace` beside the P1 `elementKernelKokkos` and `assembleColored`. `bench_kokkos.cpp` builds P2 tetrahedra (edge midpoints shared between elements, proteus's
+numbering) and Q1 hexahedra and runs `ad_sine` and `coupled2` on them; `adrh_kokkos.advection_diffusion_sine(nd, space, ...)` takes `p1` (the affine kernel), `p2` and `q1`, so
+`ADRH_MODULE=adrh_kokkos AD_SPACE=p2 python ad_regression.py` runs the whole Proteus regression on it. The transient driver (`transient_adr`) and the exterior-face kernels stay on the host module.
+
+* **Correct.** The Kokkos kernel is bitwise the host `elementKernelSpace` on the CPU in every case (R and J, 5 cases, 3 thread counts); `golden.py against adrh_kokkos`: all 12 arrays of P2 and Q1,
+  in 2 and 3 dimensions, bitwise equal. The regression against the Proteus model, every dimension, space (p1, p2, q1) and the seven boundary treatments, nn = 5, 9, 17: worst
+  difference 1.2e-14 (2D P1), 9.7e-15 (2D P2), 2.3e-15 (2D Q1), 7.1e-15 (3D P1), 5.9e-14 (3D P2, Robin; the host engine gives the same digits), 1.2e-14 (3D Q1).
+* **Same bits at every thread count** (1, 4, 12 on the Mac; 96 on `ceds-model` agrees with the serial scatter to 5e-16). Hexahedra colour with 8 colours (by cell parity); P2 tetrahedra with the same 30 as P1, since two elements that
+  share an edge DOF share its vertices.
+* **Speed**, ns per element, element kernel / colored assembly, nn = 31 (162,000 tets, 27,000 hexes):
+
+| kernel | Mac 12 threads | host, 1 core of `ceds-model` | `ceds-model` 96 threads | one RTX 6000 Ada |
+|---|---|---|---|---|
+| ad_sine P1 (space kernel) | 40 / 53 | 485 | 10 / 16 | 8 / 28 |
+| ad_sine P2 | 122 / 174 | 2198 | 46 / 56 | 50 / 172 |
+| ad_sine Q1 hex | 164 / 183 | 3406 | 63 / 70 | 99 / 400 |
+| coupled2 P2 (mass) | 806 / 905 | 9792 | 199 / 241 | 256 / 695 |
+| coupled2 Q1 hex (mass) | 913 / 949 | 9874 | 241 / 234 | 393 / 1476 |
+
+  The element kernel scales 11 to 11.7x on 12 M4 threads and 41 to 54x on 96 Zen 4 threads. At 1.3 M tets (nn = 61) the GPU element kernel is 48 ns for P2 and 74 ns for Q1 and the colored assembly 69 and 97 ns, close to the 96-thread CPU (45 and 63; 66 and 68).
+  **The GPU's colored assembly is 2.7 to 4.1 times its element kernel at 162,000 elements** (the 30 or 8 launches are too small to fill the card: 5,400 tets or 3,400 hexes per colour) and
+  closes to 1.2 to 1.5x at 1.3 M tets.
+* **Across platforms**, as for P1: with contraction on, the GPU differs from the host by up to 2.7e-15 (P2) in the element kernel; with it off (`-ffp-contract=off`, `nvcc --fmad=false`) the **Jacobians are bitwise equal CPU to GPU in all five new
+  cases**, and the residuals differ only through `sin` in the coefficient.
+* **Compiler.** nvcc 13.4 accepts the spaces headers unchanged. Forcing the geometry helpers (`PointGeometry::compute`, the basis functions) to inline made P2 and Q1 about 6% faster in both
+  the host loop and the Kokkos kernel and put them at parity; the P1 case through the general kernel is slower in both (292 to 461 ns on the Mac) and is not a production path, since P1 has the affine kernel.
+

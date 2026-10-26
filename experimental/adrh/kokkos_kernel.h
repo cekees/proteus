@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <vector>
 #include "coefficients.h"
+#include "engine.h"
 
 namespace adrh
 {
@@ -34,15 +35,40 @@ namespace adrh
     Kokkos::parallel_for(label, Kokkos::RangePolicy<>(begin, end), f);
   }
 
+  // What one element is: its node count and the function that computes it. P1Element is the affine simplex kernel
+  // (masked.h); SpaceElement is the kernel for any Lagrange space (engine.h, spaces.h: P1, P2, Q1; isoparametric geometry).
+  template <class Coefficients, int nS_>
+  struct P1Element
+  {
+    static constexpr int nD = nS_ + 1;
+    KOKKOS_INLINE_FUNCTION static void compute(const Coefficients &c, const double *X, const double *ue, const double *uo,
+                                               int nQ, const double *qp, const double *qw, double t, double dt, double *R,
+                                               double *J)
+    {
+      elementMaskedOne<Coefficients, nS_>(c, X, ue, uo, nQ, qp, qw, t, dt, R, J);
+    }
+  };
+  template <class Coefficients, class Space>
+  struct SpaceElement
+  {
+    static constexpr int nD = Space::nDOF;
+    KOKKOS_INLINE_FUNCTION static void compute(const Coefficients &c, const double *X, const double *ue, const double *uo,
+                                               int nQ, const double *qp, const double *qw, double t, double dt, double *R,
+                                               double *J)
+    {
+      elementSpaceOne<Coefficients, Space>(c, X, ue, uo, nQ, qp, qw, t, dt, R, J);
+    }
+  };
+
   // Flat views in the prototype's layouts: xn (nE, nD, 3), u and uold (nE, nc, nD), R (nE, nc, nD),
-  // J (nE, nc, nD, nc, nD). uold has extent 0 for a steady problem.
+  // J (nE, nc, nD, nc, nD), nD the element's DOF count. uold has extent 0 for a steady problem.
   //
   // Steady against unsteady is a compile-time choice (the Old parameter), so that a null old-time pointer is
   // visible to the compiler and the old-time work disappears.
-  template <class Coefficients, int nS, bool Old>
+  template <class Coefficients, class Element, bool Old>
   struct ElementFunctor
   {
-    static constexpr int nc = Coefficients::nc, nD = nS + 1;
+    static constexpr int nc = Coefficients::nc, nD = Element::nD;
     Coefficients c;
     int nQ;
     double t, dt;
@@ -50,26 +76,42 @@ namespace adrh
     DView<double> R, J;
     KOKKOS_INLINE_FUNCTION void operator()(const int e) const
     {
-      elementMaskedOne<Coefficients, nS>(c, xn.data() + (size_t)e * nD * 3, u.data() + (size_t)e * nc * nD,
-                                         Old ? uold.data() + (size_t)e * nc * nD : nullptr, nQ, qp.data(), qw.data(),
-                                         t, dt, R.data() + (size_t)e * nc * nD,
-                                         J.data() + (size_t)e * nc * nD * nc * nD);
+      Element::compute(c, xn.data() + (size_t)e * nD * 3, u.data() + (size_t)e * nc * nD,
+                       Old ? uold.data() + (size_t)e * nc * nD : nullptr, nQ, qp.data(), qw.data(), t, dt,
+                       R.data() + (size_t)e * nc * nD, J.data() + (size_t)e * nc * nD * nc * nD);
     }
   };
 
-  template <class Coefficients, int nS>
-  void elementKernelKokkos(const Coefficients &coef, int nE, int nQ,
-                           DView<const double> xn, DView<const double> u, DView<const double> uold,
-                           DView<const double> qp, DView<const double> qw, double t, double dt,
+  template <class Coefficients, class Element>
+  void elementKernelLaunch(const Coefficients &coef, int nE, int nQ, DView<const double> xn, DView<const double> u,
+                           DView<const double> uold, DView<const double> qp, DView<const double> qw, double t, double dt,
                            DView<double> R, DView<double> J)
   {
     if (uold.extent(0) > 0)
       forEachElement("adrh element kernel", 0, nE,
-                     ElementFunctor<Coefficients, nS, true>{coef, nQ, t, dt, xn, u, uold, qp, qw, R, J});
+                     ElementFunctor<Coefficients, Element, true>{coef, nQ, t, dt, xn, u, uold, qp, qw, R, J});
     else
       forEachElement("adrh element kernel", 0, nE,
-                     ElementFunctor<Coefficients, nS, false>{coef, nQ, t, dt, xn, u, uold, qp, qw, R, J});
+                     ElementFunctor<Coefficients, Element, false>{coef, nQ, t, dt, xn, u, uold, qp, qw, R, J});
     Kokkos::fence();
+  }
+
+  // the P1 simplex kernel (the prototype's interface)
+  template <class Coefficients, int nS>
+  void elementKernelKokkos(const Coefficients &coef, int nE, int nQ, DView<const double> xn, DView<const double> u,
+                           DView<const double> uold, DView<const double> qp, DView<const double> qw, double t, double dt,
+                           DView<double> R, DView<double> J)
+  {
+    elementKernelLaunch<Coefficients, P1Element<Coefficients, nS>>(coef, nE, nQ, xn, u, uold, qp, qw, t, dt, R, J);
+  }
+
+  // any Lagrange space (P1, P2 simplices; Q1 cubes)
+  template <class Coefficients, class Space>
+  void elementKernelKokkosSpace(const Coefficients &coef, int nE, int nQ, DView<const double> xn, DView<const double> u,
+                                DView<const double> uold, DView<const double> qp, DView<const double> qw, double t,
+                                double dt, DView<double> R, DView<double> J)
+  {
+    elementKernelLaunch<Coefficients, SpaceElement<Coefficients, Space>>(coef, nE, nQ, xn, u, uold, qp, qw, t, dt, R, J);
   }
 
   // ---- fused, colored assembly -------------------------------------------------------------------------
@@ -164,10 +206,10 @@ namespace adrh
   }
 
   // One color's elements share no node, so the scatter needs neither atomics nor locks.
-  template <class Coefficients, int nS, bool Old>
+  template <class Coefficients, class Element, bool Old>
   struct ColorFunctor
   {
-    static constexpr int nc = Coefficients::nc, nD = nS + 1;
+    static constexpr int nc = Coefficients::nc, nD = Element::nD;
     Coefficients cf;
     int nQ;
     double t, dt;
@@ -188,7 +230,7 @@ namespace adrh
           if (Old) uo[j * nD + a] = Uold(n * nc + j);
         }
       }
-      elementMaskedOne<Coefficients, nS>(cf, Xe, ue, Old ? uo : nullptr, nQ, qp.data(), qw.data(), t, dt, Re, Je);
+      Element::compute(cf, Xe, ue, Old ? uo : nullptr, nQ, qp.data(), qw.data(), t, dt, Re, Je);
       for (int a = 0; a < nD; ++a)
       {
         const int n = conn(e * nD + a);
@@ -203,31 +245,50 @@ namespace adrh
     }
   };
 
-  template <class Coefficients, int nS, bool Old>
+  template <class Coefficients, class Element, bool Old>
   void assembleColor(const Coefficients &coef, const ColoredMesh &M, int c, int nQ, DView<const double> X,
                      DView<const double> U, DView<const double> Uold, DView<const double> qp,
                      DView<const double> qw, double t, double dt, DView<double> Rg, DView<double> Jv)
   {
     forEachElement("adrh colored assembly", M.colorBegin[c], M.colorBegin[c + 1],
-                   ColorFunctor<Coefficients, nS, Old>{coef, nQ, t, dt, M.conn, M.order, M.blockOf, X, U, Uold, qp, qw,
+                   ColorFunctor<Coefficients, Element, Old>{coef, nQ, t, dt, M.conn, M.order, M.blockOf, X, U, Uold, qp, qw,
                                                        Rg, Jv});
   }
 
   // Zero the global residual (nNodes * nc) and block values (nBlocks * nc * nc), then one launch per color.
-  // X (nNodes, 3) coordinates, U and Uold (nNodes, nc) nodal values (Uold extent 0 for steady).
-  template <class Coefficients, int nS>
-  void assembleColored(const Coefficients &coef, const ColoredMesh &M, int nQ, DView<const double> X,
-                       DView<const double> U, DView<const double> Uold, DView<const double> qp,
-                       DView<const double> qw, double t, double dt, DView<double> Rg, DView<double> Jv)
+  // X (nNodes, 3) coordinates of every DOF, U and Uold (nNodes, nc) nodal values (Uold extent 0 for steady). M must have been
+  // made with the element's DOF count.
+  template <class Coefficients, class Element>
+  void assembleColoredElement(const Coefficients &coef, const ColoredMesh &M, int nQ, DView<const double> X,
+                              DView<const double> U, DView<const double> Uold, DView<const double> qp,
+                              DView<const double> qw, double t, double dt, DView<double> Rg, DView<double> Jv)
   {
     Kokkos::deep_copy(Rg, 0.0);
     Kokkos::deep_copy(Jv, 0.0);
     const bool old = Uold.extent(0) > 0;
     for (int c = 0; c < M.nColors; ++c)
       if (old)
-        assembleColor<Coefficients, nS, true>(coef, M, c, nQ, X, U, Uold, qp, qw, t, dt, Rg, Jv);
+        assembleColor<Coefficients, Element, true>(coef, M, c, nQ, X, U, Uold, qp, qw, t, dt, Rg, Jv);
       else
-        assembleColor<Coefficients, nS, false>(coef, M, c, nQ, X, U, Uold, qp, qw, t, dt, Rg, Jv);
+        assembleColor<Coefficients, Element, false>(coef, M, c, nQ, X, U, Uold, qp, qw, t, dt, Rg, Jv);
     Kokkos::fence();
+  }
+
+  // the P1 simplex kernel
+  template <class Coefficients, int nS>
+  void assembleColored(const Coefficients &coef, const ColoredMesh &M, int nQ, DView<const double> X, DView<const double> U,
+                       DView<const double> Uold, DView<const double> qp, DView<const double> qw, double t, double dt,
+                       DView<double> Rg, DView<double> Jv)
+  {
+    assembleColoredElement<Coefficients, P1Element<Coefficients, nS>>(coef, M, nQ, X, U, Uold, qp, qw, t, dt, Rg, Jv);
+  }
+
+  // any Lagrange space
+  template <class Coefficients, class Space>
+  void assembleColoredSpace(const Coefficients &coef, const ColoredMesh &M, int nQ, DView<const double> X,
+                            DView<const double> U, DView<const double> Uold, DView<const double> qp, DView<const double> qw,
+                            double t, double dt, DView<double> Rg, DView<double> Jv)
+  {
+    assembleColoredElement<Coefficients, SpaceElement<Coefficients, Space>>(coef, M, nQ, X, U, Uold, qp, qw, t, dt, Rg, Jv);
   }
 } // namespace adrh
