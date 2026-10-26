@@ -262,37 +262,52 @@ class Gauges(AV_base):
         comm = Comm.get().comm.tompi4py()
         return comm.rank, nearest_node_kdtree, nearest_node_distance_kdtree
 
-    def getLocalElement(self, femSpace, location, node):
+    def getLocalElement(self, femSpace, location, node, maxRings=5):
         """Given a location and its nearest node, determine if it is on a
         local element.
+
+        Elements are searched in rings of node-neighbors growing out
+        from the nearest node, up to maxRings deep.  The element
+        containing a location is not always in the star of the nearest
+        node (or of its neighbors) on graded or skewed meshes.
+
+        .. figure:: /_generated/point_location_rings.svg
+           :width: 100%
+
+           The first three layers of the search on a 2D mesh.  Red
+           nodes have their elements searched in that layer (black
+           edges); their new neighbors (black dots) are the red nodes of
+           the next layer, and grey edges were searched already.  The
+           search stops at the first element containing the location,
+           and gives up after maxRings further layers.
 
         Returns None if location is not on any elements owned by this
         process
 
         """
 
-        # search elements that contain the nearest node
-        patchBoundaryNodes=set()
-        checkedElements=[]
-        for eOffset in range(femSpace.mesh.nodeElementOffsets[node], femSpace.mesh.nodeElementOffsets[node + 1]):
-            eN = femSpace.mesh.nodeElementsArray[eOffset]
-            checkedElements.append(eN)
-            patchBoundaryNodes|=set(femSpace.mesh.elementNodesArray[eN])
-            # evaluate the inverse map for element eN
-            xi = femSpace.elementMaps.getInverseValue(eN, location)
-            # query whether xi lies within the reference element
-            if femSpace.elementMaps.referenceElement.onElement(xi):
-                return eN
-        for node in patchBoundaryNodes:
-            for eOffset in range(femSpace.mesh.nodeElementOffsets[node], femSpace.mesh.nodeElementOffsets[node + 1]):
-                eN = femSpace.mesh.nodeElementsArray[eOffset]
-                if eN not in checkedElements:
-                    checkedElements.append(eN)
+        mesh = femSpace.mesh
+        checkedElements = set()
+        checkedNodes = set()
+        ring = {node}
+        for depth in range(maxRings + 1):
+            nextRing = set()
+            for n in ring:
+                checkedNodes.add(n)
+                for eOffset in range(mesh.nodeElementOffsets[n], mesh.nodeElementOffsets[n + 1]):
+                    eN = mesh.nodeElementsArray[eOffset]
+                    if eN in checkedElements:
+                        continue
+                    checkedElements.add(eN)
                     # evaluate the inverse map for element eN
                     xi = femSpace.elementMaps.getInverseValue(eN, location)
                     # query whether xi lies within the reference element
                     if femSpace.elementMaps.referenceElement.onElement(xi):
                         return eN
+                    nextRing.update(mesh.elementNodesArray[eN])
+            ring = nextRing - checkedNodes
+            if not ring:
+                break
         # no elements found
         return None
 
@@ -347,6 +362,8 @@ class Gauges(AV_base):
         else:
             # just use nearest node for now if we're given a point outside the domain.
             # the ideal thing would be to find the element with the nearest face
+            logEvent("WARNING: gauge location [%g %g %g] is not on any local element; "
+                     "using the value at its nearest node %d" % (location[0], location[1], location[2], node), 1)
             m[quantity_id, node] = 1
 
 
@@ -577,7 +594,7 @@ class Gauges(AV_base):
         this could be optimized
         """
 
-        eps = 1e-4
+        eps = 1e-9
 
         comm = Comm.get().comm.tompi4py()
 
@@ -628,7 +645,7 @@ class Gauges(AV_base):
                 msg = "Segmented line %s different from original length by ratio %e\n segments: %s" % (
                     str(endpoints), err, str(selected_segments))
                 logEvent(msg, 3)
-                if err > 10*eps:
+                if err > 1e-6:
                     raise FloatingPointError(msg)
 
         logEvent("Selected segments: %s" % str(selected_segments), 9)
