@@ -17,6 +17,7 @@
 #include <type_traits>
 
 #include "kokkos_kernel.h"
+#include "richards.h"
 #include "quad_tet4.h"
 
 namespace py = pybind11;
@@ -181,7 +182,7 @@ namespace
       adrh::DView<double> dxn = up(xn), du = up(u), dqp = up(qpf), dqw = up(qwf);
       adrh::DView<double> dR("Rf", Rf.size()), dJ("Jf", Jf.size());
       BC bc = makeBC(dk.data());
-      adrh::exteriorFaceKernelKokkos<C, BC, Space>(coef, bc, wd, nF, nQf, dl, dxn, du, dqp, dqw, t, dR, dJ);
+      adrh::exteriorFaceKernelKokkos<C, BC, Space>(coef, bc, wd, nF, nQf, dl, adrh::DView<int>("fe", 0), dxn, du, dqp, dqw, t, dR, dJ);
       Kokkos::deep_copy(HostView(Rf.mutable_data(), Rf.size()), dR);
       Kokkos::deep_copy(HostView(Jf.mutable_data(), Jf.size()), dJ);
     }
@@ -192,13 +193,15 @@ namespace
   template <class F>
   py::tuple dispatchSpace(int nd, const std::string &space, F &&f)
   {
+    if (nd == 1 && space == "p1") return f(adrh::P1Simplex<1>{});
+    if (nd == 1 && space == "p2") return f(adrh::P2Simplex<1>{});
     if (nd == 2 && space == "p1") return f(adrh::P1Simplex<2>{});
     if (nd == 3 && space == "p1") return f(adrh::P1Simplex<3>{});
     if (nd == 2 && space == "p2") return f(adrh::P2Simplex<2>{});
     if (nd == 3 && space == "p2") return f(adrh::P2Simplex<3>{});
     if (nd == 2 && space == "q1") return f(adrh::Q1Cube<2>{});
     if (nd == 3 && space == "q1") return f(adrh::Q1Cube<3>{});
-    throw std::invalid_argument("no space '" + space + "' in " + std::to_string(nd) + "D (p1, p2, q1; nd 2 or 3)");
+    throw std::invalid_argument("no space '" + space + "' in " + std::to_string(nd) + "D (p1, p2, q1; nd 1 to 3, q1 only 2 or 3)");
   }
 
   void finalize()
@@ -273,6 +276,55 @@ PYBIND11_MODULE(adrh_kokkos, m)
       adrh::WeakDirichletParams wd{penalty_constant, penalty_power, sigma};
       auto make = [&](const int *dk) { return BC(exact, b.data(), kappa, dk, robin_alpha, robin_beta); };
       return runFaces<Co, S, BC>(co, make, wd, faceLocal, faceKind, xn, u, qpf, qwf, t);
+    });
+  });
+  // Richards' equation (richards.h) with several materials; see module.cpp for the arguments
+  m.def("richards_vgm", [](int nd, const std::string &space, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, Arr Ks, Arr g, double rho,
+                            double beta, IArr material, Arr xn, Arr u, py::object uold, Arr qp, Arr qw, double t, double dt) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      using Co = adrh::RichardsMaterials<S::nS>;
+      constexpr int nc = 1, nD = S::nDOF;
+      const int nE = (int)xn.shape(0), nQ = (int)qw.shape(0);
+      py::array_t<double> R({nE, nc, nD}), J({nE, nc, nD, nc, nD});
+      Arr uo;
+      if (!uold.is_none() && dt > 0.0) uo = uold.cast<Arr>();
+      {
+        py::gil_scoped_release release;
+        adrh::DView<int> dmat = upInt(material);
+        Co co((int)alpha.size(), alpha.data(), n_vg.data(), thetaR.data(), thetaSR.data(), Ks.data(), g.data(), dmat.data(), rho, beta);
+        adrh::DView<double> dxn = up(xn), du = up(u), dqp = up(qp), dqw = up(qw), duo("uo", 0);
+        if (uo.size() > 0) duo = up(uo);
+        adrh::DView<double> dR("R", R.size()), dJ("J", J.size());
+        adrh::elementKernelKokkosSpace<Co, S>(co, nE, nQ, dxn, du, duo, dqp, dqw, t, dt, dR, dJ);
+        Kokkos::deep_copy(HostView(R.mutable_data(), R.size()), dR);
+        Kokkos::deep_copy(HostView(J.mutable_data(), J.size()), dJ);
+      }
+      return py::make_tuple(R, J);
+    });
+  });
+  m.def("richards_vgm_faces", [](int nd, const std::string &space, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, Arr Ks, Arr g, double rho,
+                                  double beta, IArr material, IArr faceElem, IArr faceLocal, Arr gD, Arr xn, Arr u, Arr qpf, Arr qwf,
+                                  double t, double penalty_constant, double penalty_power) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      using Co = adrh::RichardsMaterials<S::nS>;
+      adrh::WeakDirichletParams wd{penalty_constant, penalty_power, 0.0};
+      constexpr int nc = 1, nD = S::nDOF;
+      const int nF = (int)xn.shape(0), nQf = (int)qwf.shape(0);
+      py::array_t<double> Rf({nF, nc, nD}), Jf({nF, nc, nD, nc, nD});
+      {
+        py::gil_scoped_release release;
+        adrh::DView<int> dmat = upInt(material), dl = upInt(faceLocal), de = upInt(faceElem);
+        Co co((int)alpha.size(), alpha.data(), n_vg.data(), thetaR.data(), thetaSR.data(), Ks.data(), g.data(), dmat.data(), rho, beta);
+        adrh::DView<double> dg = up(gD), dxn = up(xn), du = up(u), dqp = up(qpf), dqw = up(qwf);
+        adrh::DView<double> dR("Rf", Rf.size()), dJ("Jf", Jf.size());
+        adrh::FixedValueBC bc(dg.data());
+        adrh::exteriorFaceKernelKokkos<Co, adrh::FixedValueBC, S>(co, bc, wd, nF, nQf, dl, de, dxn, du, dqp, dqw, t, dR, dJ);
+        Kokkos::deep_copy(HostView(Rf.mutable_data(), Rf.size()), dR);
+        Kokkos::deep_copy(HostView(Jf.mutable_data(), Jf.size()), dJ);
+      }
+      return py::make_tuple(Rf, Jf);
     });
   });
   m.def("kokkos_info", [] {

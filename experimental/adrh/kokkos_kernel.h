@@ -44,7 +44,7 @@ namespace adrh
     static constexpr int nD = nS_ + 1;
     KOKKOS_INLINE_FUNCTION static void compute(const Coefficients &c, const double *X, const double *ue, const double *uo,
                                                int nQ, const double *qp, const double *qw, double t, double dt, double *R,
-                                               double *J)
+                                               double *J, int /*eN*/)
     {
       elementMaskedOne<Coefficients, nS_>(c, X, ue, uo, nQ, qp, qw, t, dt, R, J);
     }
@@ -55,9 +55,9 @@ namespace adrh
     static constexpr int nD = Space::nDOF;
     KOKKOS_INLINE_FUNCTION static void compute(const Coefficients &c, const double *X, const double *ue, const double *uo,
                                                int nQ, const double *qp, const double *qw, double t, double dt, double *R,
-                                               double *J)
+                                               double *J, int eN)
     {
-      elementSpaceOne<Coefficients, Space>(c, X, ue, uo, nQ, qp, qw, t, dt, R, J);
+      elementSpaceOne<Coefficients, Space>(c, X, ue, uo, nQ, qp, qw, t, dt, R, J, eN);
     }
   };
 
@@ -79,7 +79,7 @@ namespace adrh
     {
       Element::compute(c, xn.data() + (size_t)e * nD * 3, u.data() + (size_t)e * nc * nD,
                        Old ? uold.data() + (size_t)e * nc * nD : nullptr, nQ, qp.data(), qw.data(), t, dt,
-                       R.data() + (size_t)e * nc * nD, J.data() + (size_t)e * nc * nD * nc * nD);
+                       R.data() + (size_t)e * nc * nD, J.data() + (size_t)e * nc * nD * nc * nD, e);
     }
   };
 
@@ -233,7 +233,7 @@ namespace adrh
           if (Old) uo[j * nD + a] = Uold(n * nc + j);
         }
       }
-      Element::compute(cf, Xe, ue, Old ? uo : nullptr, nQ, qp.data(), qw.data(), t, dt, Re, Je);
+      Element::compute(cf, Xe, ue, Old ? uo : nullptr, nQ, qp.data(), qw.data(), t, dt, Re, Je, e);
       for (int a = 0; a < nD; ++a)
       {
         const int n = conn(e * nD + a);
@@ -309,24 +309,26 @@ namespace adrh
     WeakDirichletParams wd;
     int nQf;
     double t;
-    DView<const int> faceLocal;
+    DView<const int> faceLocal, faceElem;     // faceElem has extent 0 when no functor needs the element number
     DView<const double> xn, u, qpf, qwf;
     DView<double> Rf, Jf;
     KOKKOS_INLINE_FUNCTION void operator()(const int F) const
     {
       exteriorFaceOne<Coefficients, BC, Space>(c, bc, wd, nQf, F, faceLocal(F), xn.data() + (size_t)F * nD * 3,
                                                u.data() + (size_t)F * nc * nD, qpf.data(), qwf.data(), t,
-                                               Rf.data() + (size_t)F * nc * nD, Jf.data() + (size_t)F * nc * nD * nc * nD);
+                                               Rf.data() + (size_t)F * nc * nD, Jf.data() + (size_t)F * nc * nD * nc * nD,
+                                               faceElem.extent(0) > 0 ? faceElem(F) : 0);
     }
   };
 
   template <class Coefficients, class BC, class Space>
   void exteriorFaceKernelKokkos(const Coefficients &c, const BC &bc, const WeakDirichletParams &wd, int nF, int nQf,
-                                DView<const int> faceLocal, DView<const double> xn, DView<const double> u,
-                                DView<const double> qpf, DView<const double> qwf, double t, DView<double> Rf, DView<double> Jf)
+                                DView<const int> faceLocal, DView<const int> faceElem, DView<const double> xn,
+                                DView<const double> u, DView<const double> qpf, DView<const double> qwf, double t, DView<double> Rf,
+                                DView<double> Jf)
   {
     forEachElement("adrh face kernel", 0, nF,
-                   FaceFunctor<Coefficients, BC, Space>{c, bc, wd, nQf, t, faceLocal, xn, u, qpf, qwf, Rf, Jf});
+                   FaceFunctor<Coefficients, BC, Space>{c, bc, wd, nQf, t, faceLocal, faceElem, xn, u, qpf, qwf, Rf, Jf});
     Kokkos::fence();
   }
 
@@ -399,7 +401,7 @@ namespace adrh
         for (int I = 0; I < 3; ++I) Xe[a * 3 + I] = X(n * 3 + I);
         for (int j = 0; j < nc; ++j) ue[j * nD + a] = U(n * nc + j);
       }
-      exteriorFaceOne<Coefficients, BC, Space>(c, bc, wd, nQf, F, local(F), Xe, ue, qpf.data(), qwf.data(), t, Re, Je);
+      exteriorFaceOne<Coefficients, BC, Space>(c, bc, wd, nQf, F, local(F), Xe, ue, qpf.data(), qwf.data(), t, Re, Je, e);
       for (int a = 0; a < nD; ++a)
       {
         const int n = conn(e * nD + a);

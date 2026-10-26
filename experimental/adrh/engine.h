@@ -5,18 +5,28 @@
 //   qp (nQ, nS), qw (nQ)  reference quadrature            R (nE, nc, nDOF), J (nE, nc, nDOF, nc, nDOF)
 #pragma once
 #include <cstring>
+#include <type_traits>
+#include <utility>
 #include "masked.h"
 #include "spaces.h"
 
 namespace adrh
 {
+  // A coefficient functor with data that varies over the mesh (materials, a permeability field) defines `bindElement(int eN) const`
+  // returning the functor to use on that element, typically a copy with the element's parameters selected. The kernels call it when it
+  // exists; a functor without it is used as it is, so nothing that does not need it pays for it.
+  template <class C, class = void>
+  struct HasBindElement : std::false_type {};
+  template <class C>
+  struct HasBindElement<C, std::void_t<decltype(std::declval<const C &>().bindElement(0))>> : std::true_type {};
+
   // One element of any Lagrange space: X (nDOF, 3) the DOF coordinates, ue and uo (nc, nDOF; uo null for a steady problem),
   // R (nc, nDOF) and J (nc, nDOF, nc, nDOF) out. The function a Kokkos kernel calls per element (kokkos_kernel.h);
   // elementKernelSpace below is the loop over it. PointGeometry and the Terms are per call, on the caller's stack.
   template <class Coefficients, class Space>
-  ADRH_FN ADRH_FORCE_INLINE void elementSpaceOne(const Coefficients &C, const double *X, const double *ue, const double *uo,
-                                                int nQ, const double *qp, const double *qw, double t, double dt,
-                                                double *Rout, double *Jout)
+  ADRH_FN ADRH_FORCE_INLINE void elementSpaceOneBound(const Coefficients &C, const double *X, const double *ue, const double *uo,
+                                                     int nQ, const double *qp, const double *qw, double t, double dt,
+                                                     double *Rout, double *Jout)
   {
     using Co = Coefficients;
     constexpr int nc = Co::nc, nS = Space::nS, nD = Space::nDOF;
@@ -127,6 +137,21 @@ namespace adrh
     for (int k = 0; k < nc * nD * nc * nD; ++k) Jout[k] = (&Jloc[0][0][0][0])[k];
   }
 
+  // eN is the element's number in the mesh, which a functor with bindElement uses to pick its data.
+  template <class Coefficients, class Space>
+  ADRH_FN ADRH_FORCE_INLINE void elementSpaceOne(const Coefficients &C, const double *X, const double *ue, const double *uo,
+                                                int nQ, const double *qp, const double *qw, double t, double dt,
+                                                double *Rout, double *Jout, int eN = 0)
+  {
+    if constexpr (HasBindElement<Coefficients>::value)
+    {
+      const auto Cb = C.bindElement(eN);
+      elementSpaceOneBound<std::decay_t<decltype(Cb)>, Space>(Cb, X, ue, uo, nQ, qp, qw, t, dt, Rout, Jout);
+    }
+    else
+      elementSpaceOneBound<Coefficients, Space>(C, X, ue, uo, nQ, qp, qw, t, dt, Rout, Jout);
+  }
+
   template <class Coefficients, class Space>
   void elementKernelSpace(const Coefficients &C, int nE, int nQ,
                           const double *xn, const double *u, const double *uold,
@@ -136,6 +161,6 @@ namespace adrh
     constexpr int nc = Coefficients::nc, nD = Space::nDOF;
     for (int eN = 0; eN < nE; ++eN)
       elementSpaceOne<Coefficients, Space>(C, xn + eN * nD * 3, u + eN * nc * nD, uold ? uold + eN * nc * nD : nullptr, nQ,
-                                           qp, qw, t, dt, R + eN * nc * nD, J + eN * nc * nD * nc * nD);
+                                           qp, qw, t, dt, R + eN * nc * nD, J + eN * nc * nD * nc * nD, eN);
   }
 } // namespace adrh

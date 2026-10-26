@@ -373,7 +373,7 @@ static void runFaceCase(const char *name, const Tets &m, int repeats)
   DView<double> dxn = toDevice("xn", xn), due = toDevice("ue", ue), dqp = toDevice("qpf", qpf), dqw = toDevice("qwf", qwf);
   DView<double> dR("Rf", Rref.size()), dJ("Jf", Jref.size());
   const BC devBC(b, 0.2, om, 0.3, dkind.data(), 0.7, 0.4);
-  auto run1 = [&] { exteriorFaceKernelKokkos<Co, BC, Space>(coef, devBC, wd, nF, nQf, dlocal, dxn, due, dqp, dqw, 0.0, dR, dJ); };
+  auto run1 = [&] { exteriorFaceKernelKokkos<Co, BC, Space>(coef, devBC, wd, nF, nQf, dlocal, DView<int>("fe", 0), dxn, due, dqp, dqw, 0.0, dR, dJ); };
   run1();
   const double tK = best(repeats, run1);
   std::vector<double> Rk = toHost(dR), Jk = toHost(dJ);

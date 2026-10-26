@@ -8,6 +8,7 @@
 // reference simplex, gets n_ref = (1, ..., 1) with |n_ref| = sqrt(nS) = the stretch of that parametrization);
 // and the vertices of each face (the penalty's h is the longest edge between them).
 //
+// nS = 1 is the segment (P1: two nodes; P2: three), whose faces are its two end points and whose face quadrature has no coordinates.
 // Geometry is isoparametric through the same basis: J[I][K] = sum_b X_b[I] gwref[b][K]. For simplices with the
 // P2 nodes at the edge midpoints this is the affine map, exactly; for hexahedra it is the trilinear map.
 // The vertices are always the first nVertices DOFs, and the element's DOF coordinates are what the kernels get
@@ -22,7 +23,7 @@ namespace adrh
   struct SimplexBase
   {
     static constexpr int nS = nS_, nVertices = nS_ + 1, nFaces = nS_ + 1, nFaceVertices = nS_;
-    static_assert(nS_ == 2 || nS_ == 3, "triangles or tetrahedra");
+    static_assert(nS_ == 1 || nS_ == 2 || nS_ == 3, "segments, triangles or tetrahedra");
     // barycentric coordinates lambda_0 = 1 - sum xi, lambda_i = xi_{i-1}, and their constant gradients
     ADRH_FN ADRH_FORCE_INLINE static void bary(const double *xi, double *lam, double (*glam)[nS_])
     {
@@ -72,7 +73,9 @@ namespace adrh
     // edge e's end vertices; the table is local so that a device function can index it with a run-time e
     ADRH_FN static constexpr int edge(int e, int end)
     {
-      if constexpr (nS_ == 2)
+      if constexpr (nS_ == 1)
+        return end;                                   // the one edge of a segment: vertices 0 and 1
+      else if constexpr (nS_ == 2)
       {
         constexpr int edges2[3][2] = {{0, 1}, {1, 2}, {0, 2}};
         return edges2[e][end];
@@ -117,7 +120,12 @@ namespace adrh
         for (int I = 0; I < nS; ++I)
           for (int K = 0; K < nS; ++K) Jm[I][K] += X[b * 3 + I] * gwref[b][K];
       double det;
-      if constexpr (nS == 2)
+      if constexpr (nS == 1)
+      {
+        det = Jm[0][0];
+        Jinv[0][0] = 1.0 / det;
+      }
+      else if constexpr (nS == 2)
       {
         det = Jm[0][0] * Jm[1][1] - Jm[0][1] * Jm[1][0];
         Jinv[0][0] = Jm[1][1] / det; Jinv[0][1] = -Jm[0][1] / det;
