@@ -103,8 +103,8 @@ def test_rans2p_step_on_an_element_partition_without_overlap_gives_the_serial_an
 NCLS_HELPER = os.path.join(HERE, "ncls_partition_mpi.py")
 
 
-def _ncls_residual(ranks, cwd, rd):
-    """The NCLS residual by node (summed over ranks), for the same state on any partition."""
+def _ncls_residual(ranks, cwd, rd, helper=None, **extra):
+    """A residual harness's result by node (summed over ranks), for the same state on any partition."""
     env = dict(os.environ, OMP_NUM_THREADS="1", RD=rd,
                PETSC_OPTIONS="-mat_partitioning_type current")
     env.setdefault("FI_PROVIDER", "tcp")
@@ -112,8 +112,10 @@ def _ncls_residual(ranks, cwd, rd):
     env.setdefault("PRTE_MCA_rmaps_default_mapping_policy", ":oversubscribe")
     env["PYTHONPATH"] = os.pathsep.join(
         [p for p in sys.path if p] + [env.get("PYTHONPATH", "")]).strip(os.pathsep)
-    argv = [sys.executable, NCLS_HELPER] if ranks == 1 else \
-        [MPIEXEC, "-n", str(ranks), sys.executable, NCLS_HELPER]
+    env.update({k: str(v) for k, v in extra.items()})
+    helper = helper or NCLS_HELPER
+    argv = [sys.executable, helper] if ranks == 1 else \
+        [MPIEXEC, "-n", str(ranks), sys.executable, helper]
     out = subprocess.run(argv, capture_output=True, text=True, timeout=900, env=env,
                          cwd=str(cwd))
     assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
@@ -138,3 +140,19 @@ def test_ncls_residual_on_two_ranks_is_the_serial_residual(rd, tmp_path):
     assert set(serial) == set(parallel)
     diff = max(abs(serial[k] - parallel[k]) for k in serial)
     assert diff < 1e-12, diff
+
+
+KAPPA_HELPER = os.path.join(HERE, "kappa_partition_mpi.py")
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+def test_kappa_residual_on_two_ranks_is_the_serial_residual(tmp_path):
+    """Kappa's open-boundary branch is one-sided; the zero flux on rank-interface
+    faces cancels it. The control, without that entry, differs by 3.8e-2 on the cut."""
+    for d in ("1", "2", "3"):
+        (tmp_path / d).mkdir()
+    serial = _ncls_residual(1, tmp_path / "1", "same", helper=KAPPA_HELPER)
+    parallel = _ncls_residual(2, tmp_path / "2", "same", helper=KAPPA_HELPER)
+    assert max(abs(serial[k] - parallel[k]) for k in serial) < 1e-12
+    control = _ncls_residual(2, tmp_path / "3", "same", helper=KAPPA_HELPER, NOZERO=1)
+    assert max(abs(serial[k] - control[k]) for k in serial) > 1e-3
