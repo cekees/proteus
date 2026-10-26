@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""A VOF (or, MODEL=VOF3P, VOF3P) blob advected across a rank cut; prints its mass and L2 norm.
+"""A VOF (or, MODEL=VOF3P or VOS3P, that model) blob advected across a rank cut; prints its mass and L2 norm.
 
 Run by ``test_rank_interface_flux.py`` under ``mpiexec`` to compare a partitioned
 run against a serial one. mprans VOF is a C++ kernel with its own exterior loop,
@@ -73,7 +73,8 @@ p = defaults.Physics_base(nd=2, name="vof_part")
 p.domain = domain
 p.LevelModelType = VOF.LevelModel
 p.coefficients = Coefficients(LS_model=None, V_model=None, RD_model=None, ME_model=0,
-                              checkMass=False, epsFact=0.0, STABILIZATION_TYPE=0)
+                              checkMass=False, epsFact=0.0, STABILIZATION_TYPE=0,
+                              **({'FCT': False} if os.environ.get('MODEL') == 'VOS3P' else {}))
 p.initialConditions = {0: Blob()}
 p.dirichletConditions = {0: inflow}
 p.advectiveFluxBoundaryConditions = {0: lambda x, flag: None}

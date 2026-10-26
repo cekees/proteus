@@ -64,7 +64,7 @@ def _run(ranks, cwd, helper=None, **overrides):
 
 
 @pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
-@pytest.mark.parametrize("model", ["VOF", "VOF3P"])
+@pytest.mark.parametrize("model", ["VOF", "VOF3P", "VOS3P"])
 def test_vof_on_an_element_partition_without_overlap_gives_the_serial_answer(model, tmp_path):
     """Mass used to leave through the cut: 2.9e-02 on two ranks against 4.5e-02 on one."""
     serial = _run(1, tmp_path, MODEL=model)
@@ -76,7 +76,7 @@ def test_vof_on_an_element_partition_without_overlap_gives_the_serial_answer(mod
 
 
 @pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
-@pytest.mark.parametrize("model", ["VOF", "VOF3P"])
+@pytest.mark.parametrize("model", ["VOF", "VOF3P", "VOS3P"])
 def test_vof_with_one_layer_of_overlap_is_unchanged(model, tmp_path):
     """The control: with overlap the cut faces are ghost-layer faces and already harmless."""
     serial = _run(1, tmp_path, MODEL=model)
@@ -143,18 +143,20 @@ def test_ncls_residual_on_two_ranks_is_the_serial_residual(rd, tmp_path):
 
 
 KAPPA_HELPER = os.path.join(HERE, "kappa_partition_mpi.py")
+DISSIPATION_HELPER = os.path.join(HERE, "dissipation_partition_mpi.py")
 
 
 @pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
-def test_kappa_residual_on_two_ranks_is_the_serial_residual(tmp_path):
-    """Kappa's open-boundary branch is one-sided; the zero flux on rank-interface
+@pytest.mark.parametrize("helper", [KAPPA_HELPER, DISSIPATION_HELPER], ids=["Kappa", "Dissipation"])
+def test_kappa_and_dissipation_residual_on_two_ranks_is_the_serial_residual(helper, tmp_path):
+    """Their open-boundary branch is one-sided; the zero flux on rank-interface
     faces cancels it. The control, without that entry, differs by 3.8e-2 on the cut."""
     for d in ("1", "2", "3"):
         (tmp_path / d).mkdir()
-    serial = _ncls_residual(1, tmp_path / "1", "same", helper=KAPPA_HELPER)
-    parallel = _ncls_residual(2, tmp_path / "2", "same", helper=KAPPA_HELPER)
+    serial = _ncls_residual(1, tmp_path / "1", "same", helper=helper)
+    parallel = _ncls_residual(2, tmp_path / "2", "same", helper=helper)
     assert max(abs(serial[k] - parallel[k]) for k in serial) < 1e-12
-    control = _ncls_residual(2, tmp_path / "3", "same", helper=KAPPA_HELPER, NOZERO=1)
+    control = _ncls_residual(2, tmp_path / "3", "same", helper=helper, NOZERO=1)
     assert max(abs(serial[k] - control[k]) for k in serial) > 1e-3
 
 
