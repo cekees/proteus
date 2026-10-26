@@ -1,4 +1,5 @@
 import proteus
+import proteus.MeshTools
 from proteus.mprans.cNCLS import *
 import numpy as np
 from proteus.Transport import OneLevelTransport, cfemIntegrals, SparseMat
