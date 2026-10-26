@@ -19,6 +19,7 @@ from .AuxiliaryVariables import AV_base
 from .Profiling import logEvent
 from proteus.MeshTools import triangleVerticesToNormals, tetrahedronVerticesToNormals, getMeshIntersections
 from proteus import Profiling
+from proteus.FemTools import ReferenceCube
 
 
 def _checkFields(fields):
@@ -262,6 +263,17 @@ class Gauges(AV_base):
         comm = Comm.get().comm.tompi4py()
         return comm.rank, nearest_node_kdtree, nearest_node_distance_kdtree
 
+    @staticmethod
+    def referenceElementViolation(referenceElement, xi):
+        """How far xi is outside the reference element, in reference coordinates
+        (zero on and inside it)."""
+        xi = np.asarray(xi, dtype=float)
+        if referenceElement.onElement(xi):
+            return 0.0
+        if isinstance(referenceElement, ReferenceCube):
+            return float(np.max(np.abs(xi) - 1.0))
+        return float(max(-np.min(xi), np.sum(xi) - 1.0))
+
     def getLocalElement(self, femSpace, location, node, maxRings=5):
         """Given a location and its nearest node, determine if it is on a
         local element.
@@ -301,8 +313,10 @@ class Gauges(AV_base):
                     checkedElements.add(eN)
                     # evaluate the inverse map for element eN
                     xi = femSpace.elementMaps.getInverseValue(eN, location)
-                    # query whether xi lies within the reference element
-                    if femSpace.elementMaps.referenceElement.onElement(xi):
+                    # query whether xi lies within the reference element, up to
+                    # roundoff: a location on a face between elements (every
+                    # end of a line gauge segment) is a roundoff outside of both
+                    if self.referenceElementViolation(femSpace.elementMaps.referenceElement, xi) <= 1e-9:
                         return eN
                     nextRing.update(mesh.elementNodesArray[eN])
             ring = nextRing - checkedNodes
@@ -500,7 +514,9 @@ class Gauges(AV_base):
         length = norm(direction)
         def parameter(point):
             return np.dot(np.asarray(point, np.double) - endpoints[0], direction)/length**2
-        end_parameters = np.sort([parameter(segment[1]) for segment in line_segments])
+        # the previous segment may have been selected on another process
+        end_parameters = np.sort(np.concatenate(comm.allgather(
+            np.array([parameter(segment[1]) for segment in line_segments], dtype=float))))
 
         def continuesPreviousSegment(point):
             t = parameter(point)
@@ -770,8 +786,12 @@ class Gauges(AV_base):
         """
         comm = Comm.get().comm.tompi4py()
         nodes = self.vertices
-        low = comm.allreduce(np.min(nodes, axis=0), op=MPI.MIN)
-        high = comm.allreduce(np.max(nodes, axis=0), op=MPI.MAX)
+        # Allreduce on buffers: the pickle-based allreduce applies MIN/MAX
+        # to the arrays as Python objects and fails for more than one entry
+        low = np.empty(3)
+        high = np.empty(3)
+        comm.Allreduce(np.min(nodes, axis=0).astype(float), low, op=MPI.MIN)
+        comm.Allreduce(np.max(nodes, axis=0).astype(float), high, op=MPI.MAX)
         tolerance = relativeTolerance * max(np.max(high - low), np.finfo(float).tiny)
 
         def snap(point):
