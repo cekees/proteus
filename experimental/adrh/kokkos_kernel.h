@@ -566,4 +566,63 @@ namespace adrh
       massMatrixOne<Space>(xn.data() + (size_t)e * nD * 3, nQ, qp.data(), qw.data(), M.data() + (size_t)e * nD * nD);
     }
   };
+
+  // ---- the K-upwinded low-order operator (lowOrder.h): row-parallel passes ---------------------------------------------------
+  struct UpwindFluxPass
+  {
+    DView<const int> rowptr, colidx;
+    DView<const double> S, phi, kr, dkr;
+    DView<double> r, J;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      upwindFluxRow(i, rowptr.data(), colidx.data(), S.data(), phi.data(), kr.data(), dkr.data(), r.data(), J.data());
+    }
+  };
+  struct AntidiffusiveFluxPass
+  {
+    DView<const int> rowptr, colidx;
+    DView<const double> C, S, phi, kr;
+    DView<double> A;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      antidiffusiveFluxRow(i, rowptr.data(), colidx.data(), C.data(), S.data(), phi.data(), kr.data(), A.data());
+    }
+  };
+  struct FctFluxPassA
+  {
+    DView<const int> rowptr, colidx, tpos;
+    DView<const double> Mc, A, mL, mold;
+    double dt;
+    DView<double> G;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      fctFluxRowA(i, rowptr.data(), colidx.data(), tpos.data(), Mc.data(), A.data(), mL.data(), mold.data(), dt, G.data());
+    }
+  };
+  inline void upwindFluxKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const double> S, DView<const double> phi,
+                               DView<const double> kr, DView<const double> dkr, DView<double> r, DView<double> J)
+  {
+    forEachElement("adrh upwind flux", 0, nRows, UpwindFluxPass{rowptr, colidx, S, phi, kr, dkr, r, J});
+    Kokkos::fence();
+  }
+
+  inline void antidiffusiveFluxKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const double> C, DView<const double> S,
+                                      DView<const double> phi, DView<const double> kr, DView<double> A)
+  {
+    forEachElement("adrh antidiffusive flux", 0, nRows, AntidiffusiveFluxPass{rowptr, colidx, C, S, phi, kr, A});
+    Kokkos::fence();
+  }
+
+  inline void fctLimitFluxKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const int> tpos, DView<const double> Mc,
+                                 DView<const double> A, DView<const double> ML, DView<const double> mL, DView<const double> mold, double dt,
+                                 DView<double> mOut)
+  {
+    DView<double> G("fct flux", colidx.extent(0)), Rp("R+", nRows), Rm("R-", nRows);
+    forEachElement("adrh fct pass 1", 0, nRows, FctFluxPassA{rowptr, colidx, tpos, Mc, A, mL, mold, dt, G});
+    Kokkos::fence();
+    forEachElement("adrh fct pass 2", 0, nRows, FctBoundsPass{rowptr, colidx, G, mL, mold, ML, dt, Rp, Rm});
+    Kokkos::fence();
+    forEachElement("adrh fct pass 3", 0, nRows, FctApplyPass{rowptr, colidx, G, Rp, Rm, ML, mL, dt, mOut});
+    Kokkos::fence();
+  }
 } // namespace adrh

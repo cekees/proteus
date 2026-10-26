@@ -251,4 +251,75 @@ namespace adrh
     for (int i = 0; i < nRows; ++i) fctBoundsRow(i, rowptr, colidx, G.data(), mL, mold, ML, dt, Rp.data(), Rm.data());
     for (int i = 0; i < nRows; ++i) fctApplyRow(i, rowptr, colidx, G.data(), Rp.data(), Rm.data(), ML, mL, dt, mOut);
   }
+
+  // ---- the K-upwinded low-order operator (Richards' equation in head form) ----------------------------------------------
+
+  // The Galerkin discretization of a strongly nonlinear conductivity (Richards in a dry medium: K_r falls by ten orders of magnitude over one element)
+  // takes K from the quadrature points, where the dry side dominates, so a wetting front cannot enter the element: the discrete flux is
+  // ~1e-10 of the true one. The cure used by proteus's low-order and FCT schemes is to write the flux on the total head phi = psi - g.x
+  // (gravity included) and to take the conductivity at the UPWIND node,
+  //      flux into i from j:   F_ij = kr_up c_ij (phi_j - phi_i),   c_ij = max(0, -S_ij),   up = i if (-S_ij (phi_j - phi_i) <= 0), else j,
+  // S the stiffness K_s grad phi_i . grad phi_j (conductivity 1 relative; the matrix of the element kernel in mode 1). Row sums vanish and
+  // the same node is upwind from either side of an edge, so the scheme is conservative; with the lumped mass it is an M-matrix.
+  // Row i: r_i = -sum_j F_ij and the Jacobian of that (kr, dkr the nodal relative permeability and its derivative with respect to u; phi = u + const).
+  ADRH_FN void upwindFluxRow(int i, const int *rowptr, const int *colidx, const double *S, const double *phi, const double *kr, const double *dkr,
+                             double *r, double *J)
+  {
+    double rsum = 0.0, Jii = 0.0;
+    int ii = -1;
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j == i) { ii = p; continue; }
+      const double c = S[p] < 0.0 ? -S[p] : 0.0, dphi = phi[j] - phi[i];
+      double F, dFi, dFj;
+      if (-S[p] * dphi <= 0.0) { F = kr[i] * c * dphi; dFi = dkr[i] * c * dphi - kr[i] * c; dFj = kr[i] * c; }
+      else { F = kr[j] * c * dphi; dFi = -kr[j] * c; dFj = dkr[j] * c * dphi + kr[j] * c; }
+      rsum -= F;
+      J[p] = -dFj;
+      Jii -= dFi;
+    }
+    r[i] = rsum;
+    if (ii >= 0) J[ii] = Jii;
+  }
+
+  // the Galerkin flux (frozen stiffness C, the matrix of mode 2) minus the K-upwinded one, into i from j: antisymmetric, the antidiffusive flux of FCT
+  ADRH_FN void antidiffusiveFluxRow(int i, const int *rowptr, const int *colidx, const double *C, const double *S, const double *phi,
+                                    const double *kr, double *A)
+  {
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j == i) { A[p] = 0.0; continue; }
+      const double c = S[p] < 0.0 ? -S[p] : 0.0, dphi = phi[j] - phi[i];
+      const double krup = (-S[p] * dphi <= 0.0) ? kr[i] : kr[j];
+      A[p] = (-C[p] - krup * c) * dphi;
+    }
+  }
+
+  // pass 1 of FCT with a given antidiffusive flux A (into i from j): g_ij = -M_C,ij (delta_j - delta_i) / dt + A_ij, as fctFluxRow
+  ADRH_FN void fctFluxRowA(int i, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *A, const double *mL,
+                           const double *mold, double dt, double *G)
+  {
+    const double di = mL[i] - mold[i];
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j < i) continue;
+      if (j == i) { G[p] = 0.0; continue; }
+      const double dj = mL[j] - mold[j];
+      const double g = -Mc[p] * (dj - di) / dt + A[p];
+      G[p] = g;
+      G[tpos[p]] = -g;
+    }
+  }
+
+  inline void fctLimitFlux(int nRows, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *A, const double *ML,
+                           const double *mL, const double *mold, double dt, double *mOut)
+  {
+    std::vector<double> G(rowptr[nRows]), Rp(nRows), Rm(nRows);
+    for (int i = 0; i < nRows; ++i) fctFluxRowA(i, rowptr, colidx, tpos, Mc, A, mL, mold, dt, G.data());
+    for (int i = 0; i < nRows; ++i) fctBoundsRow(i, rowptr, colidx, G.data(), mL, mold, ML, dt, Rp.data(), Rm.data());
+    for (int i = 0; i < nRows; ++i) fctApplyRow(i, rowptr, colidx, G.data(), Rp.data(), Rm.data(), ML, mL, dt, mOut);
+  }
 } // namespace adrh
