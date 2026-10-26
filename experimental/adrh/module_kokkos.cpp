@@ -425,6 +425,69 @@ PYBIND11_MODULE(adrh_kokkos, m)
       return py::make_tuple(w, mm, dm, mold);
     });
   });
+  m.def("dissipation_values", [](IArr indptr, IArr indices, IArr tpos, Arr values) {
+    py::array_t<double> d(values.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt = upInt(tpos);
+      adrh::DView<double> dJ = up(values), dd("d", values.size());
+      adrh::dissipationValuesKokkos((int)indptr.size() - 1, dp, di, dt, dJ, dd);
+      Kokkos::deep_copy(HostView(d.mutable_data(), d.size()), dd);
+    }
+    return d;
+  });
+  m.def("consistent_mass", [](int nd, const std::string &space, Arr xn, Arr qp, Arr qw) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      constexpr int nD = S::nDOF;
+      const int nE = (int)xn.shape(0), nQ = (int)qw.shape(0);
+      py::array_t<double> M({nE, nD, nD});
+      {
+        py::gil_scoped_release release;
+        adrh::DView<double> dxn = up(xn), dqp = up(qp), dqw = up(qw), dM("M", M.size());
+        adrh::forEachElement("adrh mass matrix", 0, nE, adrh::MassMatrixFunctor<S>{nQ, dxn, dqp, dqw, dM});
+        Kokkos::fence();
+        Kokkos::deep_copy(HostView(M.mutable_data(), M.size()), dM);
+      }
+      return py::make_tuple(M);
+    });
+  });
+  m.def("fct_limit", [](IArr indptr, IArr indices, IArr tpos, Arr Mc, Arr d, Arr ML, Arr vL, Arr mL, Arr mold, double dt) {
+    py::array_t<double> out(mL.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt_ = upInt(tpos);
+      adrh::DView<double> dMc = up(Mc), dd = up(d), dML = up(ML), dvL = up(vL), dmL = up(mL), dmo = up(mold), dout("out", mL.size());
+      adrh::fctLimitKokkos((int)indptr.size() - 1, dp, di, dt_, dMc, dd, dML, dvL, dmL, dmo, dt, dout);
+      Kokkos::deep_copy(HostView(out.mutable_data(), out.size()), dout);
+    }
+    return out;
+  });
+  // the limiter with the phases timed: (m_out, {t_h2d, t_pass, t_d2h}); the three passes together, best of `repeats`
+  m.def("fct_limit_timed", [](IArr indptr, IArr indices, IArr tpos, Arr Mc, Arr d, Arr ML, Arr vL, Arr mL, Arr mold, double dt, int repeats) {
+    py::array_t<double> out(mL.size());
+    double tH = 0, tP = 1e30, tD = 0;
+    {
+      py::gil_scoped_release release;
+      double t0 = now();
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt_ = upInt(tpos);
+      adrh::DView<double> dMc = up(Mc), dd = up(d), dML = up(ML), dvL = up(vL), dmL = up(mL), dmo = up(mold), dout("out", mL.size());
+      Kokkos::fence();
+      tH = now() - t0;
+      for (int k = 0; k < repeats; ++k)
+      {
+        t0 = now();
+        adrh::fctLimitKokkos((int)indptr.size() - 1, dp, di, dt_, dMc, dd, dML, dvL, dmL, dmo, dt, dout);
+        tP = std::min(tP, now() - t0);
+      }
+      t0 = now();
+      Kokkos::deep_copy(HostView(out.mutable_data(), out.size()), dout);
+      Kokkos::fence();
+      tD = now() - t0;
+    }
+    py::dict dd; dd["t_h2d"] = tH; dd["t_pass"] = tP; dd["t_d2h"] = tD;
+    return py::make_tuple(out, dd);
+  });
   m.def("kokkos_info", [] {
     py::dict d;
     d["space"] = std::string(Kokkos::DefaultExecutionSpace::name());

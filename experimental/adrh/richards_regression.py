@@ -15,7 +15,7 @@ Proteus stops its Newton iteration when the 2-norm of the residual is below nl_a
 leaves an error of 1e-7 to 4e-6 in the pressure head. The engine reproduces the saved profiles to round-off (about 2.5e-13) when it stops by the
 same rule (the default); converged to 1e-12 it differs from them by exactly that tolerance error, and the second line printed says so.
 
-usage: [ADRH_MODULE=adrh_kokkos] python richards_regression.py [--bc weak|strong] [--stabilize] [--nn 41] [--steps 1000]
+usage: [ADRH_MODULE=adrh_kokkos] python richards_regression.py [--bc weak|strong] [--stabilize|--fct] [--nn 41] [--steps 1000]
 
 --stabilize replaces the consistent mass by the lumped mass and adds the discrete upwinding of lowOrder.h: a different scheme from every saved
 column, so it is checked for its bounds (the pressure head stays between the initial and the boundary data) and compared with them.
@@ -48,9 +48,11 @@ PONDING, BOTTOM, T_END = -0.75, -10.0, 1.0
 
 
 class Column:
-    def __init__(self, nn, bc='weak', stabilize=False):
+    def __init__(self, nn, bc='weak', stabilize=False, fct=False):
         self.nn = nn
         self.bc = bc
+        self.fct = fct
+        stabilize = stabilize or fct
         self.stabilize = stabilize
         self.x = np.linspace(0.0, 1.0, nn)
         self.conn = np.stack([np.arange(nn - 1), np.arange(1, nn)], axis=1)
@@ -71,12 +73,11 @@ class Column:
         return (np.array([ALPHA]), np.array([N_VG]), np.array([THETA_R]), np.array([THETA_S - THETA_R]), np.array([[KS]]),
                 np.array([-1.0]), 1.0, 0.0, np.zeros(self.nn - 1, dtype="i"))
 
-    def system(self, u, uold, t, dt):
-        ue = u[self.conn].reshape(-1, 1, 2); uo = uold[self.conn].reshape(-1, 1, 2)
+    def spatial(self, u, t, dt=0.0, uold=None):
+        """Element and boundary-face residual and Jacobian (CSR) of the spatial operator; with dt > 0 the element kernel adds its consistent mass."""
         mat = self.material_args()
-        # the spatial operator alone when stabilizing (the mass is lumped separately), else the engine's full element kernel
-        R, J = engine.richards_vgm(1, "p1", *mat[:4], mat[4], mat[5], mat[6], mat[7], mat[8], self.xn, ue, uo, self.qp, self.qw, t,
-                                   0.0 if self.stabilize else dt)
+        ue = u[self.conn].reshape(-1, 1, 2); uo = (uold if uold is not None else u)[self.conn].reshape(-1, 1, 2)
+        R, J = engine.richards_vgm(1, "p1", *mat[:4], mat[4], mat[5], mat[6], mat[7], mat[8], self.xn, ue, uo, self.qp, self.qw, t, dt)
         n = self.nn
         rows = np.repeat(self.conn, 2, axis=1).ravel(); cols = np.tile(self.conn, (1, 2)).ravel()
         A = sp.coo_matrix((J.reshape(-1, 2, 2).ravel(), (rows, cols)), shape=(n, n)).tocsr()
@@ -89,7 +90,13 @@ class Column:
             np.add.at(r, ef.ravel(), Rf.reshape(-1, 2).ravel())
             rows = np.repeat(ef, 2, axis=1).ravel(); cols = np.tile(ef, (1, 2)).ravel()
             A = A + sp.coo_matrix((Jf.reshape(-1, 2, 2).ravel(), (rows, cols)), shape=(n, n)).tocsr()
+        return r, A
+
+    def system(self, u, uold, t, dt):
+        n = self.nn; mat = self.material_args()
+        r, A = self.spatial(u, t, 0.0 if self.stabilize else dt, uold)
         if self.stabilize:
+            ue = u[self.conn].reshape(-1, 1, 2); uo = uold[self.conn].reshape(-1, 1, 2)
             A.sort_indices()
             Jv, r = engine.algebraic_dissipation(self.indptr, self.indices, self.tpos, A.data.copy(), u, r)
             w, m, dm, mold = engine.richards_vgm_lumped(1, "p1", *mat[:4], mat[4], mat[5], mat[6], mat[7], mat[8], self.xn, ue, uo,
@@ -99,6 +106,27 @@ class Column:
             r = r + rm
             A = sp.csr_matrix((Jv, self.indices, self.indptr), shape=(n, n)) + sp.diags(dg)
         return r, A
+
+    def fct_correct(self, uL, uold, t, dt):
+        """Flux-corrected transport on the moisture content: the low-order solution uL (lumped mass, discrete upwinding) is moved toward the Galerkin
+        solution as far as the local extrema of the low-order and old moisture contents allow, and the pressure head is recovered from the
+        limited moisture content with the analytic van Genuchten inverse."""
+        n = self.nn; mat = self.material_args()
+        ue = uL[self.conn].reshape(-1, 1, 2); uo = uold[self.conn].reshape(-1, 1, 2)
+        r, A = self.spatial(uL, t)                           # the spatial operator alone (elements and faces), at the low-order solution
+        A.sort_indices()
+        d = engine.dissipation_values(self.indptr, self.indices, self.tpos, A.data.copy())
+        w, m, dm, mold = engine.richards_vgm_lumped(1, "p1", *mat[:4], mat[4], mat[5], mat[6], mat[7], mat[8], self.xn, ue, uo, self.qp, self.qw, t, dt)
+        ML = np.zeros(n); np.add.at(ML, self.conn.ravel(), w.ravel())
+        mL = np.zeros(n); np.add.at(mL, self.conn.ravel(), (w * m).ravel()); mL /= ML
+        mo = np.zeros(n); np.add.at(mo, self.conn.ravel(), (w * mold).ravel()); mo /= ML
+        Mel = engine.consistent_mass(1, "p1", self.xn, self.qp, self.qw)[0]
+        rows = np.repeat(self.conn, 2, axis=1).ravel(); cols = np.tile(self.conn, (1, 2)).ravel()
+        Mc = sp.coo_matrix((Mel.reshape(-1, 2, 2).ravel(), (rows, cols)), shape=(n, n)).tocsr(); Mc.sort_indices()
+        mnew = engine.fct_limit(self.indptr, self.indices, self.tpos, Mc.data.copy(), d, ML, uL, mL, mo, dt)
+        se = np.clip((mnew - THETA_R) / (THETA_S - THETA_R), 1e-12, 1.0 - 1e-15)
+        mvg = 1.0 - 1.0 / N_VG
+        return -((se ** (-1.0 / mvg) - 1.0) ** (1.0 / N_VG)) / ALPHA, mnew, ML
 
     def strong(self, r, A, u):
         """Strong Dirichlet rows: residual u - g, identity row (a no-op in the weak mode)."""
@@ -146,7 +174,10 @@ def run(col, steps, tol, norm):
     dt = T_END / steps
     t0 = time.perf_counter(); frames = {}; total_its = 0
     for step in range(1, steps + 1):
+        uold = u
         u, its = newton(col, u, step * dt, dt, tol, norm); total_its += its
+        if col.fct:
+            u, _, _ = col.fct_correct(u, uold, step * dt, dt)
         if step in (steps // 2, steps): frames[step] = u.copy()
     return frames, total_its, time.perf_counter() - t0
 
@@ -155,10 +186,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--bc', default='weak', choices=['weak', 'strong'])
     ap.add_argument('--stabilize', action='store_true', help='lumped mass + discrete upwinding (lowOrder.h)')
+    ap.add_argument('--fct', action='store_true', help='stabilize, then the FCT limiter on the moisture content')
     ap.add_argument('--nn', type=int, default=41)
     ap.add_argument('--steps', type=int, default=1000)
     a = ap.parse_args()
-    col = Column(a.nn, a.bc, a.stabilize)
+    col = Column(a.nn, a.bc, a.stabilize, a.fct)
     dt = T_END / a.steps
     ref = None
     if a.nn == 41 and a.steps == 1000:
@@ -172,7 +204,7 @@ def main():
               (a.bc, label, a.steps, dt, its, its / a.steps, wall, engine.__name__))
         if ref is not None:
             for frame, tag in ((a.steps // 2, 't500'), (a.steps, 't1000')):
-                if not a.stabilize:
+                if not (a.stabilize or a.fct):
                     d = np.abs(frames[frame] - ref['stab_0_' + tag])
                     print("    t = %.3f d: against proteus (stab_0_%s) max |difference| = %.3e at x = %.3f" % (frame * dt, tag, d.max(), col.x[d.argmax()]))
                 else:                                           # a different scheme from every saved column: compare, and check the bounds

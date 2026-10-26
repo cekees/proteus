@@ -14,6 +14,14 @@
 // The artificial diffusion has zero row sums, so a constant is still a solution. D depends on the Jacobian at the current iterate and
 // is held fixed in the Jacobian of the stabilized system (an approximate Newton step: it converges, not quadratically).
 //
+// FCT (below): the limiter on top. The conserved variable is m (m = u for a linear storage term; the moisture content for Richards), v the variable
+// the artificial diffusion acts on (u). With m_L, v_L the low-order solution, delta = m_L - m_old, M_C the consistent and M_L the lumped
+// mass, the Galerkin residual at the low-order solution is a sum of antisymmetric edge fluxes,
+//      f_ij = M_C,ij (delta_j - delta_i) / dt + d_ij (v_L,j - v_L,i),     f_ji = -f_ij,
+// and the corrected conserved variable is m_i = m_L,i + (dt / M_L,i) sum_j alpha_ij g_ij, g_ij = -f_ij, with limiters 0 <= alpha_ij = alpha_ji <= 1
+// (Zalesak) chosen so that m_i stays between the smallest and largest value of m_L and m_old over node i and its neighbours. The caller maps m back to u. A symmetric alpha
+// keeps the mass sum_i M_L,i u_i exactly; alpha = 1 everywhere is one linearized step toward the Galerkin solution. Three row-parallel passes.
+//
 // One component (nc = 1), the P1 and Q1 spaces where the row-sum lumped mass is positive, and the CSR pattern of a scalar unknown with
 // sorted columns and a structurally symmetric pattern.
 #pragma once
@@ -143,5 +151,104 @@ namespace adrh
     for (int e = 0; e < nE; ++e)
       lumpedMassOne<Coefficients, Space>(C, xn + e * nD * 3, u + e * nD, uold ? uold + e * nD : nullptr, nQ, qp, qw, t, dt, w + e * nD,
                                          m + e * nD, dm + e * nD, mold + e * nD, e);
+  }
+
+  // ---- the consistent mass matrix ---------------------------------------------------------------------------------
+
+  // One element: Mloc (nDOF x nDOF), the integral of w_a w_b over the element. The unit mass matrix of the conserved variable: the FCT
+  // edge fluxes use it whatever the storage function m(u) is.
+  template <class Space>
+  ADRH_FN ADRH_FORCE_INLINE void massMatrixOne(const double *X, int nQ, const double *qp, const double *qw, double *Mloc)
+  {
+    constexpr int nS = Space::nS, nD = Space::nDOF;
+    PointGeometry<Space> G;
+    for (int k = 0; k < nD * nD; ++k) Mloc[k] = 0.0;
+    for (int q = 0; q < nQ; ++q)
+    {
+      G.compute(X, qp + q * nS);
+      const double dV = qw[q] * G.adet;
+      for (int a = 0; a < nD; ++a)
+        for (int b = 0; b < nD; ++b) Mloc[a * nD + b] += dV * G.w[a] * G.w[b];
+    }
+  }
+
+  template <class Space>
+  void massMatrixKernel(int nE, int nQ, const double *xn, const double *qp, const double *qw, double *M)
+  {
+    constexpr int nD = Space::nDOF;
+    for (int e = 0; e < nE; ++e) massMatrixOne<Space>(xn + e * nD * 3, nQ, qp, qw, M + e * nD * nD);
+  }
+
+  // ---- flux-corrected transport -----------------------------------------------------------------------------------
+
+  // pass 1, row i: g_ij = -f_ij for the entries with j > i, written to both (i, j) and, negated, (j, i): the pair is computed once, so the
+  // antisymmetry is exact; each location is written once (no race)
+  ADRH_FN void fctFluxRow(int i, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *d, const double *vL,
+                          const double *mL, const double *mold, double dt, double *G)
+  {
+    const double di = mL[i] - mold[i];
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j < i) continue;
+      if (j == i) { G[p] = 0.0; continue; }
+      const double dj = mL[j] - mold[j];
+      const double f = Mc[p] * (dj - di) / dt + d[p] * (vL[j] - vL[i]);
+      G[p] = -f;
+      G[tpos[p]] = f;
+    }
+  }
+
+  // pass 2, row i: the Zalesak ratios R+_i, R-_i from the sums of the incoming positive and negative fluxes and the room to the local extrema
+  ADRH_FN void fctBoundsRow(int i, const int *rowptr, const int *colidx, const double *G, const double *mL, const double *mold,
+                            const double *ML, double dt, double *Rp, double *Rm)
+  {
+    double Pp = 0.0, Pm = 0.0;
+    double umax = mL[i] > mold[i] ? mL[i] : mold[i], umin = mL[i] < mold[i] ? mL[i] : mold[i];
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      const double g = G[p];
+      if (g > 0.0) Pp += g; else Pm += g;
+      const double hi = mL[j] > mold[j] ? mL[j] : mold[j], lo = mL[j] < mold[j] ? mL[j] : mold[j];
+      if (hi > umax) umax = hi;
+      if (lo < umin) umin = lo;
+    }
+    const double Qp = ML[i] / dt * (umax - mL[i]), Qm = ML[i] / dt * (umin - mL[i]);
+    const double rp = Pp > 0.0 ? Qp / Pp : 1.0, rm = Pm < 0.0 ? Qm / Pm : 1.0;
+    Rp[i] = rp < 1.0 ? rp : 1.0;
+    Rm[i] = rm < 1.0 ? rm : 1.0;
+  }
+
+  // pass 3, row i: the limited update. alpha_ij = min(R+_i, R-_j) for a flux into i, min(R-_i, R+_j) for one out of i: symmetric in (i, j).
+  ADRH_FN void fctApplyRow(int i, const int *rowptr, const int *colidx, const double *G, const double *Rp, const double *Rm,
+                           const double *ML, const double *mL, double dt, double *mOut)
+  {
+    double sum = 0.0;
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      const double g = G[p];
+      if (g > 0.0) { const double a = Rp[i] < Rm[j] ? Rp[i] : Rm[j]; sum += a * g; }
+      else if (g < 0.0) { const double a = Rm[i] < Rp[j] ? Rm[i] : Rp[j]; sum += a * g; }
+    }
+    mOut[i] = mL[i] + dt / ML[i] * sum;
+  }
+
+  // the dissipation values of a Jacobian (pass 1 of the discrete upwinding on its own): d on the pattern
+  inline void dissipationValues(int nRows, const int *rowptr, const int *colidx, const int *tpos, const double *Jv, double *d)
+  {
+    for (int i = 0; i < nRows; ++i)
+      for (int p = rowptr[i]; p < rowptr[i + 1]; ++p) d[p] = dissipationEntry(i, p, colidx, tpos, Jv);
+  }
+
+  // host reference of the three passes: m_out from the low-order state (v_L for the dissipation, m_L and m_old the conserved variable)
+  inline void fctLimit(int nRows, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *d, const double *ML,
+                       const double *vL, const double *mL, const double *mold, double dt, double *mOut)
+  {
+    std::vector<double> G(rowptr[nRows]), Rp(nRows), Rm(nRows);
+    for (int i = 0; i < nRows; ++i) fctFluxRow(i, rowptr, colidx, tpos, Mc, d, vL, mL, mold, dt, G.data());
+    for (int i = 0; i < nRows; ++i) fctBoundsRow(i, rowptr, colidx, G.data(), mL, mold, ML, dt, Rp.data(), Rm.data());
+    for (int i = 0; i < nRows; ++i) fctApplyRow(i, rowptr, colidx, G.data(), Rp.data(), Rm.data(), ML, mL, dt, mOut);
   }
 } // namespace adrh
