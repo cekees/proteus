@@ -437,6 +437,75 @@ def test_sample_rate_respects_active_time():
     times = sampled_times(0.5, [0.25*i for i in range(21)], activeTime=(1.0, 3.0))
     npt.assert_allclose(times, [1.0, 1.5, 2.0, 2.5, 3.0])
 
+
+# lines and points that leave the domain (cekees, 2026-10-26): warn and
+# restrict to the mesh instead of raising; roundoff-outside is snapped in
+
+def run_line_integral(lines, nd=2, **kw):
+    filename = 'test_outside_line_integral.csv'
+    silent_rm(filename)
+    l = LineIntegralGauges(gauges=((('u0',), lines),), fileName=filename)
+    run_gauge(l, [0.0], nd=nd, **kw)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    return np.atleast_2d(data)[:, 1:]
+
+def test_line_integral_partly_outside_domain_is_restricted(monkeypatch):
+    messages = []
+    import proteus.Gauges as G
+    monkeypatch.setattr(G, 'logEvent', lambda msg, level=0: messages.append((level, msg)))
+    # u = x + 10 y at t=0; inside [0,1]: integral of x + 2.5 is 3
+    data = run_line_integral((((-1, 0.25, 0), (2, 0.25, 0)),), total_nodes=100)
+    npt.assert_allclose(data, [[3.0]], rtol=1e-10)
+    assert any('outside' in msg and level <= 1 for level, msg in messages)
+
+def test_line_gauge_partly_outside_domain_has_points_only_inside():
+    filename = 'test_outside_line.csv'
+    silent_rm(filename)
+    l = LineGauges(gauges=((('u0',), (((-1, 0.25, 0), (2, 0.25, 0)),)),), fileName=filename)
+    run_gauge(l, [0.0], nd=2, total_nodes=100)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    x = np.array([float(n.split('[')[1].split()[0]) for n in names])
+    assert x.min() >= 0 and x.max() <= 1
+    npt.assert_allclose(np.atleast_2d(data)[0, 1:], x + 2.5, rtol=1e-10)
+
+def test_line_entirely_outside_domain_is_an_error():
+    with pytest.raises(ValueError, match="outside"):
+        run_line_integral((((2, 0.25, 0), (3, 0.25, 0)),), total_nodes=100)
+
+def test_line_on_boundary_to_roundoff_is_snapped_2d():
+    # "on the bottom" computed slightly differently from the mesh
+    data = run_line_integral((((0, -1e-15, 0), (1, -1e-15, 0)),), total_nodes=100)
+    npt.assert_allclose(data, [[0.5]], rtol=1e-10)
+
+def test_line_on_boundary_to_roundoff_is_snapped_3d():
+    data = run_line_integral((((0, 0.5, -1e-15), (1, 0.5, -1e-15)),), nd=3)
+    npt.assert_allclose(data, [[5.5]], rtol=1e-10)
+
+def test_point_on_boundary_to_roundoff_is_snapped():
+    # without snapping the point is "off-element" and reads its nearest node (0.3)
+    filename = 'test_outside_point.csv'
+    silent_rm(filename)
+    g = PointGauges(gauges=((('u0',), ((0.34, -1e-15, 0),)),), fileName=filename)
+    run_gauge(g, [0.0], nd=2, total_nodes=100)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    npt.assert_allclose(np.atleast_2d(data)[0, 1], 0.34, rtol=1e-10)
+
+def test_point_outside_by_more_than_tolerance_still_uses_nearest_node():
+    filename = 'test_outside_point2.csv'
+    silent_rm(filename)
+    g = PointGauges(gauges=((('u0',), ((0.34, -0.5, 0),)),), fileName=filename)
+    run_gauge(g, [0.0], nd=2, total_nodes=100)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    npt.assert_allclose(np.atleast_2d(data)[0, 1], 0.3, rtol=1e-10)
+
 def delete_file(filename):
     if os.path.exists(filename):
         try:
