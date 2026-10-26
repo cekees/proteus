@@ -8194,12 +8194,57 @@ def chooseMeshOptions(physics, numerics):
         numerics.genMesh = physics.genMesh
         return numerics
 
+def fullOverlapAssembly(partitioningType, nLayersOfOverlap):
+    """Whether the residual is assembled as if every rank held its whole neighbourhood.
+
+    The solvers decide this from n (NumericalSolution's ``parallelUsesFullOverlap``):
+    any overlap, or a node partition. Without it, contributions to shared dofs
+    are added across ranks.
+    """
+    return nLayersOfOverlap > 0 or partitioningType == MeshParallelPartitioningTypes.node
+
+
+def checkPartitionMatchesMesh(p, n):
+    """Raise, on more than one rank, if n and the domain's mesh options disagree
+    about how the residual is assembled.
+
+    A p module with a domain meshes from ``domain.MeshOptions``; n's
+    ``parallelPartitioningType`` and ``nLayersOfOverlapForParallel`` then only
+    choose the assembly. If one says no overlap and the other says overlap,
+    shared-node contributions are counted twice, or a mesh with no global copy
+    is asked for one (test/periodic/duct segfaulted there: n asked for an
+    element partition with no overlap for the parallel periodic numbering,
+    the mesh was a node partition generated in pieces, and the trial space
+    built from the global mesh got None for its arrays). Set both, e.g.
+    ``p.domain.MeshOptions.parallelPartitioningType = n.parallelPartitioningType``
+    and the same for ``nLayersOfOverlapForParallel``.
+    """
+    from . import Comm
+    comm = Comm.get()
+    if comm is None or comm.size() == 1:
+        return
+    options = getMeshOptions(p.domain)
+    n_type = getattr(n, 'parallelPartitioningType', options.parallelPartitioningType)
+    n_layers = getattr(n, 'nLayersOfOverlapForParallel', options.nLayersOfOverlapForParallel)
+    if (fullOverlapAssembly(n_type, n_layers) !=
+        fullOverlapAssembly(options.parallelPartitioningType, options.nLayersOfOverlapForParallel)):
+        raise ValueError(
+            "the numerics for %s ask for parallelPartitioningType=%s, nLayersOfOverlapForParallel=%s "
+            "but its domain's MeshOptions say %s, %s, and the two disagree about whether the "
+            "residual is assembled with overlap; set both. For example "
+            "p.domain.MeshOptions.parallelPartitioningType = n.parallelPartitioningType and "
+            "p.domain.MeshOptions.nLayersOfOverlapForParallel = n.nLayersOfOverlapForParallel."
+            % (getattr(p, 'name', p), n_type, n_layers,
+               options.parallelPartitioningType, options.nLayersOfOverlapForParallel))
+
+
 def setDomainFromPhysics(p, n):
     """Give an old-style p module (no ``domain``) a domain built from its
     ``nd``, ``L``, ``x0``, ``polyfile`` or ``meshfile``, with mesh options
     from the n module. A p module that has a domain is left alone, so
     calling this twice is the same as calling it once."""
     if p.domain is not None:
+        checkPartitionMatchesMesh(p, n)
         return
     if p.nd == 1:
         p.domain = Domain.RectangularDomain(L=p.L[:1],

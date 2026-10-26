@@ -6674,11 +6674,16 @@ class MultilevelTransport(object):
                                       ("linearSmoother",getattr(options,'linearSmoother',None))):
                     if solver is None:
                         continue
-                    assert solver in parallelCapableSolvers, (
+                    #the KSP_Preconditioner family (petsc_ASM, petsc_LU, the Schur
+                    #complement preconditioners such as SimpleNavierStokes2D) sets up
+                    #PETSc preconditioners on the global parallel matrix for
+                    #KSP_petsc4py; it is how parallel Navier-Stokes is run
+                    assert (solver in parallelCapableSolvers or
+                            (isinstance(solver,type) and issubclass(solver,KSP_Preconditioner))), (
                         "%s=%s cannot be used in parallel: it would return a "
                         "different answer than in serial. Use one of %s."
                         % (what,getattr(solver,'__name__',solver),
-                           [c.__name__ for c in parallelCapableSolvers]))
+                           [c.__name__ for c in parallelCapableSolvers]+["KSP_Preconditioner subclasses"]))
                 if mixed:
                     #
                     #calculate dimensions mixed multicomponent system
