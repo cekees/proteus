@@ -85,3 +85,4 @@ proteus/superluWrappers.c
 proteus/MeshAdaptPUMI/MeshAdapt.cpp
 proteus/tests/ci/meshNoVessel.edge
 proteus/tests/ci/meshNoVessel.neigh
+docs/source/_generated/
