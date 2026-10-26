@@ -194,3 +194,39 @@ def test_rans3pf_projection_scheme_on_two_ranks_gives_the_serial_answer(tmp_path
     numpy.testing.assert_allclose(parallel, serial, rtol=1e-8)
     control = _rans3pf(2, tmp_path / "3", NOZERO=1)
     assert abs(control[0] - serial[0]) > 1e-3 * abs(serial[0])
+
+
+CLSVOF_HELPER = os.path.join(HERE, "clsvof_partition_mpi.py")
+
+
+def _clsvof(ranks, cwd, **overrides):
+    env = dict(os.environ, OMP_NUM_THREADS="1", PART_TYPE="node", NLAYERS="1", NSTEPS="4", CASE="2",
+               PETSC_OPTIONS="-mat_partitioning_type current -clsvof_ksp_type preonly "
+                             "-clsvof_pc_type lu -clsvof_pc_factor_mat_solver_type mumps")
+    env.setdefault("FI_PROVIDER", "tcp")
+    env.setdefault("OMPI_MCA_rmaps_base_oversubscribe", "1")
+    env.setdefault("PRTE_MCA_rmaps_default_mapping_policy", ":oversubscribe")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [p for p in sys.path if p] + [env.get("PYTHONPATH", "")]).strip(os.pathsep)
+    env.update({k: str(v) for k, v in overrides.items()})
+    argv = [sys.executable, CLSVOF_HELPER] if ranks == 1 else \
+        [MPIEXEC, "-n", str(ranks), sys.executable, CLSVOF_HELPER]
+    return subprocess.run(argv, capture_output=True, text=True, timeout=900, env=env, cwd=str(cwd))
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+def test_clsvof_on_a_partition_with_overlap_gives_the_serial_answer_and_without_is_refused(tmp_path):
+    """CLSVOF's lumped projections are not summed across ranks: a partition without overlap
+    gave a 3e-3 relative error in the first step, so it is refused."""
+    for d in ("1", "2", "3"):
+        (tmp_path / d).mkdir()
+    out = _clsvof(1, tmp_path / "1")
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    serial = [float(v) for v in [l for l in out.stdout.splitlines() if l.startswith("RESULT")][0].split()[1:3]]
+    out = _clsvof(2, tmp_path / "2")
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]
+    parallel = [float(v) for v in [l for l in out.stdout.splitlines() if l.startswith("RESULT")][0].split()[1:3]]
+    numpy.testing.assert_allclose(parallel, serial, rtol=1e-10)
+    out = _clsvof(2, tmp_path / "3", PART_TYPE="element", NLAYERS="0")
+    assert out.returncode != 0
+    assert "CLSVOF in parallel needs a node partition or at least one layer of overlap" in out.stdout + out.stderr
