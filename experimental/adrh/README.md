@@ -199,3 +199,39 @@ Building the Python module for CUDA needs Kokkos as shared libraries (`-DBUILD_S
 nvcc flags as the benchmark plus `-shared -Xcompiler -fPIC` with pybind11's and Python's include paths; at run time `libcudart` must be on `LD_LIBRARY_PATH`.
 Raw results: `reports/adrh_kokkos_solve_2026-10-25/` beside the campaign notes.
 
+## Whole solve at a fixed core count: ranks against threads (`ad_solve_mpi.py`)
+
+Roster C19 decision (3). The same problem, distributed: each MPI rank owns a brick of the Kuhn-tetrahedra mesh, assembles it with the
+Kokkos colored kernel on `T` threads, and sends the matrix to PETSc through `MatSetValuesCOO` (ghost rows are added into their owners) and the
+residual through `VecSetValues`; PETSc then solves with GMRES + GAMG on all `R` ranks. `R x T` is held at the 96 cores of `ceds-model`
+(`mpiexec -n R -bind-to core:T`, `KOKKOS_NUM_THREADS=T`, `OMP_NUM_THREADS=T`, `OMP_PROC_BIND=spread OMP_PLACES=cores`), the machine idle (the campaign script waits on measured CPU
+use between runs), best of two runs of each layout (the two agree within 1 to 3%), assembly best of 5. Every layout reproduces the serial answer: max error 4.051e-04
+(6 M tets) and 1.583e-04 (24.6 M), 24 or 25 GMRES iterations. Seconds, maximum over ranks:
+
+| tets | R x T | assemble | matrix exchange | GAMG setup | solve | total | vs 96 x 1 |
+|---|---|---|---|---|---|---|---|
+| 6.0 M | 96 x 1 | 0.054 | 0.037 | 0.125 | 0.062 | 0.279 | 1.00x |
+| | 48 x 2 | 0.054 | 0.037 | 0.162 | 0.080 | 0.334 | 1.20x |
+| | 24 x 4 | 0.053 | 0.043 | 0.237 | 0.107 | 0.442 | 1.58x |
+| | 12 x 8 | 0.053 | 0.066 | 0.368 | 0.164 | 0.653 | 2.34x |
+| | 4 x 24 | 0.054 | 0.249 | 0.899 | 0.517 | 1.725 | 6.2x |
+| | 1 x 96 | 0.065 | 0.419 | 2.751 | 2.096 | 5.344 | 19.2x |
+| 24.6 M | 96 x 1 | 0.254 | 0.132 | 0.473 | 0.611 | 1.477 | 1.00x |
+| | 48 x 2 | 0.249 | 0.143 | 0.581 | 0.644 | 1.625 | 1.10x |
+| | 24 x 4 | 0.253 | 0.207 | 0.850 | 0.736 | 2.053 | 1.39x |
+| | 12 x 8 | 0.255 | 0.303 | 1.529 | 0.952 | 3.051 | 2.07x |
+| | 4 x 24 | 0.261 | 0.640 | 4.072 | 2.299 | 7.297 | 4.9x |
+| | 1 x 96 | 0.259 | 1.112 | 11.122 | 8.154 | 20.697 | 14.0x |
+
+* **Threads do as well as ranks for the assembly and for nothing else.** Assembly time does not depend on the layout (0.054 s at 6 M tets from 96 x 1 to 4 x 24; the 1 x 96 layout is 20% slower), as in
+  the assembly benchmark. Everything that follows it is one core per rank: the matrix exchange (building and inserting the COO arrays), the GAMG setup and the
+  solve. With `T` threads per rank the other `T - 1` cores idle through them, so the total grows with `T`. At the layouts in the table the assembly is 19% of the total at 96 x 1 and 1.2% at 4 x 24.
+* **For this solver stack the answer to decision (3) is a rank per core.** The cost of `T = 2` is 10 to 20%, of `T = 4` 39 to 58%, of `T = 8` about a factor 2. This is a statement about PETSc's MPI-only
+  solvers and a serial matrix exchange. It would change with a threaded or device-resident solve, which is the case for stage 2, not for threads on a CPU node.
+* **Memory is not a reason, on this evidence.** Total resident memory falls from 13.9 GB (96 x 1) to 1.8 GB (1 x 96) at 6 M tets, but 7.8 GB of the 13.9 is the 81 MB each rank carries after importing
+  Python, numpy, PETSc and Kokkos. The ghost layer is 11.3% of the nodes at 96 ranks (7.0% at 24.6 M tets); the rest of the difference is driver temporaries.
+  A production run's per-rank state is larger than this driver's, so the halo and duplicated-setup argument is worth measuring on a real model before it is made.
+* **GAMG iteration counts do not depend on the layout** (24 to 25), so the solve times are rates, not artefacts of a worse preconditioner.
+
+Raw results and the campaign script: `reports/adrh_kokkos_ranks_2026-10-26/` beside the campaign notes.
+
