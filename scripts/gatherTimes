@@ -31,7 +31,7 @@ def gatherTimes(filename, dataDir='.', addname="_complete", tCount=None,
     records; ``global_sync`` is accepted for command-line compatibility.
     """
     from proteus.Archiver import readArchiveDomain
-    from ymf.archive import write_ymf
+    from ymf.archive import space_names, write_ymf
     from ymf.xdmf import write_xdmf
 
     domain = readArchiveDomain(filename, dataDir=dataDir)
@@ -40,21 +40,18 @@ def gatherTimes(filename, dataDir='.', addname="_complete", tCount=None,
             "gatherTimes: %s holds no grid metadata to rebuild from"
             % (os.path.join(dataDir, filename + ".h5"),))
 
-    for collection in domain.get("time_collections", []):
-        steps = collection["data"]
-        if tCount is None or tCount < 0:
-            print("%s: %d step(s)" % (collection["name"], len(steps)))
-        elif tCount > len(steps):
-            # Asking for steps the run never wrote is a mistake to report,
-            # not a request to quietly write fewer.
-            raise ValueError(
-                "asked for %d steps of %s but %s.h5 holds %d"
-                % (tCount, collection["name"],
-                   os.path.join(dataDir, filename), len(steps)))
-        else:
-            print("%s: keeping %d of %d step(s)"
-                  % (collection["name"], tCount, len(steps)))
-            collection["data"] = steps[:tCount]
+    steps = domain["times"]
+    if tCount is None or tCount < 0:
+        print("%d instant(s) of %d space(s)" % (len(steps), len(space_names(domain))))
+    elif tCount > len(steps):
+        # Asking for steps the run never wrote is a mistake to report,
+        # not a request to quietly write fewer.
+        raise ValueError(
+            "asked for %d steps but %s.h5 holds %d"
+            % (tCount, os.path.join(dataDir, filename), len(steps)))
+    else:
+        print("keeping %d of %d instant(s)" % (tCount, len(steps)))
+        domain["times"] = steps[:tCount]
 
     out_base = os.path.join(dataDir, filename + addname)
     write_ymf(domain, out_base + ".ymf")
