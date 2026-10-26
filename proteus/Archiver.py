@@ -696,6 +696,32 @@ class AR_base(object):
                "0..%d" % (written_by[-1],),
                self.size, len(written_by) or self.size))
 
+    def continue_from(self, tCount):
+        """Make the archive continue after step ``tCount``, dropping later ones.
+
+        A hot start resumes from the latest step at or before the requested
+        time, which need not be the last archived. The steps after it
+        belong to the run being continued, and the new run is about to
+        write its own under the same numbers; left in the file, a shorter
+        new run would leave the old tail to be read as part of the
+        archive, and a later hot start could resume from it. Their grid
+        metadata is deleted (the field arrays are replaced as the new run
+        reaches them, or left unreferenced). Collective: every rank calls
+        it with the same step.
+        """
+        self.n_datasets = tCount + 1
+        self.archived_domain = None
+        if self.hdfFile is not None:
+            for name in self._collection_names():
+                index = self.n_datasets
+                while True:
+                    key = self._metadata_dataset_name(name, index)
+                    if key not in self.hdfFile:
+                        break
+                    del self.hdfFile[key]
+                    index += 1
+        self.comm.barrier()
+
     def _metadata_dataset_name(self, collection_name, index):
         """Name of the HDF5 dataset holding one collection's step metadata."""
         return (collection_name + "_" + str(index)).replace(" ", "_")
@@ -894,13 +920,8 @@ class AR_base(object):
             dataset_name = self._metadata_dataset_name(
                 TemporalGridCollection.name, self.n_datasets)
             if self.hdfFile is not None:
-                try:
-                    grid_data = self.hdfFile.create_dataset(
-                        name  = dataset_name,
-                        shape = (n_rows,),
-                        dtype = '|S'+str(width))
-                except (ValueError, RuntimeError, OSError):
-                    grid_data = self.hdfFile[dataset_name]
+                grid_data = self._dataset(dataset_name, (n_rows,),
+                                          '|S'+str(width))
                 grid_data.attrs['Time'] = TimeAttrib
                 if self.comm.isMaster():
                     for j, payload in enumerate(payloads):
@@ -939,9 +960,7 @@ class AR_base(object):
         if self.driver == "mpio" and not self.inline:
             metadata = comm_world.allgather((name,data.shape,data.dtype))
             for i,m in enumerate(metadata):
-                dataset = self.hdfFile.create_dataset(name  = m[0],
-                                                      shape = m[1],
-                                                      dtype = m[2])
+                dataset = self._dataset(m[0], m[1], m[2])
                 if i == self.rank:
                     dataset[:] = data
             return
@@ -957,15 +976,8 @@ class AR_base(object):
         slices are gathered to master and assembled there.
         """
         if self.driver == "mpio" and not self.inline:
-            try:
-                dataset = self.hdfFile.create_dataset(name  = name,
-                                                      shape = tuple([offsets[-1]]+list(data.shape[1:])),
-                                                      dtype = data.dtype)
-            except:
-                try:
-                    dataset = self.hdfFile[name]
-                except Exception as e:
-                    raise e
+            dataset = self._dataset(name, tuple([offsets[-1]]+list(data.shape[1:])),
+                                    data.dtype)
             dataset[offsets[self.rank]:offsets[self.rank+1]] = data
             return
         comm_world = self.comm.comm.tompi4py()
@@ -979,10 +991,28 @@ class AR_base(object):
         """Master keeps an assembled array: in the file, or for the inline document."""
         if self.inline:
             self._inlineArrays[name] = array
-        elif name in self.hdfFile:
-            self.hdfFile[name][...] = array
         else:
-            self.hdfFile.create_dataset(name, data=array)
+            self._dataset(name, array.shape, array.dtype)[...] = array
+
+    def _dataset(self, name, shape, dtype):
+        """The dataset ``name`` with this shape and type, creating it if need be.
+
+        A hot start continues from a step that may not be the last one
+        archived, and the steps after it are written again under the names
+        they had. The dataset is reused when it fits and replaced when it
+        does not (a different mesh, rank count, or metadata width), instead
+        of failing as ``create_dataset`` does or, as the metadata writer
+        did, writing a longer payload into a shorter fixed-width string
+        and truncating it. Creation and deletion are collective under the
+        mpio driver, and every rank calls this with the same arguments.
+        """
+        dtype = numpy.dtype(dtype)
+        if name in self.hdfFile:
+            existing = self.hdfFile[name]
+            if existing.shape == tuple(shape) and existing.dtype == dtype:
+                return existing
+            del self.hdfFile[name]
+        return self.hdfFile.create_dataset(name, shape=tuple(shape), dtype=dtype)
 
     def _inlineGrid(self, grid):
         """A copy of ``grid`` with every dataset reference replaced by its values.

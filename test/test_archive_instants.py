@@ -89,3 +89,53 @@ def test_a_space_first_archived_late_is_absent_from_the_early_instants(tmp_path)
 def test_archived_times_are_the_instants(tmp_path):
     ar = run(tmp_path, [(0.0, ["Mesh", "Mesh_c0p2"]), (0.5, ["Mesh", "Mesh_c0p2"])])
     assert ar.archived_times == [0.0, 0.5]
+
+
+def hot_start(tmp_path, steps, first_step, close=True):
+    """Reopen the archive as a hot start from the step before ``first_step``
+    and write ``steps`` after it, numbered as NumericalSolution numbers them
+    (``continue_from`` the step it started from)."""
+    Comm.init()
+    ar = Archiver.XdmfArchive(str(tmp_path), "inst", global_sync=False, hotStart=True)
+    ar.continue_from(first_step - 1)
+    for tCount, (t, names) in enumerate(steps, start=first_step):
+        for name in names:
+            write_step(ar, name, t, tCount)
+        ar.sync()
+    if close:
+        ar.close()
+    return ar
+
+
+def times(tmp_path):
+    return [i["time"] for i in read(tmp_path)["times"]]
+
+
+def test_a_hot_start_replaces_the_steps_after_the_one_it_starts_from(tmp_path):
+    both = ["Mesh", "Mesh_c0p2"]
+    run(tmp_path, [(0.0, both), (0.5, both), (1.0, both)])
+    hot_start(tmp_path, [(0.75, both), (1.25, both)], first_step=2)
+    assert times(tmp_path) == [0.0, 0.5, 0.75, 1.25]
+
+
+def test_a_hot_start_that_ends_sooner_drops_the_old_tail(tmp_path):
+    both = ["Mesh", "Mesh_c0p2"]
+    run(tmp_path, [(0.0, both), (0.5, both), (1.0, both)])
+    hot_start(tmp_path, [(0.25, both)], first_step=1)
+    assert times(tmp_path) == [0.0, 0.25]
+
+
+def test_a_space_first_archived_late_waits_for_its_first_instant(tmp_path):
+    run(tmp_path, [(0.0, ["Mesh"]), (0.5, ["Mesh", "Mesh_c0p2"]), (1.0, ["Mesh", "Mesh_c0p2"])])
+    domain = read(tmp_path)
+    assert [list(i["spaces"]) for i in domain["times"]] == [
+        ["Mesh"], ["Mesh", "Mesh_c0p2"], ["Mesh", "Mesh_c0p2"]]
+
+
+def test_a_hot_start_after_a_late_space_keeps_both(tmp_path):
+    run(tmp_path, [(0.0, ["Mesh"]), (0.5, ["Mesh", "Mesh_c0p2"]), (1.0, ["Mesh", "Mesh_c0p2"])])
+    hot_start(tmp_path, [(1.5, ["Mesh", "Mesh_c0p2"])], first_step=3)
+    domain = read(tmp_path)
+    assert [i["time"] for i in domain["times"]] == [0.0, 0.5, 1.0, 1.5]
+    assert [list(i["spaces"]) for i in domain["times"]][0] == ["Mesh"]
+    assert all(len(i["spaces"]) == 2 for i in domain["times"][1:])

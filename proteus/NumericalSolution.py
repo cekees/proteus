@@ -485,7 +485,7 @@ class NS_base(object):  # (HasTraits):
                 while tCount > 0 and archiveTimes[tCount] > self.opts.hotStartTime:
                     tCount -= 1
                 time = archiveTimes[tCount]
-                self.ar[index].n_datasets = tCount + 1
+                self.ar[index].continue_from(tCount)
                 if tCount > 0:
                     dt = time - archiveTimes[tCount - 1]
                 else:
