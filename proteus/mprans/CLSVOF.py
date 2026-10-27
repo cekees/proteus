@@ -1,4 +1,5 @@
 import proteus
+import proteus.MeshTools
 from proteus.mprans.cCLSVOF import *
 import numpy as np
 from proteus.Transport import OneLevelTransport
@@ -547,6 +548,18 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.comm=comm
         if comm.size() > 1:
             assert numericalFluxType != None and numericalFluxType.useWeakDirichletConditions,"You must use a numerical flux to apply weak boundary conditions for parallel runs"
+            if not proteus.MeshTools.fullOverlapAssembly(self.mesh.parallelPartitioningType,
+                                                         self.mesh.nLayersOfOverlap):
+                # The lumped L2 projections of the normal (and the initial
+                # condition) divide a locally assembled right-hand side by a
+                # locally assembled lumped mass, then copy owned values to the
+                # ghosts: neither is summed across ranks, so on a partition
+                # without overlap every shared node holds a partial value.
+                raise NotImplementedError(
+                    "CLSVOF in parallel needs a node partition or at least one layer of "
+                    "overlap: its projections are not summed across ranks, so a partition "
+                    "without overlap gives different answers from one rank (2 ranks, "
+                    "element partition: a 3e-3 relative error in the first step)")
 
         logEvent(memory("stride+offset","OneLevelTransport"),level=4)
         if numericalFluxType != None:

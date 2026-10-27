@@ -976,20 +976,33 @@ def test_a_periodic_problem_solves_on_several_ranks_as_on_one(tmp_path, ranks):
     assert _recorded_ranks(tmp_path / "n" / "pp.archive.ymf") == {ranks}
 
 
+ADVECTED_PERIODIC_POISSON = PERIODIC_POISSON.replace(
+    '"-Δu = 5π² sin(2πx) sin(πy)  in Ω"',
+    '"∇·((1, 0) u) - Δu = 5π² sin(2πx) sin(πy) + 2π cos(2πx) sin(πy)  in Ω"')
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("ranks", [2, 3])
+def test_an_advected_periodic_problem_solves_on_several_ranks_as_on_one(tmp_path, ranks):
+    pytest.importorskip("ymf.symbolic")
+    pytest.importorskip("strictyaml")
+    spec = tmp_path / "pa.ymf"
+    spec.write_text(ADVECTED_PERIODIC_POISSON, encoding="utf-8")
+    serial = ymf_run(spec, "--cells", "8", "--outdir", tmp_path / "1")
+    errors = _errors_by_branch(serial.stdout)
+    out = ymf_run_on(ranks, spec, "--cells", "8", "--discretization", "mumps",
+                     "--discretization", "cg", "--outdir", tmp_path / "n")
+    assert out.returncode == 1, out.stdout[-2000:] + out.stderr[-2000:]   # superlu left out
+    parallel = _errors_by_branch(out.stdout)
+    assert set(parallel) == {"mumps", "cg"}, out.stdout[-2000:]
+    for branch in ("mumps", "cg"):
+        numpy.testing.assert_allclose(parallel[branch], errors[branch], rtol=1e-8)
+
+
 @pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
 def test_what_the_parallel_periodic_path_cannot_solve_is_refused(tmp_path):
     pytest.importorskip("ymf.symbolic")
     pytest.importorskip("strictyaml")
-    advected = tmp_path / "pa.ymf"
-    advected.write_text(PERIODIC_POISSON.replace(
-        '"-Δu = 5π² sin(2πx) sin(πy)  in Ω"',
-        '"∇·((1, 0) u) - Δu = 5π² sin(2πx) sin(πy) + 2π cos(2πx) sin(πy)  in Ω"'),
-        encoding="utf-8")
-    out = ymf_run_on(2, advected, "--cells", "4", "--discretization", "mumps",
-                     "--outdir", tmp_path)
-    assert out.returncode == 2
-    assert "solved without advection only for now (this run has 2 ranks, and u " \
-           "advected)" in out.stderr
     channel = tmp_path / "pc.ymf"
     channel.write_text(PERIODIC_CHANNEL, encoding="utf-8")
     out = ymf_run_on(2, channel, "--cells", "4", "--discretization", "th_mumps",
@@ -1069,6 +1082,52 @@ def test_advection_along_a_rank_interface_is_untouched(tmp_path):
                                   rtol=1e-8)
 
 
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("flux", [
+    "Advection_DiagonalUpwind",
+    "Advection_DiagonalUpwind_IIPG_exterior",
+    "Advection_DiagonalUpwind_Diffusion_IIPG_exterior",
+    "Advection_DiagonalUpwind_Diffusion_SIPG_exterior",
+    "Advection_DiagonalUpwind_Diffusion_NIPG_exterior"])
+@pytest.mark.parametrize("advonly", [0, 1])
+def test_weak_advective_flux_classes_agree_with_serial_across_a_rank_cut(flux, advonly, tmp_path):
+    """The CG weak-boundary upwind classes need no rank-interface mask.
+
+    Measured rather than assumed (C0, F1): with advection across the pinned
+    cut, an element partition with no overlap, these classes give the serial
+    answer to rounding, with diffusion and with pure advection (Dirichlet on
+    the inflow side only, free outflow, so the cut carries both inflow and
+    outflow faces). Their exterior advective flux is nonzero on the interface
+    faces, but the two ranks' terms there cancel in the assembled residual.
+    StrongDirichlet's NoBC kernel does not cancel, which is why it needed #76.
+    The test is here so that stays true.
+    """
+    kw = dict(FLUX=flux, ADVONLY=advonly or "")
+    serial = _adv_partition_run(1, tmp_path, **kw)
+    parallel = _adv_partition_run(2, tmp_path, **kw)
+    assert parallel["interfaces"] > 0, parallel
+    numpy.testing.assert_allclose(float(parallel["L2_u"]), float(serial["L2_u"]),
+                                  rtol=1e-8)
+
+
+@pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
+@pytest.mark.parametrize("bdir", ["x", "y"])
+def test_dg_gives_the_serial_answer_on_several_ranks(bdir, tmp_path):
+    """DG needs every face neighbour of an owned element on the rank.
+
+    ADRProblem used to leave the default partition, node with one layer of
+    overlap, which does not provide that: the missing neighbours' faces were
+    assembled as domain boundary and 16x16 Poisson went from 1.0e-03 on one
+    rank to 1.3e-01 on two, with or without advection. The partition is left
+    as ADRProblem.setup chose it (empty PART_TYPE / NLAYERS).
+    """
+    kw = dict(SPACE="DG", PART_TYPE="", NLAYERS="", BDIR=bdir)
+    serial = _adv_partition_run(1, tmp_path, **kw)
+    parallel = _adv_partition_run(2, tmp_path, **kw)
+    numpy.testing.assert_allclose(float(parallel["L2_u"]), float(serial["L2_u"]),
+                                  rtol=1e-6)
+
+
 def test_parallel_periodic_is_chosen_by_rank_count_space_and_advection():
     problem = {"periodic": [{"component": "u"}],
                "adr": {"equations": [{"component": "u", "diffusion": {}}]}}
@@ -1080,8 +1139,7 @@ def test_parallel_periodic_is_chosen_by_rank_count_space_and_advection():
     with pytest.raises(ValueError, match="need every component in CG1"):
         ADRProblem.parallel_periodic(problem, cg2, ranks=2)
     advected = dict(problem, adr={"equations": [{"component": "u", "advection": {"f": ["u"]}}]})
-    with pytest.raises(ValueError, match="without advection"):
-        ADRProblem.parallel_periodic(advected, cg1, ranks=2)
+    assert ADRProblem.parallel_periodic(advected, cg1, ranks=2) is True
 
 
 def test_an_old_style_model_is_meshed_with_its_n_modules_partition():

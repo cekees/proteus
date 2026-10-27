@@ -639,12 +639,6 @@ class Newton(NonlinearSolver):
         if par_u is not None:
             #allow linear solver to know what type of assembly to use
             self.linearSolver.par_fullOverlap = self.par_fullOverlap
-            #no overlap
-            if not self.par_fullOverlap:
-                par_r.scatter_reverse_add()
-            else:
-                #no overlap or overlap (until we compute norms over only owned dof)
-                par_r.scatter_forward_insert()
         # Implicit FCT (Richards FCT_TYPE='implicit'): keep the predictor's initial guess so a
         # failed Galerkin predictor can be redone with the low-order operator (fctPredictorFallback).
         fct_u0 = numpy.copy(u) if getattr(self.F, 'fct_phase', None) == 'predictor' else None
@@ -655,6 +649,20 @@ class Newton(NonlinearSolver):
         self.theta_hist = []
         self.u_current = u  # updated in place by the iteration; used by the 'du' tests
         r=self.solveInitialize(u,r,b)
+        if par_u is not None:
+            #The residual just computed is a sum over this rank's elements. With no
+            #overlap a shared dof's residual is the sum over the ranks that share it,
+            #so it has to be assembled before the first linear solve uses it; this
+            #used to run before the residual was computed, on the previous solve's
+            #array, so the first Newton step of every solve took a partial right hand
+            #side at the shared dofs (the later steps assemble after computing).
+            if not self.par_fullOverlap:
+                par_r.scatter_reverse_add()
+            else:
+                #no overlap or overlap (until we compute norms over only owned dof)
+                par_r.scatter_forward_insert()
+            self.norm_r0 = self.norm(r)
+            self.norm_r = self.norm_r0
         self.norm_r_hist = []
         self.norm_du_hist = []
         self.gammaK_max=0.0
