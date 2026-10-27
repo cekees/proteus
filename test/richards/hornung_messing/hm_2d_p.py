@@ -32,6 +32,10 @@ ct = Context.Options([
     ("par_part", "element", "par: mesh partitioning, element or node"),
     ("par_overlap", 1, "par: element layers of overlap (FCT needs >= 1 so owned rows see their full stencil)"),
     ("quad", False, "Q1 on a uniform quadrilateral mesh (as in JNMA) instead of P1 on right triangles"),
+    ("nl_test", "r", "Newton convergence test: 'r' (residual), 'du' (relative increment), 'r_and_du' (both)"),
+    ("nl_unorm", "l2", "norm of the increment test: 'l2' (discrete), 'L2' (FE, consistent mass), 'L2_lumped'"),
+    ("nl_rtol_du", 1.0e-12, "relative tolerance of the increment test (JNMA: 1e-12 in the FE L2 norm)"),
+    ("nl_max_its", 50, "maximum nonlinear iterations per solve"),
 ], mutable=True)
 
 nd = 2
