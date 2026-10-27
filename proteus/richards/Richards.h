@@ -953,7 +953,7 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
   int                  MONOLITHIC                = args.scalar<int>("MONOLITHIC");
   int                  fct_pass                  = args.scalar<int>("fct_pass");
   // 1 at DOFs whose low-order predictor is saturated (Coefficients.FCT_SATURATED_LOW_ORDER)
-  xt::pyarray<double> &satLow                    = args.array<double>("satLow");
+  proteus::pyarray<double> &satLow                    = args.array<double>("satLow");
 
   //PARALLEL. The limiter is L_ij = min(Rpos_i, Rneg_j), so an owned row i reads the ratio of a column
   //j that may be a ghost, and everything a ratio is built from -- the row's own sparsity, ML, mDotLow,
@@ -1094,33 +1094,33 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
   //   0 -> all three back to back (serial).
   void ImplicitFCTStep(arguments_dict &args)
   {
-    xt::pyarray<double> &bc_mask                   = args.array<double>("bc_mask");
+    proteus::pyarray<double> &bc_mask                   = args.array<double>("bc_mask");
     int                  numDOFs                   = args.scalar<int>("numDOFs");
     double               dt                        = args.scalar<double>("dt");
     double               rho                       = args.scalar<double>("rho");
-    xt::pyarray<double> &gravity                   = args.array<double>("gravity");
-    xt::pyarray<double> &mesh_dof                  = args.array<double>("mesh_dof");
-    xt::pyarray<double> &u_dof                     = args.array<double>("u_dof");   // p^H
-    xt::pyarray<double> &ML                        = args.array<double>("ML");
-    xt::pyarray<double> &MC                        = args.array<double>("MC");
-    xt::pyarray<double> &mn                        = args.array<double>("mn");      // s(p^n)
-    xt::pyarray<double> &mLow                      = args.array<double>("mLow");    // s(p^H)
-    xt::pyarray<double> &dt_times_fH_minus_fL      = args.array<double>("dt_times_fH_minus_fL");
-    xt::pyarray<int>    &csrRowIndeces_DofLoops    = args.array<int>("csrRowIndeces_DofLoops");
-    xt::pyarray<int>    &csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops");
-    xt::pyarray<double> &thetaR                    = args.array<double>("thetaR");
-    xt::pyarray<double> &thetaSR                   = args.array<double>("thetaSR");
-    xt::pyarray<int>    &freeDOFMaterialTypes      = args.array<int>("freeDOFMaterialTypes");
+    proteus::pyarray<double> &gravity                   = args.array<double>("gravity");
+    proteus::pyarray<double> &mesh_dof                  = args.array<double>("mesh_dof");
+    proteus::pyarray<double> &u_dof                     = args.array<double>("u_dof");   // p^H
+    proteus::pyarray<double> &ML                        = args.array<double>("ML");
+    proteus::pyarray<double> &MC                        = args.array<double>("MC");
+    proteus::pyarray<double> &mn                        = args.array<double>("mn");      // s(p^n)
+    proteus::pyarray<double> &mLow                      = args.array<double>("mLow");    // s(p^H)
+    proteus::pyarray<double> &dt_times_fH_minus_fL      = args.array<double>("dt_times_fH_minus_fL");
+    proteus::pyarray<int>    &csrRowIndeces_DofLoops    = args.array<int>("csrRowIndeces_DofLoops");
+    proteus::pyarray<int>    &csrColumnOffsets_DofLoops = args.array<int>("csrColumnOffsets_DofLoops");
+    proteus::pyarray<double> &thetaR                    = args.array<double>("thetaR");
+    proteus::pyarray<double> &thetaSR                   = args.array<double>("thetaSR");
+    proteus::pyarray<int>    &freeDOFMaterialTypes      = args.array<int>("freeDOFMaterialTypes");
     double               prelimiter_power          = args.scalar<double>("prelimiter_power");
     // detector variable: 0 = pressure head p^H (JNMA MFEM), 1 = hydraulic head p^H + z
     int                  prelimiter_head           = args.scalar<int>("prelimiter_head");
     int                  fct_pass                  = args.scalar<int>("fct_pass");
-    xt::pyarray<double> &alpha_nv                  = args.array<double>("alpha_nv");
-    xt::pyarray<double> &Rpos                      = args.array<double>("Rpos");
-    xt::pyarray<double> &Rneg                      = args.array<double>("Rneg");
-    xt::pyarray<double> &FluxCorrectionMatrix      = args.array<double>("FluxCorrectionMatrix");
-    xt::pyarray<double> &fluxCorrection            = args.array<double>("fluxCorrection");
-    xt::pyarray<double> &limited_solution          = args.array<double>("limited_solution"); // s^{n,FCT}
+    proteus::pyarray<double> &alpha_nv                  = args.array<double>("alpha_nv");
+    proteus::pyarray<double> &Rpos                      = args.array<double>("Rpos");
+    proteus::pyarray<double> &Rneg                      = args.array<double>("Rneg");
+    proteus::pyarray<double> &FluxCorrectionMatrix      = args.array<double>("FluxCorrectionMatrix");
+    proteus::pyarray<double> &fluxCorrection            = args.array<double>("fluxCorrection");
+    proteus::pyarray<double> &limited_solution          = args.array<double>("limited_solution"); // s^{n,FCT}
     const bool have_rho_dof = (rho_dof_member.size() == static_cast<std::size_t>(numDOFs));
 
     if (fct_pass == 0 || fct_pass == 1) {
