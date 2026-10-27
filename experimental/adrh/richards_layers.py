@@ -83,7 +83,7 @@ class Column:
     def system(self, u):
         ue = u[self.conn].reshape(-1, 1, 2)
         R, J = engine.richards_vgm(1, "p1", ALPHA, N_VG, THETA_R, THETA_S - THETA_R, KS.reshape(2, 1), np.array([-1.0]), 1.0, 0.0,
-                                   self.material, self.xn, ue, None, self.qp, self.qw, 0.0, 0.0)
+                                   self.material, self.xn, ue, None, self.qp, self.qw, 0.0, 0.0, 0, 0)
         n = self.nn
         rows = np.repeat(self.conn, 2, axis=1).ravel(); cols = np.tile(self.conn, (1, 2)).ravel()
         A = sp.coo_matrix((J.reshape(-1, 2, 2).ravel(), (rows, cols)), shape=(n, n)).tolil()

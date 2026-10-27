@@ -206,12 +206,12 @@ PYBIND11_MODULE(adrh_proto, m)
   // materials (alpha, n_vg, thetaR, thetaSR of length nm; Ks (nm, nd), the diagonal conductivities) and a material number per element
   using IArrR = py::array_t<int, py::array::c_style | py::array::forcecast>;
   m.def("richards_vgm", [](int nd, const std::string &space, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, Arr Ks, Arr g, double rho,
-                            double beta, IArrR material, Arr xn, Arr u, py::object uold, Arr qp, Arr qw, double t, double dt) {
+                            double beta, IArrR material, Arr xn, Arr u, py::object uold, Arr qp, Arr qw, double t, double dt, int psk, int mode) {
     return dispatchSpace(nd, space, [&](auto spaceTag) {
       using S = decltype(spaceTag);
       constexpr int nS = S::nS, nD = S::nDOF;
       adrh::RichardsMaterials<nS> co((int)alpha.size(), alpha.data(), n_vg.data(), thetaR.data(), thetaSR.data(), Ks.data(), g.data(),
-                                     material.data(), rho, beta);
+                                     material.data(), rho, beta, 1.0, psk, mode);
       const int nE = xn.shape(0), nQ = qw.shape(0);
       Arr uo;
       const double *uop = nullptr;
@@ -229,12 +229,12 @@ PYBIND11_MODULE(adrh_proto, m)
   // interior state, the penalty penalty_constant / h^penalty_power (h = 1 for a point), no adjoint term; faceElem the face's element
   m.def("richards_vgm_faces", [](int nd, const std::string &space, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, Arr Ks, Arr g, double rho,
                                   double beta, IArrR material, IArrR faceElem, IArrR faceLocal, Arr gD, Arr xn, Arr u, Arr qpf, Arr qwf,
-                                  double t, double penalty_constant, double penalty_power) {
+                                  double t, double penalty_constant, double penalty_power, int psk, int mode) {
     return dispatchSpace(nd, space, [&](auto spaceTag) {
       using S = decltype(spaceTag);
       constexpr int nS = S::nS, nD = S::nDOF;
       adrh::RichardsMaterials<nS> co((int)alpha.size(), alpha.data(), n_vg.data(), thetaR.data(), thetaSR.data(), Ks.data(), g.data(),
-                                     material.data(), rho, beta);
+                                     material.data(), rho, beta, 1.0, psk, mode);
       adrh::FixedValueBC bc(gD.data());
       adrh::WeakDirichletParams wd{penalty_constant, penalty_power, 0.0};
       const int nF = xn.shape(0), nQf = qwf.shape(0);
@@ -248,6 +248,42 @@ PYBIND11_MODULE(adrh_proto, m)
       return py::make_tuple(Rf, Jf);
     });
   });
+  // ---- the K-upwinded low-order operator (lowOrder.h) ----
+  using IArrL = py::array_t<int, py::array::c_style | py::array::forcecast>;
+  // nodal relative permeability and its derivative with respect to u: material number per node, parameters per material
+  m.def("richards_kr_nodes", [](Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, int psk, IArrL nodeMat, Arr u) {
+    const int n = (int)u.size();
+    py::array_t<double> kr(n), dkr(n);
+    for (int i = 0; i < n; ++i)
+    {
+      const int s = nodeMat.data()[i];
+      adrh::krNode(u.data()[i], alpha.data()[s], n_vg.data()[s], thetaR.data()[s], thetaSR.data()[s], psk, kr.mutable_data()[i], dkr.mutable_data()[i]);
+    }
+    return py::make_tuple(kr, dkr);
+  });
+  // the flux part of the residual (r) and its Jacobian values on the pattern: S the stiffness (mode 1), phi the total head, kr/dkr nodal
+  m.def("upwind_flux", [](IArrL indptr, IArrL indices, Arr S, Arr phi, Arr kr, Arr dkr) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> r(n), J(S.size());
+    for (int i = 0; i < n; ++i)
+      adrh::upwindFluxRow(i, indptr.data(), indices.data(), S.data(), phi.data(), kr.data(), dkr.data(), r.mutable_data(), J.mutable_data());
+    return py::make_tuple(r, J);
+  });
+  m.def("antidiffusive_flux", [](IArrL indptr, IArrL indices, Arr C, Arr S, Arr phi, Arr kr) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> A(S.size());
+    for (int i = 0; i < n; ++i)
+      adrh::antidiffusiveFluxRow(i, indptr.data(), indices.data(), C.data(), S.data(), phi.data(), kr.data(), A.mutable_data());
+    return A;
+  });
+  // bounds_old: take the local extrema over mold as well as mL (False: over mL alone, as proteus's FCTStep does when it is not monolithic)
+  m.def("fct_limit_flux", [](IArrL indptr, IArrL indices, IArrL tpos, Arr Mc, Arr A, Arr ML, Arr mL, Arr mold, double dt, bool bounds_old) {
+    py::array_t<double> out(mL.size());
+    adrh::fctLimitFlux((int)indptr.size() - 1, indptr.data(), indices.data(), tpos.data(), Mc.data(), A.data(), ML.data(), mL.data(), mold.data(),
+                       bounds_old ? mold.data() : mL.data(), dt, out.mutable_data());
+    return out;
+  }, py::arg("indptr"), py::arg("indices"), py::arg("tpos"), py::arg("Mc"), py::arg("A"), py::arg("ML"), py::arg("mL"), py::arg("mold"), py::arg("dt"),
+     py::arg("bounds_old") = true);
   // ---- algebraic stabilization (lowOrder.h) ----
   m.def("transpose_map", [](py::array_t<int, py::array::c_style | py::array::forcecast> indptr, py::array_t<int, py::array::c_style | py::array::forcecast> indices) {
     const std::vector<int> t = adrh::buildTransposeMap((int)indptr.size() - 1, indptr.data(), indices.data());
@@ -268,12 +304,12 @@ PYBIND11_MODULE(adrh_proto, m)
   // lumped mass of every element: (w, m, dm, mold), each (nE, nDOF)
   m.def("richards_vgm_lumped", [](int nd, const std::string &space, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, Arr Ks, Arr g, double rho,
                                    double beta, py::array_t<int, py::array::c_style | py::array::forcecast> material, Arr xn, Arr u,
-                                   py::object uold, Arr qp, Arr qw, double t, double dt) {
+                                   py::object uold, Arr qp, Arr qw, double t, double dt, int psk, int mode) {
     return dispatchSpace(nd, space, [&](auto spaceTag) {
       using S = decltype(spaceTag);
       constexpr int nD = S::nDOF;
       adrh::RichardsMaterials<S::nS> co((int)alpha.size(), alpha.data(), n_vg.data(), thetaR.data(), thetaSR.data(), Ks.data(), g.data(),
-                                        material.data(), rho, beta);
+                                        material.data(), rho, beta, 1.0, psk, mode);
       const int nE = xn.shape(0), nQ = qw.shape(0);
       Arr uo;
       const double *uop = nullptr;

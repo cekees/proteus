@@ -317,8 +317,7 @@ boundary value.
 * **Heterogeneity, against no finite elements.** `richards_layers.py`: a two-layer column (a sand over a soil with `K_s` 160 times smaller, different `alpha` and `n`), steady, strong
   Dirichlet rows. Steady 1D flow has a constant flux, so each layer obeys an ODE, `psi' = -Q/K(psi) - 1`, with `psi` continuous at the interface, and the flux `Q` that reaches the top value
   follows by shooting; the ODE is integrated to 1e-12. The engine's nodal error falls at **exactly the P1 rate, 2.00, at every refinement from 11 to 321 nodes** (7.2e-4 to 7.1e-7), identically on the host and Kokkos modules.
-* **Not covered.** The saved profiles for the other decks come from stabilized schemes (entropy viscosity, FCT), which proteus uses because plain Galerkin does not run the HYDRUS and Szymkiewicz cases; the
-  engine has no stabilization yet, so those are not compared. Faces through `bindElement` (a layered boundary element) are implemented but not exercised by a test.
+* **Not covered here.** The other two decks (HYDRUS, Szymkiewicz) need a stabilized scheme and, for Szymkiewicz, the Brooks-Corey closure: see the section on the K-upwinded scheme below. Faces through `bindElement` (a layered boundary element) are implemented but not exercised by a test.
 
 **Richards as a kernel benchmark** (`bench_kokkos.cpp`: unsaturated, backward Euler mass term, four materials in stripes by element number, so `bindElement` runs on every element of every backend with no data pointer): the van Genuchten-Mualem law
 calls `pow` and `sqrt` at every quadrature point, so it costs about three times the advection-diffusion kernel per element on one core (P1: 1,490 ns against 485 for `ad_sine`) and the GPU's element kernel is 1.2 times faster than the 96-core node on P1 and level with it on P2 (its colored assembly is behind the node at 162,000 elements and level at 1.3 M, where the launches fill the card).
@@ -335,8 +334,8 @@ The Celia column runs on the GPU module as well and matches proteus's saved prof
 
 ## Algebraic stabilization (`lowOrder.h`, `stabilization_test.py`, `stabilization_timing.py`)
 
-Consistent-mass Galerkin is not monotone: a sharp front overshoots and undershoots, which is why proteus runs its HYDRUS and Szymkiewicz Richards decks only with entropy viscosity or FCT.
-`lowOrder.h` adds the algebraic cure that needs only the assembled matrix, so it works for any coefficient functor: a **lumped mass** (`M_L,i (m(u_i) - m(u_old,i)) / dt`, `M_L,i` the integral
+Consistent-mass Galerkin is not monotone: a sharp front overshoots and undershoots, which is why proteus runs its HYDRUS and Szymkiewicz Richards decks only with its low-order (`STABILIZATION_TYPE=2`) or FCT scheme.
+`lowOrder.h` adds the algebraic cure that needs only the assembled matrix, so it works for any coefficient functor (**but see the section on the K-upwinded scheme: on a strongly nonlinear conductivity this operator cannot carry a front into dry soil**): a **lumped mass** (`M_L,i (m(u_i) - m(u_old,i)) / dt`, `M_L,i` the integral
 of the basis function; `lumpedMassKernel`, with `bindElement` for materials) and **discrete upwinding of the spatial operator**: for each pair, the symmetric artificial diffusion `d_ij = max(0, J_ij, J_ji)`
 (`J` the Jacobian of the spatial residual), `r_i += sum_j d_ij (u_i - u_j)`, `J_ij -= d_ij`, `J_ii += sum_j d_ij`. The result has no positive off-diagonal, so with the lumped mass it is an M-matrix and satisfies a
 discrete maximum principle. It is the low-order operator of FCT and monolithic limiting: the antidiffusive correction a later limiter adds is the difference to the Galerkin operator over this same pattern and
@@ -355,10 +354,10 @@ held fixed in the Jacobian (an approximate Newton step: it converges, not quadra
 | engine, Galerkin (= proteus, 2.5e-13) | 0.6218 | 0.4373 | -11.60 |
 | **engine, lumped mass + upwinding** | 0.6184 | 0.4324 | -10.00 |
 | proteus, FCT | 0.6147 | 0.4219 | -10.00 |
-| proteus, entropy viscosity | 0.5505 | 0.3565 | -10.00 |
+| proteus, `STABILIZATION_TYPE=2` (the K-upwinded low-order scheme, below) | 0.5505 | 0.3565 | -10.00 |
 
-  The algebraic scheme's front is within 0.15 and 0.4 of an element (0.025 m) of proteus's FCT front and does not lag as the entropy viscosity does; 3.5 Newton iterations per step. The profiles are not compared digit for digit
-  (different schemes), and the HYDRUS and Szymkiewicz decks are not run yet.
+  The algebraic scheme's front is within 0.15 and 0.4 of an element (0.025 m) of proteus's FCT front and lags less than proteus's `STABILIZATION_TYPE=2` scheme; 3.5 Newton iterations per step. The profiles are not compared digit for digit
+  (different schemes). The HYDRUS and Szymkiewicz decks show where this operator fails: see below.
 * **Cost** (`stabilization_timing.py`, 3D tetrahedra, the pass against the colored assembly that produces its input, `ceds-model`):
 
 | rows | 1 thread | 96 threads | RTX 6000 Ada | transpose map (once, host) |
@@ -401,12 +400,85 @@ The lumped-mass/upwinded scheme is monotone and first-order, so it smears a fron
 | engine, lumped mass + upwinding | 0.6184 | 0.4324 | -10.00 |
 | **engine, FCT** | 0.6188 | 0.4339 | -10.00 |
 | proteus, FCT | 0.6147 | 0.4219 | -10.00 |
-| proteus, entropy viscosity | 0.5505 | 0.3565 | -10.00 |
+| proteus, `STABILIZATION_TYPE=2` (the K-upwinded low-order scheme, below) | 0.5505 | 0.3565 | -10.00 |
 
   The engine's FCT front is 0.0041 and 0.012 m (a sixth and a half of an element) ahead of proteus's FCT front. The two limiters are not the same algorithm (here the correction is applied after a Newton solve of the low-order scheme
   rather than inside the time step; the saved profiles are not expected to agree digit for digit), and the engine's FCT moves the front back only a little toward the Galerkin one: on this smooth, strongly
-  diffusive problem the upwinding costs little. The HYDRUS and Szymkiewicz decks, where FCT matters, are not run yet.
+  diffusive problem the upwinding costs little. The HYDRUS and Szymkiewicz decks, where FCT matters, are in the next section.
 * **Cost** (`stabilization_timing.py`, 3D tetrahedra, 31^3 nodes, 29,791 rows, 424 k nonzeros): the three passes take 0.3 ms on the RTX 6000 Ada (7% of the 4.7 ms colored assembly) and 0.6 ms with 12 threads on the Mac (8%).
   The limiter needs `Mc` and `d` as well; both are assembled once per step with the Jacobian's pattern.
 * **Caveats.** The limiter is linearized and applied once after the low-order solve, as in Zalesak's original; nonlinear limiting (iterating the correction, or inside the Newton loop) is not done. It does not make the Galerkin
   solution bit-for-bit reproducible across platforms (the Richards moisture inversion uses `pow`).
+
+
+## The K-upwinded low-order scheme, and the HYDRUS and Szymkiewicz decks (`richards_decks.py`, `upwind_test.py`)
+
+`richards_regression.py --case celia|hydrus|szymkiewicz` runs the three one-dimensional decks of `test/richards` (the parameters are the decks', computed as they compute them) and compares with the
+profiles proteus saved for each. The Szymkiewicz (2009) deck is Brooks-Corey with Mualem conductivity (`PSK_type=BC_MUALEM`), so `richards.h` gained `bcWetting`, a port of `bc_wetting` in `pskRelations.h`
+(`psk` argument of the Richards entry points: 0 van Genuchten, 1 Brooks-Corey-Burdine, 2 Brooks-Corey-Mualem). The Celia result is unchanged (2.5e-13).
+
+**What the decks showed about the Jacobian-based upwinding of the previous section.** On HYDRUS (a 20 m sand column, hydrostatic about a water table, 0 m head at the top, 101 nodes) the relative conductivity
+falls from 1 to 1e-10 over the top 2 m, and the Galerkin quadrature takes `K_r` from its points, where the dry side dominates: the flux into the first dry element is about 1e-10 of the true one. Plain Galerkin
+undershoots to -38.7 m and is stuck; **the Jacobian-based upwinding of `lowOrder.h` is stuck too** (its dissipation is the size of the Jacobian's off-diagonals, which carry that same tiny `K_r`): the front sits
+at the top of the column (19.7 m) for the whole two days, where the reference front is at 16.07 m after 5 h and 11.4 m after 11 h. On Szymkiewicz (11 nodes) Newton does not converge for it at all. It is not a bug of
+the pass; the operator cannot move a front into a medium where the conductivity ratio is that large. The right low-order operator for Richards is not "Galerkin plus symmetric dissipation" but proteus's.
+
+**The K-upwinded low-order operator** (proteus's `STABILIZATION_TYPE=2`, which, in spite of the name `EntropyViscosity`, is this scheme: it matches the engine to 3e-13 on Celia and Szymkiewicz): write the
+flux on the total head `phi = psi - g.x`, so gravity is part of the gradient, and take the relative permeability at the **upwind node** of each edge,
+
+    flux into i from j:  F_ij = kr_up c_ij (phi_j - phi_i),   c_ij = max(0, -S_ij),   up = i if -S_ij (phi_j - phi_i) <= 0, else j,
+
+with `S` the stiffness `K_s grad phi_i . grad phi_j` and the lumped mass. The same node is upwind from both sides of an edge, so it is conservative; the residual sums to zero and so does every column of the Jacobian.
+The matrices come from the element kernel itself: `mode` 1 of `RichardsVGM` is `S` (relative permeability 1, no storage or gravity), `mode` 2 is the **frozen** Galerkin stiffness `C` (`K_r` at the quadrature points, no derivative
+of `K_r`); `richards_kr_nodes` gives the nodal `kr` and `dkr/du`, `upwind_flux` the residual and the Jacobian on the pattern (row-parallel, `lowOrder.h` `upwindFluxRow`). The FCT correction on it is
+`g_ij = -M_C,ij (dm_j - dm_i)/dt + A_ij` with the antidiffusive flux `A_ij = (-C_ij - kr_up c_ij)(phi_j - phi_i)` (Galerkin minus upwinded; `antidiffusive_flux`), through the same bounds and apply passes
+(`fct_limit_flux`, optionally with proteus's bounds). Proteus imposes the Dirichlet values on this scheme strongly, so `--upwind` requires `--bc strong` and sets them before each Newton iteration, as proteus does. The conductivity is taken per node
+from one material and the density factor assumes `beta = 0` (true of every deck).
+
+* **Tests** (`upwind_test.py`, 3D tetrahedra, both retention models): `S` and `C` symmetric with zero row sums to 2e-16; `upwind_flux` against a numpy edge loop 0 (residual) and 1.5e-16 (Jacobian); conservation to 1e-15; the
+  Jacobian against central finite differences of the residual to 1e-5 or better; the antidiffusive flux antisymmetric; FCT on it keeps the local bounds exactly and the mass to 5e-18, and with `A_ij = d_ij (v_i - v_j)` it
+  gives the bits of the Jacobian-based `fct_limit`. The Kokkos module agrees with the host (bitwise on the Mac; 6e-14 at most on `ceds-model`, CPU and RTX 6000 Ada alike).
+* **Against proteus** (`richards_regression.py --bc strong --upwind [--fct]`, proteus's Newton rule): the largest pressure-head differences from the saved columns are
+
+| | low-order vs `stab_2` | FCT vs `FCT`, bounds over our two states | FCT vs `FCT`, `--proteus-limiter` |
+|---|---|---|---|
+| Celia (12 h, 24 h) | 3.1e-13, 2.7e-13 | 4.2e-4, 1.3e-4 | **3.0e-8, 5.6e-9** |
+| Szymkiewicz (1.5 h, 3 h) | 6.3e-14, 1.1e-13 | 3.1e-10, 7.9e-7 | **6.2e-10, 1.9e-12** |
+| HYDRUS (5 h, 11 h, 48 h) | 4.6e-2, 2.3e-2, 6.0e-9 | 2.2, 1.6, 2.1e-7 | 6.1e-2, 3.6e-2, 2.1e-7 |
+
+  **The FCT difference is the limiter's bounds, not a second limiter.** Proteus's `FCTStep` takes the local extrema (the `Qposi`, `Qnegi` of Zalesak's limiter) over the low-order moisture content `mLow` of a node and its
+  neighbours alone; the engine's default takes them over `mLow` and the old moisture content, a wider interval. `fct_limit_flux(..., bounds_old=False)` / `--proteus-limiter` takes them over `mLow` alone, and then the
+  engine reproduces proteus's FCT column to 3e-8 (Celia; Newton-tolerance level) and 2e-12 (Szymkiewicz). **The `alpha_dot` limiter in `FCTStep` (a limiter on the difference of the nodal time derivatives) is not used by
+  these decks and is not ported:** it sits in the `MONOLITHIC` branch, and `Richards.py` passes `MONOLITHIC = 0` to `FCTStep` (a `cek hack` comment) whatever the deck says; in the branch that runs, `alpha_dot` is computed and discarded.
+  (An earlier version of this section attributed the Celia difference to it; that was wrong.) The monolithic variant, with the correction inside the Newton loop, has no proteus reference to validate against and the code
+  carries the comment that it is probably not right for Richards. Using the nodal time derivative `mDotLow` that proteus's residual stores (the fluxes over `M_L`) in the mass-matrix term, instead of `(mLow - mold)/dt`, makes the
+  agreement much worse (2.0 on Celia), so that is not what the limiter sees. The HYDRUS difference (a single node at the edge of the front, in the low-order scheme as well) does not depend on the Newton tolerance of the engine
+  between 1e-4 and 1e-12 and is not explained; the fronts agree to 3e-4 m.
+* **Against a reference** (`richards_decks.py`: the engine's own K-upwinded FCT on a mesh 8 times finer in space and in time (16 for Szymkiewicz), with one twice finer still to show it has converged: the moisture
+  content differs between the two by an integral of 1.7e-5 (Celia), 3.7e-3 (HYDRUS) and 5.3e-3 (Szymkiewicz), a small fraction of the errors below). Front = where the moisture content falls through the middle between the wet
+  boundary value and the driest initial value; `L1` is the integral of |theta - theta_ref| over the column (m).
+
+| deck, time | scheme | L1 | front (m) | lowest psi |
+|---|---|---|---|---|
+| **Celia**, 12 h (reference front 0.6736) | Galerkin = proteus | 1.6e-4 | 0.6743 | -11.60 |
+| | Jacobian upwinding | 5.1e-4 | 0.6687 | -10.00 |
+| | K-upwind (= proteus `stab_2`) | 3.2e-3 | 0.6429 | -10.00 |
+| | K-upwind + FCT (= proteus FCT, 3e-8 with `--proteus-limiter`) | 7.2e-4 | 0.6681 | -10.00 |
+| **HYDRUS**, 5 h (reference 16.07) | Galerkin | 1.5 | 19.90 | -38.7 |
+| | Jacobian upwinding | 1.4 | 19.70 | -19.4 |
+| | K-upwind (= proteus `stab_2`) | 6.0e-2 | 15.94 | -15.40 |
+| | K-upwind + FCT (= proteus FCT) | 5.2e-2 | 15.95 | -16.12 |
+| **HYDRUS**, 11 h (reference 11.44) | K-upwind | 7.0e-2 | 11.32 | -10.80 |
+| | K-upwind + FCT | 6.3e-2 | 11.32 | -11.27 |
+| **Szymkiewicz**, 3 h (reference 3.39) | Galerkin | 0.36 | 4.25 | -10.87 |
+| | Jacobian upwinding | Newton fails at 0.0355 d | | |
+| | K-upwind (= proteus `stab_2`) | 0.11 | 2.99 | -7.50 |
+| | K-upwind + FCT (= proteus FCT) | 7.6e-2 | 3.06 | -7.50 |
+
+  HYDRUS at 48 h is wet through and every K-upwinded scheme gives psi = 0 to 1e-15 (the saved columns agree). Reading: on a sharp front the K-upwinded low-order scheme lags by about half an element, and FCT
+  recovers part of it (a third of the L1 error on Szymkiewicz, 13% and 10% on HYDRUS, where the front is narrower than one element and the local bounds cannot admit a sharper one); on Celia, the smooth case,
+  the Jacobian-based upwinding is the most accurate of the stabilized schemes (L1 5.1e-4 against 3.2e-3 for the K-upwind scheme, which lags by a third of an element). The engine reproduces proteus's two stabilized schemes on all three decks, and plain Galerkin
+  cannot run two of them.
+* **On the GPU**, Celia, Szymkiewicz and HYDRUS with `--upwind --fct` print the same differences from the saved profiles as the host (RTX 6000 Ada, `adrh_kokkos` CUDA module).
+* **Not done.** One material per run for the nodal `kr` (the node's material number is an argument, but the decks use one); `beta != 0`; 2D and 3D decks; the cost of the new passes (they are the same
+  row-parallel gathers as the dissipation pass, 2 to 4% of the assembly there); FCT iterated inside the Newton loop.
