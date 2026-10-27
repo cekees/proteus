@@ -1234,13 +1234,26 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         (Hornung-Messing h = 1/16, 2 ranks: WRR FCT 2.8e-3 vs 6.8e-5 serial). Element
         partitioning with overlap >= 1 and node partitioning both pass.
 
-        Test: the number of local elements containing each owned DOF must equal its global
-        count, which is assembled by a reverse-add of the counts over the uniquely owned
-        elements (eN < nElements_owned).
+        Test: ownedElementStarsIncomplete().
+        """
+        bad = self.ownedElementStarsIncomplete()
+        if bad > 0:
+            raise ValueError("Richards FCT in parallel: %d owned DOFs miss part of their element star, so the "
+                             "limiter would act on partial rows. Use parallelPartitioningType = "
+                             "MeshParallelPartitioningTypes.node, or element partitioning with "
+                             "nLayersOfOverlapForParallel >= 1." % bad)
+
+    def ownedElementStarsIncomplete(self):
+        """Global number of owned DOFs whose element star is not entirely on their rank (0 in serial).
+
+        The number of local elements containing each owned DOF must equal its global count,
+        which is assembled by a reverse-add of the counts over the uniquely owned elements
+        (eN < nElements_owned). Rows of element-assembled matrices (ML, MC, ...) are complete
+        at owned DOFs exactly when this is 0.
         """
         par = getattr(self.u[0], 'par_dof', None)
         if par is None or self.comm.size() == 1:
-            return
+            return 0
         l2g = np.asarray(self.l2g[0]['freeGlobal'])
         ndof = self.u[0].dof.shape[0]
         n_local = np.bincount(l2g.ravel(), minlength=ndof).astype('d')[:ndof]
@@ -1252,12 +1265,37 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.u[0].dof[:] = saved
         n_owned = par.dim_proc
         bad_local = int(np.count_nonzero(n_local[:n_owned] != n_global[:n_owned]))
-        bad = int(self.comm.globalSum(float(bad_local)))
-        if bad > 0:
-            raise ValueError("Richards FCT in parallel: %d owned DOFs miss part of their element star, so the "
-                             "limiter would act on partial rows. Use parallelPartitioningType = "
-                             "MeshParallelPartitioningTypes.node, or element partitioning with "
-                             "nLayersOfOverlapForParallel >= 1." % bad)
+        return int(self.comm.globalSum(float(bad_local)))
+
+    def femL2Norm(self, x, lumped=False):
+        """Finite element L2 norm of a nodal vector x (free DOFs, local numbering with ghosts).
+
+        ||x||_{L2} = sqrt(sum_{i owned} x_i (M_C x)_i), M_C the consistent mass matrix, i.e. the
+        L2(Omega) norm of the finite element function with these nodal values (the quantity
+        MFEM's GridFunction::ComputeL2Error(0) evaluates). lumped=True uses M_L instead.
+        x must hold current ghost values. The consistent version needs complete rows of M_C
+        at owned DOFs (node partitioning, or element partitioning with overlap >= 1); it
+        raises otherwise. Used by NonlinearSolvers for unorm = 'L2' / 'L2_lumped'.
+        """
+        if self.MC_global is None:
+            raise RuntimeError("femL2Norm: the mass matrix is assembled with the first residual")
+        n_owned = getattr(getattr(self.u[0], 'par_dof', None), 'dim_proc', self.ML.shape[0])
+        if lumped:
+            local = float(np.dot(self.ML[:n_owned], x[:n_owned] * x[:n_owned]))
+        else:
+            if getattr(self, '_femL2_checked', False) is False:
+                bad = self.ownedElementStarsIncomplete()
+                if bad > 0:
+                    raise ValueError("femL2Norm: %d owned DOFs miss part of their element star, so M_C x is "
+                                     "incomplete there. Use node partitioning, element partitioning with "
+                                     "overlap >= 1, or unorm = 'L2_lumped'." % bad)
+                self._femL2_checked = True
+            Mx = getattr(self, '_femL2_Mx', None)
+            if Mx is None or Mx.shape != x.shape:
+                Mx = self._femL2_Mx = np.zeros_like(x)
+            self.MC_global.matvec(x, Mx)
+            local = float(np.dot(x[:n_owned], Mx[:n_owned]))
+        return np.sqrt(max(self.comm.globalSum(local), 0.0))
 
     def ghostScatter(self, *arrays):
         """Forward-insert (owner -> ghost copy) each free-DOF array.  No-op in serial.

@@ -47,9 +47,47 @@ class NonlinearEquation(object):
         self.nonlinear_function_jacobian_evaluations = 0
 
 
+def resolveNorm(spec, F):
+    """Return the norm function selected by `spec` for the nonlinear equation `F`.
+
+    `spec` is a callable taking the owned entries of a vector (e.g. l2Norm), or one of
+    the finite element norms of a nodal vector x, which the model F must provide:
+
+    'L2'        ||x||_{L^2} = sqrt(x^T M_C x), M_C the consistent mass matrix (F.femL2Norm)
+    'L2_lumped' sqrt(x^T M_L x), M_L the lumped mass matrix (F.femL2Norm(x, lumped=True))
+
+    The finite element norms take the full local vector (owned and ghost entries), since
+    M_C x at an owned row needs the ghost values; they are marked with full_vector = True.
+    """
+    if spec is None or callable(spec):
+        return spec
+    if spec in ('L2', 'L2_lumped'):
+        if not hasattr(F, 'femL2Norm'):
+            raise ValueError("norm '%s' needs a model with femL2Norm(x, lumped=False); %s has none"
+                             % (spec, type(F).__name__))
+        lumped = (spec == 'L2_lumped')
+        def fem_norm(x):
+            return F.femL2Norm(x, lumped=lumped)
+        fem_norm.full_vector = True
+        fem_norm.__name__ = 'femL2Norm_lumped' if lumped else 'femL2Norm'
+        return fem_norm
+    raise ValueError("unknown norm specification %r (use a callable, 'L2' or 'L2_lumped')" % (spec,))
+
+
 class NonlinearSolver(object):
     """
     The base class for nonlinear solvers.
+
+    Convergence tests (convergenceTest):
+
+    'r'        ||r_k|| < rtol_r ||r_0|| + atol_r (norm)
+    'u'        s ||du_k|| < tol_du, s = rho/(1-rho) from the observed contraction rho (unorm)
+    'du'       ||du_k|| < rtol_du ||u_k|| + atol_du: the last increment relative to the
+               current iterate (unorm). unorm='L2' with atol_du = 0 gives the criterion
+               ||p^{k+1}-p^k||_{L2} < tol ||p^{k+1}||_{L2}
+    'r_and_du' both 'r' and 'du' (the increment test alone does not control the residual,
+               i.e. the discrete mass balance)
+    'its', 'rits' fixed iteration counts (with 'rits' also stopping on 'r')
     """
 
     def __init__(self,
@@ -120,10 +158,12 @@ class NonlinearSolver(object):
         self.computeRates = computeRates
         self.printInfo = printInfo
         self.norm_function = norm
+        unorm = resolveNorm(unorm, F)
         if unorm is not None:
             self.unorm_function = unorm
         else:
             self.unorm_function = self.norm_function
+        self.u_current = None  # the iterate the 'du' tests compare against (set by solve)
         self.tol_du = tol_du
         self.infoString=''
         self.convergenceHistoryIsCorrupt=False
@@ -143,6 +183,8 @@ class NonlinearSolver(object):
 
 
     def unorm(self,u):
+        if getattr(self.unorm_function, 'full_vector', False):
+            return self.unorm_function(u)
         try:
             return self.unorm_function(u[self.F.owned_local])
         except AttributeError:
@@ -300,7 +342,10 @@ class NonlinearSolver(object):
         self.convergedFlag = False
         if self.its != 0:
             self.norm_r = self.norm(r)
-        if self.computeRates == True or self.convergenceTest == 'u':
+        du_test = self.convergenceTest in ('du', 'r_and_du')
+        if du_test and self.its != 0 and getattr(self, 'par_du', None) is not None:
+            self.par_du.scatter_forward_insert()  # ghost values of du for full-vector norms
+        if self.computeRates == True or self.convergenceTest == 'u' or (du_test and self.its != 0):
             self.norm_du = self.unorm(self.du)
         if self.computeRates ==  True:
             self.computeConvergenceRates()
@@ -316,6 +361,20 @@ class NonlinearSolver(object):
             if (self.convergingIts != 0 and
                 self.s * self.norm_du < self.tol_du):
                 self.convergedFlag = True
+        if du_test and self.its != 0:
+            if self.u_current is None:
+                raise RuntimeError("convergenceTest '%s' needs the current iterate (set u_current)"
+                                   % self.convergenceTest)
+            self.norm_u = self.unorm(self.u_current)
+            du_ok = self.norm_du < self.rtol_du*self.norm_u + self.atol_du
+            r_ok = self.norm_r < self.rtol_r*self.norm_r0 + self.atol_r
+            logEvent("   %s it %d: ||du|| = %12.5e  ||u|| = %12.5e  ||du||/(rtol_du ||u|| + atol_du) = %g  "
+                     "||r||/(rtol_r ||r0|| + atol_r) = %g"
+                     % (type(self).__name__, self.its, self.norm_du, self.norm_u,
+                        self.norm_du/max(self.rtol_du*self.norm_u + self.atol_du, 1.0e-300),
+                        self.norm_r/max(self.rtol_r*self.norm_r0 + self.atol_r, 1.0e-300)), level=3)
+            if du_ok and (r_ok or self.convergenceTest == 'du'):
+                self.convergedFlag = True
         if self.convergedFlag == True and self.computeRates == True:
             self.computeAverages()
         if self.printInfo == True:
@@ -328,7 +387,7 @@ class NonlinearSolver(object):
         if self.linearSolverFailed == True:
             self.failedFlag = True
             return self.failedFlag
-        if self.its == self.maxIts and self.convergenceTest in ['r','u']:
+        if self.its == self.maxIts and self.convergenceTest in ['r','u','du','r_and_du']:
             self.solveCalls_failed +=1
             self.recordedIts_failed +=self.its
             self.failedFlag = True
@@ -410,7 +469,8 @@ class Newton(NonlinearSolver):
                  fullNewton=True,
                  directSolver=False,
                  EWtol=True,
-                 maxLSits = 100):
+                 maxLSits = 100,
+                 unorm = None):
         import copy
         self.par_du = par_du
         if par_du is not None:
@@ -424,7 +484,8 @@ class Newton(NonlinearSolver):
                                  norm,
                                  convergenceTest,
                                  computeRates,
-                                 printInfo)
+                                 printInfo,
+                                 unorm=unorm)
         self.updateJacobian=True
         self.fullNewton=fullNewton
         self.linearSolver = linearSolver
@@ -592,6 +653,7 @@ class Newton(NonlinearSolver):
         self.lscheme_its = 0
         self.lscheme_retries = 0
         self.theta_hist = []
+        self.u_current = u  # updated in place by the iteration; used by the 'du' tests
         r=self.solveInitialize(u,r,b)
         self.norm_r_hist = []
         self.norm_du_hist = []
@@ -3450,7 +3512,10 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                      EWtol=True,
                                      maxLSits=100,
                                      parallelUsesFullOverlap = True,
-                                     nonlinearSolverNorm = l2Norm):
+                                     nonlinearSolverNorm = l2Norm,
+                                     nonlinearSolverUNorm = None,
+                                     relativeToleranceDu = 1.0e-4,
+                                     absoluteToleranceDu = 1.0e-16):
     if (levelNonlinearSolverType == TwoStageNewton):
         levelNonlinearSolverType = TwoStageNewton
     elif (levelNonlinearSolverType == ExplicitLumpedMassMatrixShallowWaterEquationsSolver):
@@ -3641,7 +3706,10 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                                    fullNewton=levelSolverFullNewtonFlag,
                                                    directSolver=linearDirectSolverFlag,
                                                    EWtol=EWtol,
-                                                   maxLSits=maxLSits ))
+                                                   maxLSits=maxLSits,
+                                                   rtol_du=relativeToleranceDu,
+                                                   atol_du=absoluteToleranceDu,
+                                                   unorm=nonlinearSolverUNorm))
     elif levelNonlinearSolverType in [POD_Newton,POD_DEIM_Newton]:
         for l in range(nLevels):
             if par_duList is not None and len(par_duList) > 0:

@@ -38,7 +38,12 @@ nonlinearSmoother = None
 fullNewtonFlag = True
 tolFac = 0.0
 nl_atol_res = 1.0e-10
-maxNonlinearIts = 50
+maxNonlinearIts = ct.nl_max_its
+# increment test ||du|| < nl_rtol_du ||u|| (+ nl_atol_du), e.g. nl_test='du' nl_unorm='L2' for the JNMA criterion
+levelNonlinearSolverConvergenceTest = ct.nl_test
+nonlinearSolverUNorm = None if ct.nl_unorm == 'l2' else ct.nl_unorm
+nl_rtol_du = ct.nl_rtol_du
+nl_atol_du = 0.0
 maxLineSearches = 20
 
 matrix = SparseMatrix
