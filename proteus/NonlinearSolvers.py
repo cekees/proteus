@@ -372,7 +372,7 @@ class NonlinearSolver(object):
                      "||r||/(rtol_r ||r0|| + atol_r) = %g"
                      % (type(self).__name__, self.its, self.norm_du, self.norm_u,
                         self.norm_du/max(self.rtol_du*self.norm_u + self.atol_du, 1.0e-300),
-                        self.norm_r/max(self.rtol_r*self.norm_r0 + self.atol_r, 1.0e-300)), level=3)
+                        self.norm_r/max(self.rtol_r*self.norm_r0 + self.atol_r, 1.0e-300)), level=2)
             if du_ok and (r_ok or self.convergenceTest == 'du'):
                 self.convergedFlag = True
         if self.convergedFlag == True and self.computeRates == True:
