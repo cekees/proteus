@@ -1,11 +1,11 @@
 # Handoff: Richards FCT in proteus (JNMA implicit FCT and WRR semi-implicit FCT)
 
-Written 20 Oct 2026 at the end of a Claude Code session with C. Kees; updated 21 Oct and 27 Oct 2026 (§11). The session worked in a local
+Written 20 Oct 2026 at the end of a Claude Code session with C. Kees; updated 21 Oct and 27 Oct 2026 (§11, §12). The session worked in a local
 folder `~/Richards_JNMA`, which holds the JNMA manuscript (not in this repo) with this repo cloned
 inside it. Everything needed to continue is in this repo on branch **`jnma-fct-1.9.x`** of
 `https://github.com/cekees/proteus` (head `82806fe9` or later). This file is self-contained.
-The branch is cut from `cekees/1.9.x` (bda13572) and is to be cherry-picked onto main later: take the
-commits after `bda13572` (§3), not the 1.9.x maintenance commits beneath it.
+The branch is cut from `cekees/1.9.x` (bda13572). Pull requests: cekees/proteus#123 (into `1.9.x`) and
+cekees/proteus#124 (cherry-pick onto `main`, branch `jnma-fct-main`); see §12.
 
 ## Priorities for the next session
 1. ~~Fix the accuracy loss of the WRR semi-implicit FCT on Q1 meshes~~ **Done** (§4).
@@ -360,4 +360,27 @@ in parallel (checked on 1, 2 and 4 ranks). Its callers are the multigrid residua
 - Still unanswered by the co-authors: quadrature, linear solver/tolerance, ℓ, the Hornung–Messing time steps
   and criterion, whether Tables 1–2 predate the pⁿ → pᴴ detector fix, and whether the L-scheme theory covers
   L = L_s/2.
+
+## 12. Pull requests (27 Oct 2026)
+- **cekees/proteus#123**: `jnma-fct-1.9.x` → `1.9.x`. All branch commits after `bda13572`. It was mergeable when
+  opened.
+- **cekees/proteus#124**: `jnma-fct-main` → `main`. The same commits cherry-picked onto `cekees/main` @ `21abf268`,
+  plus one porting commit.
+  - `main` renamed `xt::pyarray` to `proteus::pyarray`. Conflicts that were only this rename were resolved by taking
+    the cherry-picked side with the rename, after checking that none of main's lines were lost.
+  - The `LSCHEME_L` conflict in `e353c693` was a real change: that commit removes the earlier Galerkin-Jacobian
+    L-scheme variant, and its side was taken.
+  - The final commit renames the remaining `xt::pyarray` uses from hunks that applied without conflict. The
+    intermediate commits therefore do not build on main by themselves; **squash-merge #124** (or rebase) if
+    bisectability matters.
+- Verified on main in a separate env built from main's own `environment-openmpi-dev.yml` (`proteus-jnma-main`,
+  proteus 2.0.0.dev):
+  - `test_richards.py` 7 passed; `test_linear_algebra.py` 12 passed.
+  - Hornung–Messing Q1, h = 1/16, θ = 1: implicit FCT 5.229e-5, WRR FCT 6.828e-5, Galerkin 4.150e-6, identical to 1.9.x.
+- Local layout used: the 1.9.x checkout at `~/Richards_JNMA/proteus` (env `proteus-jnma-190`) and the main worktree
+  at `~/Richards_JNMA/proteus-main-jnma` (env `proteus-jnma-main`).
+- Changes to the handoff or the code after this point belong on **both** branches: commit on
+  `jnma-fct-1.9.x`, then cherry-pick onto `jnma-fct-main`, porting `xt::pyarray` → `proteus::pyarray` in C++.
+- The open questions for the co-authors (§11.6) were drafted as an email to L. Dielmann and D. Kuzmin,
+  `~/Richards_JNMA/EMAIL_DRAFT_coauthors.md` (not in this repo).
 
