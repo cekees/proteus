@@ -19,6 +19,7 @@ from .AuxiliaryVariables import AV_base
 from .Profiling import logEvent
 from proteus.MeshTools import triangleVerticesToNormals, tetrahedronVerticesToNormals, getMeshIntersections
 from proteus import Profiling
+from proteus.FemTools import ReferenceCube
 
 
 def _checkFields(fields):
@@ -262,6 +263,17 @@ class Gauges(AV_base):
         comm = Comm.get().comm.tompi4py()
         return comm.rank, nearest_node_kdtree, nearest_node_distance_kdtree
 
+    @staticmethod
+    def referenceElementViolation(referenceElement, xi):
+        """How far xi is outside the reference element, in reference coordinates
+        (zero on and inside it)."""
+        xi = np.asarray(xi, dtype=float)
+        if referenceElement.onElement(xi):
+            return 0.0
+        if isinstance(referenceElement, ReferenceCube):
+            return float(np.max(np.abs(xi) - 1.0))
+        return float(max(-np.min(xi), np.sum(xi) - 1.0))
+
     def getLocalElement(self, femSpace, location, node, maxRings=5):
         """Given a location and its nearest node, determine if it is on a
         local element.
@@ -301,8 +313,10 @@ class Gauges(AV_base):
                     checkedElements.add(eN)
                     # evaluate the inverse map for element eN
                     xi = femSpace.elementMaps.getInverseValue(eN, location)
-                    # query whether xi lies within the reference element
-                    if femSpace.elementMaps.referenceElement.onElement(xi):
+                    # query whether xi lies within the reference element, up to
+                    # roundoff: a location on a face between elements (every
+                    # end of a line gauge segment) is a roundoff outside of both
+                    if self.referenceElementViolation(femSpace.elementMaps.referenceElement, xi) <= 1e-9:
                         return eN
                     nextRing.update(mesh.elementNodesArray[eN])
             ring = nextRing - checkedNodes
@@ -494,13 +508,29 @@ class Gauges(AV_base):
                                      'owning_proc': comm.rank}
             new_points[point] = points[point]
 
+        # a segment's start point is the end of the previous segment unless
+        # the line has just come back into the mesh (at its start, or after a hole)
+        direction = np.asarray(endpoints[1], np.double) - np.asarray(endpoints[0], np.double)
+        length = norm(direction)
+        def parameter(point):
+            return np.dot(np.asarray(point, np.double) - endpoints[0], direction)/length**2
+        # the previous segment may have been selected on another process
+        end_parameters = np.sort(np.concatenate(comm.allgather(
+            np.array([parameter(segment[1]) for segment in line_segments], dtype=float))))
+
+        def continuesPreviousSegment(point):
+            t = parameter(point)
+            i = np.searchsorted(end_parameters, t - 1e-9)
+            return i < len(end_parameters) and end_parameters[i] <= t + 1e-9
+
         for segment in line_segments:
             logEvent("Processing segment [ %e %e %e ] to [ %e %e %e ]" % (
                 segment[0][0], segment[0][1], segment[0][2],
                 segment[1][0], segment[1][1], segment[1][2]), 5)
             startPoint, endPoint = segment
-            # only add both sides of segment to line integral gauges and first segment
-            if self.isLineIntegralGauge or all(startPoint == endpoints[0]):
+            # line integral gauges need both sides of every segment, line gauges
+            # only the points where the line enters the mesh
+            if self.isLineIntegralGauge or not continuesPreviousSegment(startPoint):
                 addPoint(points, field, startPoint)
             addPoint(points, field, endPoint)
 
@@ -602,14 +632,16 @@ class Gauges(AV_base):
         length_segments = comm.gather(length_segments)
 
 
-        if comm.rank != 0:
-            selected_segments = None
-        else:
+        selected_segments = None
+        error = None
+        if comm.rank == 0:
             selected_segments = [[] for i in range(len(length_segments))]
             segment_pos = 0
+            covered = 0.
             while segment_pos < (1 - eps):
                 # choose the longest line from those that start at segment_pos
                 longest_segment = 0, None, None
+                next_start = None
                 for proc_rank, proc_length_segments in enumerate(length_segments):
                     segment_id = 0
                     for segment_id, length_segment in enumerate(proc_length_segments):
@@ -623,30 +655,40 @@ class Gauges(AV_base):
                             if segment_length > longest_segment[0]:
                                 longest_segment = segment_length, proc_rank, segment
                         else:
+                            # first segment starting beyond segment_pos: candidate for the end of a gap
+                            if next_start is None or start < next_start:
+                                next_start = start
                             break
                     # discard any segments that start before our current position
                     proc_length_segments[:] = proc_length_segments[segment_id:]
 
                 segment_length, proc_rank, segment = longest_segment
                 if segment_length == 0:
-                    print(segment_pos)
-                    print('segments')
-                    for segment in selected_segments: print(segment)
-                    print('length_segments')
-                    for length_segment in length_segments: print(length_segment)
-                    raise FloatingPointError("Unable to identify next segment while segmenting, are %s in domain?" %
-                                             str(endpoints))
+                    # the line leaves the mesh here: skip to the next segment, or stop
+                    if next_start is None:
+                        break
+                    segment_pos = next_start
+                    continue
                 logEvent("Identified best segment of length %g on %d: %s" % (segment_length, proc_rank, str(segment)), 9)
                 selected_segments[proc_rank].append(segment)
                 segment_pos += segment_length
+                covered += segment_length
 
-            err = abs(segment_pos - 1)
-            if err > 1e-8:
+            if covered == 0:
+                error = "Gauge line %s is entirely outside the mesh" % (endpoints.tolist(),)
+            elif covered < 1 - 1e-6:
+                logEvent("WARNING: gauge line %s is partly outside the mesh; using the %.6g of it "
+                         "that is inside" % (endpoints.tolist(), covered), 1)
+            elif abs(segment_pos - 1) > 1e-8:
                 msg = "Segmented line %s different from original length by ratio %e\n segments: %s" % (
-                    str(endpoints), err, str(selected_segments))
+                    str(endpoints), abs(segment_pos - 1), str(selected_segments))
                 logEvent(msg, 3)
-                if err > 1e-6:
-                    raise FloatingPointError(msg)
+                if abs(segment_pos - 1) > 1e-6:
+                    error = msg
+        # every rank must see the error, or the others wait forever in scatter
+        error = comm.bcast(error)
+        if error is not None:
+            raise ValueError(error)
 
         logEvent("Selected segments: %s" % str(selected_segments), 9)
         segments = comm.scatter(selected_segments)
@@ -720,6 +762,57 @@ class Gauges(AV_base):
         for m in self.lineIntegralGaugeMats:
             m.assemble()
 
+    def snapGaugesToBoundingBox(self, relativeTolerance=1e-9):
+        """ Moves gauge points and line endpoints that lie outside the mesh's
+        bounding box by no more than relativeTolerance times its largest
+        extent onto the box.
+
+        A gauge "on the bottom" is typically computed differently from the
+        mesh's own bottom and lands outside it by roundoff, where it would
+        otherwise miss every element.  Only boundaries aligned with the
+        bounding box are caught; further outside, points use their nearest
+        node and lines are restricted to the part inside the mesh.
+
+        .. figure:: /_generated/line_gauge_cases.svg
+           :width: 100%
+
+           Line gauges on a 2D mesh.  (1) A line gauge places points
+           (red) where the line crosses element boundaries.  (2) A line
+           outside the mesh by roundoff is snapped onto it.  (3) A line
+           partly outside, and (4) a line over a hole in the mesh, warn
+           and are restricted to the part inside (solid); the dashed
+           part is not gauged and a line integral does not interpolate
+           across it.
+        """
+        comm = Comm.get().comm.tompi4py()
+        nodes = self.vertices
+        # Allreduce on buffers: the pickle-based allreduce applies MIN/MAX
+        # to the arrays as Python objects and fails for more than one entry
+        low = np.empty(3)
+        high = np.empty(3)
+        comm.Allreduce(np.min(nodes, axis=0).astype(float), low, op=MPI.MIN)
+        comm.Allreduce(np.max(nodes, axis=0).astype(float), high, op=MPI.MAX)
+        tolerance = relativeTolerance * max(np.max(high - low), np.finfo(float).tiny)
+
+        def snap(point):
+            p = np.asarray(point, dtype=float)
+            snapped = np.where((p < low) & (p >= low - tolerance), low, p)
+            snapped = np.where((snapped > high) & (snapped <= high + tolerance), high, snapped)
+            if np.any(snapped != p):
+                logEvent("Gauge location [%g %g %g] moved onto the mesh boundary" % tuple(p), 3)
+            return tuple(float(c) for c in snapped)
+
+        if self.points:
+            points = OrderedDict()
+            for point, l_d in self.points.items():
+                snapped = snap(point)
+                if snapped in points:
+                    points[snapped]['fields'].update(l_d['fields'])
+                else:
+                    points[snapped] = l_d
+            self.points = points
+        self.lines = [(field, (snap(endpoints[0]), snap(endpoints[1]))) for field, endpoints in self.lines]
+
     def attachModel(self, model, ar):
         """ Attach this gauge to the given simulation model.
         """
@@ -738,6 +831,7 @@ class Gauges(AV_base):
             field_id = self.fieldNames.index(field)
             self.field_ids.append(field_id)
         self.nodes_kdtree = spatial.cKDTree(model.levelModelList[-1].mesh.nodeArray)
+        self.snapGaugesToBoundingBox()
         linesSegments = []
         for line in self.lines:
             lineSegments = self.getMeshIntersections(line)

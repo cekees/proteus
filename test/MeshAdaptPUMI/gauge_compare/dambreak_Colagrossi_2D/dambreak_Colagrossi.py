@@ -13,7 +13,7 @@ from proteus import (Domain, Context,
 from proteus.mprans import SpatialTools as st
 from proteus.Profiling import logEvent
 from proteus.mprans.SpatialTools import Tank2D
-from proteus.Gauges import PointGauges
+from proteus.Gauges import PointGauges, LineIntegralGauges
 
 
 # predefined options
@@ -50,6 +50,13 @@ pressure_gauges = PointGauges(gauges=((('p',),
                                           (1.4,0.0,0.0)
                                           )),),
                                   fileName="pressure.csv")
+
+# The integral of vof (the air fraction) up a vertical line is the height of air
+# in the column, so the equivalent water height is the tank height minus it.
+height_gauges = LineIntegralGauges(gauges=((('vof',),
+                                            tuple(((x, 0.0, 0.0), (x, opts.tank_dim[1], 0.0))
+                                                  for x in (0.3, 0.9, 1.5, 1.78))),),
+                                   fileName="vof_height.csv")
 
 
 # ----- CONTEXT ------ #
