@@ -329,6 +329,7 @@ Source Code Documentation
 
    tools/spatial_tools
    tools/wave_tools
+   tools/gauges
 
 .. toctree::
    :maxdepth: 1

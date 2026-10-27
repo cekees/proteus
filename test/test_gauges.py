@@ -9,6 +9,7 @@ from proteus import (Comm,
                      TransportCoefficients,
                      MeshTools,
                      FemTools,
+                     LinearSolvers,
                      Transport,
                      Quadrature,
                      NumericalFlux)
@@ -45,7 +46,7 @@ def build3DMesh(p, nnx, nny, nnz):
                                                nLayersOfOverlap=0,
                                                parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
 
-def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transform=None):
+def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transform=None, mesh_builder=None):
     comm = Comm.get()
 
     #Simplified Physics
@@ -69,11 +70,17 @@ def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transfo
     n.numericalFluxType = NumericalFlux.NoFlux
     n.cfluxtag = None
     n.conservativeFlux = None
+    if comm.size() > 1:
+        # a direct solve is not available in parallel; nothing is solved here
+        n.multilevelLinearSolver = LinearSolvers.KSP_petsc4py
+        n.levelLinearSolver = LinearSolvers.KSP_petsc4py
 
     if total_nodes is None:
         total_nodes = 2*comm.size()
 
-    if p.nd == 1:
+    if mesh_builder is not None:
+        mlMesh = mesh_builder()
+    elif p.nd == 1:
         mlMesh = build1DMesh(p, total_nodes+1)
     elif p.nd == 2:
         if nnx is None:
@@ -115,13 +122,19 @@ def run_gauge(p, time_list, nd=3, total_nodes=None, **mesh_options):
         p.calculate()
 
 def parse_gauge_output(filename):
-    with open(filename) as f:
-        header = f.readline().split(',')
-        assert header[0].strip() == 'time'
-        gauge_names = [gauge_name.strip() for gauge_name in header[1:]]
-        f.seek(0)
-        data = np.genfromtxt(f, delimiter=",", skip_header=1)
-    return gauge_names, data
+    """Read the file on rank 0, after the gauges have written it, and share it."""
+    comm = Comm.get().comm.tompi4py()
+    comm.barrier()
+    result = None
+    if comm.rank == 0:
+        with open(filename) as f:
+            header = f.readline().split(',')
+            assert header[0].strip() == 'time'
+            gauge_names = [gauge_name.strip() for gauge_name in header[1:]]
+            f.seek(0)
+            data = np.genfromtxt(f, delimiter=",", skip_header=1)
+        result = (gauge_names, data)
+    return comm.bcast(result)
 
 def test_2D_point_gauge_output():
     filename = 'test_2D_gauge_output.csv'
@@ -318,6 +331,8 @@ def test_line_integral_gauge_fine_mesh():
     delete_file(filename)
 
 def test_point_location_beyond_two_rings():
+    if Comm.get().size() > 1:
+        pytest.skip("calls getLocalElement directly, which only sees this rank's elements")
     # erdc#426: getLocalElement only searched the star of the nearest node
     # and one ring around it, and fell back to the nearest node's value
     # (wrong, silently) when the containing element was farther out
@@ -437,8 +452,80 @@ def test_sample_rate_respects_active_time():
     times = sampled_times(0.5, [0.25*i for i in range(21)], activeTime=(1.0, 3.0))
     npt.assert_allclose(times, [1.0, 1.5, 2.0, 2.5, 3.0])
 
+
+# lines and points that leave the domain (cekees, 2026-10-26): warn and
+# restrict to the mesh instead of raising; roundoff-outside is snapped in
+
+def run_line_integral(lines, nd=2, **kw):
+    filename = 'test_outside_line_integral.csv'
+    silent_rm(filename)
+    l = LineIntegralGauges(gauges=((('u0',), lines),), fileName=filename)
+    run_gauge(l, [0.0], nd=nd, **kw)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    return np.atleast_2d(data)[:, 1:]
+
+def test_line_integral_partly_outside_domain_is_restricted(monkeypatch):
+    messages = []
+    import proteus.Gauges as G
+    monkeypatch.setattr(G, 'logEvent', lambda msg, level=0: messages.append((level, msg)))
+    # u = x + 10 y at t=0; inside [0,1]: integral of x + 2.5 is 3
+    data = run_line_integral((((-1, 0.25, 0), (2, 0.25, 0)),), total_nodes=100)
+    npt.assert_allclose(data, [[3.0]], rtol=1e-10)
+    if Comm.get().rank() == 0:  # the segments are pruned on rank 0
+        assert any('outside' in msg and level <= 1 for level, msg in messages)
+
+def test_line_gauge_partly_outside_domain_has_points_only_inside():
+    filename = 'test_outside_line.csv'
+    silent_rm(filename)
+    l = LineGauges(gauges=((('u0',), (((-1, 0.25, 0), (2, 0.25, 0)),)),), fileName=filename)
+    run_gauge(l, [0.0], nd=2, total_nodes=100)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    x = np.array([float(n.split('[')[1].split()[0]) for n in names])
+    assert x.min() >= 0 and x.max() <= 1
+    npt.assert_allclose(np.atleast_2d(data)[0, 1:], x + 2.5, rtol=1e-10)
+
+def test_line_entirely_outside_domain_is_an_error():
+    with pytest.raises(ValueError, match="outside"):
+        run_line_integral((((2, 0.25, 0), (3, 0.25, 0)),), total_nodes=100)
+
+def test_line_on_boundary_to_roundoff_is_snapped_2d():
+    # "on the bottom" computed slightly differently from the mesh
+    data = run_line_integral((((0, -1e-15, 0), (1, -1e-15, 0)),), total_nodes=100)
+    npt.assert_allclose(data, [[0.5]], rtol=1e-10)
+
+def test_line_on_boundary_to_roundoff_is_snapped_3d():
+    data = run_line_integral((((0, 0.5, -1e-15), (1, 0.5, -1e-15)),), nd=3)
+    npt.assert_allclose(data, [[5.5]], rtol=1e-10)
+
+def test_point_on_boundary_to_roundoff_is_snapped():
+    # without snapping the point is "off-element" and reads its nearest node (0.3)
+    filename = 'test_outside_point.csv'
+    silent_rm(filename)
+    g = PointGauges(gauges=((('u0',), ((0.34, -1e-15, 0),)),), fileName=filename)
+    run_gauge(g, [0.0], nd=2, total_nodes=100)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    npt.assert_allclose(np.atleast_2d(data)[0, 1], 0.34, rtol=1e-10)
+
+def test_point_outside_by_more_than_tolerance_still_uses_nearest_node():
+    filename = 'test_outside_point2.csv'
+    silent_rm(filename)
+    g = PointGauges(gauges=((('u0',), ((0.34, -0.5, 0),)),), fileName=filename)
+    run_gauge(g, [0.0], nd=2, total_nodes=100)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    npt.assert_allclose(np.atleast_2d(data)[0, 1], 0.3, rtol=1e-10)
+
 def delete_file(filename):
-    if os.path.exists(filename):
+    comm = Comm.get().comm.tompi4py()
+    comm.barrier()  # every rank has read the file
+    if comm.rank == 0 and os.path.exists(filename):
         try:
             os.remove(filename)
         except OSError as e:
@@ -453,6 +540,86 @@ if __name__ == '__main__':
     test_point_gauge_output()
     test_point_gauge_output_2()
     test_line_integral_gauge_output()
+
+def build_turek_cylinder_mesh():
+    """The stored 2D mesh of the flow-around-a-cylinder benchmark: a 2.2 x 0.41
+    channel with a hole of radius 0.1 centered at (0.2, 0.2)."""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'cylinder2D', 'conforming_rans2p', 'mesh_cylinder2D')
+    mesh = MeshTools.TriangularMesh()
+    mesh.generateFromTriangleFiles(filebase=base, base=1)
+    mlMesh = MeshTools.MultilevelTriangularMesh(0, 0, 0, skipInit=True,
+                                                nLayersOfOverlap=0,
+                                                parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
+    mlMesh.generateFromExistingCoarseMesh(mesh, 1, nLayersOfOverlap=0,
+                                          parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
+    return mlMesh
+
+# a line along the channel through the center of the cylinder, with both ends
+# a roundoff outside the inflow and outflow boundaries
+TUREK_LINE = ((-1e-12, 0.2, 0), (2.2 + 1e-12, 0.2, 0))
+
+def test_line_gauge_across_cylinder_hole(monkeypatch):
+    messages = []
+    import proteus.Gauges as G
+    monkeypatch.setattr(G, 'logEvent', lambda msg, level=0: messages.append((level, msg)))
+    filename = 'test_turek_line.csv'
+    silent_rm(filename)
+    l = LineGauges(gauges=((('u0',), (TUREK_LINE,)),), fileName=filename)
+    run_gauge(l, [0.0], nd=2, mesh_builder=build_turek_cylinder_mesh)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    x = np.array([float(n.split('[')[1].split()[0]) for n in names])
+    # snapped onto the inflow and outflow boundaries
+    npt.assert_allclose([x.min(), x.max()], [0.0, 2.2], atol=1e-12)
+    # nothing is gauged inside the hole, and points exist on both sides of it
+    assert not np.any(np.abs(x - 0.2) < 0.09)
+    assert np.any(x < 0.2) and np.any(x > 0.2)
+    # the line is gauged up to the hole on the left and from the hole on the right
+    npt.assert_allclose([x[x < 0.2].max(), x[x > 0.2].min()], [0.1, 0.3], atol=1e-5)
+    # the header prints coordinates to six digits
+    npt.assert_allclose(np.atleast_2d(data)[0, 1:], x + 2.0, atol=1e-4)
+    if Comm.get().rank() == 0:  # the segments are pruned on rank 0
+        assert any('outside' in msg and level <= 1 for level, msg in messages)
+
+def test_line_integral_across_cylinder_hole():
+    filename = 'test_turek_line_integral.csv'
+    silent_rm(filename)
+    lg = 'test_turek_line_points.csv'
+    silent_rm(lg)
+    run_gauge(LineGauges(gauges=((('u0',), (TUREK_LINE,)),), fileName=lg),
+              [0.0], nd=2, mesh_builder=build_turek_cylinder_mesh)
+    Comm.get().barrier()
+    names, _ = parse_gauge_output(lg)
+    delete_file(lg)
+    x = np.sort([float(n.split('[')[1].split()[0]) for n in names])
+    # the hole is the one gap between consecutive gauge points that is not a mesh edge crossing
+    gap = np.argmax(np.diff(x))
+    xa, xb = x[gap], x[gap + 1]
+    assert xb - xa > 0.15
+    exact = (2.2**2/2 + 2*2.2) - ((xb**2 - xa**2)/2 + 2*(xb - xa))
+    l = LineIntegralGauges(gauges=((('u0',), (TUREK_LINE,)),), fileName=filename)
+    run_gauge(l, [0.0], nd=2, mesh_builder=build_turek_cylinder_mesh)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    # xa and xb come from a header that prints six digits
+    npt.assert_allclose(np.atleast_2d(data)[0, 1], exact, rtol=1e-5)
+
+def test_gauge_points_on_element_faces_read_the_field_not_a_node():
+    # the ends of a line gauge's segments lie on element faces, and roundoff can put
+    # them outside both neighbours; they must still be interpolated, not read at the
+    # nearest node.  u = x + 10 y, and the line ends on the top boundary at y = 1
+    line = (((0.31, -0.5, 0), (0.31, 1.5, 0)),)
+    npt.assert_allclose(run_line_integral(line, total_nodes=100), [[0.31 + 5.0]], rtol=1e-12)
+    filename = 'test_face_points.csv'
+    silent_rm(filename)
+    run_gauge(LineGauges(gauges=((('u0',), line),), fileName=filename), [0.0], nd=2, total_nodes=100)
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    y = np.array([float(n.split('[')[1].split()[1]) for n in names])
+    npt.assert_allclose(np.atleast_2d(data)[0, 1:], 0.31 + 10*y, rtol=1e-6)
 
 def test_first_gauge_row_is_the_initial_condition(tmp_path, monkeypatch):
     # NumericalSolution used to sample auxiliary variables before the initial
