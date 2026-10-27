@@ -129,12 +129,12 @@ def launch_policy():
     --import-mode=importlib, so they reach them through this fixture)."""
     import types
     return types.SimpleNamespace(scaled_timeout=scaled_timeout, died_by_signal=died_by_signal,
-                                 launched_environment=launched_environment, os=os)
+                                 launched_environment=launched_environment, retrying_run=retrying_run,
+                                 os=os)
 
 
-@pytest.fixture(autouse=True)
-def _retry_an_mpi_launch_that_never_started(monkeypatch):
-    """Every ``subprocess.run`` from a test, hardened for a shared runner:
+def retrying_run(run):
+    """``run`` (a ``subprocess.run``), hardened for a shared runner:
 
     * launched again, up to three times in all, if an mpiexec never started
       (MPI_LAUNCH_FAILURES); the pause before a relaunch is PROTEUS_TEST_MPI_RETRY_DELAY
@@ -142,9 +142,11 @@ def _retry_an_mpi_launch_that_never_started(monkeypatch):
     * launched once more, with a RuntimeWarning, if it died by a signal (died_by_signal);
     * its ``timeout`` scaled by PROTEUS_TEST_TIMEOUT_SCALE (scaled_timeout);
     * run with PYTHONFAULTHANDLER=1 (launched_environment).
+
+    A function of ``run``, rather than closed over ``subprocess.run`` inside the fixture, so
+    that a test can hand it a stand-in and look at what it was called with.
     """
     import warnings
-    run = subprocess.run
 
     def run_with_retry(cmd, *args, **kwargs):
         if 'timeout' in kwargs:
@@ -171,7 +173,13 @@ def _retry_an_mpi_launch_that_never_started(monkeypatch):
                 time.sleep(float(os.environ.get('PROTEUS_TEST_MPI_RETRY_DELAY', 3.0)))
                 continue
             return result
-    monkeypatch.setattr(subprocess, 'run', run_with_retry)
+    return run_with_retry
+
+
+@pytest.fixture(autouse=True)
+def _retry_an_mpi_launch_that_never_started(monkeypatch):
+    """Every ``subprocess.run`` from a test goes through :func:`retrying_run`."""
+    monkeypatch.setattr(subprocess, 'run', retrying_run(subprocess.run))
 
 
 @pytest.fixture(autouse=True)

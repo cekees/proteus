@@ -7000,7 +7000,8 @@ def findArchiveGrid(domain, MeshTag='Spatial_Domain', id_in_collection=-1, verbo
     per-subdomain step holds one grid per rank, of which the first is
     returned, which is what a serial reader can use.
     """
-    collections = domain.get("time_collections", [])
+    from proteus.Archiver import archive_collections
+    collections = archive_collections(domain)
     assert collections, "the archive has no time collections"
     collection = None
     for c in collections:
@@ -7134,8 +7135,9 @@ def readMeshFromArchive(archive_base,MeshTag="Spatial_Domain",verbose=0):
     dataDir = dataDir or '.'
     h5_path = os.path.join(dataDir, filename+'.h5')
     assert os.path.isfile(h5_path)
+    from proteus.Archiver import archive_collections
     domain = readArchiveDomain(filename, dataDir)
-    assert domain is not None and domain.get("time_collections"), \
+    assert domain is not None and archive_collections(domain), \
         ("%s holds no proteus archive metadata; a mesh in an XDMF file written "
          "by another tool is read with readMeshXdmf" % (h5_path,))
     return _readMeshFromDomain(domain, h5_path, MeshTag=MeshTag, verbose=verbose)

@@ -494,8 +494,10 @@ class AR_base(object):
             else getattr(self, "archived_domain", None)
         if domain is None:
             return []
+        if "times" in domain:
+            return [instant["time"] for instant in domain["times"]]
         times = []
-        for collection in domain.get("time_collections", []):
+        for collection in archive_collections(domain):
             for step in collection["data"]:
                 times.append(step["time"])
             #every collection covers the same instants, so one is enough
@@ -520,8 +522,8 @@ class AR_base(object):
         Returns ``None`` when there is no HDF5 metadata to assemble from,
         which is the text-archive case.
         """
-        from ymf.archive import (add_collection, add_spatial_step,
-                                 add_uniform_step, load_grid, new_domain)
+        from ymf.archive import (add_spatial_step, add_uniform_step,
+                                 load_grid, new_domain)
 
         if self.hdfFile is None:
             return None
@@ -546,27 +548,37 @@ class AR_base(object):
         recorded = self.hdfFile.attrs.get(self.GLOBAL_SYNC_ATTR)
         global_sync = self.global_sync if recorded is None else bool(int(recorded))
 
-        domain = None
-        for ci, collection_name in enumerate(collection_names):
-            if domain is None:
-                domain = new_domain(collection_name)
-            else:
-                add_collection(domain, collection_name)
-            keys = datasets.get(collection_name)
-            step = 0
-            while n_steps is None or step < n_steps:
+        #Time outside, space inside: walk the steps outermost, and let each
+        #collection's grid join the instant at its time (add_*_step with a
+        #collection name does that). A collection that is missing a step --
+        #one first archived late -- is simply absent from that instant.
+        domain = new_domain()
+        live = {name: True for name in collection_names}
+        seen = set()
+        step = 0
+        while n_steps is None or step < n_steps:
+            found = False
+            for collection_name in collection_names:
+                if not live[collection_name]:
+                    continue
+                keys = datasets.get(collection_name)
                 if keys is not None:
                     if step >= len(keys):
-                        break
+                        live[collection_name] = False
+                        continue
                     dataset_name = keys[step]
                 else:
                     dataset_name = self._metadata_dataset_name(
                         collection_name, step)
                     if dataset_name not in self.hdfFile:
-                        if n_steps is None:
-                            break      # discovered the end
-                        step += 1
+                        #Discovering the end of a collection that has had steps
+                        #ends it; one that has not had any yet is waiting for
+                        #its first (a space first archived late).
+                        if n_steps is None and collection_name in seen:
+                            live[collection_name] = False
                         continue       # writer knows the count; tolerate a gap
+                found = True
+                seen.add(collection_name)
                 grid_array = self.hdfFile[dataset_name]
                 if version == 1:
                     t, grids, step_is_global = self._v1_grids(grid_array)
@@ -579,12 +591,16 @@ class AR_base(object):
                     #one already-global grid: its pieces are the archive
                     g = grids[0]
                     add_uniform_step(domain, t, g["topology"], g["geometry"],
-                                     g.get("attributes", []), collection=ci)
+                                     g.get("attributes", []),
+                                     collection=collection_name)
                 else:
                     #one grid per rank, presented as a single instant
-                    add_spatial_step(domain, t, grids, collection=ci)
-                step += 1
-        return domain
+                    add_spatial_step(domain, t, grids,
+                                     collection=collection_name)
+            if n_steps is None and not found:
+                break
+            step += 1
+        return domain if collection_names else None
 
     def _v1_grids(self, grid_array):
         """Read one step out of a version 1 (XDMF fragment) archive.
@@ -680,6 +696,32 @@ class AR_base(object):
                "0..%d" % (written_by[-1],),
                self.size, len(written_by) or self.size))
 
+    def continue_from(self, tCount):
+        """Make the archive continue after step ``tCount``, dropping later ones.
+
+        A hot start resumes from the latest step at or before the requested
+        time, which need not be the last archived. The steps after it
+        belong to the run being continued, and the new run is about to
+        write its own under the same numbers; left in the file, a shorter
+        new run would leave the old tail to be read as part of the
+        archive, and a later hot start could resume from it. Their grid
+        metadata is deleted (the field arrays are replaced as the new run
+        reaches them, or left unreferenced). Collective: every rank calls
+        it with the same step.
+        """
+        self.n_datasets = tCount + 1
+        self.archived_domain = None
+        if self.hdfFile is not None:
+            for name in self._collection_names():
+                index = self.n_datasets
+                while True:
+                    key = self._metadata_dataset_name(name, index)
+                    if key not in self.hdfFile:
+                        break
+                    del self.hdfFile[key]
+                    index += 1
+        self.comm.barrier()
+
     def _metadata_dataset_name(self, collection_name, index):
         """Name of the HDF5 dataset holding one collection's step metadata."""
         return (collection_name + "_" + str(index)).replace(" ", "_")
@@ -694,7 +736,7 @@ class AR_base(object):
     def _appendLiveStep(self, live_steps):
         """Append this timestep to the running document.
 
-        One record per collection, appended and flushed. Master already
+        One record for the instant, appended and flushed. Master already
         holds the grids, so this costs no HDF5 read and no YAML parse, and
         because it appends rather than rewrites it costs the same whether
         the archive holds ten steps or ten thousand.
@@ -717,19 +759,28 @@ class AR_base(object):
             from ymf.archive import append_step, new_domain, write_ymf
             if not self._liveYmfStarted:
                 tmp = path + ".writing"
-                write_ymf(new_domain(live_steps[0][1]), tmp,
+                write_ymf(new_domain(), tmp,
                           extra=self._document_extra(with_log=False))
                 os.replace(tmp, path)
                 self._liveYmfStarted = True
+            #One record per instant: every space archived at this time, so a
+            #run killed here has the whole instant or none of it.
+            instants = []
             for _, name, t, grids in live_steps:
                 if self.global_sync:
                     g = grids[0]
-                    step = {"time": t, "topology": g["topology"],
-                            "geometry": g["geometry"],
-                            "attributes": g.get("attributes", [])}
+                    space = {"topology": g["topology"],
+                             "geometry": g["geometry"],
+                             "attributes": g.get("attributes", [])}
                 else:
-                    step = {"time": t, "spatial_collection": grids}
-                append_step(path, name, step)
+                    space = {"spatial_collection": grids}
+                if instants and instants[-1]["time"] == t \
+                        and name not in instants[-1]["spaces"]:
+                    instants[-1]["spaces"][name] = space
+                else:
+                    instants.append({"time": t, "spaces": {name: space}})
+            for instant in instants:
+                append_step(path, instant)
         except Exception as error:
             if not self._liveYmfWarned:
                 self._liveYmfWarned = True
@@ -869,13 +920,8 @@ class AR_base(object):
             dataset_name = self._metadata_dataset_name(
                 TemporalGridCollection.name, self.n_datasets)
             if self.hdfFile is not None:
-                try:
-                    grid_data = self.hdfFile.create_dataset(
-                        name  = dataset_name,
-                        shape = (n_rows,),
-                        dtype = '|S'+str(width))
-                except (ValueError, RuntimeError, OSError):
-                    grid_data = self.hdfFile[dataset_name]
+                grid_data = self._dataset(dataset_name, (n_rows,),
+                                          '|S'+str(width))
                 grid_data.attrs['Time'] = TimeAttrib
                 if self.comm.isMaster():
                     for j, payload in enumerate(payloads):
@@ -914,9 +960,7 @@ class AR_base(object):
         if self.driver == "mpio" and not self.inline:
             metadata = comm_world.allgather((name,data.shape,data.dtype))
             for i,m in enumerate(metadata):
-                dataset = self.hdfFile.create_dataset(name  = m[0],
-                                                      shape = m[1],
-                                                      dtype = m[2])
+                dataset = self._dataset(m[0], m[1], m[2])
                 if i == self.rank:
                     dataset[:] = data
             return
@@ -932,15 +976,8 @@ class AR_base(object):
         slices are gathered to master and assembled there.
         """
         if self.driver == "mpio" and not self.inline:
-            try:
-                dataset = self.hdfFile.create_dataset(name  = name,
-                                                      shape = tuple([offsets[-1]]+list(data.shape[1:])),
-                                                      dtype = data.dtype)
-            except:
-                try:
-                    dataset = self.hdfFile[name]
-                except Exception as e:
-                    raise e
+            dataset = self._dataset(name, tuple([offsets[-1]]+list(data.shape[1:])),
+                                    data.dtype)
             dataset[offsets[self.rank]:offsets[self.rank+1]] = data
             return
         comm_world = self.comm.comm.tompi4py()
@@ -954,10 +991,28 @@ class AR_base(object):
         """Master keeps an assembled array: in the file, or for the inline document."""
         if self.inline:
             self._inlineArrays[name] = array
-        elif name in self.hdfFile:
-            self.hdfFile[name][...] = array
         else:
-            self.hdfFile.create_dataset(name, data=array)
+            self._dataset(name, array.shape, array.dtype)[...] = array
+
+    def _dataset(self, name, shape, dtype):
+        """The dataset ``name`` with this shape and type, creating it if need be.
+
+        A hot start continues from a step that may not be the last one
+        archived, and the steps after it are written again under the names
+        they had. The dataset is reused when it fits and replaced when it
+        does not (a different mesh, rank count, or metadata width), instead
+        of failing as ``create_dataset`` does or, as the metadata writer
+        did, writing a longer payload into a shorter fixed-width string
+        and truncating it. Creation and deletion are collective under the
+        mpio driver, and every rank calls this with the same arguments.
+        """
+        dtype = numpy.dtype(dtype)
+        if name in self.hdfFile:
+            existing = self.hdfFile[name]
+            if existing.shape == tuple(shape) and existing.dtype == dtype:
+                return existing
+            del self.hdfFile[name]
+        return self.hdfFile.create_dataset(name, shape=tuple(shape), dtype=dtype)
 
     def _inlineGrid(self, grid):
         """A copy of ``grid`` with every dataset reference replaced by its values.
@@ -993,11 +1048,9 @@ class AR_base(object):
 
     def _inlineStep(self, name, t, grids):
         """Append one step to the inline document, creating its collection at need."""
-        from ymf.archive import add_collection, add_spatial_step, add_uniform_step, new_domain
+        from ymf.archive import add_spatial_step, add_uniform_step, new_domain
         if self._inlineDomain is None:
-            self._inlineDomain = new_domain(name)
-        elif all(c["name"] != name for c in self._inlineDomain["time_collections"]):
-            add_collection(self._inlineDomain, name)
+            self._inlineDomain = new_domain()
         if self.global_sync:
             g = grids[0]
             add_uniform_step(self._inlineDomain, t, g["topology"], g["geometry"],
@@ -1182,6 +1235,31 @@ class AR_base(object):
         return data_item([int(d) for d in dimensions],
                          data_type=kind["DataType"],
                          precision=int(kind["Precision"]), **reference)
+
+def archive_collections(domain):
+    """A domain's spaces as ``[{"name", "data": [step, ...]}]``, in either format.
+
+    ymf's archive format 1 holds one time collection per space
+    (``time_collections``); format 2 holds one list of instants with the
+    spaces inside each (``times``). Readers that think one space at a time
+    use this and work with a ymf of either kind. A format 1 domain is
+    returned as it is; a format 2 one is turned into the same shape, the
+    grids shared, not copied. Spaces come out in the order they first
+    appear.
+    """
+    if not domain:
+        return []
+    if "times" not in domain:
+        return domain.get("time_collections", [])
+    order, steps = [], {}
+    for instant in domain["times"]:
+        for name, space in instant["spaces"].items():
+            if name not in steps:
+                order.append(name)
+                steps[name] = []
+            steps[name].append(dict(space, time=instant["time"]))
+    return [{"name": name, "data": steps[name]} for name in order]
+
 
 def readArchiveDomain(filename, dataDir='.'):
     """The ymf domain of an existing archive, read from its HDF5 file.

@@ -23,6 +23,8 @@ strong Dirichlet rows and solves with scipy (regression_common.py has the shared
 
 usage: [AD_ND=2|3] [AD_SPACE=p1|p2|q1] [AD_BC=mode] python ad_regression.py [nn ...]        default 5 9 17
 """
+import importlib
+import os
 import sys
 
 import numpy as np
@@ -30,6 +32,10 @@ import numpy as np
 from regression_common import (ND, SPACE, BC, nD, qp, qw, qpf, qwf, WEAK_PARAMS, ROBIN_ALPHA, ROBIN_BETA,
                                adrh_proto, run_proteus, boundary_faces, dirichlet_dofs, assemble,
                                solve_with_dirichlet, l2_error)
+
+# the element and exterior-face kernels: the host engine, or the Kokkos port (ADRH_MODULE=adrh_kokkos; see build_kokkos.sh); the
+# spaces' geometry and norms stay on the host module
+engine = importlib.import_module(os.environ.get('ADRH_MODULE', 'adrh_proto'))
 
 b = np.array([1.0, 0.5, 0.25])[:ND]; kappa = 0.2; omega = np.array([3.0, 2.0, 4.0])[:ND]; omega0 = 0.3
 # the verified exact solution (LinearADR_Sine with c = 0), on points with any leading shape and 2 or 3 coordinates
@@ -40,14 +46,14 @@ def engine_solution(nodes, conn):
     """nodes: the coordinates of every global dof; conn: the element-to-dof map (nE, nD)."""
     nE, nN = len(conn), len(nodes)
     xn = np.ascontiguousarray(nodes[conn])                                      # (nE, nD, 3): Proteus keeps 3 coordinates
-    R, J = adrh_proto.advection_diffusion_sine(ND, SPACE, b, kappa, omega, omega0, xn, np.zeros((nE, 1, nD)), qp, qw)
+    R, J = engine.advection_diffusion_sine(ND, SPACE, b, kappa, omega, omega0, xn, np.zeros((nE, 1, nD)), qp, qw)
     K, rhs = assemble(conn, R, J, nN)
     faces = boundary_faces(nodes, conn)
     if faces is not None:
         fe, fk, kind = faces
         face_conn = conn[fe]
         pc, pp, sig = WEAK_PARAMS
-        Rf, Jf = adrh_proto.advection_diffusion_sine_faces(ND, SPACE, b, kappa, omega, omega0, fk, kind,
+        Rf, Jf = engine.advection_diffusion_sine_faces(ND, SPACE, b, kappa, omega, omega0, fk, kind,
                                                            np.ascontiguousarray(nodes[face_conn]), np.zeros((len(fe), 1, nD)),
                                                            qpf, qwf, pc, pp, sig, ROBIN_ALPHA, ROBIN_BETA)
         Kf, rhs_f = assemble(face_conn, Rf, Jf, nN)
@@ -67,7 +73,7 @@ for nn in sizes:
     mxe = np.abs(ue - exact(nodes)).max()
     # the exact solution through the engine: element residual of u_exact at the interior dofs (no boundary terms)
     uex = exact(nodes)[conn][:, None, :]
-    Rx = adrh_proto.advection_diffusion_sine(ND, SPACE, b, kappa, omega, omega0, xn, np.ascontiguousarray(uex), qp, qw)[0]
+    Rx = engine.advection_diffusion_sine(ND, SPACE, b, kappa, omega, omega0, xn, np.ascontiguousarray(uex), qp, qw)[0]
     X = nodes[:, :ND]
     interior = (X.min(axis=1) > 1e-12) & (X.max(axis=1) < 1 - 1e-12)
     resid = np.abs(np.bincount(conn.ravel(), weights=Rx[:, 0, :].ravel(), minlength=len(nodes))[interior]).max()

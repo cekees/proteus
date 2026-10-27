@@ -449,7 +449,10 @@ class NS_base(object):  # (HasTraits):
                 maxLSits=n.maxLineSearches,
                 #\todo need to add logic in multilevel NL solver chooser to account for numerical method's stencil as well
                 parallelUsesFullOverlap=(n.nLayersOfOverlapForParallel > 0 or n.parallelPartitioningType == MeshTools.MeshParallelPartitioningTypes.node),
-                nonlinearSolverNorm = n.nonlinearSolverNorm))
+                nonlinearSolverNorm = n.nonlinearSolverNorm,
+                nonlinearSolverUNorm = getattr(n, 'nonlinearSolverUNorm', None),
+                relativeToleranceDu = getattr(n, 'nl_rtol_du', 1.0e-4),
+                absoluteToleranceDu = getattr(n, 'nl_atol_du', 1.0e-16)))
             model.solver=self.nlsList[-1]
             model.viewer = Viewers.V_base(p,n,s)
             Profiling.memory("MultilevelNonlinearSolver for"+p.name)
@@ -485,7 +488,7 @@ class NS_base(object):  # (HasTraits):
                 while tCount > 0 and archiveTimes[tCount] > self.opts.hotStartTime:
                     tCount -= 1
                 time = archiveTimes[tCount]
-                self.ar[index].n_datasets = tCount + 1
+                self.ar[index].continue_from(tCount)
                 if tCount > 0:
                     dt = time - archiveTimes[tCount - 1]
                 else:
@@ -515,6 +518,10 @@ class NS_base(object):  # (HasTraits):
                     lm.calculateSolutionAtQuadrature()
             else:
                 logEvent("No initial conditions provided for model "+p.name)
+        for model in self.modelList:
+            for av in self.auxiliaryVariables[model.name]:
+                # auxiliary variables need not derive from AV_base
+                getattr(av, "calculate_initial_solution", lambda: None)()
         if self.opts.hotStart:
             if time >= self.tnList[-1] - 1.0e-5:
                 logEvent("Modifying time interval to be tnList[-1] + tnList since tnList hasn't been modified already")
