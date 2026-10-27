@@ -46,11 +46,11 @@ Proteus can be installed through conda with:::
   % conda install proteus -c conda-forge
 
 Proteus is available as source from our public
-`GitHub <https://github.com/erdc/proteus>`_
+`GitHub <https://github.com/proteustoolkit/proteus>`_
 repository. For a development installation, the installation of
 dependencies and the compilation of Proteus from source is done with:::
 
-  % git clone https://github.com/erdc/proteus
+  % git clone https://github.com/proteustoolkit/proteus
   % cd proteus
   % conda env create -f environment-dev.yml
   % conda activate proteus-dev
@@ -60,12 +60,12 @@ Alternatively, if you already have compilers (C,C++, and Fortran!)
 installed on your system, you can install Proteus through hashdist
 with the following commands:::
 
-  % git clone https://github.com/erdc/proteus
+  % git clone https://github.com/proteustoolkit/proteus
   % cd proteus
   % make develop
   % make test
 
-More information is available on our `Wiki <https://github.com/erdc/proteus/wiki>`_, and you can ask for help on
+More information is available on our `Wiki <https://github.com/proteustoolkit/proteus/wiki>`_, and you can ask for help on
 the `Developers' Mailing List <https://groups.google.com/forum/#!forum/proteus-dev>`_.
 
 .. _running-sec:

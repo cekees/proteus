@@ -84,7 +84,7 @@ make tetgen
 cp tetgen ${PROTEUS_PREFIX}/bin
 cd ..
 info "install proteus"
-git clone https://github.com/cekees/proteus
+git clone https://github.com/proteustoolkit/proteus
 cd proteus
 N=${N} python setup.py build_ext
 pip install -v .

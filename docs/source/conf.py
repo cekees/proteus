@@ -85,7 +85,7 @@ def linkcode_resolve(domain, info):
         # change source only if it is not a "pure python" cython module
         if not os.path.isfile(module_name+'.py'):
             suffix = 'pyx'
-    return "https://github.com/erdc/proteus/tree/master/%s.%s" % (filename, suffix)
+    return "https://github.com/proteustoolkit/proteus/tree/master/%s.%s" % (filename, suffix)
 
 autoclass_content = 'both'
 

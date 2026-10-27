@@ -119,9 +119,9 @@ Add additional notes about how to deploy this on a live system
 
 ## Contributing
 
-Please read [CONTRIBUTING.md](https://github.com/erdc/proteus/blob/master/CONTRIBUTING.md) for details on the Proteus code of conduct, and the process for submitting pull requests to us.
+Please read [CONTRIBUTING.md](https://github.com/proteustoolkit/proteus/blob/master/CONTRIBUTING.md) for details on the Proteus code of conduct, and the process for submitting pull requests to us.
 
-See also the list of Proteus [contributors](https://github.com/erdc/proteus/blob/master/CONTRIBUTORS.md) who participated in this project.
+See also the list of Proteus [contributors](https://github.com/proteustoolkit/proteus/blob/master/CONTRIBUTORS.md) who participated in this project.
 
 ## License
 
