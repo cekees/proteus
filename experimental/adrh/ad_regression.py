@@ -33,8 +33,8 @@ from regression_common import (ND, SPACE, BC, nD, qp, qw, qpf, qwf, WEAK_PARAMS,
                                adrh_proto, run_proteus, boundary_faces, dirichlet_dofs, assemble,
                                solve_with_dirichlet, l2_error)
 
-# the element kernel: the host engine, or the Kokkos port of the P1 kernel (ADRH_MODULE=adrh_kokkos, AD_SPACE=p1; see
-# build_kokkos.sh); the exterior-face kernels and the spaces' geometry stay on the host module
+# the element and exterior-face kernels: the host engine, or the Kokkos port (ADRH_MODULE=adrh_kokkos; see build_kokkos.sh); the
+# spaces' geometry and norms stay on the host module
 engine = importlib.import_module(os.environ.get('ADRH_MODULE', 'adrh_proto'))
 
 b = np.array([1.0, 0.5, 0.25])[:ND]; kappa = 0.2; omega = np.array([3.0, 2.0, 4.0])[:ND]; omega0 = 0.3
@@ -53,7 +53,7 @@ def engine_solution(nodes, conn):
         fe, fk, kind = faces
         face_conn = conn[fe]
         pc, pp, sig = WEAK_PARAMS
-        Rf, Jf = adrh_proto.advection_diffusion_sine_faces(ND, SPACE, b, kappa, omega, omega0, fk, kind,
+        Rf, Jf = engine.advection_diffusion_sine_faces(ND, SPACE, b, kappa, omega, omega0, fk, kind,
                                                            np.ascontiguousarray(nodes[face_conn]), np.zeros((len(fe), 1, nD)),
                                                            qpf, qwf, pc, pp, sig, ROBIN_ALPHA, ROBIN_BETA)
         Kf, rhs_f = assemble(face_conn, Rf, Jf, nN)

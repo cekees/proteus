@@ -21,6 +21,7 @@
 #include <vector>
 #include "coefficients.h"
 #include "engine.h"
+#include "boundary.h"
 
 namespace adrh
 {
@@ -124,6 +125,7 @@ namespace adrh
     DView<int> conn;                        // (nE, nD) node numbers
     DView<int> order;                       // element numbers, grouped by color
     std::vector<int> colorBegin;            // host: color c is order[colorBegin[c] .. colorBegin[c+1])
+    std::vector<int> elemColor;             // host: the color of every element
     DView<int> blockOf;                     // (nE, nD, nD) index of block (node a, node b) in the CSR values
     int nBlocks = 0;
   };
@@ -184,6 +186,7 @@ namespace adrh
     ColoredMesh M;
     M.nNodes = nNodes; M.nE = nE; M.nD = nD;
     std::vector<int> color = colorElements(nNodes, nE, nD, conn.data(), M.nColors);
+    M.elemColor = color;
     M.colorBegin.assign(M.nColors + 1, 0);
     for (int e = 0; e < nE; ++e) ++M.colorBegin[color[e] + 1];
     for (int c = 0; c < M.nColors; ++c) M.colorBegin[c + 1] += M.colorBegin[c];
@@ -290,5 +293,141 @@ namespace adrh
                             double t, double dt, DView<double> Rg, DView<double> Jv)
   {
     assembleColoredElement<Coefficients, SpaceElement<Coefficients, Space>>(coef, M, nQ, X, U, Uold, qp, qw, t, dt, Rg, Jv);
+  }
+
+  // ---- exterior faces ------------------------------------------------------------------------------------------
+
+  // One exterior face per thread, per-face outputs in the layouts of exteriorFaceKernel (boundary.h): faceLocal (nF), xn (nF, nD, 3)
+  // the DOF coordinates of the face's element, u (nF, nc, nD), qpf (nQf, nS - 1), qwf (nQf), Rf (nF, nc, nD), Jf (nF, nc, nD, nc, nD).
+  // The BC functor is copied to the device with the launch: anything it points to (a per-face kind array) must live there.
+  template <class Coefficients, class BC, class Space>
+  struct FaceFunctor
+  {
+    static constexpr int nc = Coefficients::nc, nD = Space::nDOF;
+    Coefficients c;
+    BC bc;
+    WeakDirichletParams wd;
+    int nQf;
+    double t;
+    DView<const int> faceLocal;
+    DView<const double> xn, u, qpf, qwf;
+    DView<double> Rf, Jf;
+    KOKKOS_INLINE_FUNCTION void operator()(const int F) const
+    {
+      exteriorFaceOne<Coefficients, BC, Space>(c, bc, wd, nQf, F, faceLocal(F), xn.data() + (size_t)F * nD * 3,
+                                               u.data() + (size_t)F * nc * nD, qpf.data(), qwf.data(), t,
+                                               Rf.data() + (size_t)F * nc * nD, Jf.data() + (size_t)F * nc * nD * nc * nD);
+    }
+  };
+
+  template <class Coefficients, class BC, class Space>
+  void exteriorFaceKernelKokkos(const Coefficients &c, const BC &bc, const WeakDirichletParams &wd, int nF, int nQf,
+                                DView<const int> faceLocal, DView<const double> xn, DView<const double> u,
+                                DView<const double> qpf, DView<const double> qwf, double t, DView<double> Rf, DView<double> Jf)
+  {
+    forEachElement("adrh face kernel", 0, nF,
+                   FaceFunctor<Coefficients, BC, Space>{c, bc, wd, nQf, t, faceLocal, xn, u, qpf, qwf, Rf, Jf});
+    Kokkos::fence();
+  }
+
+  // The exterior faces grouped for a race-free scatter into the global system: faces of elements of one color share no node, but one
+  // element can own several exterior faces (a corner), so a color is processed in passes, the r-th face of every element in pass r.
+  // Pass p of color c is order[passBegin[c * nRank + r] .. passBegin[c * nRank + r + 1]).
+  struct ColoredFaces
+  {
+    int nF = 0, nRank = 0;
+    DView<int> order;                        // face numbers, grouped by (color, rank within the element)
+    DView<int> elem;                         // (nF) the face's element
+    DView<int> local;                        // (nF) the element's local face index
+    std::vector<int> passBegin;              // host, nColors * nRank + 1 entries
+  };
+
+  inline ColoredFaces makeColoredFaces(const ColoredMesh &M, const std::vector<int> &faceElem, const std::vector<int> &faceLocal)
+  {
+    ColoredFaces CF;
+    CF.nF = (int)faceElem.size();
+    std::vector<int> seen(M.nE, 0), rank(CF.nF);
+    for (int F = 0; F < CF.nF; ++F)
+    {
+      rank[F] = seen[faceElem[F]]++;
+      CF.nRank = std::max(CF.nRank, rank[F] + 1);
+    }
+    const int nPass = M.nColors * std::max(CF.nRank, 1);
+    std::vector<int> key(CF.nF), count(nPass + 1, 0);
+    for (int F = 0; F < CF.nF; ++F)
+    {
+      key[F] = M.elemColor[faceElem[F]] * CF.nRank + rank[F];
+      ++count[key[F] + 1];
+    }
+    for (int p = 0; p < nPass; ++p) count[p + 1] += count[p];
+    CF.passBegin = count;
+    std::vector<int> order(CF.nF), fill(count.begin(), count.end() - 1);
+    for (int F = 0; F < CF.nF; ++F) order[fill[key[F]]++] = F;
+    auto upload = [](const char *name, const std::vector<int> &h) {
+      DView<int> d(name, h.size());
+      auto m = Kokkos::create_mirror_view(d);
+      for (size_t k = 0; k < h.size(); ++k) m(k) = h[k];
+      Kokkos::deep_copy(d, m);
+      return d;
+    };
+    CF.order = upload("face order", order);
+    CF.elem = upload("face elem", faceElem);
+    CF.local = upload("face local", faceLocal);
+    return CF;
+  }
+
+  // One pass: each face is computed from its element's global DOF values and added to the global residual and block values.
+  template <class Coefficients, class BC, class Space>
+  struct FaceColorFunctor
+  {
+    static constexpr int nc = Coefficients::nc, nD = Space::nDOF;
+    Coefficients c;
+    BC bc;
+    WeakDirichletParams wd;
+    int nQf;
+    double t;
+    DView<const int> conn, blockOf, order, elem, local;
+    DView<const double> X, U, qpf, qwf;
+    DView<double> Rg, Jv;
+    KOKKOS_INLINE_FUNCTION void operator()(const int k) const
+    {
+      const int F = order(k), e = elem(F);
+      double Xe[nD * 3], ue[nc * nD], Re[nc * nD], Je[nc * nD * nc * nD];
+      for (int a = 0; a < nD; ++a)
+      {
+        const int n = conn(e * nD + a);
+        for (int I = 0; I < 3; ++I) Xe[a * 3 + I] = X(n * 3 + I);
+        for (int j = 0; j < nc; ++j) ue[j * nD + a] = U(n * nc + j);
+      }
+      exteriorFaceOne<Coefficients, BC, Space>(c, bc, wd, nQf, F, local(F), Xe, ue, qpf.data(), qwf.data(), t, Re, Je);
+      for (int a = 0; a < nD; ++a)
+      {
+        const int n = conn(e * nD + a);
+        for (int i = 0; i < nc; ++i) Rg(n * nc + i) += Re[i * nD + a];
+        for (int b = 0; b < nD; ++b)
+        {
+          double *blk = Jv.data() + (size_t)blockOf(((size_t)e * nD + a) * nD + b) * nc * nc;
+          for (int i = 0; i < nc; ++i)
+            for (int j = 0; j < nc; ++j) blk[i * nc + j] += Je[((i * nD + a) * nc + j) * nD + b];
+        }
+      }
+    }
+  };
+
+  // Add the exterior-face terms to a system assembleColoredSpace has just built (it zeroes Rg and Jv; this does not).
+  template <class Coefficients, class BC, class Space>
+  void assembleFacesColored(const Coefficients &c, const BC &bc, const WeakDirichletParams &wd, const ColoredMesh &M,
+                            const ColoredFaces &CF, int nQf, DView<const double> X, DView<const double> U,
+                            DView<const double> qpf, DView<const double> qwf, double t, DView<double> Rg, DView<double> Jv)
+  {
+    const int nRank = std::max(CF.nRank, 1);
+    for (int p = 0; p < M.nColors * nRank; ++p)
+    {
+      if (CF.passBegin[p + 1] == CF.passBegin[p]) continue;
+      forEachElement("adrh colored faces", CF.passBegin[p], CF.passBegin[p + 1],
+                     FaceColorFunctor<Coefficients, BC, Space>{c, bc, wd, nQf, t, M.conn, M.blockOf, CF.order, CF.elem, CF.local,
+                                                              X, U, qpf, qwf, Rg, Jv});
+    }
+    Kokkos::fence();
   }
 } // namespace adrh

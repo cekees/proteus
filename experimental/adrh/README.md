@@ -242,7 +242,7 @@ is `ADRH_FN` throughout (the P2 edge table moved into the function: a device can
 policy (`P1Element`, `SpaceElement`) so that one launch path, one colored assembly and one block-CSR builder serve both: `elementKernelKokkosSpace` and
 `assembleColoredSpace` beside the P1 `elementKernelKokkos` and `assembleColored`. `bench_kokkos.cpp` builds P2 tetrahedra (edge midpoints shared between elements, proteus's
 numbering) and Q1 hexahedra and runs `ad_sine` and `coupled2` on them; `adrh_kokkos.advection_diffusion_sine(nd, space, ...)` takes `p1` (the affine kernel), `p2` and `q1`, so
-`ADRH_MODULE=adrh_kokkos AD_SPACE=p2 python ad_regression.py` runs the whole Proteus regression on it. The transient driver (`transient_adr`) and the exterior-face kernels stay on the host module.
+`ADRH_MODULE=adrh_kokkos AD_SPACE=p2 python ad_regression.py` runs the whole Proteus regression on it. The exterior-face kernels and the transient driver were ported next (the section below).
 
 * **Correct.** The Kokkos kernel is bitwise the host `elementKernelSpace` on the CPU in every case (R and J, 5 cases, 3 thread counts); `golden.py against adrh_kokkos`: all 12 arrays of P2 and Q1,
   in 2 and 3 dimensions, bitwise equal. The regression against the Proteus model, every dimension, space (p1, p2, q1) and the seven boundary treatments, nn = 5, 9, 17: worst
@@ -266,4 +266,35 @@ numbering) and Q1 hexahedra and runs `ad_sine` and `coupled2` on them; `adrh_kok
   cases**, and the residuals differ only through `sin` in the coefficient.
 * **Compiler.** nvcc 13.4 accepts the spaces headers unchanged. Forcing the geometry helpers (`PointGeometry::compute`, the basis functions) to inline made P2 and Q1 about 6% faster in both
   the host loop and the Kokkos kernel and put them at parity; the P1 case through the general kernel is slower in both (292 to 461 ns on the Mac) and is not a production path, since P1 has the affine kernel.
+
+## Exterior faces and the transient driver under Kokkos
+
+The last host-only pieces. `boundary.h`: the loop body is `exteriorFaceOne` (always inline), `exteriorFaceKernel` is the loop over it, and the BC functors (`SineBC`, `DiracExact`, `ExactBC`,
+`FaceBC`) and `TransientLinearADR` are `ADRH_FN`. `kokkos_kernel.h`: `exteriorFaceKernelKokkos` (one thread per face, per-face outputs; the BC functor is copied to the device with the launch, so
+the per-face kind array it points to must live there) and a **colored face pass** for the fused assembly, `ColoredFaces` and `assembleFacesColored`. Faces of elements of one color share no node, but a
+corner element can own several exterior faces, so a color runs in passes, the r-th face of every element in pass r (60 passes for the cube's tetrahedra: 30 colors, at most 2 faces per element; 24 for hexahedra: 8 colors,
+3 faces); the pass adds to the system `assembleColoredSpace` built. The transient driver needs nothing new in the element kernel (the mass term and the old-time values were already there, with `Old` a compile-time choice); the module gets the
+host's entry points: `advection_diffusion_sine_faces`, `transient_adr` and `transient_adr_faces`, in any space, so `ADRH_MODULE=adrh_kokkos python ad_regression.py` and `ad_dirac_regression.py` run entirely on Kokkos kernels.
+
+* **Bitwise the host kernel.** Face kernel, transient element kernel and transient faces: all 36 new arrays in `golden.py against adrh_kokkos` (P1, P2, Q1; 2D and 3D; the four face kinds) bit for bit. The host module is bit-identical to its saved
+  output on all 64 golden arrays.
+* **Proteus regressions on Kokkos kernels**, nn = 5, 9, 17 (steady) and 5, 9 (transient), 2 and 3 dimensions, p1/p2/q1, seven boundary treatments (84 cases each): steady worst 5.9e-14 (as before); **transient worst 1.2e-13**
+  (3D P2 Robin, 1.1e-13 for 3D Q1; the host engine gives the same digits) with `AD_FIRST_STEP=proteus` in the strongly imposed modes, as the transient driver requires; without it the strong modes differ from Proteus by 1e-6 to 7e-6, the
+  first-step behaviour documented above.
+* **Same bits at every thread count** for the colored face scatter (1, 4, 12 on the Mac).
+* **Speed**, ns per face, face kernel / colored face pass, nn = 31 (10,800 tetrahedron faces, 5,400 hexahedron faces):
+
+| kernel | Mac 12 threads | host, 1 core of `ceds-model` | `ceds-model` 96 threads | one RTX 6000 Ada |
+|---|---|---|---|---|
+| faces P1 | 13 / 154 | 109 | 4.8 / 81 | 3.3 / 112 |
+| faces P2 | 22 / 187 | 282 | 9.4 / 131 | 13 / 437 |
+| faces Q1 hex | 39 / 209 | 820 | 24 / 113 | 52 / 799 |
+
+  The face kernel scales 7.7 to 9.4x on 12 M4 threads and 23 to 34x on 96 Zen 4 threads. **The colored face pass is dominated by launch overhead**: 24 to 62 small passes (180 to 600 faces each) cost 5 to 34 times
+  the face kernel at this size, and still 8 to 15 times on the GPU at 43,200 faces. Surface terms are a small share of an assembly, but the pass count should shrink: coloring the faces directly
+  instead of inheriting the element colors would cut 60 passes to the number of colors of the boundary-element graph.
+* **Across platforms.** With multiply-add fusing on, the GPU differs from the host by up to 5.3e-15 over all 62 arrays. With it off, the **face Jacobians are bitwise equal CPU to GPU** in all three spaces (and
+  the element Jacobians as before); the residuals differ only through `sin` and `cos` in the boundary data. **A trap this found:** the face Jacobians were *not* equal at first, by 4e-16, because the penalty is `C / pow(h, p)` and
+  CUDA's `pow` does not return `h` exactly for `p = 1`; taking the power-one case out (`pow(h, 1)` is `h` in a conforming libm, so the host is unchanged) fixed it. Any libm call in the Jacobian is a cross-platform
+  bit difference; in the residual, the boundary data's `sin` and `cos` are the only ones left.
 

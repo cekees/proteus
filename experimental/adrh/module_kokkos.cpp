@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <type_traits>
@@ -139,20 +140,65 @@ namespace
   };
 
   template <class C, class Space>
-  py::tuple runSpace(const C &coef, Arr xn, Arr u, Arr qp, Arr qw)
+  py::tuple runSpace(const C &coef, Arr xn, Arr u, py::object uold, Arr qp, Arr qw, double t, double dt)
   {
     constexpr int nc = C::nc, nD = Space::nDOF;
     const int nE = (int)xn.shape(0), nQ = (int)qw.shape(0);
     py::array_t<double> R({nE, nc, nD}), J({nE, nc, nD, nc, nD});
+    Arr uo;
+    if (!uold.is_none() && dt > 0.0) uo = uold.cast<Arr>();
     {
       py::gil_scoped_release release;
       adrh::DView<double> dxn = up(xn), du = up(u), dqp = up(qp), dqw = up(qw), duo("uo", 0);
+      if (uo.size() > 0) duo = up(uo);
       adrh::DView<double> dR("R", R.size()), dJ("J", J.size());
-      adrh::elementKernelKokkosSpace<C, Space>(coef, nE, nQ, dxn, du, duo, dqp, dqw, 0.0, 0.0, dR, dJ);
+      adrh::elementKernelKokkosSpace<C, Space>(coef, nE, nQ, dxn, du, duo, dqp, dqw, t, dt, dR, dJ);
       Kokkos::deep_copy(HostView(R.mutable_data(), R.size()), dR);
       Kokkos::deep_copy(HostView(J.mutable_data(), J.size()), dJ);
     }
     return py::make_tuple(R, J);
+  }
+
+  adrh::DView<int> upInt(const IArr &a)
+  {
+    adrh::DView<int> d("in", a.size());
+    Kokkos::deep_copy(d, Kokkos::View<int *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+                             const_cast<int *>(a.data()), a.size()));
+    return d;
+  }
+
+  // The exterior-face kernel on the execution space. makeBC gets the device pointer of the per-face kind array.
+  template <class C, class Space, class BC, class MakeBC>
+  py::tuple runFaces(const C &coef, MakeBC makeBC, const adrh::WeakDirichletParams &wd, IArr faceLocal, IArr faceKind, Arr xn, Arr u,
+                     Arr qpf, Arr qwf, double t)
+  {
+    constexpr int nc = C::nc, nD = Space::nDOF;
+    const int nF = (int)xn.shape(0), nQf = (int)qwf.shape(0);
+    py::array_t<double> Rf({nF, nc, nD}), Jf({nF, nc, nD, nc, nD});
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dl = upInt(faceLocal), dk = upInt(faceKind);
+      adrh::DView<double> dxn = up(xn), du = up(u), dqp = up(qpf), dqw = up(qwf);
+      adrh::DView<double> dR("Rf", Rf.size()), dJ("Jf", Jf.size());
+      BC bc = makeBC(dk.data());
+      adrh::exteriorFaceKernelKokkos<C, BC, Space>(coef, bc, wd, nF, nQf, dl, dxn, du, dqp, dqw, t, dR, dJ);
+      Kokkos::deep_copy(HostView(Rf.mutable_data(), Rf.size()), dR);
+      Kokkos::deep_copy(HostView(Jf.mutable_data(), Jf.size()), dJ);
+    }
+    return py::make_tuple(Rf, Jf);
+  }
+
+  // Lagrange spaces by name and dimension; f gets a default-constructed space as a type tag and returns a py::tuple.
+  template <class F>
+  py::tuple dispatchSpace(int nd, const std::string &space, F &&f)
+  {
+    if (nd == 2 && space == "p1") return f(adrh::P1Simplex<2>{});
+    if (nd == 3 && space == "p1") return f(adrh::P1Simplex<3>{});
+    if (nd == 2 && space == "p2") return f(adrh::P2Simplex<2>{});
+    if (nd == 3 && space == "p2") return f(adrh::P2Simplex<3>{});
+    if (nd == 2 && space == "q1") return f(adrh::Q1Cube<2>{});
+    if (nd == 3 && space == "q1") return f(adrh::Q1Cube<3>{});
+    throw std::invalid_argument("no space '" + space + "' in " + std::to_string(nd) + "D (p1, p2, q1; nd 2 or 3)");
   }
 
   void finalize()
@@ -188,6 +234,47 @@ PYBIND11_MODULE(adrh_kokkos, m)
     }
     return py::make_tuple(qp, qw);
   });
+  // exterior faces of the sine problem (host module's signature); kind per face: 1 flux, 2 flux with the advective flux, 3 weak Dirichlet,
+  // 4 Robin
+  m.def("advection_diffusion_sine_faces", [](int nd, const std::string &space, Arr b, double kappa, Arr omega, double omega0, IArr faceLocal,
+                                              IArr faceKind, Arr xn, Arr u, Arr qpf, Arr qwf, double penalty_constant,
+                                              double penalty_power, double sigma, double robin_alpha, double robin_beta) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      constexpr int nS = S::nS;
+      using Co = adrh::AdvectionDiffusionSine<nS>;
+      using BC = adrh::SineBC<nS>;
+      Co c(b.data(), kappa, omega.data(), omega0);
+      adrh::WeakDirichletParams wd{penalty_constant, penalty_power, sigma};
+      auto make = [&](const int *dk) { return BC(b.data(), kappa, omega.data(), omega0, dk, robin_alpha, robin_beta); };
+      return runFaces<Co, S, BC>(c, make, wd, faceLocal, faceKind, xn, u, qpf, qwf, 0.0);
+    });
+  });
+  // the transient linear advection-diffusion-reaction element kernel (backward Euler mass term), any space
+  m.def("transient_adr", [](int nd, const std::string &space, Arr b, double kappa, double c, Arr xn, Arr u, Arr uold, Arr qp, Arr qw,
+                             double t, double dt) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      adrh::TransientLinearADR<S::nS> co(b.data(), kappa, c);
+      return runSpace<adrh::TransientLinearADR<S::nS>, S>(co, xn, u, uold, qp, qw, t, dt);
+    });
+  });
+  // its exterior faces, with boundary data from the Dirac-IC Gaussian
+  m.def("transient_adr_faces", [](int nd, const std::string &space, Arr b, double kappa, double c, double tStart, double u0, Arr x0,
+                                   IArr faceLocal, IArr faceKind, Arr xn, Arr u, Arr qpf, Arr qwf, double t, double penalty_constant,
+                                   double penalty_power, double sigma, double robin_alpha, double robin_beta) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      constexpr int nS = S::nS;
+      using Co = adrh::TransientLinearADR<nS>;
+      using BC = adrh::ExactBC<nS, adrh::DiracExact<nS>>;
+      Co co(b.data(), kappa, c);
+      adrh::DiracExact<nS> exact(b.data(), kappa, c, tStart, u0, x0.data());
+      adrh::WeakDirichletParams wd{penalty_constant, penalty_power, sigma};
+      auto make = [&](const int *dk) { return BC(exact, b.data(), kappa, dk, robin_alpha, robin_beta); };
+      return runFaces<Co, S, BC>(co, make, wd, faceLocal, faceKind, xn, u, qpf, qwf, t);
+    });
+  });
   m.def("kokkos_info", [] {
     py::dict d;
     d["space"] = std::string(Kokkos::DefaultExecutionSpace::name());
@@ -219,7 +306,7 @@ PYBIND11_MODULE(adrh_kokkos, m)
       auto go = [&](auto tag) -> py::tuple {
         using S = decltype(tag);
         adrh::AdvectionDiffusionSine<S::nS> c(b.data(), kappa, omega.data(), omega0);
-        return runSpace<adrh::AdvectionDiffusionSine<S::nS>, S>(c, xn, u, qp, qw);
+        return runSpace<adrh::AdvectionDiffusionSine<S::nS>, S>(c, xn, u, py::none(), qp, qw, 0.0, 0.0);
       };
       if (space == "p2") return nd == 2 ? go(adrh::P2Simplex<2>{}) : go(adrh::P2Simplex<3>{});
       return nd == 2 ? go(adrh::Q1Cube<2>{}) : go(adrh::Q1Cube<3>{});
