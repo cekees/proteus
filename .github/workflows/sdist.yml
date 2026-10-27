@@ -152,7 +152,7 @@ jobs:
           environment-file: environment-ci.yml
           activate-environment: proteus-dev
 
-      # ymf comes from "git+https://github.com/cekees/ymf.git@main" in the
+      # ymf comes from "git+https://github.com/proteustoolkit/ymf.git@main" in the
       # environment file -- a moving branch, resolved at run time, because ymf
       # is on neither PyPI nor conda-forge. So the same proteus commit passes
       # or fails depending on when it ran relative to an ymf merge, and the
