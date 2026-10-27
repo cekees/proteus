@@ -23,6 +23,14 @@ def tet_quadrature(nd, order=4):
     return np.array([list(p)[:nd] for p in q.points]), np.array(q.weights)
 
 
+def cube_quadrature(nd):
+    """Tensor Gauss rule (3 points per axis) on proteus's reference cube [-1, 1]^nd."""
+    g = np.array([-np.sqrt(0.6), 0.0, np.sqrt(0.6)]); w = np.array([5.0, 8.0, 5.0]) / 9.0
+    pts = np.array(np.meshgrid(*([g] * nd), indexing="ij")).reshape(nd, -1).T
+    wts = np.prod(np.array(np.meshgrid(*([w] * nd), indexing="ij")).reshape(nd, -1).T, axis=1)
+    return pts, wts
+
+
 def inputs(nE=2000, seed=0):
     rng = np.random.default_rng(seed)
     d = {}
@@ -33,6 +41,25 @@ def inputs(nE=2000, seed=0):
             xn[:, k + 1, :nd] = xn[:, 0, :nd] + 0.2 * np.eye(nd)[k] + rng.uniform(-0.04, 0.04, (nE, nd))
         d[nd] = xn
     return d, rng
+
+
+EDGES = {2: [(0, 1), (1, 2), (0, 2)], 3: [(0, 1), (1, 2), (2, 3), (0, 2), (1, 3), (0, 3)]}
+
+
+def space_coords(nd, space, xv, rng):
+    """The DOF coordinates (nE, nDOF, 3) of elements of a Lagrange space. P1: the vertices xv (nE, nd+1, 3); P2: plus the edge
+    midpoints in proteus's order; Q1: a perturbed cube in proteus's node order (the perturbation keeps the map invertible)."""
+    nE = xv.shape[0]
+    if space == "p1":
+        return xv
+    if space == "p2":
+        mids = [0.5 * (xv[:, a] + xv[:, b]) for a, b in EDGES[nd]]
+        return np.concatenate([xv, np.stack(mids, axis=1)], axis=1)
+    sgn = np.array([[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]], dtype=float)[: 2 ** nd]
+    X = np.zeros((nE, 2 ** nd, 3))
+    base = rng.uniform(0, 1, (nE, 1, nd))
+    X[:, :, :nd] = base + 0.1 * (sgn[None, :, :nd] + 1.0) + rng.uniform(-0.01, 0.01, (nE, 2 ** nd, nd))
+    return X
 
 
 def calls(m, nE=2000):
@@ -56,6 +83,12 @@ def calls(m, nE=2000):
                 continue
             out["chain5_m%d_s%d" % (masked, sparse)] = ("chain5", (xn3, u5, o5, qp, qw, 0.7, 0.05, masked, sparse))
     b = np.array([1.0, 0.5, 0.25]); omega = np.array([3.0, 2.0, 4.0])
+    for nd in (2, 3):
+        for space in ("p2", "q1"):
+            qps, qws = tet_quadrature(nd) if space == "p2" else cube_quadrature(nd)
+            Xs = space_coords(nd, space, xs[nd], rng)
+            us = rng.uniform(0.2, 1.0, (nE, 1, Xs.shape[1]))
+            out["ad_sine_%dd_%s" % (nd, space)] = ("advection_diffusion_sine", (nd, space, b[:nd].copy(), 0.2, omega[:nd].copy(), 0.3, Xs, us, qps, qws))
     for nd in (2, 3):
         qpn, qwn = tet_quadrature(nd)
         un = rng.uniform(0.2, 1.0, (nE, 1, nd + 1))
