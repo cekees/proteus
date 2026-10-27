@@ -1112,6 +1112,8 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     xt::pyarray<double> &thetaSR                   = args.array<double>("thetaSR");
     xt::pyarray<int>    &freeDOFMaterialTypes      = args.array<int>("freeDOFMaterialTypes");
     double               prelimiter_power          = args.scalar<double>("prelimiter_power");
+    // detector variable: 0 = pressure head p^H (JNMA MFEM), 1 = hydraulic head p^H + z
+    int                  prelimiter_head           = args.scalar<int>("prelimiter_head");
     int                  fct_pass                  = args.scalar<int>("fct_pass");
     xt::pyarray<double> &alpha_nv                  = args.array<double>("alpha_nv");
     xt::pyarray<double> &Rpos                      = args.array<double>("Rpos");
@@ -1122,13 +1124,15 @@ inline void exteriorNumericalFlux2(const double &bc_flux, int rowptr[nSpace], in
     const bool have_rho_dof = (rho_dof_member.size() == static_cast<std::size_t>(numDOFs));
 
     if (fct_pass == 0 || fct_pass == 1) {
-      // nodal-variation prelimiter on the hydraulic head u = p - (rho_i/rho) g.x (as in the residual's
-      // edge loop), over N_i* = {j != i : m_ij > 0}. prelimiter_power <= 0 switches it off.
+      // nodal-variation prelimiter over N_i* = {j != i : m_ij > 0}, on the pressure head p^H
+      // (prelimiter_head = 0) or on the hydraulic head p - (rho_i/rho) g.x as in the residual's
+      // edge loop (prelimiter_head = 1). prelimiter_power <= 0 switches it off.
       std::vector<double> head(numDOFs);
       for (int i = 0; i < numDOFs; i++) {
         const double rho_i = have_rho_dof ? rho_dof_member[i] : rho;
         head[i] = u_dof.data()[i];
-        for (int I = 0; I < nSpace; I++) head[i] -= (rho_i / rho) * gravity.data()[I] * mesh_dof.data()[i * 3 + I];
+        if (prelimiter_head)
+          for (int I = 0; I < nSpace; I++) head[i] -= (rho_i / rho) * gravity.data()[I] * mesh_dof.data()[i * 3 + I];
       }
       for (int i = 0; i < numDOFs; i++) {
         double num = 0.0, den = 0.0;

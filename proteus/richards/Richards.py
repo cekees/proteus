@@ -263,6 +263,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                  FCT_SATURATED_LOW_ORDER=True,
                  FCT_TYPE='semi-implicit',
                  FCT_PRELIMITER_POWER=3.0,
+                 FCT_PRELIMITER_VARIABLE='pressure',
                  LSCHEME_L=0.0,
                  NONLINEAR_SOLVER=None,
                  LSCHEME_RETRY_ITS=1,
@@ -416,6 +417,15 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
             raise ValueError("FCT_TYPE must be 'semi-implicit' or 'implicit', not %r" % (FCT_TYPE,))
         self.FCT_TYPE = FCT_TYPE
         self.FCT_PRELIMITER_POWER = FCT_PRELIMITER_POWER
+        # Variable the implicit FCT nodal-variation detector acts on: 'pressure' (p^H, as in the
+        # JNMA MFEM implementation) or 'hydraulic_head' (u^H = p^H + z, as first written in the
+        # JNMA draft). They coincide without gravity.
+        prelimiter_variables = {'pressure': 0, 'hydraulic_head': 1}
+        if FCT_PRELIMITER_VARIABLE not in prelimiter_variables:
+            raise ValueError("FCT_PRELIMITER_VARIABLE must be one of %s, not %r"
+                             % (list(prelimiter_variables), FCT_PRELIMITER_VARIABLE))
+        self.FCT_PRELIMITER_VARIABLE = FCT_PRELIMITER_VARIABLE
+        self.FCT_PRELIMITER_HEAD = prelimiter_variables[FCT_PRELIMITER_VARIABLE]
         # Nonlinear iteration matrix. LSCHEME_L = L >= sup dm/dpsi defines the L-scheme matrix
         # J = (L/dt) M_L + A~(p^k) (low order, upwind k_r frozen), used for every residual (Galerkin,
         # low order, implicit-FCT final) as in the JNMA defect correction p^{k+1} = p^k - J^{-1} R(p^k).
@@ -1406,6 +1416,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["thetaSR"] = self.coefficients.thetaSR_types
         argsDict["freeDOFMaterialTypes"] = self.freeDOFMaterialTypes
         argsDict["prelimiter_power"] = float(self.coefficients.FCT_PRELIMITER_POWER)
+        argsDict["prelimiter_head"] = int(self.coefficients.FCT_PRELIMITER_HEAD)
         argsDict["alpha_nv"] = self.alpha_nv
         argsDict["Rpos"] = self.Rpos
         argsDict["Rneg"] = self.Rneg
