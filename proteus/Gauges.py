@@ -938,6 +938,15 @@ class Gauges(AV_base):
                          + 1e-9) + 1
             self.next_output = self.first_output + k * self.sampleRate
 
+    def calculate_init(self):
+        """Nothing: the initial conditions are not set when this is called, and
+        the gauges would record zeros.  See calculate_initial_solution."""
+        pass
+
+    def calculate_initial_solution(self):
+        """Records the initial time, now that the initial conditions are set."""
+        self.calculate()
+
     def calculate(self):
         """ Computes current gauge values, updates open output files
         """

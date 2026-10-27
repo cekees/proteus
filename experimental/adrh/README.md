@@ -199,3 +199,286 @@ Building the Python module for CUDA needs Kokkos as shared libraries (`-DBUILD_S
 nvcc flags as the benchmark plus `-shared -Xcompiler -fPIC` with pybind11's and Python's include paths; at run time `libcudart` must be on `LD_LIBRARY_PATH`.
 Raw results: `reports/adrh_kokkos_solve_2026-10-25/` beside the campaign notes.
 
+## Whole solve at a fixed core count: ranks against threads (`ad_solve_mpi.py`)
+
+Roster C19 decision (3). The same problem, distributed: each MPI rank owns a brick of the Kuhn-tetrahedra mesh, assembles it with the
+Kokkos colored kernel on `T` threads, and sends the matrix to PETSc through `MatSetValuesCOO` (ghost rows are added into their owners) and the
+residual through `VecSetValues`; PETSc then solves with GMRES + GAMG on all `R` ranks. `R x T` is held at the 96 cores of `ceds-model`
+(`mpiexec -n R -bind-to core:T`, `KOKKOS_NUM_THREADS=T`, `OMP_NUM_THREADS=T`, `OMP_PROC_BIND=spread OMP_PLACES=cores`), the machine idle (the campaign script waits on measured CPU
+use between runs), best of two runs of each layout (the two agree within 1 to 3%), assembly best of 5. Every layout reproduces the serial answer: max error 4.051e-04
+(6 M tets) and 1.583e-04 (24.6 M), 24 or 25 GMRES iterations. Seconds, maximum over ranks:
+
+| tets | R x T | assemble | matrix exchange | GAMG setup | solve | total | vs 96 x 1 |
+|---|---|---|---|---|---|---|---|
+| 6.0 M | 96 x 1 | 0.054 | 0.037 | 0.125 | 0.062 | 0.279 | 1.00x |
+| | 48 x 2 | 0.054 | 0.037 | 0.162 | 0.080 | 0.334 | 1.20x |
+| | 24 x 4 | 0.053 | 0.043 | 0.237 | 0.107 | 0.442 | 1.58x |
+| | 12 x 8 | 0.053 | 0.066 | 0.368 | 0.164 | 0.653 | 2.34x |
+| | 4 x 24 | 0.054 | 0.249 | 0.899 | 0.517 | 1.725 | 6.2x |
+| | 1 x 96 | 0.065 | 0.419 | 2.751 | 2.096 | 5.344 | 19.2x |
+| 24.6 M | 96 x 1 | 0.254 | 0.132 | 0.473 | 0.611 | 1.477 | 1.00x |
+| | 48 x 2 | 0.249 | 0.143 | 0.581 | 0.644 | 1.625 | 1.10x |
+| | 24 x 4 | 0.253 | 0.207 | 0.850 | 0.736 | 2.053 | 1.39x |
+| | 12 x 8 | 0.255 | 0.303 | 1.529 | 0.952 | 3.051 | 2.07x |
+| | 4 x 24 | 0.261 | 0.640 | 4.072 | 2.299 | 7.297 | 4.9x |
+| | 1 x 96 | 0.259 | 1.112 | 11.122 | 8.154 | 20.697 | 14.0x |
+
+* **Threads do as well as ranks for the assembly and for nothing else.** Assembly time does not depend on the layout (0.054 s at 6 M tets from 96 x 1 to 4 x 24; the 1 x 96 layout is 20% slower), as in
+  the assembly benchmark. Everything that follows it is one core per rank: the matrix exchange (building and inserting the COO arrays), the GAMG setup and the
+  solve. With `T` threads per rank the other `T - 1` cores idle through them, so the total grows with `T`. At the layouts in the table the assembly is 19% of the total at 96 x 1, 3% at 4 x 24 and 1.2% at 1 x 96.
+* **For this solver stack the answer to decision (3) is a rank per core.** The cost of `T = 2` is 10 to 20%, of `T = 4` 39 to 58%, of `T = 8` about a factor 2. This is a statement about PETSc's MPI-only
+  solvers and a serial matrix exchange. It would change with a threaded or device-resident solve, which is the case for stage 2, not for threads on a CPU node.
+* **Memory is not a reason, on this evidence.** Total resident memory falls from 13.9 GB (96 x 1) to 1.8 GB (1 x 96) at 6 M tets, but 7.8 GB of the 13.9 is the 81 MB each rank carries after importing
+  Python, numpy, PETSc and Kokkos. The ghost layer is 11.3% of the nodes at 96 ranks (7.0% at 24.6 M tets); the rest of the difference is driver temporaries.
+  A production run's per-rank state is larger than this driver's, so the halo and duplicated-setup argument is worth measuring on a real model before it is made.
+* **GAMG iteration counts do not depend on the layout** (24 to 25), so the solve times are rates, not artefacts of a worse preconditioner.
+
+Raw results and the campaign script: `reports/adrh_kokkos_ranks_2026-10-26/` beside the campaign notes.
+
+## The Lagrange-space kernel under Kokkos (`engine.h`, P1 and P2 simplices, Q1 cubes)
+
+The spaces kernel is ported the way the P1 kernel was: the body of the element loop is `elementSpaceOne` (`engine.h`), `elementKernelSpace` is the loop over it, `spaces.h`
+is `ADRH_FN` throughout (the P2 edge table moved into the function: a device cannot index a host-side `static constexpr` array), and `kokkos_kernel.h` takes an element
+policy (`P1Element`, `SpaceElement`) so that one launch path, one colored assembly and one block-CSR builder serve both: `elementKernelKokkosSpace` and
+`assembleColoredSpace` beside the P1 `elementKernelKokkos` and `assembleColored`. `bench_kokkos.cpp` builds P2 tetrahedra (edge midpoints shared between elements, proteus's
+numbering) and Q1 hexahedra and runs `ad_sine` and `coupled2` on them; `adrh_kokkos.advection_diffusion_sine(nd, space, ...)` takes `p1` (the affine kernel), `p2` and `q1`, so
+`ADRH_MODULE=adrh_kokkos AD_SPACE=p2 python ad_regression.py` runs the whole Proteus regression on it. The exterior-face kernels and the transient driver were ported next (the section below).
+
+* **Correct.** The Kokkos kernel is bitwise the host `elementKernelSpace` on the CPU in every case (R and J, 5 cases, 3 thread counts); `golden.py against adrh_kokkos`: all 12 arrays of P2 and Q1,
+  in 2 and 3 dimensions, bitwise equal. The regression against the Proteus model, every dimension, space (p1, p2, q1) and the seven boundary treatments, nn = 5, 9, 17: worst
+  difference 1.2e-14 (2D P1), 9.7e-15 (2D P2), 2.3e-15 (2D Q1), 7.1e-15 (3D P1), 5.9e-14 (3D P2, Robin; the host engine gives the same digits), 1.2e-14 (3D Q1).
+* **Same bits at every thread count** (1, 4, 12 on the Mac; 96 on `ceds-model` agrees with the serial scatter to 5e-16). Hexahedra colour with 8 colours (by cell parity); P2 tetrahedra with the same 30 as P1, since two elements that
+  share an edge DOF share its vertices.
+* **Speed**, ns per element, element kernel / colored assembly, nn = 31 (162,000 tets, 27,000 hexes):
+
+| kernel | Mac 12 threads | host, 1 core of `ceds-model` | `ceds-model` 96 threads | one RTX 6000 Ada |
+|---|---|---|---|---|
+| ad_sine P1 (space kernel) | 40 / 53 | 485 | 10 / 16 | 8 / 28 |
+| ad_sine P2 | 122 / 174 | 2198 | 46 / 56 | 50 / 172 |
+| ad_sine Q1 hex | 164 / 183 | 3406 | 63 / 70 | 99 / 400 |
+| coupled2 P2 (mass) | 806 / 905 | 9792 | 199 / 241 | 256 / 695 |
+| coupled2 Q1 hex (mass) | 913 / 949 | 9874 | 241 / 234 | 393 / 1476 |
+
+  The element kernel scales 11 to 11.7x on 12 M4 threads and 41 to 54x on 96 Zen 4 threads. At 1.3 M tets (nn = 61) the GPU element kernel is 48 ns for P2 and 74 ns for Q1 and the colored assembly 69 and 97 ns, close to the 96-thread CPU (45 and 63; 66 and 68).
+  **The GPU's colored assembly is 2.7 to 4.1 times its element kernel at 162,000 elements** (the 30 or 8 launches are too small to fill the card: 5,400 tets or 3,400 hexes per colour) and
+  closes to 1.2 to 1.5x at 1.3 M tets.
+* **Across platforms**, as for P1: with contraction on, the GPU differs from the host by up to 2.7e-15 (P2) in the element kernel; with it off (`-ffp-contract=off`, `nvcc --fmad=false`) the **Jacobians are bitwise equal CPU to GPU in all five new
+  cases**, and the residuals differ only through `sin` in the coefficient.
+* **Compiler.** nvcc 13.4 accepts the spaces headers unchanged. Forcing the geometry helpers (`PointGeometry::compute`, the basis functions) to inline made P2 and Q1 about 6% faster in both
+  the host loop and the Kokkos kernel and put them at parity; the P1 case through the general kernel is slower in both (292 to 461 ns on the Mac) and is not a production path, since P1 has the affine kernel.
+
+## Exterior faces and the transient driver under Kokkos
+
+The last host-only pieces. `boundary.h`: the loop body is `exteriorFaceOne` (always inline), `exteriorFaceKernel` is the loop over it, and the BC functors (`SineBC`, `DiracExact`, `ExactBC`,
+`FaceBC`) and `TransientLinearADR` are `ADRH_FN`. `kokkos_kernel.h`: `exteriorFaceKernelKokkos` (one thread per face, per-face outputs; the BC functor is copied to the device with the launch, so
+the per-face kind array it points to must live there) and a **colored face pass** for the fused assembly, `ColoredFaces` and `assembleFacesColored`. Faces of elements of one color share no node, but a
+corner element can own several exterior faces, so a color runs in passes, the r-th face of every element in pass r (60 passes for the cube's tetrahedra: 30 colors, at most 2 faces per element; 24 for hexahedra: 8 colors,
+3 faces); the pass adds to the system `assembleColoredSpace` built. The transient driver needs nothing new in the element kernel (the mass term and the old-time values were already there, with `Old` a compile-time choice); the module gets the
+host's entry points: `advection_diffusion_sine_faces`, `transient_adr` and `transient_adr_faces`, in any space, so `ADRH_MODULE=adrh_kokkos python ad_regression.py` and `ad_dirac_regression.py` run entirely on Kokkos kernels.
+
+* **Bitwise the host kernel.** Face kernel, transient element kernel and transient faces: all 36 new arrays in `golden.py against adrh_kokkos` (P1, P2, Q1; 2D and 3D; the four face kinds) bit for bit. The host module is bit-identical to its saved
+  output on all 64 golden arrays.
+* **Proteus regressions on Kokkos kernels**, nn = 5, 9, 17 (steady) and 5, 9 (transient), 2 and 3 dimensions, p1/p2/q1, seven boundary treatments (84 cases each): steady worst 5.9e-14 (as before); **transient worst 1.2e-13**
+  (3D P2 Robin, 1.1e-13 for 3D Q1; the host engine gives the same digits) with `AD_FIRST_STEP=proteus` in the strongly imposed modes, as the transient driver requires; without it the strong modes differ from Proteus by 1e-6 to 7e-6, the
+  first-step behaviour documented above.
+* **Same bits at every thread count** for the colored face scatter (1, 4, 12 on the Mac).
+* **Speed**, ns per face, face kernel / colored face pass, nn = 31 (10,800 tetrahedron faces, 5,400 hexahedron faces):
+
+| kernel | Mac 12 threads | host, 1 core of `ceds-model` | `ceds-model` 96 threads | one RTX 6000 Ada |
+|---|---|---|---|---|
+| faces P1 | 13 / 154 | 109 | 4.8 / 81 | 3.3 / 112 |
+| faces P2 | 22 / 187 | 282 | 9.4 / 131 | 13 / 437 |
+| faces Q1 hex | 39 / 209 | 820 | 24 / 113 | 52 / 799 |
+
+  The face kernel scales 7.7 to 9.4x on 12 M4 threads and 23 to 34x on 96 Zen 4 threads. **The colored face pass is dominated by launch overhead**: 24 to 62 small passes (180 to 600 faces each) cost 5 to 34 times
+  the face kernel at this size, and still 8 to 15 times on the GPU at 43,200 faces. Surface terms are a small share of an assembly, but the pass count should shrink: coloring the faces directly
+  instead of inheriting the element colors would cut 60 passes to the number of colors of the boundary-element graph.
+* **Across platforms.** With multiply-add fusing on, the GPU differs from the host by up to 5.3e-15 over all 62 arrays. With it off, the **face Jacobians are bitwise equal CPU to GPU** in all three spaces (and
+  the element Jacobians as before); the residuals differ only through `sin` and `cos` in the boundary data. **A trap this found:** the face Jacobians were *not* equal at first, by 4e-16, because the penalty is `C / pow(h, p)` and
+  CUDA's `pow` does not return `h` exactly for `p = 1`; taking the power-one case out (`pow(h, 1)` is `h` in a conforming libm, so the host is unchanged) fixed it. Any libm call in the Jacobian is a cross-platform
+  bit difference; in the residual, the boundary data's `sin` and `cos` are the only ones left.
+
+## Richards' equation (`richards.h`, `richards_regression.py`, `richards_layers.py`)
+
+A nonlinear, strongly heterogeneous transport problem for the engine: Richards' equation in pressure-head form with the Mualem-van Genuchten
+relations, `m(psi)_t + div(f(psi) - a(psi) grad psi) = 0`, `m = rho theta(psi)`, `a = rho K_r(psi) K_s`, `f = (rho^2/rho0) K_r(psi) K_s g`. `richards.h` ports
+proteus's `vgm_wetting` (`proteus/pskRelations.h`) and the coefficients of `proteus/richards/Richards.h` into the engine's `Terms`;
+`RichardsMaterials` holds up to 8 parameter sets and a material number per element and reaches the kernels through the new opt-in `bindElement(eN)` hook
+(`engine.h`, `boundary.h`): a coefficient functor that defines it is asked for the functor to use on element `eN`, and one that does not is used as it is, so
+the other functors pay nothing. Segment (1D) spaces were added to `spaces.h` for the decks' one-dimensional columns (a face of a segment is a point; as proteus's mesh gives
+it, its diameter is 1). `FaceBC::advInterior` selects the weak Dirichlet variant of `Richards_IIPG_exterior`: the advective flux from the interior state, no upwinding against the
+boundary value.
+
+* **Against proteus's richards model.** `richards_regression.py` runs `test/richards/test_1` (the Celia et al. 1990 column, 1000 backward Euler steps, 40 elements) and
+  compares with the profiles proteus saved for its Galerkin scheme (`STABILIZATION_TYPE=0`). The deck's boundary condition is **weak** (`Richards_IIPG_exterior`, penalty 100): with the Dirichlet
+  rows replaced instead (`--bc strong`) the fronts differ by 0.06 to 0.08 m of pressure head. With the weak treatment and proteus's own Newton stopping rule (2-norm of the residual below
+  1e-8) the engine reproduces the saved profiles to **2.5e-13** at 12 h and 24 h, on the host and the Kokkos modules alike; converged to 1e-12 it differs from them by 8.7e-8 and 4.2e-6, which is
+  proteus's Newton tolerance error at the dry nodes (a tiny capacity there), not the discretization. 3.0 Newton iterations per step.
+* **Heterogeneity, against no finite elements.** `richards_layers.py`: a two-layer column (a sand over a soil with `K_s` 160 times smaller, different `alpha` and `n`), steady, strong
+  Dirichlet rows. Steady 1D flow has a constant flux, so each layer obeys an ODE, `psi' = -Q/K(psi) - 1`, with `psi` continuous at the interface, and the flux `Q` that reaches the top value
+  follows by shooting; the ODE is integrated to 1e-12. The engine's nodal error falls at **exactly the P1 rate, 2.00, at every refinement from 11 to 321 nodes** (7.2e-4 to 7.1e-7), identically on the host and Kokkos modules.
+* **Not covered here.** The other two decks (HYDRUS, Szymkiewicz) need a stabilized scheme and, for Szymkiewicz, the Brooks-Corey closure: see the section on the K-upwinded scheme below. Faces through `bindElement` (a layered boundary element) are implemented but not exercised by a test.
+
+**Richards as a kernel benchmark** (`bench_kokkos.cpp`: unsaturated, backward Euler mass term, four materials in stripes by element number, so `bindElement` runs on every element of every backend with no data pointer): the van Genuchten-Mualem law
+calls `pow` and `sqrt` at every quadrature point, so it costs about three times the advection-diffusion kernel per element on one core (P1: 1,490 ns against 485 for `ad_sine`) and the GPU's element kernel is 1.2 times faster than the 96-core node on P1 and level with it on P2 (its colored assembly is behind the node at 162,000 elements and level at 1.3 M, where the launches fill the card).
+ns per element, element kernel / colored assembly, `ceds-model` (one machine, a few percent of the cores busy with another session's job during these runs):
+
+| kernel | M4, 12 threads | host, 1 core | 96 threads, nn = 31 | RTX 6000 Ada, nn = 31 | 96 threads, nn = 61 | RTX 6000 Ada, nn = 61 |
+|---|---|---|---|---|---|---|
+| Richards P1 | 185 / 226 | 1,490 | 30.5 / 36.2 | 24.7 / 81.7 | 28.8 / 32.2 | 24.5 / 28.8 |
+| Richards P2 | 497 / 726 | 4,138 | 86.4 / 101.1 | 74.5 / 252.6 | 69.7 / 83.5 | 68.8 / 109.8 |
+
+The Kokkos kernel is bitwise the host's on the CPU for both; the GPU differs from the host by up to 2e-14 (multiply-add fusing and the device `pow`). Unlike the advection-diffusion kernels, **with contraction off the
+Richards residual and Jacobian are not bitwise equal CPU to GPU** (`pow` and `sqrt` of the retention curve: any libm call in a Jacobian is a cross-platform bit difference, as found for the face penalty).
+The Celia column runs on the GPU module as well and matches proteus's saved profiles to 3.3e-13, and the layered column reproduces the CPU errors exactly.
+
+## Algebraic stabilization (`lowOrder.h`, `stabilization_test.py`, `stabilization_timing.py`)
+
+Consistent-mass Galerkin is not monotone: a sharp front overshoots and undershoots, which is why proteus runs its HYDRUS and Szymkiewicz Richards decks only with its low-order (`STABILIZATION_TYPE=2`) or FCT scheme.
+`lowOrder.h` adds the algebraic cure that needs only the assembled matrix, so it works for any coefficient functor (**but see the section on the K-upwinded scheme: on a strongly nonlinear conductivity this operator cannot carry a front into dry soil**): a **lumped mass** (`M_L,i (m(u_i) - m(u_old,i)) / dt`, `M_L,i` the integral
+of the basis function; `lumpedMassKernel`, with `bindElement` for materials) and **discrete upwinding of the spatial operator**: for each pair, the symmetric artificial diffusion `d_ij = max(0, J_ij, J_ji)`
+(`J` the Jacobian of the spatial residual), `r_i += sum_j d_ij (u_i - u_j)`, `J_ij -= d_ij`, `J_ii += sum_j d_ij`. The result has no positive off-diagonal, so with the lumped mass it is an M-matrix and satisfies a
+discrete maximum principle. It is the low-order operator of FCT and monolithic limiting: the antidiffusive correction a later limiter adds is the difference to the Galerkin operator over this same pattern and
+transpose map (`buildTransposeMap`). Row-parallel on the execution space, in two passes (`d`, then the rows), each writing only its own row: no race, the result does not depend on the thread count. `D` is
+held fixed in the Jacobian (an approximate Newton step: it converges, not quadratically). One component, P1 and Q1.
+
+* **The pass is exact.** Against a scipy implementation of the formula on the Jacobian of an advection-dominated 3D problem: 1.5e-16 (Jacobian) and 3.4e-16 (residual); 4,128 positive off-diagonals become 0; row sums change by 1e-16;
+  a constant vector's artificial residual is exactly 0. Host, CPU Kokkos and GPU give the same numbers.
+* **A sharp front** (`stabilization_test.py`: `u_t + u_x - 2e-4 u_xx = 0`, step data, cell Peclet number 25, CFL 0.2, backward Euler): consistent-mass Galerkin overshoots to 1.0052 (and undershoots to -1.3e-8); lumping alone is worse, 1.0659;
+  **lumped mass with discrete upwinding stays inside [0, 1] exactly**. It pays in accuracy: the L1 error against the exact erfc solution is 3.9e-2 against Galerkin's 1.4e-2, the smearing of a first-order monotone scheme. Mass is conserved
+  to the same digits (0.495000 against 0.495349).
+* **Richards, the Celia column** (`richards_regression.py --stabilize`): the pressure head stays exactly inside the data's bounds [-10, -0.75] at 12 h and 24 h, where plain Galerkin undershoots to -11.6 and -10.8. The front (psi = -5 m):
+
+| | 12 h | 24 h | lowest psi |
+|---|---|---|---|
+| engine, Galerkin (= proteus, 2.5e-13) | 0.6218 | 0.4373 | -11.60 |
+| **engine, lumped mass + upwinding** | 0.6184 | 0.4324 | -10.00 |
+| proteus, FCT | 0.6147 | 0.4219 | -10.00 |
+| proteus, `STABILIZATION_TYPE=2` (the K-upwinded low-order scheme, below) | 0.5505 | 0.3565 | -10.00 |
+
+  The algebraic scheme's front is within 0.15 and 0.4 of an element (0.025 m) of proteus's FCT front and lags less than proteus's `STABILIZATION_TYPE=2` scheme; 3.5 Newton iterations per step. The profiles are not compared digit for digit
+  (different schemes). The HYDRUS and Szymkiewicz decks show where this operator fails: see below.
+* **Cost** (`stabilization_timing.py`, 3D tetrahedra, the pass against the colored assembly that produces its input, `ceds-model`):
+
+| rows | 1 thread | 96 threads | RTX 6000 Ada | transpose map (once, host) |
+|---|---|---|---|---|
+| 227 k | 7.0 ms (assembly 819 ms) | 0.3 ms (13 ms) | 0.6 ms (13.5 ms) | 9 to 19 ms |
+| 1.03 M | 79 ms (3.9 s) | 14.6 ms (65 ms) | 2.3 ms (53 ms) | 41 to 85 ms |
+
+  Two to four percent of the assembly on one thread and on the GPU. At 96 threads it is 23% at 1.03 M rows: the pass is a memory-bound gather over the CSR and scales 5x, not 50x, on the node.
+
+
+## The FCT limiter (`lowOrder.h`, `fct_limit`; `stabilization_test.py`, `richards_regression.py --fct`)
+
+The lumped-mass/upwinded scheme is monotone and first-order, so it smears a front (10-90% width 0.154 against the exact 0.031). Flux-corrected transport restores the accuracy the low-order scheme gave up while keeping its bounds.
+`fctLimit` is the linearized (Zalesak) limiter over the pattern and transpose map `buildTransposeMap` already provides:
+
+* The antidiffusive edge flux is `f_ij = Mc_ij (dm_j - dm_i)/dt + d_ij (v_j - v_i)` with `Mc` the consistent mass, `dm = m_L - m_old` the change of the **conserved variable** `m` over the low-order step, `d_ij` the dissipation of the
+  upwinding pass and `v` the variable it acts on; `f_ji = -f_ij` exactly, so what leaves a node arrives at its neighbour. For a transport equation `m = v = u`. For Richards `m` is the moisture content and `v` the pressure head:
+  the driver limits `theta`, then inverts it with the analytic van Genuchten inverse (`Column.fct_correct`), so mass in the sense of the PDE is what is conserved.
+* The bounds of node `i` are the extrema of `m_L` and `m_old` over `i` and its neighbours; `R+_i`, `R-_i` are the ratios of the room that is available to the antidiffusion that is asked for, and the edge gets
+  `alpha_ij = min(R+_i, R-_j)` (or the other pair, by sign), the same `alpha` on both sides of the edge. Three row-parallel passes (fluxes, bounds, apply), each writing only its own row: no race, the result does not
+  depend on the thread count. `consistent_mass` supplies `Mc` (`massMatrixOne`, any space); `dissipation_values` the `d_ij`. One component; nc > 1 and P2 are not done.
+
+* **Against a numpy implementation of Zalesak's formula**, random bounded data on 343 nodes and 1,854 edges: 1.1e-16 (max abs); the local bounds are respected to 1e-17; the conserved sum `M_L m` changes by 3e-18 (relative).
+  Host, CPU Kokkos and the RTX 6000 Ada agree.
+* **The sharp front** (the `stabilization_test.py` problem; width = distance between the 10% and 90% levels):
+
+| scheme | min u | max u | L1 error | width |
+|---|---|---|---|---|
+| Galerkin, consistent mass | -1.3e-8 | 1.0052 | 1.39e-2 | 0.0687 |
+| lumped mass only | 0 | 1.0659 | 2.13e-2 | 0.0761 |
+| lumped mass + upwinding | 0 | 1.0000 | 3.94e-2 | 0.1537 |
+| **FCT** | **0** | **1.0000** | **1.57e-2** | **0.0747** |
+
+  (exact width 0.0310). The limiter halves the width of the low-order front, keeps the profile in [0, 1] exactly and has a smaller L1 error than the lumped-mass Galerkin scheme; the mass is that of the low-order scheme (0.495000).
+* **Richards, the Celia column** (`richards_regression.py --fct`): the pressure head stays exactly in [-10, -0.75] at 3.74 Newton iterations per step. Position of psi = -5 m:
+
+| | 12 h | 24 h | lowest psi |
+|---|---|---|---|
+| engine, Galerkin (= proteus, 2.5e-13) | 0.6218 | 0.4373 | -11.60 |
+| engine, lumped mass + upwinding | 0.6184 | 0.4324 | -10.00 |
+| **engine, FCT** | 0.6188 | 0.4339 | -10.00 |
+| proteus, FCT | 0.6147 | 0.4219 | -10.00 |
+| proteus, `STABILIZATION_TYPE=2` (the K-upwinded low-order scheme, below) | 0.5505 | 0.3565 | -10.00 |
+
+  The engine's FCT front is 0.0041 and 0.012 m (a sixth and a half of an element) ahead of proteus's FCT front. The two limiters are not the same algorithm (here the correction is applied after a Newton solve of the low-order scheme
+  rather than inside the time step; the saved profiles are not expected to agree digit for digit), and the engine's FCT moves the front back only a little toward the Galerkin one: on this smooth, strongly
+  diffusive problem the upwinding costs little. The HYDRUS and Szymkiewicz decks, where FCT matters, are in the next section.
+* **Cost** (`stabilization_timing.py`, 3D tetrahedra, 31^3 nodes, 29,791 rows, 424 k nonzeros): the three passes take 0.3 ms on the RTX 6000 Ada (7% of the 4.7 ms colored assembly) and 0.6 ms with 12 threads on the Mac (8%).
+  The limiter needs `Mc` and `d` as well; both are assembled once per step with the Jacobian's pattern.
+* **Caveats.** The limiter is linearized and applied once after the low-order solve, as in Zalesak's original; nonlinear limiting (iterating the correction, or inside the Newton loop) is not done. It does not make the Galerkin
+  solution bit-for-bit reproducible across platforms (the Richards moisture inversion uses `pow`).
+
+
+## The K-upwinded low-order scheme, and the HYDRUS and Szymkiewicz decks (`richards_decks.py`, `upwind_test.py`)
+
+`richards_regression.py --case celia|hydrus|szymkiewicz` runs the three one-dimensional decks of `test/richards` (the parameters are the decks', computed as they compute them) and compares with the
+profiles proteus saved for each. The Szymkiewicz (2009) deck is Brooks-Corey with Mualem conductivity (`PSK_type=BC_MUALEM`), so `richards.h` gained `bcWetting`, a port of `bc_wetting` in `pskRelations.h`
+(`psk` argument of the Richards entry points: 0 van Genuchten, 1 Brooks-Corey-Burdine, 2 Brooks-Corey-Mualem). The Celia result is unchanged (2.5e-13).
+
+**What the decks showed about the Jacobian-based upwinding of the previous section.** On HYDRUS (a 20 m sand column, hydrostatic about a water table, 0 m head at the top, 101 nodes) the relative conductivity
+falls from 1 to 1e-10 over the top 2 m, and the Galerkin quadrature takes `K_r` from its points, where the dry side dominates: the flux into the first dry element is about 1e-10 of the true one. Plain Galerkin
+undershoots to -38.7 m and is stuck; **the Jacobian-based upwinding of `lowOrder.h` is stuck too** (its dissipation is the size of the Jacobian's off-diagonals, which carry that same tiny `K_r`): the front sits
+at the top of the column (19.7 m) for the whole two days, where the reference front is at 16.07 m after 5 h and 11.4 m after 11 h. On Szymkiewicz (11 nodes) Newton does not converge for it at all. It is not a bug of
+the pass; the operator cannot move a front into a medium where the conductivity ratio is that large. The right low-order operator for Richards is not "Galerkin plus symmetric dissipation" but proteus's.
+
+**The K-upwinded low-order operator** (proteus's `STABILIZATION_TYPE=2`, which, in spite of the name `EntropyViscosity`, is this scheme: it matches the engine to 3e-13 on Celia and Szymkiewicz): write the
+flux on the total head `phi = psi - g.x`, so gravity is part of the gradient, and take the relative permeability at the **upwind node** of each edge,
+
+    flux into i from j:  F_ij = kr_up c_ij (phi_j - phi_i),   c_ij = max(0, -S_ij),   up = i if -S_ij (phi_j - phi_i) <= 0, else j,
+
+with `S` the stiffness `K_s grad phi_i . grad phi_j` and the lumped mass. The same node is upwind from both sides of an edge, so it is conservative; the residual sums to zero and so does every column of the Jacobian.
+The matrices come from the element kernel itself: `mode` 1 of `RichardsVGM` is `S` (relative permeability 1, no storage or gravity), `mode` 2 is the **frozen** Galerkin stiffness `C` (`K_r` at the quadrature points, no derivative
+of `K_r`); `richards_kr_nodes` gives the nodal `kr` and `dkr/du`, `upwind_flux` the residual and the Jacobian on the pattern (row-parallel, `lowOrder.h` `upwindFluxRow`). The FCT correction on it is
+`g_ij = -M_C,ij (dm_j - dm_i)/dt + A_ij` with the antidiffusive flux `A_ij = (-C_ij - kr_up c_ij)(phi_j - phi_i)` (Galerkin minus upwinded; `antidiffusive_flux`), through the same bounds and apply passes
+(`fct_limit_flux`, optionally with proteus's bounds). Proteus imposes the Dirichlet values on this scheme strongly, so `--upwind` requires `--bc strong` and sets them before each Newton iteration, as proteus does. The conductivity is taken per node
+from one material and the density factor assumes `beta = 0` (true of every deck).
+
+* **Tests** (`upwind_test.py`, 3D tetrahedra, both retention models): `S` and `C` symmetric with zero row sums to 2e-16; `upwind_flux` against a numpy edge loop 0 (residual) and 1.5e-16 (Jacobian); conservation to 1e-15; the
+  Jacobian against central finite differences of the residual to 1e-5 or better; the antidiffusive flux antisymmetric; FCT on it keeps the local bounds exactly and the mass to 5e-18, and with `A_ij = d_ij (v_i - v_j)` it
+  gives the bits of the Jacobian-based `fct_limit`. The Kokkos module agrees with the host (bitwise on the Mac; 6e-14 at most on `ceds-model`, CPU and RTX 6000 Ada alike).
+* **Against proteus** (`richards_regression.py --bc strong --upwind [--fct]`, proteus's Newton rule): the largest pressure-head differences from the saved columns are
+
+| | low-order vs `stab_2` | FCT vs `FCT`, bounds over our two states | FCT vs `FCT`, `--proteus-limiter` |
+|---|---|---|---|
+| Celia (12 h, 24 h) | 3.1e-13, 2.7e-13 | 4.2e-4, 1.3e-4 | **3.0e-8, 5.6e-9** |
+| Szymkiewicz (1.5 h, 3 h) | 6.3e-14, 1.1e-13 | 3.1e-10, 7.9e-7 | **6.2e-10, 1.9e-12** |
+| HYDRUS (5 h, 11 h, 48 h) | 4.6e-2, 2.3e-2, 6.0e-9 | 2.2, 1.6, 2.1e-7 | 6.1e-2, 3.6e-2, 2.1e-7 |
+
+  **The FCT difference is the limiter's bounds, not a second limiter.** Proteus's `FCTStep` takes the local extrema (the `Qposi`, `Qnegi` of Zalesak's limiter) over the low-order moisture content `mLow` of a node and its
+  neighbours alone; the engine's default takes them over `mLow` and the old moisture content, a wider interval. `fct_limit_flux(..., bounds_old=False)` / `--proteus-limiter` takes them over `mLow` alone, and then the
+  engine reproduces proteus's FCT column to 3e-8 (Celia; Newton-tolerance level) and 2e-12 (Szymkiewicz). **The `alpha_dot` limiter in `FCTStep` (a limiter on the difference of the nodal time derivatives) is not used by
+  these decks and is not ported:** it sits in the `MONOLITHIC` branch, and `Richards.py` passes `MONOLITHIC = 0` to `FCTStep` (a `cek hack` comment) whatever the deck says; in the branch that runs, `alpha_dot` is computed and discarded.
+  (An earlier version of this section attributed the Celia difference to it; that was wrong.) The monolithic variant, with the correction inside the Newton loop, has no proteus reference to validate against and the code
+  carries the comment that it is probably not right for Richards. Using the nodal time derivative `mDotLow` that proteus's residual stores (the fluxes over `M_L`) in the mass-matrix term, instead of `(mLow - mold)/dt`, makes the
+  agreement much worse (2.0 on Celia), so that is not what the limiter sees. The HYDRUS difference (a single node at the edge of the front, in the low-order scheme as well) does not depend on the Newton tolerance of the engine
+  between 1e-4 and 1e-12 and is not explained; the fronts agree to 3e-4 m.
+* **Against a reference** (`richards_decks.py`: the engine's own K-upwinded FCT on a mesh 8 times finer in space and in time (16 for Szymkiewicz), with one twice finer still to show it has converged: the moisture
+  content differs between the two by an integral of 1.7e-5 (Celia), 3.7e-3 (HYDRUS) and 5.3e-3 (Szymkiewicz), a small fraction of the errors below). Front = where the moisture content falls through the middle between the wet
+  boundary value and the driest initial value; `L1` is the integral of |theta - theta_ref| over the column (m).
+
+| deck, time | scheme | L1 | front (m) | lowest psi |
+|---|---|---|---|---|
+| **Celia**, 12 h (reference front 0.6736) | Galerkin = proteus | 1.6e-4 | 0.6743 | -11.60 |
+| | Jacobian upwinding | 5.1e-4 | 0.6687 | -10.00 |
+| | K-upwind (= proteus `stab_2`) | 3.2e-3 | 0.6429 | -10.00 |
+| | K-upwind + FCT (= proteus FCT, 3e-8 with `--proteus-limiter`) | 7.2e-4 | 0.6681 | -10.00 |
+| **HYDRUS**, 5 h (reference 16.07) | Galerkin | 1.5 | 19.90 | -38.7 |
+| | Jacobian upwinding | 1.4 | 19.70 | -19.4 |
+| | K-upwind (= proteus `stab_2`) | 6.0e-2 | 15.94 | -15.40 |
+| | K-upwind + FCT (= proteus FCT) | 5.2e-2 | 15.95 | -16.12 |
+| **HYDRUS**, 11 h (reference 11.44) | K-upwind | 7.0e-2 | 11.32 | -10.80 |
+| | K-upwind + FCT | 6.3e-2 | 11.32 | -11.27 |
+| **Szymkiewicz**, 3 h (reference 3.39) | Galerkin | 0.36 | 4.25 | -10.87 |
+| | Jacobian upwinding | Newton fails at 0.0355 d | | |
+| | K-upwind (= proteus `stab_2`) | 0.11 | 2.99 | -7.50 |
+| | K-upwind + FCT (= proteus FCT) | 7.6e-2 | 3.06 | -7.50 |
+
+  HYDRUS at 48 h is wet through and every K-upwinded scheme gives psi = 0 to 1e-15 (the saved columns agree). Reading: on a sharp front the K-upwinded low-order scheme lags by about half an element, and FCT
+  recovers part of it (a third of the L1 error on Szymkiewicz, 13% and 10% on HYDRUS, where the front is narrower than one element and the local bounds cannot admit a sharper one); on Celia, the smooth case,
+  the Jacobian-based upwinding is the most accurate of the stabilized schemes (L1 5.1e-4 against 3.2e-3 for the K-upwind scheme, which lags by a third of an element). The engine reproduces proteus's two stabilized schemes on all three decks, and plain Galerkin
+  cannot run two of them.
+* **On the GPU**, Celia, Szymkiewicz and HYDRUS with `--upwind --fct` print the same differences from the saved profiles as the host (RTX 6000 Ada, `adrh_kokkos` CUDA module).
+* **Not done.** One material per run for the nodal `kr` (the node's material number is an argument, but the decks use one); `beta != 0`; 2D and 3D decks; the cost of the new passes (they are the same
+  row-parallel gathers as the dissipation pass, 2 to 4% of the assembly there); FCT iterated inside the Newton loop.

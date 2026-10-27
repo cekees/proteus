@@ -64,14 +64,14 @@ RANK_SCRIPT = textwrap.dedent(
 
     global_sync = os.environ["GLOBAL_SYNC"] == "1"
     datadir = os.environ["DATADIR"]
-    if rank == 0 and os.environ.get("HOT_START") != "1":
+    if rank == 0 and os.environ.get("HOT_START") not in ("1", "back"):
         shutil.rmtree(datadir, ignore_errors=True)
         os.makedirs(datadir, exist_ok=True)
     comm.barrier()
 
     from proteus import Archiver
 
-    hot = os.environ.get("HOT_START") == "1"
+    hot = os.environ.get("HOT_START") in ("1", "back")
     if os.environ.get("WITH_LOG") == "1":
         from proteus import Profiling
         Profiling.procID = rank
@@ -85,7 +85,10 @@ RANK_SCRIPT = textwrap.dedent(
         ar.writeIncrementalYmf = False
     if hot:
         # what NumericalSolution does: continue after the archive's last step
-        ar.n_datasets = len(ar.archived_times)
+        # (or, for HOT_START=back, from the first step of two: the second
+        # is written again, as when the requested time is not the last)
+        last = 0 if os.environ.get("HOT_START") == "back" else len(ar.archived_times) - 1
+        ar.continue_from(last)
 
     # Sizes differ per rank on purpose: the metadata dataset is fixed-width
     # and created collectively, so if the width agreement is wrong the
@@ -173,7 +176,7 @@ def run_ranks(tmp_path, n_ranks, global_sync, hot_start=False,
     """
     datadir = str(tmp_path / name)
     env = dict(os.environ, GLOBAL_SYNC="1" if global_sync else "0",
-               DATADIR=datadir, HOT_START="1" if hot_start else "0",
+               DATADIR=datadir, HOT_START=("back" if hot_start == "back" else "1") if hot_start else "0",
                SKIP_CLOSE="1" if skip_close else "0",
                NO_INCREMENTAL="0" if incremental else "1",
                MODE=mode or "", DRIVER=driver or "",
@@ -671,6 +674,18 @@ def test_a_parallel_hot_start_continues_the_archive(tmp_path):
     run_ranks(tmp_path, 2, global_sync=False, hot_start=True)
     (collection,) = archive_collections(read_domain(datadir))
     assert [step["time"] for step in collection["data"]] == [0.0, 0.5, 1.0]
+
+
+@pytest.mark.parametrize("n_ranks", [1, pytest.param(
+    2, marks=pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available"))])
+@pytest.mark.parametrize("global_sync", [True, False])
+def test_a_hot_start_from_an_earlier_step_replaces_the_later_ones(
+        tmp_path, n_ranks, global_sync):
+    """The requested time need not be the last one archived."""
+    datadir = run_ranks(tmp_path, n_ranks, global_sync=global_sync)
+    run_ranks(tmp_path, n_ranks, global_sync=global_sync, hot_start="back")
+    (collection,) = archive_collections(read_domain(datadir))
+    assert [step["time"] for step in collection["data"]] == [0.0, 1.0]
 
 
 # --------------------------------------------------------------------------

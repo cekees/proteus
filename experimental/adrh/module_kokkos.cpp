@@ -11,11 +11,13 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <type_traits>
 
 #include "kokkos_kernel.h"
+#include "richards.h"
 #include "quad_tet4.h"
 
 namespace py = pybind11;
@@ -138,11 +140,92 @@ namespace
     adrh::DView<double> dX_, dqp_, dqw_, dU_, dUold_, dRg_, dJv_;
   };
 
+  template <class C, class Space>
+  py::tuple runSpace(const C &coef, Arr xn, Arr u, py::object uold, Arr qp, Arr qw, double t, double dt)
+  {
+    constexpr int nc = C::nc, nD = Space::nDOF;
+    const int nE = (int)xn.shape(0), nQ = (int)qw.shape(0);
+    py::array_t<double> R({nE, nc, nD}), J({nE, nc, nD, nc, nD});
+    Arr uo;
+    if (!uold.is_none() && dt > 0.0) uo = uold.cast<Arr>();
+    {
+      py::gil_scoped_release release;
+      adrh::DView<double> dxn = up(xn), du = up(u), dqp = up(qp), dqw = up(qw), duo("uo", 0);
+      if (uo.size() > 0) duo = up(uo);
+      adrh::DView<double> dR("R", R.size()), dJ("J", J.size());
+      adrh::elementKernelKokkosSpace<C, Space>(coef, nE, nQ, dxn, du, duo, dqp, dqw, t, dt, dR, dJ);
+      Kokkos::deep_copy(HostView(R.mutable_data(), R.size()), dR);
+      Kokkos::deep_copy(HostView(J.mutable_data(), J.size()), dJ);
+    }
+    return py::make_tuple(R, J);
+  }
+
+  adrh::DView<int> upInt(const IArr &a)
+  {
+    adrh::DView<int> d("in", a.size());
+    Kokkos::deep_copy(d, Kokkos::View<int *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>(
+                             const_cast<int *>(a.data()), a.size()));
+    return d;
+  }
+
+  // The exterior-face kernel on the execution space. makeBC gets the device pointer of the per-face kind array.
+  template <class C, class Space, class BC, class MakeBC>
+  py::tuple runFaces(const C &coef, MakeBC makeBC, const adrh::WeakDirichletParams &wd, IArr faceLocal, IArr faceKind, Arr xn, Arr u,
+                     Arr qpf, Arr qwf, double t)
+  {
+    constexpr int nc = C::nc, nD = Space::nDOF;
+    const int nF = (int)xn.shape(0), nQf = (int)qwf.shape(0);
+    py::array_t<double> Rf({nF, nc, nD}), Jf({nF, nc, nD, nc, nD});
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dl = upInt(faceLocal), dk = upInt(faceKind);
+      adrh::DView<double> dxn = up(xn), du = up(u), dqp = up(qpf), dqw = up(qwf);
+      adrh::DView<double> dR("Rf", Rf.size()), dJ("Jf", Jf.size());
+      BC bc = makeBC(dk.data());
+      adrh::exteriorFaceKernelKokkos<C, BC, Space>(coef, bc, wd, nF, nQf, dl, adrh::DView<int>("fe", 0), dxn, du, dqp, dqw, t, dR, dJ);
+      Kokkos::deep_copy(HostView(Rf.mutable_data(), Rf.size()), dR);
+      Kokkos::deep_copy(HostView(Jf.mutable_data(), Jf.size()), dJ);
+    }
+    return py::make_tuple(Rf, Jf);
+  }
+
+  // Lagrange spaces by name and dimension; f gets a default-constructed space as a type tag and returns a py::tuple.
+  template <class F>
+  py::tuple dispatchSpace(int nd, const std::string &space, F &&f)
+  {
+    if (nd == 1 && space == "p1") return f(adrh::P1Simplex<1>{});
+    if (nd == 1 && space == "p2") return f(adrh::P2Simplex<1>{});
+    if (nd == 2 && space == "p1") return f(adrh::P1Simplex<2>{});
+    if (nd == 3 && space == "p1") return f(adrh::P1Simplex<3>{});
+    if (nd == 2 && space == "p2") return f(adrh::P2Simplex<2>{});
+    if (nd == 3 && space == "p2") return f(adrh::P2Simplex<3>{});
+    if (nd == 2 && space == "q1") return f(adrh::Q1Cube<2>{});
+    if (nd == 3 && space == "q1") return f(adrh::Q1Cube<3>{});
+    throw std::invalid_argument("no space '" + space + "' in " + std::to_string(nd) + "D (p1, p2, q1; nd 1 to 3, q1 only 2 or 3)");
+  }
+
   void finalize()
   {
     if (Kokkos::is_initialized() && !Kokkos::is_finalized()) Kokkos::finalize();
   }
 } // namespace
+
+namespace adrh
+{
+  struct KrNodesPass
+  {
+    DView<const double> alpha, n, thetaR, thetaSR, u;
+    DView<const int> nodeMat;
+    int psk;
+    DView<double> kr, dkr;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      const int m = nodeMat(i);
+      krNode(u(i), alpha(m), n(m), thetaR(m), thetaSR(m), psk, kr(i), dkr(i));
+    }
+  };
+
+}
 
 PYBIND11_MODULE(adrh_kokkos, m)
 {
@@ -171,6 +254,309 @@ PYBIND11_MODULE(adrh_kokkos, m)
     }
     return py::make_tuple(qp, qw);
   });
+  // exterior faces of the sine problem (host module's signature); kind per face: 1 flux, 2 flux with the advective flux, 3 weak Dirichlet,
+  // 4 Robin
+  m.def("advection_diffusion_sine_faces", [](int nd, const std::string &space, Arr b, double kappa, Arr omega, double omega0, IArr faceLocal,
+                                              IArr faceKind, Arr xn, Arr u, Arr qpf, Arr qwf, double penalty_constant,
+                                              double penalty_power, double sigma, double robin_alpha, double robin_beta) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      constexpr int nS = S::nS;
+      using Co = adrh::AdvectionDiffusionSine<nS>;
+      using BC = adrh::SineBC<nS>;
+      Co c(b.data(), kappa, omega.data(), omega0);
+      adrh::WeakDirichletParams wd{penalty_constant, penalty_power, sigma};
+      auto make = [&](const int *dk) { return BC(b.data(), kappa, omega.data(), omega0, dk, robin_alpha, robin_beta); };
+      return runFaces<Co, S, BC>(c, make, wd, faceLocal, faceKind, xn, u, qpf, qwf, 0.0);
+    });
+  });
+  // the transient linear advection-diffusion-reaction element kernel (backward Euler mass term), any space
+  m.def("transient_adr", [](int nd, const std::string &space, Arr b, double kappa, double c, Arr xn, Arr u, Arr uold, Arr qp, Arr qw,
+                             double t, double dt) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      adrh::TransientLinearADR<S::nS> co(b.data(), kappa, c);
+      return runSpace<adrh::TransientLinearADR<S::nS>, S>(co, xn, u, uold, qp, qw, t, dt);
+    });
+  });
+  // its exterior faces, with boundary data from the Dirac-IC Gaussian
+  m.def("transient_adr_faces", [](int nd, const std::string &space, Arr b, double kappa, double c, double tStart, double u0, Arr x0,
+                                   IArr faceLocal, IArr faceKind, Arr xn, Arr u, Arr qpf, Arr qwf, double t, double penalty_constant,
+                                   double penalty_power, double sigma, double robin_alpha, double robin_beta) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      constexpr int nS = S::nS;
+      using Co = adrh::TransientLinearADR<nS>;
+      using BC = adrh::ExactBC<nS, adrh::DiracExact<nS>>;
+      Co co(b.data(), kappa, c);
+      adrh::DiracExact<nS> exact(b.data(), kappa, c, tStart, u0, x0.data());
+      adrh::WeakDirichletParams wd{penalty_constant, penalty_power, sigma};
+      auto make = [&](const int *dk) { return BC(exact, b.data(), kappa, dk, robin_alpha, robin_beta); };
+      return runFaces<Co, S, BC>(co, make, wd, faceLocal, faceKind, xn, u, qpf, qwf, t);
+    });
+  });
+  // Richards' equation (richards.h) with several materials; see module.cpp for the arguments
+  m.def("richards_vgm", [](int nd, const std::string &space, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, Arr Ks, Arr g, double rho,
+                            double beta, IArr material, Arr xn, Arr u, py::object uold, Arr qp, Arr qw, double t, double dt, int psk, int mode) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      using Co = adrh::RichardsMaterials<S::nS>;
+      constexpr int nc = 1, nD = S::nDOF;
+      const int nE = (int)xn.shape(0), nQ = (int)qw.shape(0);
+      py::array_t<double> R({nE, nc, nD}), J({nE, nc, nD, nc, nD});
+      Arr uo;
+      if (!uold.is_none() && dt > 0.0) uo = uold.cast<Arr>();
+      {
+        py::gil_scoped_release release;
+        adrh::DView<int> dmat = upInt(material);
+        Co co((int)alpha.size(), alpha.data(), n_vg.data(), thetaR.data(), thetaSR.data(), Ks.data(), g.data(), dmat.data(), rho, beta, 1.0, psk, mode);
+        adrh::DView<double> dxn = up(xn), du = up(u), dqp = up(qp), dqw = up(qw), duo("uo", 0);
+        if (uo.size() > 0) duo = up(uo);
+        adrh::DView<double> dR("R", R.size()), dJ("J", J.size());
+        adrh::elementKernelKokkosSpace<Co, S>(co, nE, nQ, dxn, du, duo, dqp, dqw, t, dt, dR, dJ);
+        Kokkos::deep_copy(HostView(R.mutable_data(), R.size()), dR);
+        Kokkos::deep_copy(HostView(J.mutable_data(), J.size()), dJ);
+      }
+      return py::make_tuple(R, J);
+    });
+  });
+  m.def("richards_vgm_faces", [](int nd, const std::string &space, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, Arr Ks, Arr g, double rho,
+                                  double beta, IArr material, IArr faceElem, IArr faceLocal, Arr gD, Arr xn, Arr u, Arr qpf, Arr qwf,
+                                  double t, double penalty_constant, double penalty_power, int psk, int mode) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      using Co = adrh::RichardsMaterials<S::nS>;
+      adrh::WeakDirichletParams wd{penalty_constant, penalty_power, 0.0};
+      constexpr int nc = 1, nD = S::nDOF;
+      const int nF = (int)xn.shape(0), nQf = (int)qwf.shape(0);
+      py::array_t<double> Rf({nF, nc, nD}), Jf({nF, nc, nD, nc, nD});
+      {
+        py::gil_scoped_release release;
+        adrh::DView<int> dmat = upInt(material), dl = upInt(faceLocal), de = upInt(faceElem);
+        Co co((int)alpha.size(), alpha.data(), n_vg.data(), thetaR.data(), thetaSR.data(), Ks.data(), g.data(), dmat.data(), rho, beta, 1.0, psk, mode);
+        adrh::DView<double> dg = up(gD), dxn = up(xn), du = up(u), dqp = up(qpf), dqw = up(qwf);
+        adrh::DView<double> dR("Rf", Rf.size()), dJ("Jf", Jf.size());
+        adrh::FixedValueBC bc(dg.data());
+        adrh::exteriorFaceKernelKokkos<Co, adrh::FixedValueBC, S>(co, bc, wd, nF, nQf, dl, de, dxn, du, dqp, dqw, t, dR, dJ);
+        Kokkos::deep_copy(HostView(Rf.mutable_data(), Rf.size()), dR);
+        Kokkos::deep_copy(HostView(Jf.mutable_data(), Jf.size()), dJ);
+      }
+      return py::make_tuple(Rf, Jf);
+    });
+  });
+  // ---- the K-upwinded low-order operator (lowOrder.h), on the execution space ----
+  m.def("richards_kr_nodes", [](Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, int psk, IArr nodeMat, Arr u) {
+    const int n = (int)u.size();
+    py::array_t<double> kr(n), dkr(n);
+    {
+      py::gil_scoped_release release;
+      adrh::DView<double> da = up(alpha), dn = up(n_vg), dtr = up(thetaR), dts = up(thetaSR), du = up(u), dkrv("kr", n), ddkrv("dkr", n);
+      adrh::DView<int> dm = upInt(nodeMat);
+      adrh::forEachElement("adrh kr nodes", 0, n, adrh::KrNodesPass{da, dn, dtr, dts, du, dm, psk, dkrv, ddkrv});
+      Kokkos::fence();
+      Kokkos::deep_copy(HostView(kr.mutable_data(), n), dkrv);
+      Kokkos::deep_copy(HostView(dkr.mutable_data(), n), ddkrv);
+    }
+    return py::make_tuple(kr, dkr);
+  });
+  m.def("upwind_flux", [](IArr indptr, IArr indices, Arr S, Arr phi, Arr kr, Arr dkr) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> r(n), J(S.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices);
+      adrh::DView<double> dS = up(S), dphi = up(phi), dK = up(kr), ddK = up(dkr), dr("r", n), dJ("J", S.size());
+      adrh::upwindFluxKokkos(n, dp, di, dS, dphi, dK, ddK, dr, dJ);
+      Kokkos::deep_copy(HostView(r.mutable_data(), n), dr);
+      Kokkos::deep_copy(HostView(J.mutable_data(), J.size()), dJ);
+    }
+    return py::make_tuple(r, J);
+  });
+  m.def("antidiffusive_flux", [](IArr indptr, IArr indices, Arr C, Arr S, Arr phi, Arr kr) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> A(S.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices);
+      adrh::DView<double> dC = up(C), dS = up(S), dphi = up(phi), dK = up(kr), dA("A", S.size());
+      adrh::antidiffusiveFluxKokkos(n, dp, di, dC, dS, dphi, dK, dA);
+      Kokkos::deep_copy(HostView(A.mutable_data(), A.size()), dA);
+    }
+    return A;
+  });
+  m.def("fct_limit_flux", [](IArr indptr, IArr indices, IArr tpos, Arr Mc, Arr A, Arr ML, Arr mL, Arr mold, double dt, bool bounds_old) {
+    py::array_t<double> out(mL.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt_ = upInt(tpos);
+      adrh::DView<double> dMc = up(Mc), dA = up(A), dML = up(ML), dmL = up(mL), dmo = up(mold), dout("out", mL.size());
+      adrh::fctLimitFluxKokkos((int)indptr.size() - 1, dp, di, dt_, dMc, dA, dML, dmL, dmo, bounds_old ? dmo : dmL, dt, dout);
+      Kokkos::deep_copy(HostView(out.mutable_data(), out.size()), dout);
+    }
+    return out;
+  }, py::arg("indptr"), py::arg("indices"), py::arg("tpos"), py::arg("Mc"), py::arg("A"), py::arg("ML"), py::arg("mL"), py::arg("mold"), py::arg("dt"),
+     py::arg("bounds_old") = true);
+  // ---- algebraic stabilization (lowOrder.h), on the execution space ----
+  m.def("transpose_map", [](IArr indptr, IArr indices) {
+    const std::vector<int> t = adrh::buildTransposeMap((int)indptr.size() - 1, indptr.data(), indices.data());
+    py::array_t<int> out((py::ssize_t)t.size());
+    std::copy(t.begin(), t.end(), out.mutable_data());
+    return out;
+  });
+  m.def("algebraic_dissipation", [](IArr indptr, IArr indices, IArr tpos, Arr values, Arr u, Arr r) {
+    py::array_t<double> J(values.size()), R(r.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt = upInt(tpos);
+      adrh::DView<double> dJ = up(values), du = up(u), dR = up(r);
+      adrh::algebraicDissipationKokkos((int)indptr.size() - 1, dp, di, dt, dJ, du, dR);
+      Kokkos::deep_copy(HostView(J.mutable_data(), J.size()), dJ);
+      Kokkos::deep_copy(HostView(R.mutable_data(), R.size()), dR);
+    }
+    return py::make_tuple(J, R);
+  });
+  // the same pass with the three phases timed: returns (values, r, {t_h2d, t_pass, t_d2h}); the pass is best of `repeats` (pass 1 reads the
+  // original values each time, so the device copy is refreshed between repeats outside the timing)
+  m.def("algebraic_dissipation_timed", [](IArr indptr, IArr indices, IArr tpos, Arr values, Arr u, Arr r, int repeats) {
+    py::array_t<double> J(values.size()), R(r.size());
+    double tH = 0, tP = 1e30, tD = 0;
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt = upInt(tpos);
+      double t0 = now();
+      adrh::DView<double> dJ = up(values), du = up(u), dR = up(r), dJ0 = up(values), dR0 = up(r);
+      Kokkos::fence();
+      tH = now() - t0;
+      for (int k = 0; k < repeats; ++k)
+      {
+        Kokkos::deep_copy(dJ, dJ0); Kokkos::deep_copy(dR, dR0); Kokkos::fence();
+        t0 = now();
+        adrh::algebraicDissipationKokkos((int)indptr.size() - 1, dp, di, dt, dJ, du, dR);
+        tP = std::min(tP, now() - t0);
+      }
+      t0 = now();
+      Kokkos::deep_copy(HostView(J.mutable_data(), J.size()), dJ);
+      Kokkos::deep_copy(HostView(R.mutable_data(), R.size()), dR);
+      Kokkos::fence();
+      tD = now() - t0;
+    }
+    py::dict d; d["t_h2d"] = tH; d["t_pass"] = tP; d["t_d2h"] = tD;
+    return py::make_tuple(J, R, d);
+  });
+  m.def("richards_vgm_lumped", [](int nd, const std::string &space, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, Arr Ks, Arr g, double rho,
+                                   double beta, IArr material, Arr xn, Arr u, py::object uold, Arr qp, Arr qw, double t, double dt, int psk, int mode) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      using Co = adrh::RichardsMaterials<S::nS>;
+      constexpr int nD = S::nDOF;
+      const int nE = (int)xn.shape(0), nQ = (int)qw.shape(0);
+      py::array_t<double> w({nE, nD}), mm({nE, nD}), dm({nE, nD}), mold({nE, nD});
+      Arr uo;
+      if (!uold.is_none() && dt > 0.0) uo = uold.cast<Arr>();
+      {
+        py::gil_scoped_release release;
+        adrh::DView<int> dmat = upInt(material);
+        Co co((int)alpha.size(), alpha.data(), n_vg.data(), thetaR.data(), thetaSR.data(), Ks.data(), g.data(), dmat.data(), rho, beta, 1.0, psk, mode);
+        adrh::DView<double> dxn = up(xn), du = up(u), dqp = up(qp), dqw = up(qw), duo("uo", 0);
+        if (uo.size() > 0) duo = up(uo);
+        adrh::DView<double> dw("w", w.size()), dmm("m", mm.size()), ddm("dm", dm.size()), dmo("mold", mold.size());
+        adrh::lumpedMassKokkos<Co, S>(co, nE, nQ, dxn, du, duo, dqp, dqw, t, dt, dw, dmm, ddm, dmo);
+        Kokkos::deep_copy(HostView(w.mutable_data(), w.size()), dw);
+        Kokkos::deep_copy(HostView(mm.mutable_data(), mm.size()), dmm);
+        Kokkos::deep_copy(HostView(dm.mutable_data(), dm.size()), ddm);
+        Kokkos::deep_copy(HostView(mold.mutable_data(), mold.size()), dmo);
+      }
+      return py::make_tuple(w, mm, dm, mold);
+    });
+  });
+  m.def("transient_adr_lumped", [](int nd, const std::string &space, Arr b, double kappa, double c, Arr xn, Arr u, py::object uold, Arr qp,
+                                    Arr qw, double t, double dt) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      using Co = adrh::TransientLinearADR<S::nS>;
+      constexpr int nD = S::nDOF;
+      Co co(b.data(), kappa, c);
+      const int nE = (int)xn.shape(0), nQ = (int)qw.shape(0);
+      py::array_t<double> w({nE, nD}), mm({nE, nD}), dm({nE, nD}), mold({nE, nD});
+      Arr uo;
+      if (!uold.is_none() && dt > 0.0) uo = uold.cast<Arr>();
+      {
+        py::gil_scoped_release release;
+        adrh::DView<double> dxn = up(xn), du = up(u), dqp = up(qp), dqw = up(qw), duo("uo", 0);
+        if (uo.size() > 0) duo = up(uo);
+        adrh::DView<double> dw("w", w.size()), dmm("m", mm.size()), ddm("dm", dm.size()), dmo("mold", mold.size());
+        adrh::lumpedMassKokkos<Co, S>(co, nE, nQ, dxn, du, duo, dqp, dqw, t, dt, dw, dmm, ddm, dmo);
+        Kokkos::deep_copy(HostView(w.mutable_data(), w.size()), dw);
+        Kokkos::deep_copy(HostView(mm.mutable_data(), mm.size()), dmm);
+        Kokkos::deep_copy(HostView(dm.mutable_data(), dm.size()), ddm);
+        Kokkos::deep_copy(HostView(mold.mutable_data(), mold.size()), dmo);
+      }
+      return py::make_tuple(w, mm, dm, mold);
+    });
+  });
+  m.def("dissipation_values", [](IArr indptr, IArr indices, IArr tpos, Arr values) {
+    py::array_t<double> d(values.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt = upInt(tpos);
+      adrh::DView<double> dJ = up(values), dd("d", values.size());
+      adrh::dissipationValuesKokkos((int)indptr.size() - 1, dp, di, dt, dJ, dd);
+      Kokkos::deep_copy(HostView(d.mutable_data(), d.size()), dd);
+    }
+    return d;
+  });
+  m.def("consistent_mass", [](int nd, const std::string &space, Arr xn, Arr qp, Arr qw) {
+    return dispatchSpace(nd, space, [&](auto tag) {
+      using S = decltype(tag);
+      constexpr int nD = S::nDOF;
+      const int nE = (int)xn.shape(0), nQ = (int)qw.shape(0);
+      py::array_t<double> M({nE, nD, nD});
+      {
+        py::gil_scoped_release release;
+        adrh::DView<double> dxn = up(xn), dqp = up(qp), dqw = up(qw), dM("M", M.size());
+        adrh::forEachElement("adrh mass matrix", 0, nE, adrh::MassMatrixFunctor<S>{nQ, dxn, dqp, dqw, dM});
+        Kokkos::fence();
+        Kokkos::deep_copy(HostView(M.mutable_data(), M.size()), dM);
+      }
+      return py::make_tuple(M);
+    });
+  });
+  m.def("fct_limit", [](IArr indptr, IArr indices, IArr tpos, Arr Mc, Arr d, Arr ML, Arr vL, Arr mL, Arr mold, double dt) {
+    py::array_t<double> out(mL.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt_ = upInt(tpos);
+      adrh::DView<double> dMc = up(Mc), dd = up(d), dML = up(ML), dvL = up(vL), dmL = up(mL), dmo = up(mold), dout("out", mL.size());
+      adrh::fctLimitKokkos((int)indptr.size() - 1, dp, di, dt_, dMc, dd, dML, dvL, dmL, dmo, dt, dout);
+      Kokkos::deep_copy(HostView(out.mutable_data(), out.size()), dout);
+    }
+    return out;
+  });
+  // the limiter with the phases timed: (m_out, {t_h2d, t_pass, t_d2h}); the three passes together, best of `repeats`
+  m.def("fct_limit_timed", [](IArr indptr, IArr indices, IArr tpos, Arr Mc, Arr d, Arr ML, Arr vL, Arr mL, Arr mold, double dt, int repeats) {
+    py::array_t<double> out(mL.size());
+    double tH = 0, tP = 1e30, tD = 0;
+    {
+      py::gil_scoped_release release;
+      double t0 = now();
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt_ = upInt(tpos);
+      adrh::DView<double> dMc = up(Mc), dd = up(d), dML = up(ML), dvL = up(vL), dmL = up(mL), dmo = up(mold), dout("out", mL.size());
+      Kokkos::fence();
+      tH = now() - t0;
+      for (int k = 0; k < repeats; ++k)
+      {
+        t0 = now();
+        adrh::fctLimitKokkos((int)indptr.size() - 1, dp, di, dt_, dMc, dd, dML, dvL, dmL, dmo, dt, dout);
+        tP = std::min(tP, now() - t0);
+      }
+      t0 = now();
+      Kokkos::deep_copy(HostView(out.mutable_data(), out.size()), dout);
+      Kokkos::fence();
+      tD = now() - t0;
+    }
+    py::dict dd; dd["t_h2d"] = tH; dd["t_pass"] = tP; dd["t_d2h"] = tD;
+    return py::make_tuple(out, dd);
+  });
   m.def("kokkos_info", [] {
     py::dict d;
     d["space"] = std::string(Kokkos::DefaultExecutionSpace::name());
@@ -193,12 +579,23 @@ PYBIND11_MODULE(adrh_kokkos, m)
     if (sparse) return run<adrh::Chain5<true>, 3>(adrh::Chain5<true>(), xn, u, uold, qp, qw, t, dt);
     return run<adrh::Chain5<false>, 3>(adrh::Chain5<false>(), xn, u, uold, qp, qw, t, dt);
   });
-  // the host module's signature, with the space; the Kokkos port is of the P1 simplex kernel (masked.h) only
+  // the host module's signature, with the space: p1 runs the affine simplex kernel (masked.h), p2 and q1 the Lagrange-space kernel
+  // (engine.h, isoparametric geometry at every point)
   m.def("advection_diffusion_sine", [](int nd, const std::string &space, Arr b, double kappa, Arr omega, double omega0,
-                                        Arr xn, Arr u, Arr qp, Arr qw) {
+                                        Arr xn, Arr u, Arr qp, Arr qw) -> py::tuple {
+    if (space == "p2" || space == "q1")
+    {
+      auto go = [&](auto tag) -> py::tuple {
+        using S = decltype(tag);
+        adrh::AdvectionDiffusionSine<S::nS> c(b.data(), kappa, omega.data(), omega0);
+        return runSpace<adrh::AdvectionDiffusionSine<S::nS>, S>(c, xn, u, py::none(), qp, qw, 0.0, 0.0);
+      };
+      if (space == "p2") return nd == 2 ? go(adrh::P2Simplex<2>{}) : go(adrh::P2Simplex<3>{});
+      return nd == 2 ? go(adrh::Q1Cube<2>{}) : go(adrh::Q1Cube<3>{});
+    }
     if (space != "p1")
     {
-      PyErr_SetString(PyExc_NotImplementedError, "the Kokkos port covers the P1 simplex kernel; spaces p2 and q1 (engine.h) are not ported");
+      PyErr_SetString(PyExc_ValueError, "space must be p1, p2 or q1");
       throw py::error_already_set();
     }
     if (nd == 2)

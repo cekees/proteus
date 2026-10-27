@@ -45,6 +45,9 @@
 #include <cstring>
 #include "masked.h"
 #include "spaces.h"
+#include <type_traits>
+#include "portable.h"
+#include "engine.h"
 
 namespace adrh
 {
@@ -60,11 +63,13 @@ namespace adrh
     double dgdiff[nc];   //       plus dgdiff * u_i (Robin); 0 for a flux that does not depend on the trace
     bool hasAdv[nc];     // Flux: whether the advective flux is prescribed too,
     double fadv[nc];     //       and its value f . n
-    void reset()
+    bool advInterior[nc];  // WeakDirichlet: take the advective flux from the interior state, f(u) . n, with no upwinding against f(g_D)
+                           //       (proteus's Richards_IIPG_exterior)
+    ADRH_FN void reset()
     {
       for (int i = 0; i < nc; ++i)
       {
-        kind[i] = Strong; gD[i] = 0.0; gdiff[i] = 0.0; dgdiff[i] = 0.0; hasAdv[i] = false; fadv[i] = 0.0;
+        kind[i] = Strong; gD[i] = 0.0; gdiff[i] = 0.0; dgdiff[i] = 0.0; hasAdv[i] = false; fadv[i] = 0.0; advInterior[i] = false;
       }
     }
   };
@@ -78,6 +83,224 @@ namespace adrh
     static WeakDirichletParams SIPG() { return {100.0, 1.0, 1.0}; }
   };
 
+  // One exterior face, the function a Kokkos kernel calls per face. X (nDOF, 3) the DOF coordinates of the face's element, k the
+  // element's local face index, F the face's number (what bc.evaluate gets, so that a functor can look a per-face kind up), ue
+  // (nc, nDOF) the element's dofs; Rout (nc, nDOF) and Jout (nc, nDOF, nc, nDOF) out.
+  template <class Coefficients, class BC, class Space = P1Simplex<Coefficients::nSpace>>
+  ADRH_FN ADRH_FORCE_INLINE void exteriorFaceOneBound(const Coefficients &C, const BC &bc, const WeakDirichletParams &wd, int nQf, int F,
+                                                     int k, const double *X, const double *ue, const double *qpf, const double *qwf,
+                                                     double t, double *Rout, double *Jout)
+  {
+    using Co = Coefficients;
+    constexpr int nc = Co::nc, nS = Co::nSpace, nD = Space::nDOF;
+    static_assert(Space::nS == nS, "space dimension");
+    PointGeometry<Space> G;
+    Terms<nc, nS> T, Tb;
+    // face diameter = the longest edge between its vertices (mesh.cpp computeGeometricInfo_*), for the penalty
+    double h = 0.0;
+    for (int p = 0; p < Space::nFaceVertices; ++p)
+      for (int r = p + 1; r < Space::nFaceVertices; ++r)
+      {
+        const int vp = Space::faceVertex(k, p), vr = Space::faceVertex(k, r);
+        double d2 = 0.0;
+        for (int I = 0; I < 3; ++I)
+        {
+          const double d = X[vp * 3 + I] - X[vr * 3 + I];
+          d2 += d * d;
+        }
+        h = std::fmax(h, std::sqrt(d2));
+      }
+    // pow(h, 1) is h exactly in a conforming libm, but not in every device math library: taking the power-one case out keeps the
+    // penalty, and with it the Jacobian, the same bits on every backend
+    // a face of a segment is a point, which has no longest edge: proteus's mesh gives it the diameter 1 (mesh.cpp), and so do we
+    if constexpr (Space::nFaceVertices == 1) h = 1.0;
+    const double penalty = wd.penalty_constant / (wd.penalty_power == 1.0 ? h : std::pow(h, wd.penalty_power));
+    double Rloc[nc][nD] = {};
+    double Jloc[nc][nD][nc][nD] = {};
+    for (int q = 0; q < nQf; ++q)
+    {
+      double xi[nS];
+      Space::faceToReference(k, qpf + q * (nS - 1), xi);
+      G.compute(X, xi);
+      const double *w = G.w, *x = G.x;
+      const auto &gw = G.gw;
+      double nrm[3], vn;
+      G.faceNormal(k, nrm, vn);
+      const double dS = qwf[q] * vn;
+      double uq[nc], gu[nc][nS];
+      for (int j = 0; j < nc; ++j)
+      {
+        uq[j] = 0.0;
+        for (int I = 0; I < nS; ++I) gu[j][I] = 0.0;
+        for (int b = 0; b < nD; ++b)
+        {
+          uq[j] += ue[j * nD + b] * w[b];
+          for (int I = 0; I < nS; ++I) gu[j][I] += ue[j * nD + b] * gw[b][I];
+        }
+      }
+      FaceBC<nc> B;
+      B.reset();
+      bc.evaluate(t, x, nrm, F, B);
+      bool anyWeak = false;
+      for (int i = 0; i < nc; ++i) anyWeak = anyWeak || (B.kind[i] == WeakDirichlet);
+      zeroMasked<Co>(T);
+      C.evaluate(t, x, uq, gu, T);
+      // the boundary state: g_D where a component is WeakDirichlet, the interior value elsewhere
+      double ub[nc];
+      for (int j = 0; j < nc; ++j) ub[j] = (B.kind[j] == WeakDirichlet) ? B.gD[j] : uq[j];
+      if (anyWeak)
+      {
+        zeroMasked<Co>(Tb);
+        C.evaluate(t, x, ub, gu, Tb);
+      }
+      // grad phi^k = sum_j dphi[k][j] grad u_j
+      double gphi[nc][nS];
+      for (int kk = 0; kk < nc; ++kk)
+        for (int I = 0; I < nS; ++I)
+        {
+          gphi[kk][I] = 0.0;
+          for (int j = 0; j < nc; ++j) gphi[kk][I] += T.dphi[kk][j] * gu[j][I];
+        }
+      constexpr_for<0, nc>([&](auto i_) ADRH_LAMBDA_INLINE {
+        constexpr int i = decltype(i_)::value;
+        if (B.kind[i] == Strong) return;
+        double Fn = 0.0;                 // the flux . n at this point
+        double dFn[nc] = {};             // d Fn / d u_j, the part that multiplies w_b (no gradients)
+        // advective part
+        if constexpr (Co::has_advection && Co::f_nz(i))
+        {
+          double fl = 0.0, dl = 0.0;
+          for (int I = 0; I < nS; ++I) fl += T.f[i][I] * nrm[I];
+          if constexpr (Co::df_nz(i, i))
+            for (int I = 0; I < nS; ++I) dl += T.df[i][i][I] * nrm[I];
+          bool interior = false, prescribed = false;
+          if (B.kind[i] == Flux)
+          {
+            if (B.hasAdv[i]) { prescribed = true; Fn += B.fadv[i]; }
+            else interior = (dl >= 0.0);           // inflow without a value: dropped, as proteus does
+          }
+          else if (B.advInterior[i])               // WeakDirichlet, advective flux from the interior state (Richards_IIPG_exterior)
+            interior = true;
+          else                                     // WeakDirichlet: upwind against f(g_D)
+          {
+            double fr = 0.0, dr = 0.0;
+            for (int I = 0; I < nS; ++I) fr += Tb.f[i][I] * nrm[I];
+            if constexpr (Co::df_nz(i, i))
+              for (int I = 0; I < nS; ++I) dr += Tb.df[i][i][I] * nrm[I];
+            if (dl >= 0.0 && dr >= 0.0) interior = true;
+            else if (dl <= 0.0 && dr <= 0.0) interior = false;
+            else if (dl >= 0.0 && dr <= 0.0)
+            {
+              const double uj = ub[i] - uq[i], fj = fr - fl;
+              const double s = (std::fabs(uj) > std::fabs(fj) * 1.0e-16) ? fj / uj : 0.0;
+              interior = (s >= 0.0);
+            }
+            else
+            {                                      // transonic rarefaction: proteus averages the two
+              Fn += 0.5 * (fl + fr);
+              prescribed = true;                   // and takes half the interior speed as the Jacobian
+              constexpr_for<0, nc>([&](auto j_) ADRH_LAMBDA_INLINE {
+                constexpr int j = decltype(j_)::value;
+                if constexpr (Co::df_nz(i, j))
+                  for (int I = 0; I < nS; ++I) dFn[j] += 0.5 * T.df[i][j][I] * nrm[I];
+              });
+            }
+            if (!prescribed && !interior) Fn += fr;
+          }
+          if (interior)
+          {
+            Fn += fl;
+            constexpr_for<0, nc>([&](auto j_) ADRH_LAMBDA_INLINE {
+              constexpr int j = decltype(j_)::value;
+              if constexpr (Co::df_nz(i, j))
+                for (int I = 0; I < nS; ++I) dFn[j] += T.df[i][j][I] * nrm[I];
+            });
+          }
+        }
+        // diffusive part
+        if constexpr (Co::has_diffusion)
+        {
+          if (B.kind[i] == Flux)
+          {
+            Fn += B.gdiff[i] + B.dgdiff[i] * uq[i];
+            dFn[i] += B.dgdiff[i];
+          }
+          else
+          {
+            constexpr_for<0, nc>([&](auto k_) ADRH_LAMBDA_INLINE {
+              constexpr int kk = decltype(k_)::value;
+              if constexpr (Co::a_nz(i, kk))
+              {
+                double an[nS];                     // (a^{ik})^T n
+                for (int J = 0; J < nS; ++J)
+                {
+                  an[J] = 0.0;
+                  for (int I = 0; I < nS; ++I) an[J] += nrm[I] * T.a[i][kk][I][J];
+                }
+                const double jump = uq[kk] - ub[kk];   // zero unless component kk is WeakDirichlet
+                double qn = 0.0;
+                for (int J = 0; J < nS; ++J) qn -= an[J] * gphi[kk][J];
+                Fn += qn + penalty * jump;
+                // Jacobian of -n . a grad phi^k + penalty (u_k - g) and of the adjoint, which carry grad w_b
+                constexpr_for<0, nc>([&](auto j_) ADRH_LAMBDA_INLINE {
+                  constexpr int j = decltype(j_)::value;
+                  for (int b = 0; b < nD; ++b)
+                  {
+                    double d = 0.0;
+                    if constexpr (Co::dphi_nz(kk, j))
+                      for (int J = 0; J < nS; ++J) d -= an[J] * T.dphi[kk][j] * gw[b][J];
+                    if constexpr (Co::da_nz(i, kk, j))
+                      for (int I = 0; I < nS; ++I)
+                        for (int J = 0; J < nS; ++J) d -= nrm[I] * T.da[i][kk][j][I][J] * gphi[kk][J] * w[b];
+                    if (j == kk) d += penalty * w[b];
+                    for (int a = 0; a < nD; ++a) Jloc[i][a][j][b] += dS * d * w[a];
+                  }
+                });
+                if (wd.sigma != 0.0)
+                {
+                  for (int a = 0; a < nD; ++a)
+                  {
+                    double angw = 0.0;
+                    for (int J = 0; J < nS; ++J) angw += an[J] * gw[a][J];
+                    Rloc[i][a] -= dS * wd.sigma * jump * angw;
+                    if (B.kind[kk] == WeakDirichlet)
+                      for (int b = 0; b < nD; ++b) Jloc[i][a][kk][b] -= dS * wd.sigma * w[b] * angw;
+                  }
+                }
+              }
+            });
+          }
+        }
+        for (int a = 0; a < nD; ++a)
+        {
+          Rloc[i][a] += dS * Fn * w[a];
+          constexpr_for<0, nc>([&](auto j_) ADRH_LAMBDA_INLINE {
+            constexpr int j = decltype(j_)::value;
+            if (dFn[j] != 0.0)
+              for (int b = 0; b < nD; ++b) Jloc[i][a][j][b] += dS * dFn[j] * w[b] * w[a];
+          });
+        }
+      });
+    }
+    for (int kk = 0; kk < nc * nD; ++kk) Rout[kk] = (&Rloc[0][0])[kk];
+    for (int kk = 0; kk < nc * nD * nc * nD; ++kk) Jout[kk] = (&Jloc[0][0][0][0])[kk];
+  }
+
+  // eN: the number of the face's element, for a coefficient functor with bindElement (engine.h)
+  template <class Coefficients, class BC, class Space = P1Simplex<Coefficients::nSpace>>
+  ADRH_FN ADRH_FORCE_INLINE void exteriorFaceOne(const Coefficients &C, const BC &bc, const WeakDirichletParams &wd, int nQf, int F,
+                                                int k, const double *X, const double *ue, const double *qpf, const double *qwf,
+                                                double t, double *Rout, double *Jout, int eN = 0)
+  {
+    if constexpr (HasBindElement<Coefficients>::value)
+    {
+      const auto Cb = C.bindElement(eN);
+      exteriorFaceOneBound<std::decay_t<decltype(Cb)>, BC, Space>(Cb, bc, wd, nQf, F, k, X, ue, qpf, qwf, t, Rout, Jout);
+    }
+    else
+      exteriorFaceOneBound<Coefficients, BC, Space>(C, bc, wd, nQf, F, k, X, ue, qpf, qwf, t, Rout, Jout);
+  }
+
   // The boundary kernel, for any Lagrange Space (spaces.h; the default is P1 on simplices). bc.evaluate(t, x, n, F,
   // FaceBC<nc>&) is called per face F and quadrature point; the face index lets a functor look a per-face kind up.
   // Geometry (basis, gradients, outward normal, face measure) comes from the space's isoparametric map at each
@@ -89,202 +312,28 @@ namespace adrh
                           const double *xn,                // (nF, nDOF, 3) DOF node coordinates of the face's element
                           const double *u,                 // (nF, nc, nDOF) the element's dofs
                           const double *qpf, const double *qwf,   // (nQf, nS-1), (nQf): quadrature on the reference face
-                          double t, double *Rf, double *Jf)
+                          double t, double *Rf, double *Jf,
+                          const int *faceElem = nullptr)   // (nF) the element number of each face, for a functor with bindElement
   {
-    using Co = Coefficients;
-    constexpr int nc = Co::nc, nS = Co::nSpace, nD = Space::nDOF;
-    static_assert(Space::nS == nS, "space dimension");
-    PointGeometry<Space> G;
-    Terms<nc, nS> T, Tb;
+    constexpr int nc = Coefficients::nc, nD = Space::nDOF;
     for (int F = 0; F < nF; ++F)
-    {
-      const double *X = xn + F * nD * 3;
-      const int k = faceLocal[F];
-      // face diameter = the longest edge between its vertices (mesh.cpp computeGeometricInfo_*), for the penalty
-      double h = 0.0;
-      for (int p = 0; p < Space::nFaceVertices; ++p)
-        for (int r = p + 1; r < Space::nFaceVertices; ++r)
-        {
-          const int vp = Space::faceVertex(k, p), vr = Space::faceVertex(k, r);
-          double d2 = 0.0;
-          for (int I = 0; I < 3; ++I)
-          {
-            const double d = X[vp * 3 + I] - X[vr * 3 + I];
-            d2 += d * d;
-          }
-          h = std::fmax(h, std::sqrt(d2));
-        }
-      const double penalty = wd.penalty_constant / std::pow(h, wd.penalty_power);
-      const double *ue = u + F * nc * nD;
-      double Rloc[nc][nD] = {};
-      double Jloc[nc][nD][nc][nD] = {};
-      for (int q = 0; q < nQf; ++q)
-      {
-        double xi[nS];
-        Space::faceToReference(k, qpf + q * (nS - 1), xi);
-        G.compute(X, xi);
-        const double *w = G.w, *x = G.x;
-        const auto &gw = G.gw;
-        double nrm[3], vn;
-        G.faceNormal(k, nrm, vn);
-        const double dS = qwf[q] * vn;
-        double uq[nc], gu[nc][nS];
-        for (int j = 0; j < nc; ++j)
-        {
-          uq[j] = 0.0;
-          for (int I = 0; I < nS; ++I) gu[j][I] = 0.0;
-          for (int b = 0; b < nD; ++b)
-          {
-            uq[j] += ue[j * nD + b] * w[b];
-            for (int I = 0; I < nS; ++I) gu[j][I] += ue[j * nD + b] * gw[b][I];
-          }
-        }
-        FaceBC<nc> B;
-        B.reset();
-        bc.evaluate(t, x, nrm, F, B);
-        bool anyWeak = false;
-        for (int i = 0; i < nc; ++i) anyWeak = anyWeak || (B.kind[i] == WeakDirichlet);
-        zeroMasked<Co>(T);
-        C.evaluate(t, x, uq, gu, T);
-        // the boundary state: g_D where a component is WeakDirichlet, the interior value elsewhere
-        double ub[nc];
-        for (int j = 0; j < nc; ++j) ub[j] = (B.kind[j] == WeakDirichlet) ? B.gD[j] : uq[j];
-        if (anyWeak)
-        {
-          zeroMasked<Co>(Tb);
-          C.evaluate(t, x, ub, gu, Tb);
-        }
-        // grad phi^k = sum_j dphi[k][j] grad u_j
-        double gphi[nc][nS];
-        for (int kk = 0; kk < nc; ++kk)
-          for (int I = 0; I < nS; ++I)
-          {
-            gphi[kk][I] = 0.0;
-            for (int j = 0; j < nc; ++j) gphi[kk][I] += T.dphi[kk][j] * gu[j][I];
-          }
-        constexpr_for<0, nc>([&](auto i_) {
-          constexpr int i = decltype(i_)::value;
-          if (B.kind[i] == Strong) return;
-          double Fn = 0.0;                 // the flux . n at this point
-          double dFn[nc] = {};             // d Fn / d u_j, the part that multiplies w_b (no gradients)
-          // advective part
-          if constexpr (Co::has_advection && Co::f_nz(i))
-          {
-            double fl = 0.0, dl = 0.0;
-            for (int I = 0; I < nS; ++I) fl += T.f[i][I] * nrm[I];
-            if constexpr (Co::df_nz(i, i))
-              for (int I = 0; I < nS; ++I) dl += T.df[i][i][I] * nrm[I];
-            bool interior = false, prescribed = false;
-            if (B.kind[i] == Flux)
-            {
-              if (B.hasAdv[i]) { prescribed = true; Fn += B.fadv[i]; }
-              else interior = (dl >= 0.0);           // inflow without a value: dropped, as proteus does
-            }
-            else                                     // WeakDirichlet: upwind against f(g_D)
-            {
-              double fr = 0.0, dr = 0.0;
-              for (int I = 0; I < nS; ++I) fr += Tb.f[i][I] * nrm[I];
-              if constexpr (Co::df_nz(i, i))
-                for (int I = 0; I < nS; ++I) dr += Tb.df[i][i][I] * nrm[I];
-              if (dl >= 0.0 && dr >= 0.0) interior = true;
-              else if (dl <= 0.0 && dr <= 0.0) interior = false;
-              else if (dl >= 0.0 && dr <= 0.0)
-              {
-                const double uj = ub[i] - uq[i], fj = fr - fl;
-                const double s = (std::fabs(uj) > std::fabs(fj) * 1.0e-16) ? fj / uj : 0.0;
-                interior = (s >= 0.0);
-              }
-              else
-              {                                      // transonic rarefaction: proteus averages the two
-                Fn += 0.5 * (fl + fr);
-                prescribed = true;                   // and takes half the interior speed as the Jacobian
-                constexpr_for<0, nc>([&](auto j_) {
-                  constexpr int j = decltype(j_)::value;
-                  if constexpr (Co::df_nz(i, j))
-                    for (int I = 0; I < nS; ++I) dFn[j] += 0.5 * T.df[i][j][I] * nrm[I];
-                });
-              }
-              if (!prescribed && !interior) Fn += fr;
-            }
-            if (interior)
-            {
-              Fn += fl;
-              constexpr_for<0, nc>([&](auto j_) {
-                constexpr int j = decltype(j_)::value;
-                if constexpr (Co::df_nz(i, j))
-                  for (int I = 0; I < nS; ++I) dFn[j] += T.df[i][j][I] * nrm[I];
-              });
-            }
-          }
-          // diffusive part
-          if constexpr (Co::has_diffusion)
-          {
-            if (B.kind[i] == Flux)
-            {
-              Fn += B.gdiff[i] + B.dgdiff[i] * uq[i];
-              dFn[i] += B.dgdiff[i];
-            }
-            else
-            {
-              constexpr_for<0, nc>([&](auto k_) {
-                constexpr int kk = decltype(k_)::value;
-                if constexpr (Co::a_nz(i, kk))
-                {
-                  double an[nS];                     // (a^{ik})^T n
-                  for (int J = 0; J < nS; ++J)
-                  {
-                    an[J] = 0.0;
-                    for (int I = 0; I < nS; ++I) an[J] += nrm[I] * T.a[i][kk][I][J];
-                  }
-                  const double jump = uq[kk] - ub[kk];   // zero unless component kk is WeakDirichlet
-                  double qn = 0.0;
-                  for (int J = 0; J < nS; ++J) qn -= an[J] * gphi[kk][J];
-                  Fn += qn + penalty * jump;
-                  // Jacobian of -n . a grad phi^k + penalty (u_k - g) and of the adjoint, which carry grad w_b
-                  constexpr_for<0, nc>([&](auto j_) {
-                    constexpr int j = decltype(j_)::value;
-                    for (int b = 0; b < nD; ++b)
-                    {
-                      double d = 0.0;
-                      if constexpr (Co::dphi_nz(kk, j))
-                        for (int J = 0; J < nS; ++J) d -= an[J] * T.dphi[kk][j] * gw[b][J];
-                      if constexpr (Co::da_nz(i, kk, j))
-                        for (int I = 0; I < nS; ++I)
-                          for (int J = 0; J < nS; ++J) d -= nrm[I] * T.da[i][kk][j][I][J] * gphi[kk][J] * w[b];
-                      if (j == kk) d += penalty * w[b];
-                      for (int a = 0; a < nD; ++a) Jloc[i][a][j][b] += dS * d * w[a];
-                    }
-                  });
-                  if (wd.sigma != 0.0)
-                  {
-                    for (int a = 0; a < nD; ++a)
-                    {
-                      double angw = 0.0;
-                      for (int J = 0; J < nS; ++J) angw += an[J] * gw[a][J];
-                      Rloc[i][a] -= dS * wd.sigma * jump * angw;
-                      if (B.kind[kk] == WeakDirichlet)
-                        for (int b = 0; b < nD; ++b) Jloc[i][a][kk][b] -= dS * wd.sigma * w[b] * angw;
-                    }
-                  }
-                }
-              });
-            }
-          }
-          for (int a = 0; a < nD; ++a)
-          {
-            Rloc[i][a] += dS * Fn * w[a];
-            constexpr_for<0, nc>([&](auto j_) {
-              constexpr int j = decltype(j_)::value;
-              if (dFn[j] != 0.0)
-                for (int b = 0; b < nD; ++b) Jloc[i][a][j][b] += dS * dFn[j] * w[b] * w[a];
-            });
-          }
-        });
-      }
-      std::memcpy(Rf + F * nc * nD, Rloc, sizeof(Rloc));
-      std::memcpy(Jf + F * nc * nD * nc * nD, Jloc, sizeof(Jloc));
-    }
+      exteriorFaceOne<Coefficients, BC, Space>(C, bc, wd, nQf, F, faceLocal[F], xn + F * nD * 3, u + F * nc * nD, qpf, qwf, t,
+                                               Rf + F * nc * nD, Jf + F * nc * nD * nc * nD, faceElem ? faceElem[F] : 0);
   }
+
+  // Weak Dirichlet data from an array, one value per face (nc = 1): the BC of proteus's Richards decks (dirichletConditions with
+  // Richards_IIPG_exterior): the value g_D imposed through the penalty, the advective flux taken from the interior state.
+  struct FixedValueBC
+  {
+    const double *gD;       // (nF) the Dirichlet value of each face; the pointer must be valid where the kernel runs
+    ADRH_FN FixedValueBC(const double *gD_) : gD(gD_) {}
+    ADRH_FN void evaluate(double, const double[3], const double[3], int F, FaceBC<1> &B) const
+    {
+      B.kind[0] = WeakDirichlet;
+      B.gD[0] = gD[F];
+      B.advInterior[0] = true;
+    }
+  };
 
   // Boundary data of the sine solution u = sin(omega.x + omega0) for the regression, in nS dimensions. The kind
   // of each face comes from an array: 1 = Flux (diffusive flux given; advection leaves by the interior value,
@@ -295,13 +344,13 @@ namespace adrh
   {
     double b[3], kappa, omega[3], omega0, alpha, beta;
     const int *faceKind;
-    SineBC(const double *b_, double kappa_, const double *omega_, double omega0_, const int *faceKind_,
+    ADRH_FN SineBC(const double *b_, double kappa_, const double *omega_, double omega0_, const int *faceKind_,
            double alpha_ = 1.0, double beta_ = 1.0)
         : kappa(kappa_), omega0(omega0_), alpha(alpha_), beta(beta_), faceKind(faceKind_)
     {
       for (int I = 0; I < 3; ++I) { b[I] = I < nS ? b_[I] : 0.0; omega[I] = I < nS ? omega_[I] : 0.0; }
     }
-    void evaluate(double, const double x[3], const double n[3], int F, FaceBC<1> &B) const
+    ADRH_FN void evaluate(double, const double x[3], const double n[3], int F, FaceBC<1> &B) const
     {
       double arg = omega0, wn = 0.0, bn = 0.0;
       for (int I = 0; I < nS; ++I) { arg += omega[I] * x[I]; wn += omega[I] * n[I]; bn += b[I] * n[I]; }
@@ -326,12 +375,12 @@ namespace adrh
   struct DiracExact
   {
     double b[3], a, c, tStart, u0, x0[3];
-    DiracExact(const double *b_, double a_, double c_, double tStart_, double u0_, const double *x0_)
+    ADRH_FN DiracExact(const double *b_, double a_, double c_, double tStart_, double u0_, const double *x0_)
         : a(a_), c(c_), tStart(tStart_), u0(u0_)
     {
       for (int I = 0; I < 3; ++I) { b[I] = I < nS ? b_[I] : 0.0; x0[I] = I < nS ? x0_[I] : 0.0; }
     }
-    double value(const double x[3], double T) const
+    ADRH_FN double value(const double x[3], double T) const
     {
       const double t = T + tStart;
       double yy = 0.0;
@@ -340,7 +389,7 @@ namespace adrh
       if (arg > 100.0) return 0.0;
       return u0 * std::exp(-arg) / std::pow(4.0 * a * M_PI * t, 0.5 * nS) * std::exp(-c * t);
     }
-    void gradient(const double x[3], double T, double g[3]) const
+    ADRH_FN void gradient(const double x[3], double T, double g[3]) const
     {
       const double t = T + tStart, u = value(x, T);
       for (int I = 0; I < 3; ++I) g[I] = (I < nS) ? -u * (x[I] - x0[I] - b[I] * t) / (2.0 * a * t) : 0.0;
@@ -356,12 +405,12 @@ namespace adrh
     Exact exact;
     double b[3], kappa, alpha, beta;
     const int *faceKind;
-    ExactBC(const Exact &exact_, const double *b_, double kappa_, const int *faceKind_, double alpha_ = 1.0, double beta_ = 1.0)
+    ADRH_FN ExactBC(const Exact &exact_, const double *b_, double kappa_, const int *faceKind_, double alpha_ = 1.0, double beta_ = 1.0)
         : exact(exact_), kappa(kappa_), alpha(alpha_), beta(beta_), faceKind(faceKind_)
     {
       for (int I = 0; I < 3; ++I) b[I] = I < nS ? b_[I] : 0.0;
     }
-    void evaluate(double t, const double x[3], const double n[3], int F, FaceBC<1> &B) const
+    ADRH_FN void evaluate(double t, const double x[3], const double n[3], int F, FaceBC<1> &B) const
     {
       const double ue = exact.value(x, t);
       double g[3];
