@@ -298,3 +298,38 @@ host's entry points: `advection_diffusion_sine_faces`, `transient_adr` and `tran
   CUDA's `pow` does not return `h` exactly for `p = 1`; taking the power-one case out (`pow(h, 1)` is `h` in a conforming libm, so the host is unchanged) fixed it. Any libm call in the Jacobian is a cross-platform
   bit difference; in the residual, the boundary data's `sin` and `cos` are the only ones left.
 
+## Richards' equation (`richards.h`, `richards_regression.py`, `richards_layers.py`)
+
+A nonlinear, strongly heterogeneous transport problem for the engine: Richards' equation in pressure-head form with the Mualem-van Genuchten
+relations, `m(psi)_t + div(f(psi) - a(psi) grad psi) = 0`, `m = rho theta(psi)`, `a = rho K_r(psi) K_s`, `f = (rho^2/rho0) K_r(psi) K_s g`. `richards.h` ports
+proteus's `vgm_wetting` (`proteus/pskRelations.h`) and the coefficients of `proteus/richards/Richards.h` into the engine's `Terms`;
+`RichardsMaterials` holds up to 8 parameter sets and a material number per element and reaches the kernels through the new opt-in `bindElement(eN)` hook
+(`engine.h`, `boundary.h`): a coefficient functor that defines it is asked for the functor to use on element `eN`, and one that does not is used as it is, so
+the other functors pay nothing. Segment (1D) spaces were added to `spaces.h` for the decks' one-dimensional columns (a face of a segment is a point; as proteus's mesh gives
+it, its diameter is 1). `FaceBC::advInterior` selects the weak Dirichlet variant of `Richards_IIPG_exterior`: the advective flux from the interior state, no upwinding against the
+boundary value.
+
+* **Against proteus's richards model.** `richards_regression.py` runs `test/richards/test_1` (the Celia et al. 1990 column, 1000 backward Euler steps, 40 elements) and
+  compares with the profiles proteus saved for its Galerkin scheme (`STABILIZATION_TYPE=0`). The deck's boundary condition is **weak** (`Richards_IIPG_exterior`, penalty 100): with the Dirichlet
+  rows replaced instead (`--bc strong`) the fronts differ by 0.06 to 0.08 m of pressure head. With the weak treatment and proteus's own Newton stopping rule (2-norm of the residual below
+  1e-8) the engine reproduces the saved profiles to **2.5e-13** at 12 h and 24 h, on the host and the Kokkos modules alike; converged to 1e-12 it differs from them by 8.7e-8 and 4.2e-6, which is
+  proteus's Newton tolerance error at the dry nodes (a tiny capacity there), not the discretization. 3.0 Newton iterations per step.
+* **Heterogeneity, against no finite elements.** `richards_layers.py`: a two-layer column (a sand over a soil with `K_s` 160 times smaller, different `alpha` and `n`), steady, strong
+  Dirichlet rows. Steady 1D flow has a constant flux, so each layer obeys an ODE, `psi' = -Q/K(psi) - 1`, with `psi` continuous at the interface, and the flux `Q` that reaches the top value
+  follows by shooting; the ODE is integrated to 1e-12. The engine's nodal error falls at **exactly the P1 rate, 2.00, at every refinement from 11 to 321 nodes** (7.2e-4 to 7.1e-7), identically on the host and Kokkos modules.
+* **Not covered.** The saved profiles for the other decks come from stabilized schemes (entropy viscosity, FCT), which proteus uses because plain Galerkin does not run the HYDRUS and Szymkiewicz cases; the
+  engine has no stabilization yet, so those are not compared. Faces through `bindElement` (a layered boundary element) are implemented but not exercised by a test.
+
+**Richards as a kernel benchmark** (`bench_kokkos.cpp`: unsaturated, backward Euler mass term, four materials in stripes by element number, so `bindElement` runs on every element of every backend with no data pointer): the van Genuchten-Mualem law
+calls `pow` and `sqrt` at every quadrature point, so it costs about three times the advection-diffusion kernel per element on one core (P1: 1,490 ns against 485 for `ad_sine`) and the GPU's element kernel is 1.2 times faster than the 96-core node on P1 and level with it on P2 (its colored assembly is behind the node at 162,000 elements and level at 1.3 M, where the launches fill the card).
+ns per element, element kernel / colored assembly, `ceds-model` (one machine, a few percent of the cores busy with another session's job during these runs):
+
+| kernel | M4, 12 threads | host, 1 core | 96 threads, nn = 31 | RTX 6000 Ada, nn = 31 | 96 threads, nn = 61 | RTX 6000 Ada, nn = 61 |
+|---|---|---|---|---|---|---|
+| Richards P1 | 185 / 226 | 1,490 | 30.5 / 36.2 | 24.7 / 81.7 | 28.8 / 32.2 | 24.5 / 28.8 |
+| Richards P2 | 497 / 726 | 4,138 | 86.4 / 101.1 | 74.5 / 252.6 | 69.7 / 83.5 | 68.8 / 109.8 |
+
+The Kokkos kernel is bitwise the host's on the CPU for both; the GPU differs from the host by up to 2e-14 (multiply-add fusing and the device `pow`). Unlike the advection-diffusion kernels, **with contraction off the
+Richards residual and Jacobian are not bitwise equal CPU to GPU** (`pow` and `sqrt` of the retention curve: any libm call in a Jacobian is a cross-platform bit difference, as found for the face penalty).
+The Celia column runs on the GPU module as well and matches proteus's saved profiles to 3.3e-13, and the layered column reproduces the CPU errors exactly.
+

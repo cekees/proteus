@@ -4,6 +4,7 @@
 #include "coefficients.h"
 #include "boundary.h"
 #include "engine.h"
+#include "richards.h"
 #include <stdexcept>
 #include <string>
 
@@ -56,13 +57,15 @@ py::tuple runMasked(const C &coef, Arr xn, Arr u, py::object uold, Arr qp, Arr q
 template <class F>
 py::tuple dispatchSpace(int nd, const std::string &space, F &&f)
 {
+  if (nd == 1 && space == "p1") return f(adrh::P1Simplex<1>{});
+  if (nd == 1 && space == "p2") return f(adrh::P2Simplex<1>{});
   if (nd == 2 && space == "p1") return f(adrh::P1Simplex<2>{});
   if (nd == 3 && space == "p1") return f(adrh::P1Simplex<3>{});
   if (nd == 2 && space == "p2") return f(adrh::P2Simplex<2>{});
   if (nd == 3 && space == "p2") return f(adrh::P2Simplex<3>{});
   if (nd == 2 && space == "q1") return f(adrh::Q1Cube<2>{});
   if (nd == 3 && space == "q1") return f(adrh::Q1Cube<3>{});
-  throw std::invalid_argument("no space '" + space + "' in " + std::to_string(nd) + "D (p1, p2, q1; nd 2 or 3)");
+  throw std::invalid_argument("no space '" + space + "' in " + std::to_string(nd) + "D (p1, p2, q1; nd 1 to 3, q1 only 2 or 3)");
 }
 
 PYBIND11_MODULE(adrh_proto, m)
@@ -196,6 +199,52 @@ PYBIND11_MODULE(adrh_proto, m)
       double gw[nD][nS];
       for (int q = 0; q < nQ; ++q) S::basis(xi.data() + q * nS, W.mutable_data() + q * nD, gw);
       return py::make_tuple(W);
+    });
+  });
+  // Richards' equation in pressure-head form (richards.h): element residual and Jacobian with the backward Euler mass term, for nm
+  // materials (alpha, n_vg, thetaR, thetaSR of length nm; Ks (nm, nd), the diagonal conductivities) and a material number per element
+  using IArrR = py::array_t<int, py::array::c_style | py::array::forcecast>;
+  m.def("richards_vgm", [](int nd, const std::string &space, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, Arr Ks, Arr g, double rho,
+                            double beta, IArrR material, Arr xn, Arr u, py::object uold, Arr qp, Arr qw, double t, double dt) {
+    return dispatchSpace(nd, space, [&](auto spaceTag) {
+      using S = decltype(spaceTag);
+      constexpr int nS = S::nS, nD = S::nDOF;
+      adrh::RichardsMaterials<nS> co((int)alpha.size(), alpha.data(), n_vg.data(), thetaR.data(), thetaSR.data(), Ks.data(), g.data(),
+                                     material.data(), rho, beta);
+      const int nE = xn.shape(0), nQ = qw.shape(0);
+      Arr uo;
+      const double *uop = nullptr;
+      if (!uold.is_none() && dt > 0.0) { uo = uold.cast<Arr>(); uop = uo.data(); }
+      py::array_t<double> R({nE, 1, nD}), J({nE, 1, nD, 1, nD});
+      {
+        py::gil_scoped_release release;
+        adrh::elementKernelSpace<adrh::RichardsMaterials<nS>, S>(co, nE, nQ, xn.data(), u.data(), uop, qp.data(), qw.data(), t, dt,
+                                                                 R.mutable_data(), J.mutable_data());
+      }
+      return py::make_tuple(R, J);
+    });
+  });
+  // its exterior faces: weak Dirichlet data gD (one value per face) as proteus's Richards_IIPG_exterior, the advective flux from the
+  // interior state, the penalty penalty_constant / h^penalty_power (h = 1 for a point), no adjoint term; faceElem the face's element
+  m.def("richards_vgm_faces", [](int nd, const std::string &space, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, Arr Ks, Arr g, double rho,
+                                  double beta, IArrR material, IArrR faceElem, IArrR faceLocal, Arr gD, Arr xn, Arr u, Arr qpf, Arr qwf,
+                                  double t, double penalty_constant, double penalty_power) {
+    return dispatchSpace(nd, space, [&](auto spaceTag) {
+      using S = decltype(spaceTag);
+      constexpr int nS = S::nS, nD = S::nDOF;
+      adrh::RichardsMaterials<nS> co((int)alpha.size(), alpha.data(), n_vg.data(), thetaR.data(), thetaSR.data(), Ks.data(), g.data(),
+                                     material.data(), rho, beta);
+      adrh::FixedValueBC bc(gD.data());
+      adrh::WeakDirichletParams wd{penalty_constant, penalty_power, 0.0};
+      const int nF = xn.shape(0), nQf = qwf.shape(0);
+      py::array_t<double> Rf({nF, 1, nD}), Jf({nF, 1, nD, 1, nD});
+      {
+        py::gil_scoped_release release;
+        adrh::exteriorFaceKernel<adrh::RichardsMaterials<nS>, adrh::FixedValueBC, S>(
+            co, bc, wd, nF, nQf, faceLocal.data(), xn.data(), u.data(), qpf.data(), qwf.data(), t, Rf.mutable_data(), Jf.mutable_data(),
+            faceElem.data());
+      }
+      return py::make_tuple(Rf, Jf);
     });
   });
   m.def("poisson3d_masked", [](Arr xn, Arr u, Arr qp, Arr qw) {

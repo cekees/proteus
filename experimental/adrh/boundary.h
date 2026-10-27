@@ -45,7 +45,9 @@
 #include <cstring>
 #include "masked.h"
 #include "spaces.h"
+#include <type_traits>
 #include "portable.h"
+#include "engine.h"
 
 namespace adrh
 {
@@ -61,11 +63,13 @@ namespace adrh
     double dgdiff[nc];   //       plus dgdiff * u_i (Robin); 0 for a flux that does not depend on the trace
     bool hasAdv[nc];     // Flux: whether the advective flux is prescribed too,
     double fadv[nc];     //       and its value f . n
+    bool advInterior[nc];  // WeakDirichlet: take the advective flux from the interior state, f(u) . n, with no upwinding against f(g_D)
+                           //       (proteus's Richards_IIPG_exterior)
     ADRH_FN void reset()
     {
       for (int i = 0; i < nc; ++i)
       {
-        kind[i] = Strong; gD[i] = 0.0; gdiff[i] = 0.0; dgdiff[i] = 0.0; hasAdv[i] = false; fadv[i] = 0.0;
+        kind[i] = Strong; gD[i] = 0.0; gdiff[i] = 0.0; dgdiff[i] = 0.0; hasAdv[i] = false; fadv[i] = 0.0; advInterior[i] = false;
       }
     }
   };
@@ -83,9 +87,9 @@ namespace adrh
   // element's local face index, F the face's number (what bc.evaluate gets, so that a functor can look a per-face kind up), ue
   // (nc, nDOF) the element's dofs; Rout (nc, nDOF) and Jout (nc, nDOF, nc, nDOF) out.
   template <class Coefficients, class BC, class Space = P1Simplex<Coefficients::nSpace>>
-  ADRH_FN ADRH_FORCE_INLINE void exteriorFaceOne(const Coefficients &C, const BC &bc, const WeakDirichletParams &wd, int nQf, int F,
-                                                int k, const double *X, const double *ue, const double *qpf, const double *qwf,
-                                                double t, double *Rout, double *Jout)
+  ADRH_FN ADRH_FORCE_INLINE void exteriorFaceOneBound(const Coefficients &C, const BC &bc, const WeakDirichletParams &wd, int nQf, int F,
+                                                     int k, const double *X, const double *ue, const double *qpf, const double *qwf,
+                                                     double t, double *Rout, double *Jout)
   {
     using Co = Coefficients;
     constexpr int nc = Co::nc, nS = Co::nSpace, nD = Space::nDOF;
@@ -108,6 +112,8 @@ namespace adrh
       }
     // pow(h, 1) is h exactly in a conforming libm, but not in every device math library: taking the power-one case out keeps the
     // penalty, and with it the Jacobian, the same bits on every backend
+    // a face of a segment is a point, which has no longest edge: proteus's mesh gives it the diameter 1 (mesh.cpp), and so do we
+    if constexpr (Space::nFaceVertices == 1) h = 1.0;
     const double penalty = wd.penalty_constant / (wd.penalty_power == 1.0 ? h : std::pow(h, wd.penalty_power));
     double Rloc[nc][nD] = {};
     double Jloc[nc][nD][nc][nD] = {};
@@ -173,6 +179,8 @@ namespace adrh
             if (B.hasAdv[i]) { prescribed = true; Fn += B.fadv[i]; }
             else interior = (dl >= 0.0);           // inflow without a value: dropped, as proteus does
           }
+          else if (B.advInterior[i])               // WeakDirichlet, advective flux from the interior state (Richards_IIPG_exterior)
+            interior = true;
           else                                     // WeakDirichlet: upwind against f(g_D)
           {
             double fr = 0.0, dr = 0.0;
@@ -278,6 +286,21 @@ namespace adrh
     for (int kk = 0; kk < nc * nD * nc * nD; ++kk) Jout[kk] = (&Jloc[0][0][0][0])[kk];
   }
 
+  // eN: the number of the face's element, for a coefficient functor with bindElement (engine.h)
+  template <class Coefficients, class BC, class Space = P1Simplex<Coefficients::nSpace>>
+  ADRH_FN ADRH_FORCE_INLINE void exteriorFaceOne(const Coefficients &C, const BC &bc, const WeakDirichletParams &wd, int nQf, int F,
+                                                int k, const double *X, const double *ue, const double *qpf, const double *qwf,
+                                                double t, double *Rout, double *Jout, int eN = 0)
+  {
+    if constexpr (HasBindElement<Coefficients>::value)
+    {
+      const auto Cb = C.bindElement(eN);
+      exteriorFaceOneBound<std::decay_t<decltype(Cb)>, BC, Space>(Cb, bc, wd, nQf, F, k, X, ue, qpf, qwf, t, Rout, Jout);
+    }
+    else
+      exteriorFaceOneBound<Coefficients, BC, Space>(C, bc, wd, nQf, F, k, X, ue, qpf, qwf, t, Rout, Jout);
+  }
+
   // The boundary kernel, for any Lagrange Space (spaces.h; the default is P1 on simplices). bc.evaluate(t, x, n, F,
   // FaceBC<nc>&) is called per face F and quadrature point; the face index lets a functor look a per-face kind up.
   // Geometry (basis, gradients, outward normal, face measure) comes from the space's isoparametric map at each
@@ -289,13 +312,28 @@ namespace adrh
                           const double *xn,                // (nF, nDOF, 3) DOF node coordinates of the face's element
                           const double *u,                 // (nF, nc, nDOF) the element's dofs
                           const double *qpf, const double *qwf,   // (nQf, nS-1), (nQf): quadrature on the reference face
-                          double t, double *Rf, double *Jf)
+                          double t, double *Rf, double *Jf,
+                          const int *faceElem = nullptr)   // (nF) the element number of each face, for a functor with bindElement
   {
     constexpr int nc = Coefficients::nc, nD = Space::nDOF;
     for (int F = 0; F < nF; ++F)
       exteriorFaceOne<Coefficients, BC, Space>(C, bc, wd, nQf, F, faceLocal[F], xn + F * nD * 3, u + F * nc * nD, qpf, qwf, t,
-                                               Rf + F * nc * nD, Jf + F * nc * nD * nc * nD);
+                                               Rf + F * nc * nD, Jf + F * nc * nD * nc * nD, faceElem ? faceElem[F] : 0);
   }
+
+  // Weak Dirichlet data from an array, one value per face (nc = 1): the BC of proteus's Richards decks (dirichletConditions with
+  // Richards_IIPG_exterior): the value g_D imposed through the penalty, the advective flux taken from the interior state.
+  struct FixedValueBC
+  {
+    const double *gD;       // (nF) the Dirichlet value of each face; the pointer must be valid where the kernel runs
+    ADRH_FN FixedValueBC(const double *gD_) : gD(gD_) {}
+    ADRH_FN void evaluate(double, const double[3], const double[3], int F, FaceBC<1> &B) const
+    {
+      B.kind[0] = WeakDirichlet;
+      B.gD[0] = gD[F];
+      B.advInterior[0] = true;
+    }
+  };
 
   // Boundary data of the sine solution u = sin(omega.x + omega0) for the regression, in nS dimensions. The kind
   // of each face comes from an array: 1 = Flux (diffusive flux given; advection leaves by the interior value,
