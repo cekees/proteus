@@ -5,6 +5,7 @@
 #include "boundary.h"
 #include "engine.h"
 #include "richards.h"
+#include "lowOrder.h"
 #include <stdexcept>
 #include <string>
 
@@ -245,6 +246,58 @@ PYBIND11_MODULE(adrh_proto, m)
             faceElem.data());
       }
       return py::make_tuple(Rf, Jf);
+    });
+  });
+  // ---- algebraic stabilization (lowOrder.h) ----
+  m.def("transpose_map", [](py::array_t<int, py::array::c_style | py::array::forcecast> indptr, py::array_t<int, py::array::c_style | py::array::forcecast> indices) {
+    const std::vector<int> t = adrh::buildTransposeMap((int)indptr.size() - 1, indptr.data(), indices.data());
+    py::array_t<int> out((py::ssize_t)t.size());
+    std::copy(t.begin(), t.end(), out.mutable_data());
+    return out;
+  });
+  // the discrete upwinding of lowOrder.h applied to the residual r and the CSR values of the spatial Jacobian: returns (values, r)
+  m.def("algebraic_dissipation", [](py::array_t<int, py::array::c_style | py::array::forcecast> indptr,
+                                     py::array_t<int, py::array::c_style | py::array::forcecast> indices,
+                                     py::array_t<int, py::array::c_style | py::array::forcecast> tpos, Arr values, Arr u, Arr r) {
+    py::array_t<double> J(values.size()), R(r.size());
+    std::copy(values.data(), values.data() + values.size(), J.mutable_data());
+    std::copy(r.data(), r.data() + r.size(), R.mutable_data());
+    adrh::algebraicDissipation((int)indptr.size() - 1, indptr.data(), indices.data(), tpos.data(), J.mutable_data(), u.data(), R.mutable_data());
+    return py::make_tuple(J, R);
+  });
+  // lumped mass of every element: (w, m, dm, mold), each (nE, nDOF)
+  m.def("richards_vgm_lumped", [](int nd, const std::string &space, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, Arr Ks, Arr g, double rho,
+                                   double beta, py::array_t<int, py::array::c_style | py::array::forcecast> material, Arr xn, Arr u,
+                                   py::object uold, Arr qp, Arr qw, double t, double dt) {
+    return dispatchSpace(nd, space, [&](auto spaceTag) {
+      using S = decltype(spaceTag);
+      constexpr int nD = S::nDOF;
+      adrh::RichardsMaterials<S::nS> co((int)alpha.size(), alpha.data(), n_vg.data(), thetaR.data(), thetaSR.data(), Ks.data(), g.data(),
+                                        material.data(), rho, beta);
+      const int nE = xn.shape(0), nQ = qw.shape(0);
+      Arr uo;
+      const double *uop = nullptr;
+      if (!uold.is_none() && dt > 0.0) { uo = uold.cast<Arr>(); uop = uo.data(); }
+      py::array_t<double> w({nE, nD}), mm({nE, nD}), dm({nE, nD}), mold({nE, nD});
+      adrh::lumpedMassKernel<adrh::RichardsMaterials<S::nS>, S>(co, nE, nQ, xn.data(), u.data(), uop, qp.data(), qw.data(), t, dt,
+                                                                w.mutable_data(), mm.mutable_data(), dm.mutable_data(), mold.mutable_data());
+      return py::make_tuple(w, mm, dm, mold);
+    });
+  });
+  m.def("transient_adr_lumped", [](int nd, const std::string &space, Arr b, double kappa, double c, Arr xn, Arr u, py::object uold, Arr qp,
+                                    Arr qw, double t, double dt) {
+    return dispatchSpace(nd, space, [&](auto spaceTag) {
+      using S = decltype(spaceTag);
+      constexpr int nD = S::nDOF;
+      adrh::TransientLinearADR<S::nS> co(b.data(), kappa, c);
+      const int nE = xn.shape(0), nQ = qw.shape(0);
+      Arr uo;
+      const double *uop = nullptr;
+      if (!uold.is_none() && dt > 0.0) { uo = uold.cast<Arr>(); uop = uo.data(); }
+      py::array_t<double> w({nE, nD}), mm({nE, nD}), dm({nE, nD}), mold({nE, nD});
+      adrh::lumpedMassKernel<adrh::TransientLinearADR<S::nS>, S>(co, nE, nQ, xn.data(), u.data(), uop, qp.data(), qw.data(), t, dt,
+                                                                 w.mutable_data(), mm.mutable_data(), dm.mutable_data(), mold.mutable_data());
+      return py::make_tuple(w, mm, dm, mold);
     });
   });
   m.def("poisson3d_masked", [](Arr xn, Arr u, Arr qp, Arr qw) {
