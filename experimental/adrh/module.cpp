@@ -300,6 +300,30 @@ PYBIND11_MODULE(adrh_proto, m)
       return py::make_tuple(w, mm, dm, mold);
     });
   });
+  using IArrF = py::array_t<int, py::array::c_style | py::array::forcecast>;
+  m.def("dissipation_values", [](IArrF indptr, IArrF indices, IArrF tpos, Arr values) {
+    py::array_t<double> d(values.size());
+    adrh::dissipationValues((int)indptr.size() - 1, indptr.data(), indices.data(), tpos.data(), values.data(), d.mutable_data());
+    return d;
+  });
+  m.def("consistent_mass", [](int nd, const std::string &space, Arr xn, Arr qp, Arr qw) {
+    return dispatchSpace(nd, space, [&](auto spaceTag) {
+      using S = decltype(spaceTag);
+      constexpr int nD = S::nDOF;
+      const int nE = xn.shape(0), nQ = qw.shape(0);
+      py::array_t<double> M({nE, nD, nD});
+      adrh::massMatrixKernel<S>(nE, nQ, xn.data(), qp.data(), qw.data(), M.mutable_data());
+      return py::make_tuple(M);
+    });
+  });
+  // vL: the variable the dissipation acts on; mL, mold: the conserved variable at the low-order solution and at the old time; returns the
+  // limited conserved variable (for a linear storage term all three are u)
+  m.def("fct_limit", [](IArrF indptr, IArrF indices, IArrF tpos, Arr Mc, Arr d, Arr ML, Arr vL, Arr mL, Arr mold, double dt) {
+    py::array_t<double> out(mL.size());
+    adrh::fctLimit((int)indptr.size() - 1, indptr.data(), indices.data(), tpos.data(), Mc.data(), d.data(), ML.data(), vL.data(), mL.data(),
+                   mold.data(), dt, out.mutable_data());
+    return out;
+  });
   m.def("poisson3d_masked", [](Arr xn, Arr u, Arr qp, Arr qw) {
     return runMasked<adrh::Poisson3D, 3>(adrh::Poisson3D(), xn, u, py::none(), qp, qw, 0.0, 0.0);
   });

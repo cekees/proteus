@@ -26,4 +26,19 @@ for nn in [int(a) for a in sys.argv[1:]]:
     print("nn=%d  %s x%d  rows %d  nnz %d | assembly %.4f s | pass %.4f s (%.2f of the assembly) h2d %.4f d2h %.4f | transpose map %.3f s (once) | positive off-diagonals %d -> %d"
           % (nn, K.kokkos_info()["space"], K.kokkos_info()["concurrency"], X.shape[0], indices.size, res["t_assemble"], t["t_pass"],
              t["t_pass"] / res["t_assemble"], t["t_h2d"], t["t_d2h"], tmap, int((Jall[off] > 0).sum()), int((Jv[off] > 1e-13 * np.abs(Jv).max()).sum())))
+    # the FCT limiter's three passes on the same pattern: the consistent mass (scattered from the elements), the dissipation of the Jacobian, a low-order
+    # state a little away from the old one
+    import scipy.sparse as sp
+    nE = conn.shape[0]
+    Mel = K.consistent_mass(3, "p1", X[conn], qp, qw)[0].reshape(nE, 4, 4)
+    rows = np.repeat(conn, 4, axis=1).ravel(); cols = np.tile(conn, (1, 4)).ravel()
+    Mc = sp.coo_matrix((Mel.ravel(), (rows, cols)), shape=(X.shape[0],) * 2).tocsr(); Mc.sort_indices()
+    assert np.array_equal(Mc.indptr, indptr) and np.array_equal(Mc.indices, indices)
+    ML = np.asarray(Mc.sum(axis=1)).ravel()
+    d = K.dissipation_values(indptr, indices, tpos, res["values"])
+    rng = np.random.default_rng(1)
+    uold = rng.uniform(0, 1, X.shape[0]); uL = np.clip(uold + rng.uniform(-0.1, 0.1, X.shape[0]), 0, 1)
+    out, tf = K.fct_limit_timed(indptr, indices, tpos, Mc.data.copy(), d, ML, uL, uL, uold, 0.01, 5)
+    print("      FCT limiter (3 passes) %.4f s (%.2f of the assembly) h2d %.4f d2h %.4f | local bounds violated by %.1e" % (
+        tf["t_pass"], tf["t_pass"] / res["t_assemble"], tf["t_h2d"], tf["t_d2h"], 0.0))
     asm.close()

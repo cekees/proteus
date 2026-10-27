@@ -497,4 +497,73 @@ namespace adrh
                    LumpedMassFunctor<Coefficients, Space>{c, nQ, t, dt, uold.extent(0) > 0, xn, u, uold, qp, qw, w, m, dm, mold});
     Kokkos::fence();
   }
+
+  // ---- flux-corrected transport (lowOrder.h): the three passes on the execution space ---------------------------------------
+
+  struct FctFluxPass
+  {
+    DView<const int> rowptr, colidx, tpos;
+    DView<const double> Mc, d, vL, mL, mold;
+    double dt;
+    DView<double> G;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      fctFluxRow(i, rowptr.data(), colidx.data(), tpos.data(), Mc.data(), d.data(), vL.data(), mL.data(), mold.data(), dt, G.data());
+    }
+  };
+  struct FctBoundsPass
+  {
+    DView<const int> rowptr, colidx;
+    DView<const double> G, mL, mold, ML;
+    double dt;
+    DView<double> Rp, Rm;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      fctBoundsRow(i, rowptr.data(), colidx.data(), G.data(), mL.data(), mold.data(), ML.data(), dt, Rp.data(), Rm.data());
+    }
+  };
+  struct FctApplyPass
+  {
+    DView<const int> rowptr, colidx;
+    DView<const double> G, Rp, Rm, ML, mL;
+    double dt;
+    DView<double> mOut;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      fctApplyRow(i, rowptr.data(), colidx.data(), G.data(), Rp.data(), Rm.data(), ML.data(), mL.data(), dt, mOut.data());
+    }
+  };
+
+  inline void dissipationValuesKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const int> tpos,
+                                      DView<const double> Jv, DView<double> d)
+  {
+    forEachElement("adrh dissipation values", 0, nRows, DissipationPass1{rowptr, colidx, tpos, Jv, d});
+    Kokkos::fence();
+  }
+
+  inline void fctLimitKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const int> tpos, DView<const double> Mc,
+                             DView<const double> d, DView<const double> ML, DView<const double> vL, DView<const double> mL,
+                             DView<const double> mold, double dt, DView<double> mOut)
+  {
+    DView<double> G("fct flux", colidx.extent(0)), Rp("R+", nRows), Rm("R-", nRows);
+    forEachElement("adrh fct pass 1", 0, nRows, FctFluxPass{rowptr, colidx, tpos, Mc, d, vL, mL, mold, dt, G});
+    Kokkos::fence();
+    forEachElement("adrh fct pass 2", 0, nRows, FctBoundsPass{rowptr, colidx, G, mL, mold, ML, dt, Rp, Rm});
+    Kokkos::fence();
+    forEachElement("adrh fct pass 3", 0, nRows, FctApplyPass{rowptr, colidx, G, Rp, Rm, ML, mL, dt, mOut});
+    Kokkos::fence();
+  }
+
+  template <class Space>
+  struct MassMatrixFunctor
+  {
+    static constexpr int nD = Space::nDOF;
+    int nQ;
+    DView<const double> xn, qp, qw;
+    DView<double> M;
+    KOKKOS_INLINE_FUNCTION void operator()(const int e) const
+    {
+      massMatrixOne<Space>(xn.data() + (size_t)e * nD * 3, nQ, qp.data(), qw.data(), M.data() + (size_t)e * nD * nD);
+    }
+  };
 } // namespace adrh

@@ -368,3 +368,45 @@ held fixed in the Jacobian (an approximate Newton step: it converges, not quadra
 
   Two to four percent of the assembly on one thread and on the GPU. At 96 threads it is 23% at 1.03 M rows: the pass is a memory-bound gather over the CSR and scales 5x, not 50x, on the node.
 
+
+## The FCT limiter (`lowOrder.h`, `fct_limit`; `stabilization_test.py`, `richards_regression.py --fct`)
+
+The lumped-mass/upwinded scheme is monotone and first-order, so it smears a front (10-90% width 0.154 against the exact 0.031). Flux-corrected transport restores the accuracy the low-order scheme gave up while keeping its bounds.
+`fctLimit` is the linearized (Zalesak) limiter over the pattern and transpose map `buildTransposeMap` already provides:
+
+* The antidiffusive edge flux is `f_ij = Mc_ij (dm_j - dm_i)/dt + d_ij (v_j - v_i)` with `Mc` the consistent mass, `dm = m_L - m_old` the change of the **conserved variable** `m` over the low-order step, `d_ij` the dissipation of the
+  upwinding pass and `v` the variable it acts on; `f_ji = -f_ij` exactly, so what leaves a node arrives at its neighbour. For a transport equation `m = v = u`. For Richards `m` is the moisture content and `v` the pressure head:
+  the driver limits `theta`, then inverts it with the analytic van Genuchten inverse (`Column.fct_correct`), so mass in the sense of the PDE is what is conserved.
+* The bounds of node `i` are the extrema of `m_L` and `m_old` over `i` and its neighbours; `R+_i`, `R-_i` are the ratios of the room that is available to the antidiffusion that is asked for, and the edge gets
+  `alpha_ij = min(R+_i, R-_j)` (or the other pair, by sign), the same `alpha` on both sides of the edge. Three row-parallel passes (fluxes, bounds, apply), each writing only its own row: no race, the result does not
+  depend on the thread count. `consistent_mass` supplies `Mc` (`massMatrixOne`, any space); `dissipation_values` the `d_ij`. One component; nc > 1 and P2 are not done.
+
+* **Against a numpy implementation of Zalesak's formula**, random bounded data on 343 nodes and 1,854 edges: 1.1e-16 (max abs); the local bounds are respected to 1e-17; the conserved sum `M_L m` changes by 3e-18 (relative).
+  Host, CPU Kokkos and the RTX 6000 Ada agree.
+* **The sharp front** (the `stabilization_test.py` problem; width = distance between the 10% and 90% levels):
+
+| scheme | min u | max u | L1 error | width |
+|---|---|---|---|---|
+| Galerkin, consistent mass | -1.3e-8 | 1.0052 | 1.39e-2 | 0.0687 |
+| lumped mass only | 0 | 1.0659 | 2.13e-2 | 0.0761 |
+| lumped mass + upwinding | 0 | 1.0000 | 3.94e-2 | 0.1537 |
+| **FCT** | **0** | **1.0000** | **1.57e-2** | **0.0747** |
+
+  (exact width 0.0310). The limiter halves the width of the low-order front, keeps the profile in [0, 1] exactly and has a smaller L1 error than the lumped-mass Galerkin scheme; the mass is that of the low-order scheme (0.495000).
+* **Richards, the Celia column** (`richards_regression.py --fct`): the pressure head stays exactly in [-10, -0.75] at 3.74 Newton iterations per step. Position of psi = -5 m:
+
+| | 12 h | 24 h | lowest psi |
+|---|---|---|---|
+| engine, Galerkin (= proteus, 2.5e-13) | 0.6218 | 0.4373 | -11.60 |
+| engine, lumped mass + upwinding | 0.6184 | 0.4324 | -10.00 |
+| **engine, FCT** | 0.6188 | 0.4339 | -10.00 |
+| proteus, FCT | 0.6147 | 0.4219 | -10.00 |
+| proteus, entropy viscosity | 0.5505 | 0.3565 | -10.00 |
+
+  The engine's FCT front is 0.0041 and 0.012 m (a sixth and a half of an element) ahead of proteus's FCT front. The two limiters are not the same algorithm (here the correction is applied after a Newton solve of the low-order scheme
+  rather than inside the time step; the saved profiles are not expected to agree digit for digit), and the engine's FCT moves the front back only a little toward the Galerkin one: on this smooth, strongly
+  diffusive problem the upwinding costs little. The HYDRUS and Szymkiewicz decks, where FCT matters, are not run yet.
+* **Cost** (`stabilization_timing.py`, 3D tetrahedra, 31^3 nodes, 29,791 rows, 424 k nonzeros): the three passes take 0.3 ms on the RTX 6000 Ada (7% of the 4.7 ms colored assembly) and 0.6 ms with 12 threads on the Mac (8%).
+  The limiter needs `Mc` and `d` as well; both are assembled once per step with the Jacobian's pattern.
+* **Caveats.** The limiter is linearized and applied once after the low-order solve, as in Zalesak's original; nonlinear limiting (iterating the correction, or inside the Newton loop) is not done. It does not make the Galerkin
+  solution bit-for-bit reproducible across platforms (the Richards moisture inversion uses `pow`).

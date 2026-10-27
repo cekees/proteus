@@ -6,6 +6,10 @@
      mesh: consistent-mass Galerkin overshoots and undershoots, the stabilized scheme keeps every value inside the data's bounds
      (the discrete maximum principle), conserves mass, and is compared with the exact (erfc) solution.
 
+  3. the FCT limiter (lowOrder.h) on top: on random bounded data it keeps every node inside the local extrema of the two states and
+     the mass M_L u exactly, matches an independent numpy implementation of Zalesak's limiter, and (on the host and Kokkos modules) gives
+     the same bits; on the sharp front it removes most of the smearing of the low-order scheme without bringing back the overshoot.
+
 usage: [ADRH_MODULE=adrh_kokkos] python stabilization_test.py
 """
 import importlib
@@ -94,7 +98,7 @@ def front(variant, nn=101, b=1.0, kappa=2e-4, dt=0.002, T=0.3, x0=0.2):
         else:
             R, J = engine.transient_adr(1, "p1", bv, kappa, 0.0, xn, ue, uo, qp, qw, 0.0, 0.0)       # the spatial operator alone
             r, Jv = scatter(conn, n, R, J, indptr, indices)
-            if variant == 'lumped+upwind':
+            if variant in ('lumped+upwind', 'fct'):
                 Jv, r = engine.algebraic_dissipation(indptr, indices, tpos, Jv, u, r)
             w, m, dm, mold = engine.transient_adr_lumped(1, "p1", bv, kappa, 0.0, xn, ue, uo, qp, qw, 0.0, dt)
             rm = np.zeros(n); np.add.at(rm, conn.ravel(), (w * (m - mold) / dt).ravel()); r = r + rm
@@ -107,27 +111,129 @@ def front(variant, nn=101, b=1.0, kappa=2e-4, dt=0.002, T=0.3, x0=0.2):
         for i, g in ((0, 1.0), (n - 1, 0.0)):                # strong rows: inflow value, and the far end held at 0
             r[i] = u[i] - g; A.rows[i] = [i]; A.data[i] = [1.0]
         u = u + spl.spsolve(A.tocsc(), -r)
+        if variant == 'fct':                                 # the limiter: antidiffusive fluxes at the low-order solution
+            ue2 = u[conn].reshape(-1, 1, 2)
+            R2, J2 = engine.transient_adr(1, "p1", bv, kappa, 0.0, xn, ue2, ue2, qp, qw, 0.0, 0.0)
+            _, Jv2 = scatter(conn, n, R2, J2, indptr, indices)
+            d = engine.dissipation_values(indptr, indices, tpos, Jv2)
+            Mel = engine.consistent_mass(1, "p1", xn, qp, qw)[0]
+            _, Mc = scatter(conn, n, np.zeros((conn.shape[0], 2)), Mel.reshape(-1, 2, 2), indptr, indices)
+            u = engine.fct_limit(indptr, indices, tpos, Mc, d, wnode, u, u, uold, dt)
+            u[0], u[-1] = 1.0, 0.0                           # the Dirichlet values stay what they are
     if variant != 'galerkin':
         pass
     return x, u, wnode
 
 
+def width(x, u, lo=0.1, hi=0.9):
+    """Distance between where the profile falls through hi and through lo (the front's width), interpolated."""
+    def cross(level):
+        for i in range(len(x) - 1):
+            if u[i] >= level > u[i + 1]:
+                return x[i] + (u[i] - level) * (x[i + 1] - x[i]) / (u[i] - u[i + 1])
+        return np.nan
+    return cross(lo) - cross(hi)
+
+
 def test_front():
     print("\nsharp front, cell Peclet number 25, backward Euler, CFL 0.2, t = 0.3")
-    print("  %-28s %10s %10s %14s %12s" % ("scheme", "min u", "max u", "L1 error", "mass"))
-    for variant in ('galerkin', 'lumped', 'lumped+upwind'):
+    print("  %-34s %10s %10s %12s %12s %10s" % ("scheme", "min u", "max u", "L1 error", "width 10-90%", "mass"))
+    out = {}
+    for variant in ('galerkin', 'lumped', 'lumped+upwind', 'fct'):
         x, u, wnode = front(variant)
         ex = exact(x, 0.3, 1.0, 2e-4, 0.2)
         h = x[1] - x[0]
-        mass = np.trapezoid(u, x)
-        print("  %-28s %10.2e %10.6f %14.4e %12.6f" % ({'galerkin': 'Galerkin, consistent mass', 'lumped': 'lumped mass only',
-                                                         'lumped+upwind': 'lumped mass + discrete upwinding'}[variant],
-                                                         u.min(), u.max(), h * np.abs(u - ex).sum(), mass))
-        if variant == 'lumped+upwind':
-            assert u.min() > -1e-12 and u.max() < 1.0 + 1e-12, "the discrete maximum principle failed"
-            print("  the stabilized scheme stays inside [0, 1]: largest excursion %.1e" % max(-u.min(), u.max() - 1.0, 0.0))
+        out[variant] = u
+        print("  %-34s %10.2e %10.6f %12.4e %12.4f %10.6f" % (
+            {'galerkin': 'Galerkin, consistent mass', 'lumped': 'lumped mass only', 'lumped+upwind': 'lumped mass + discrete upwinding',
+             'fct': 'FCT (low-order + Zalesak limiter)'}[variant], u.min(), u.max(), h * np.abs(u - ex).sum(), width(x, u), np.trapezoid(u, x)))
+    print("  exact front width %.4f" % width(x, ex))
+    for variant in ('lumped+upwind', 'fct'):
+        u = out[variant]
+        assert u.min() > -1e-12 and u.max() < 1.0 + 1e-12, variant + ": the bounds failed"
+    print("  low-order and FCT both stay inside [0, 1]: largest excursions %.1e and %.1e" % (
+        max(-out['lumped+upwind'].min(), out['lumped+upwind'].max() - 1.0, 0.0), max(-out['fct'].min(), out['fct'].max() - 1.0, 0.0)))
+
+
+def zalesak_reference(indptr, indices, Mc, d, ML, uL, uold, dt):
+    """The limiter written the plain way, loops over nodes and their neighbours: the oracle for lowOrder.h."""
+    n = len(uL); delta = uL - uold; out = uL.copy()
+    pos = {(i, int(indices[p])): p for i in range(n) for p in range(indptr[i], indptr[i + 1])}
+    G = {}
+    for (i, j), p in pos.items():
+        if i != j:
+            f = Mc[p] * (delta[j] - delta[i]) / dt + d[p] * (uL[j] - uL[i])     # computed once per pair, from the lower-numbered node
+            if i < j:
+                G[(i, j)] = -f; G[(j, i)] = f
+    Rp = np.ones(n); Rm = np.ones(n)
+    for i in range(n):
+        nb = [int(indices[p]) for p in range(indptr[i], indptr[i + 1])]
+        gi = [G[(i, j)] for j in nb if j != i]
+        Pp = sum(g for g in gi if g > 0); Pm = sum(g for g in gi if g < 0)
+        umax = max(max(uL[j], uold[j]) for j in nb); umin = min(min(uL[j], uold[j]) for j in nb)
+        Qp = ML[i] / dt * (umax - uL[i]); Qm = ML[i] / dt * (umin - uL[i])
+        Rp[i] = min(1.0, Qp / Pp) if Pp > 0 else 1.0
+        Rm[i] = min(1.0, Qm / Pm) if Pm < 0 else 1.0
+    for i in range(n):
+        acc = 0.0
+        for j in [int(indices[p]) for p in range(indptr[i], indptr[i + 1])]:
+            if j == i: continue
+            g = G[(i, j)]
+            acc += (min(Rp[i], Rm[j]) if g > 0 else min(Rm[i], Rp[j]) if g < 0 else 0.0) * g
+        out[i] = uL[i] + dt / ML[i] * acc
+    return out
+
+
+def test_fct_properties():
+    from ad_solve_device import cube_tets
+    X, conn = cube_tets(7)
+    n = X.shape[0]
+    quad = Quadrature.SimplexGaussQuadrature(3, 4); qp = np.array([list(p)[:3] for p in quad.points]); qw = np.array(quad.weights)
+    rng = np.random.default_rng(7)
+    indptr, indices = csr_pattern(conn, n); tpos = engine.transpose_map(indptr, indices)
+    Mel = engine.consistent_mass(3, "p1", X[conn], qp, qw)[0]
+    _, Mc = scatter(conn, n, np.zeros((conn.shape[0], 4)), Mel.reshape(-1, 4, 4), indptr, indices)
+    ML = np.asarray(sp.csr_matrix((Mc, indices, indptr), shape=(n, n)).sum(axis=1)).ravel()
+    u0 = rng.uniform(0, 1, n)
+    R, J = engine.transient_adr(3, "p1", np.array([30.0, 15.0, 8.0]), 0.01, 0.0, X[conn], u0[conn].reshape(-1, 1, 4), u0[conn].reshape(-1, 1, 4), qp, qw, 0.0, 0.0)
+    _, Jv = scatter(conn, n, R, J, indptr, indices)
+    d = engine.dissipation_values(indptr, indices, tpos, Jv)
+    uold = rng.uniform(0, 1, n); uL = np.clip(uold + rng.uniform(-0.2, 0.2, n), 0, 1); dt = 0.05
+    out = engine.fct_limit(indptr, indices, tpos, Mc, d, ML, uL, uL, uold, dt)
+    ref = zalesak_reference(indptr, indices, Mc, d, ML, uL, uold, dt)
+    # local bounds, from the two states over each node and its neighbours
+    hi = np.array([max(max(uL[j], uold[j]) for j in indices[indptr[i]:indptr[i + 1]]) for i in range(n)])
+    lo = np.array([min(min(uL[j], uold[j]) for j in indices[indptr[i]:indptr[i + 1]]) for i in range(n)])
+    print("\nFCT on random bounded data, %d nodes, %d edges" % (n, (indices.size - n) // 2))
+    print("  against the numpy implementation of Zalesak's limiter: %.1e (max abs)" % np.abs(out - ref).max())
+    print("  local bounds: largest violation %.1e; mass M_L u changed by %.1e (relative to M_L |uL|)" % (
+        max(0.0, (out - hi).max(), (lo - out).max()), abs(ML @ (out - uL)) / (ML @ np.abs(uL))))
+    print("  the limiter moved the low-order solution by %.2e (max), the unlimited step would move it by %.2e" % (
+        np.abs(out - uL).max(), np.abs(zalesak_unlimited(indptr, indices, Mc, d, ML, uL, uold, dt) - uL).max()))
+    assert np.abs(out - ref).max() < 1e-13 and max(0.0, (out - hi).max(), (lo - out).max()) < 1e-13
+    assert abs(ML @ (out - uL)) < 1e-14 * (ML @ np.abs(uL))
+    try:
+        host = importlib.import_module('adrh_proto')
+        if engine.__name__ != 'adrh_proto':
+            o2 = host.fct_limit(indptr, indices, tpos, Mc, d, ML, uL, uL, uold, dt)
+            print("  %s against the host module: %s (max abs %.1e)" % (engine.__name__, "bitwise equal" if np.array_equal(o2, out) else "differs", np.abs(o2 - out).max()))
+    except ImportError:
+        pass
+
+
+def zalesak_unlimited(indptr, indices, Mc, d, ML, uL, uold, dt):
+    n = len(uL); delta = uL - uold; out = uL.copy()
+    for i in range(n):
+        acc = 0.0
+        for p in range(indptr[i], indptr[i + 1]):
+            j = int(indices[p])
+            if j == i: continue
+            acc += -(Mc[p] * (delta[j] - delta[i]) / dt + d[p] * (uL[j] - uL[i]))
+        out[i] = uL[i] + dt / ML[i] * acc
+    return out
 
 
 if __name__ == '__main__':
     test_pass()
     test_front()
+    test_fct_properties()
