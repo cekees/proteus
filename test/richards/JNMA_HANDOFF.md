@@ -1,14 +1,19 @@
 # Handoff: Richards FCT in proteus (JNMA implicit FCT and WRR semi-implicit FCT)
 
-Written 20 Oct 2026 at the end of a Claude Code session with C. Kees. The session worked in a local
+Written 20 Oct 2026 at the end of a Claude Code session with C. Kees; updated 21 Oct and 27 Oct 2026 (§11). The session worked in a local
 folder `~/Richards_JNMA`, which holds the JNMA manuscript (not in this repo) with this repo cloned
 inside it. Everything needed to continue is in this repo on branch **`jnma-fct-1.9.x`** of
-`https://github.com/cekees/proteus` (head `78b151c2` or later). This file is self-contained.
+`https://github.com/cekees/proteus` (head `82806fe9` or later). This file is self-contained.
+The branch is cut from `cekees/1.9.x` (bda13572) and is to be cherry-picked onto main later: take the
+commits after `bda13572` (§3), not the 1.9.x maintenance commits beneath it.
 
 ## Priorities for the next session
 1. ~~Fix the accuracy loss of the WRR semi-implicit FCT on Q1 meshes~~ **Done** (§4).
 2. ~~Implement the fully implicit JNMA FCT in proteus~~ **Done** (§5).
-3. Smaller open items (§6).
+3. ~~Match the co-authors' 1-D refinement studies and their solver settings~~ **Done** (§11).
+4. Open (§6, §11.6): the cheaper first Galerkin step in proteus versus MFEM (initial guess?), the Δt
+   window of Galerkin + Newton, the WRR text-vs-code mismatch, bio2d reruns, and the manuscript changes
+   that follow from §11.
 
 ## 1. Background
 - **WRR paper** (Barua, Kees & Kuzmin, *Bound-preserving FCT methods for Richards' equation*, WRR, under
@@ -38,6 +43,16 @@ cd test/richards && python -m pytest -q test_richards.py
 | 4915ad6e | `Coefficients(FCT_SATURATED_LOW_ORDER=...)`: Zalesak Q_i^± = 0 at DOFs whose low-order predictor is saturated (not for Gardner). `forceStrongConditions` is now honoured (it was silently forced False). With strong BCs, `u_dof_old` at Dirichlet DOFs is set to g(tⁿ) (was g(tⁿ⁺¹), which corrupted the (1−θ) terms). |
 | 5b9f4f23 | `FCT_SATURATED_LOW_ORDER=True` is the default. |
 | 78b151c2 | `hornung_messing`: `quad=True` (Q1, 2×2 Gauss, the JNMA element), Q1 L² error integration, `MESH=q1` in the driver. |
+| f4d847ad, b3513fd9 | This handoff document. |
+| c777e21f | WRR FCT: `mDotLow` at strong-Dirichlet DOFs from the imposed data. Q1 Hornung–Messing becomes about second order (§4). |
+| 3dad551c | Fully implicit JNMA FCT, `FCT_TYPE='implicit'` (C++ `ImplicitFCTStep`, §5). |
+| 0720e829 | Both FCTs refuse parallel layouts in which owned DOFs miss part of their element star (`checkFCTParallelLayout`, §9). |
+| 4fa8f106 | `LSCHEME_L`: L-scheme Jacobian option; deck options for the implicit-FCT tests; `galerkin = False` in WRR test_1. |
+| e353c693 | `FCT_PREDICTOR_FALLBACK` (default True): low-order predictor when Newton fails on the Galerkin predictor; JNMA L-scheme defect-correction matrix. |
+| 6abc1f1e | `NONLINEAR_SOLVER` = `'newton'` / `'lscheme'` / `'hybrid'` and the solver study (§10). |
+| 43af6813 | Newton `convergenceTest='du'` / `'r_and_du'` (relative increment), `unorm='L2'` / `'L2_lumped'` (finite element norms, `Richards.femL2Norm`); numerics options `nonlinearSolverUNorm`, `nl_rtol_du`, `nl_atol_du` (§11.2). |
+| 69e41a37 | `FCT_PRELIMITER_VARIABLE` = `'pressure'` / `'hydraulic_head'` (default `'pressure'`, as in MFEM, §11.3). |
+| 82806fe9 | Fix: `LinearAlgebraTools.wl2Norm` reduced twice in parallel (off by √nranks; §11.5). |
 
 Example (Hornung–Messing, unit square, no gravity, T = 0.05, exact solution; see its README):
 ```bash
@@ -153,13 +168,14 @@ Mapping to proteus:
   divergent when unlimited.
 - **Galerkin + Newton robustness** on sharp 1-D infiltration fronts (Celia, Szymkiewicz): it works only in a
   Δt window. If Δt is too large it collapses; if too small it stalls on the first step from the initial
-  jump. Galerkin never started on Szymkiewicz. A Rannacher start-up or an L-scheme/Picard solver would help.
+  jump. The co-authors report the same window for their L-scheme, and chose Δt by it (§11.1). With
+  `nl_solver='lscheme'` and the JNMA settings, proteus completes every level without fallbacks (§11.4).
 - **`WRR_input_files/bio2d`** passes `forceStrongConditions=True`, which the code now honours. Its published
   results were computed with weak BCs, so a rerun may differ. Ponded 2-D runs may also differ under the
   new default `FCT_SATURATED_LOW_ORDER=True`.
-- **`WRR_input_files/test_1/re_vgm_sand_10m_1d_p.py`** lacks `galerkin = False`, so `run_test_1.sh` fails.
-  The digitized Celia data (`data_celia*.csv`) that `plot_test_1.py` reads is not committed.
-- The VG–Mualem law hard-codes pore connectivity ℓ = ½.
+- The digitized Celia data (`data_celia*.csv`) that `WRR_input_files/test_1/plot_test_1.py` reads is not
+  committed. (`galerkin = False` was added to the deck in 4fa8f106.)
+- The VG–Mualem law hard-codes pore connectivity ℓ = ½. (The co-authors have not stated ℓ.)
 
 ## 7. Highlighted finding: MFEM Galerkin accuracy
 With identical inputs (Q1, same h and Δt), **proteus Galerkin errors are 2.4–6× smaller than the JNMA MFEM
@@ -268,3 +284,80 @@ study"), scripts and results in `~/Richards_JNMA/numerical_tests/solver_study/`.
   - Θ₀-triggered remedy (fallback or warm-up) instead of waiting for Newton to fail.
   - FAS / nested iteration (the initial guess from the coarse level keeps Θ₀ small).
   - Anderson acceleration of the L-scheme.
+
+## 11. Co-author answers and parity runs (27 Oct 2026)
+Sources outside this repo (in `~/Richards_JNMA`): `notes on convergence and mesh sizes` and `Numerical Results/`
+(V2 figures) from L. Dielmann, his email of 27 Oct, `COAUTHOR_NOTES_REVIEW.md` (full review), and
+`numerical_tests/jnma_1d/` (decks, drivers, results). The 1-D parity decks are not in this repo.
+
+### 11.1 What the co-authors confirmed
+- Structure: Galerkin predictor ("ho") → limiter → final upwind solve from s^FCT ("lo"); fluxes frozen at pᴴ.
+- **Detector on the pressure head pᴴ**, not uᴴ = pᴴ + z. An earlier MFEM version used pⁿ by mistake (since fixed;
+  the V2 plots are post-fix).
+- **Pure L-scheme** everywhere; no Anderson acceleration, no switch to Newton.
+  - Stopping criterion: ‖p^{k+1} − p^k‖_{L²} < 10⁻¹² ‖p^{k+1}‖_{L²} (FE L² norm), max 5·10⁴ iterations.
+  - L = ½ sup|s′| over the attained pressure range for the infiltration tests (Celia 0.1132/2, Szymkiewicz
+    0.14207/2) and L = sup|s′| = 1.6478 for Hornung–Messing. The draft's "L ≥ L_s" does not hold for the 1-D runs.
+- Strong Dirichlet. p^{n,0} = pⁿ with boundary values g(tⁿ⁺¹). The limiter treats boundary nodes like interior
+  ones (proteus `ImplicitFCTStep` already does). Hornung–Messing bounds: [0, π²/2].
+- Refinement studies:
+  - Celia: 1 m column, T = 1 d; j = 0…5, Δz = 0.025/2^j m, Δt = 0.5/2^j d (j = 0 is two steps).
+  - Szymkiewicz (modified, 0.2 m): t = 0.03 h and 0.15 h; j = 0…6, Δz = 0.005/2^j m, Δt = 0.03/2^j h.
+  - Δt₀ = the smallest step for which Galerkin + CN converged within 5·10⁴ iterations.
+  - The old Celia figure used the wrong mesh; the V2 runs converge to an independent Picard reference
+    (front height 0.435 m).
+
+### 11.2 Termination criterion in proteus (43af6813)
+- Numerics file: `levelNonlinearSolverConvergenceTest = 'du'` (or `'r_and_du'`), `nonlinearSolverUNorm = 'L2'`,
+  `nl_rtol_du = 1e-12`, `nl_atol_du = 0`.
+- `'L2'` is √(xᵀM_C x) via `LevelModel.femL2Norm` (Richards only so far). It matches independent quadrature to 13
+  digits on P1 and Q1. In parallel it needs complete M_C rows at owned DOFs (`ownedElementStarsIncomplete()`).
+- Increment-only termination controls the residual (the discrete water balance) only if the tolerance is tight.
+  Celia j = 0 with the L-scheme (contraction ≈ 0.99, so the error is about 100× the last increment):
+
+  | rtol_du | final ‖r‖ | max head error | stored-water error |
+  |---|---|---|---|
+  | 1e-4 | 1.4e-5 | 0.13 m | 2e-5 |
+  | 1e-6 | 1.4e-7 | 1.3e-3 m | 2e-7 |
+  | 1e-12 | 1.3e-13 | — | — |
+
+  Use `'r_and_du'` when the tolerance is loose.
+
+### 11.3 Detector variable (69e41a37)
+`Coefficients(FCT_PRELIMITER_VARIABLE='pressure')` is the default (MFEM). `'hydraulic_head'` restores the old
+behaviour. Without gravity the two coincide; Hornung–Messing is unchanged (Q1 h = 1/16: 5.229e-5).
+
+### 11.4 1-D parity with the MFEM V2 results
+Implicit FCT, θ = 1 and ½, both detectors, all co-author refinement levels. MFEM curves were digitized from the
+V2 PDFs, which have the same nodes (40·2^j + 1).
+- **Fronts match MFEM to about 1e-4 m** at every level. Node-wise rms differences are 1e-3–1e-2 m and fall with
+  refinement.
+- The detector choice matters only at Celia θ = ½ on coarse levels, where the pressure detector is closer to MFEM
+  (rms 1.06e-2 vs 2.06e-2 at j = 1).
+- Newton + fallback: one fallback per run, in the first step. On Szymkiewicz j = 0 at 0.03 h (a single step) it
+  undershoots to −7.83 m (θ = 1) and −8.15 m (θ = ½); MFEM stays at −7.5 m.
+- **L-scheme with the JNMA settings** (`nl_solver='lscheme'`, `lscheme_L` = L_s/2, `nl_test='du'`,
+  `nl_unorm='L2'`, `nl_rtol_du=1e-12`, `nl_max_its=50000`): no fallbacks and no undershoot (min −7.500). The
+  Szymkiewicz j = 0 rms drops from 0.158 to 1.9e-2.
+- Iterations per solve, proteus vs MFEM notes:
+  - Low-order solves match: Celia about 1300, Szymkiewicz about 190 per step.
+  - **The first Galerkin step is 3–15× cheaper in proteus** (Celia IE 1563 vs 4508; CN 1684 vs 14 596;
+    Szymkiewicz CN 380 vs 5869). Likely the initial guess (proteus `useInitialGuessPredictor` vs MFEM pⁿ with
+    new boundary values); not checked.
+
+### 11.5 Ancillary fix (82806fe9)
+`LinearAlgebraTools.wl2Norm` wrapped `wDot`, which already reduces, in a second `globalSum`. It was off by √nranks
+in parallel (checked on 1, 2 and 4 ranks). Its callers are the multigrid residual norms in `LinearSolvers.py`.
+`wl1Norm` and `wlInfNorm` were correct.
+
+### 11.6 Open after 27 Oct
+- Check the first-step iteration gap (§11.4): run proteus with p^{n,0} = pⁿ and new boundary values.
+- Manuscript changes (applied in the JNMA working copy, not here):
+  - the detector is pᴴ, and the §5 extremum argument with gravity must be revisited;
+  - the L rule and stopping criterion in §6;
+  - refinement figures in §7.2–7.3;
+  - a reproducibility table.
+- Still unanswered by the co-authors: quadrature, linear solver/tolerance, ℓ, the Hornung–Messing time steps
+  and criterion, whether Tables 1–2 predate the pⁿ → pᴴ detector fix, and whether the L-scheme theory covers
+  L = L_s/2.
+
