@@ -656,3 +656,33 @@ def test_first_gauge_row_is_the_initial_condition(tmp_path, monkeypatch):
     data = np.atleast_2d(data)
     npt.assert_allclose(data[0], [0.0, 0.5], atol=1e-12)
     npt.assert_allclose(data[-1, 1], 0.5*(1 + data[-1, 0]), rtol=1e-2)
+
+@pytest.mark.parametrize("nd", [2, 3])
+def test_bounding_box_prefilter_changes_no_clipping_result(nd):
+    # getMeshIntersections only clips the elements a line can touch; the
+    # result must equal clipping every element
+    import time
+    rng = np.random.default_rng(7)
+    if nd == 2:
+        mesh = MeshTools.MultilevelTriangularMesh(30, 30, 1, 0, 0, 0, 1, 1, 1, refinementLevels=1).meshList[0]
+        toPolyhedron = MeshTools.triangleVerticesToNormals
+    else:
+        mesh = MeshTools.MultilevelTetrahedralMesh(8, 8, 8, 0, 0, 0, 1, 1, 1, refinementLevels=1).meshList[0]
+        toPolyhedron = MeshTools.tetrahedronVerticesToNormals
+    def brute(endpoints):
+        found = set()
+        for element in mesh.elementNodesArray:
+            clipped = MeshTools.intersectPolyhedron(endpoints, toPolyhedron(mesh.nodeArray[element]))
+            if clipped and not np.array_equal(clipped[0], clipped[1]):
+                found.add((tuple(clipped[0]), tuple(clipped[1])))
+        return found
+    lines = [((0.0, 0.5, 0.5 if nd == 3 else 0.0), (1.0, 0.5, 0.5 if nd == 3 else 0.0)),  # along a mesh line
+             ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0 if nd == 3 else 0.0)),                       # through vertices
+             ((-0.5, 0.3, 0.0), (1.5, 0.3, 0.0))]                                         # leaving the mesh
+    for _ in range(10):
+        p, q = rng.uniform(-0.2, 1.2, (2, 3))
+        if nd == 2:
+            p[2] = q[2] = 0.0
+        lines.append((tuple(p), tuple(q)))
+    for endpoints in lines:
+        assert MeshTools.getMeshIntersections(mesh, toPolyhedron, endpoints) == brute(endpoints)

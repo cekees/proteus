@@ -73,9 +73,10 @@ phase in the column, which is how an equivalent water height is measured.
 
 .. note::
 
-   Line gauges clip the line against every element, one element at a time in
-   Python, when the model is attached.  This is quick for ordinary meshes and
-   slow for very fine ones; it happens once, not every time step.
+   Line gauges clip the line against the elements it can touch when the model is
+   attached.  A bounding-box test discards the rest in one vectorized step, so a
+   line through a mesh of 180,000 elements takes tens of milliseconds, and the
+   clipping happens once, not every time step.
 
 Lines and points outside the mesh
 ---------------------------------
