@@ -16,8 +16,8 @@ The scheme names are the (STABILIZATION_TYPE, FCT) pair each deck reads off its
 Context options:
 
 * ``stab_0``  ``STABILIZATION_TYPE=0``, ``FCT=False`` -- plain Galerkin
-* ``stab_2``  ``STABILIZATION_TYPE=2``, ``FCT=False`` -- entropy viscosity
-* ``FCT``     ``STABILIZATION_TYPE=2``, ``FCT=True``  -- entropy viscosity + FCT
+* ``stab_2``  ``STABILIZATION_TYPE=2``, ``FCT=False`` -- lumped mass, K at the upwind node
+* ``FCT``     ``STABILIZATION_TYPE=2``, ``FCT=True``  -- the same, with FCT
 
 ``beta`` is 0 in all three decks, so the schemes differ by stabilization alone.
 The same decks run standalone under parun, e.g.

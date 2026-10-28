@@ -100,6 +100,7 @@ coloring for the assembly's scatter (`ADRH_ENGINE_DESIGN.md` section 19, roster 
   existing checks run on it: `ADRH_MODULE=adrh_kokkos python compare_with_python.py | ad_regression.py`; `golden.py` compares
   any two builds (`golden.py against adrh_kokkos`; `golden.py save|compare` brackets a change to the host kernel).
 * `build_kokkos.sh` – CPU build in a conda environment with `kokkos`; the CUDA recipe is in the design note.
+* `CMakeLists.txt` – the same modules as a CMake project, with the tests as `ctest` (`cmake -S . -B build && cmake --build build && ctest --test-dir build`; CUDA/HIP Kokkos: configure with its compiler, see the design note). `.github/workflows/adrh.yml` runs it on linux-64, linux-aarch64 and macOS (arm64, Intel) in a conda environment of `cmake compilers pybind11 numpy scipy kokkos`; the tests import `proteus.Quadrature` from the source tree, which needs no compiled proteus.
 
 Results (`reports/adrh_kokkos_2026-10-24/` beside the campaign notes; nn = 31, ns per element, element kernel / colored assembly):
 

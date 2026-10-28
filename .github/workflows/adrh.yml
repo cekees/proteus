@@ -1,0 +1,58 @@
+name: ADRH engine (experimental/adrh)
+
+# The engine's kernel tests need numpy, scipy, pybind11 and Kokkos, and proteus.Quadrature
+# from the source tree (it needs no compiled extension), so this builds in minutes and does not
+# wait for the proteus build in sdist.yml. The regressions against proteus models
+# (ad_regression.py and the like) need a built proteus and are run by hand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'experimental/adrh/**'
+      - 'proteus/Quadrature.py'
+      - '.github/workflows/adrh.yml'
+  pull_request:
+    paths:
+      - 'experimental/adrh/**'
+      - 'proteus/Quadrature.py'
+      - '.github/workflows/adrh.yml'
+  workflow_dispatch:
+
+jobs:
+  kernels:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: linux-64, os: ubuntu-latest}
+          - {name: linux-aarch64, os: ubuntu-24.04-arm}
+          - {name: macos-15 (Apple Silicon), os: macos-15}
+          - {name: macos-15 (Intel), os: macos-15-intel}
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up conda environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          python-version: "3.12"
+          activate-environment: adrh
+      - name: Install the build and test dependencies
+        run: >
+          conda install -y -c conda-forge --override-channels
+          cmake ninja compilers pybind11 numpy scipy kokkos
+      - name: Configure
+        working-directory: experimental/adrh
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DPython_EXECUTABLE="$(which python)" -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
+      - name: Build
+        working-directory: experimental/adrh
+        run: cmake --build build
+      - name: Test
+        working-directory: experimental/adrh
+        run: ctest --test-dir build --output-on-failure
