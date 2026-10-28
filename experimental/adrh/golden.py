@@ -140,6 +140,12 @@ def calls(m, nE=2000):
         pm = np.maximum(uh, uo_) + 0.5; pn = np.minimum(uh, uo_) - 0.5
         mL_ = rng.uniform(0.1, 0.3, n); mo_ = rng.uniform(0.1, 0.3, n); mmax = np.maximum(mL_, mo_) + 0.02; mmin = np.minimum(mL_, mo_) - 0.02
         out["fct_limit_flux_bounded"] = ("fct_limit_flux_bounded", (indptr, indices, tpos, Mc, A, ML, mL_, mo_, mmax, mmin, 0.01))
+        # implicit FCT: the prelimiter, and the limited datum from an antisymmetric flux
+        At = A - A[tpos]; At[np.repeat(np.arange(n), np.diff(indptr)) == indices] = 0.0
+        alpha_nv = np.asarray(m.nodal_variation(indptr, indices, Mc, uh, 3.0)) if hasattr(m, "nodal_variation") else None
+        out["nodal_variation"] = ("nodal_variation", (indptr, indices, Mc, uh, 3.0))
+        if alpha_nv is not None:
+            out["implicit_fct_limit"] = ("implicit_fct_limit", (indptr, indices, tpos, Mc, At, ML, mL_, mo_, np.maximum(mL_, mo_) + 0.05, np.minimum(mL_, mo_) - 0.05, alpha_nv, 0.01))
     return out
 
 

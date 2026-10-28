@@ -136,6 +136,7 @@ class KUpwindRichards:
             rk, Jk = engine.upwind_flux(self.indptr, self.indices, self.S_by[int(k)], phi, kr, dkr)
             r += rk; Jv += Jk
         return r, Jv
+
     def m(self, u):
         return engine.richards_m_nodes(self.alpha, self.n_vg, self.theta_r, self.thetaSR, self.psk, self.nodeMat, u)
 
@@ -144,30 +145,44 @@ class KUpwindRichards:
         return float(self.ML @ self.m(u)[0])
 
     # -- the nonlinear system -------------------------------------------------------------------------------------------------------------------
-    def system(self, u, uold, dt):
-        """Residual and Jacobian of one backward Euler step of the K-upwinded low-order scheme (dt None: the steady problem), strong Dirichlet rows."""
+    def _strong(self, r, A, u):
+        mask = np.ones(self.nn); mask[self.fixed] = 0.0
+        r = r * mask; r[self.fixed] = u[self.fixed] - self.gD
+        return r, (sp.diags(mask) @ A + sp.diags(1.0 - mask)).tocsc()
+
+    def system(self, u, uold, dt, datum=None):
+        """Residual and Jacobian of one backward Euler step of the K-upwinded low-order scheme (dt None: the steady problem), strong Dirichlet rows.
+        datum: the moisture content the mass term differences against, in place of m(uold) (implicit FCT's limited datum)."""
         r, Jv = self.flux(u)
         A = sp.csr_matrix((Jv, self.indices, self.indptr), shape=(self.nn, self.nn))
         if dt is not None:
-            m, dm = self.m(u); mo, _ = self.m(uold)
+            m, dm = self.m(u)
+            mo = self.m(uold)[0] if datum is None else datum
             r = r + self.ML * (m - mo) / dt
             A = A + sp.diags(self.ML * dm / dt)
-        mask = np.ones(self.nn); mask[self.fixed] = 0.0
-        r = r * mask; r[self.fixed] = u[self.fixed] - self.gD
-        A = (sp.diags(mask) @ A + sp.diags(1.0 - mask)).tocsc()
-        return r, A
+        return self._strong(r, A, u)
 
-    def newton(self, u0, uold, dt, tol=1e-12, norm='inf', maxit=60):
-        """Newton with a backtracking line search on the residual norm (2: proteus's stopping rule; 'inf')."""
+    def galerkin_system(self, u, uold, dt):
+        """Residual and Jacobian of one backward Euler step of the Galerkin discretization (K at the quadrature points, the consistent mass matrix), strong
+        Dirichlet rows: implicit FCT's high-order predictor."""
+        ue = u[self.conn].reshape(self.nE, 1, self.nV); uo = uold[self.conn].reshape(self.nE, 1, self.nV)
+        R, J = engine.richards_vgm(self.nd, "p1", *self._args()[:8], self.material, self.xn, ue, uo, self.qp, self.qw, 0.0, dt, self.psk, 0)
+        r = np.zeros(self.nn); np.add.at(r, self.conn.ravel(), np.asarray(R).reshape(self.nE, self.nV).ravel())
+        return self._strong(r, self.pattern_matrix(J), u)
+
+    def newton(self, u0, uold, dt, tol=1e-12, norm='inf', maxit=60, datum=None, system=None):
+        """Newton with a backtracking line search on the residual norm (2: proteus's stopping rule; 'inf'). system(u) -> (r, A) replaces the low-order
+        system (the Galerkin predictor); datum is passed to the low-order system."""
         nrm = (lambda v: np.linalg.norm(v)) if norm == 2 else (lambda v: np.abs(v).max())
+        system = system or (lambda v: self.system(v, uold, dt, datum))
         u = np.array(u0, dtype=float); u[self.fixed] = self.gD
-        r, A = self.system(u, uold, dt); its = 0
+        r, A = system(u); its = 0
         while nrm(r) > tol and its < maxit:
             du = spl.spsolve(A, -r)
             lam, r0 = 1.0, nrm(r)
             while True:
                 un = u + lam * du
-                rn, An = self.system(un, uold, dt)
+                rn, An = system(un)
                 if nrm(rn) < (1.0 - 1e-4 * lam) * r0 or lam < 1e-4:
                     break
                 lam *= 0.5
@@ -191,6 +206,18 @@ class KUpwindRichards:
         wet = se >= 1.0
         return np.where(wet, np.maximum(uL, -1.0 / a), -np.clip(se, 1e-300, 1.0) ** (-1.0 / n) / a)
 
+    def antidiffusive(self, u):
+        """The antidiffusive flux at u on the pattern: the Galerkin flux (K at the quadrature points) minus the K-upwinded one, into i from j."""
+        phi = self.total_head(u)
+        if self.interface == 'node':
+            kr, _ = self.kr(u)
+            return engine.antidiffusive_flux(self.indptr, self.indices, self.stiffness(u, 2).data.copy(), self.S, phi, kr)
+        A = np.zeros(self.indices.size)                         # linear in the stiffness and in the upwinded term: the sum over materials
+        for k in self.present:
+            kr, _ = self.kr(u, int(k))
+            A += engine.antidiffusive_flux(self.indptr, self.indices, self.stiffness(u, 2, only=k).data.copy(), self.S_by[int(k)], phi, kr)
+        return A
+
     def fct_correct(self, uL, uold, dt, bounds_old=True, bounds='head'):
         """FCT on the moisture content, the antidiffusive flux being the Galerkin flux (K at the quadrature points) minus the upwinded one. Returns the
         corrected head and moisture content.
@@ -199,15 +226,7 @@ class KUpwindRichards:
         content with the node's own retention curve; 'moisture' bounds the moisture content itself, as proteus does. They are the same for one
         material. They differ across a soil interface, where the moisture contents of two soils at one head are not comparable: the moisture bound lets
         a node dry below every head around it (psi = -11 in a lens that started at -6 to -10, richards_2d.py --lens --fct)."""
-        phi = self.total_head(uL)
-        if self.interface == 'node':
-            kr, _ = self.kr(uL)
-            A = engine.antidiffusive_flux(self.indptr, self.indices, self.stiffness(uL, 2).data.copy(), self.S, phi, kr)
-        else:                                                   # linear in the stiffness and in the upwinded term: the sum over materials
-            A = np.zeros(self.indices.size)
-            for k in self.present:
-                kr, _ = self.kr(uL, int(k))
-                A += engine.antidiffusive_flux(self.indptr, self.indices, self.stiffness(uL, 2, only=k).data.copy(), self.S_by[int(k)], phi, kr)
+        A = self.antidiffusive(uL)
         mL, _ = self.m(uL); mo, _ = self.m(uold)
         if bounds == 'moisture':
             mnew = engine.fct_limit_flux(self.indptr, self.indices, self.tpos, self.Mc.data.copy(), A, self.ML, mL, mo, dt, bounds_old)
@@ -219,11 +238,51 @@ class KUpwindRichards:
         u[self.fixed] = uL[self.fixed]
         return u, mnew
 
-    def run(self, u0, t_end, steps, fct=False, tol=1e-12, norm='inf', bounds='head'):
-        """steps backward Euler steps of dt = t_end / steps from u0; returns the final head and the Newton iteration count."""
+    # -- implicit FCT (Dielmann, Kuzmin and Kees; proteus's FCT_TYPE='implicit') -------------------------------------------------------------------------
+    def implicit_datum(self, pH, uold, dt, prelimiter_power=3.0, prelimiter='pressure', mask=True, bounds='global'):
+        """The limited datum s^{n,FCT}: the antidiffusive fluxes at the predictor pH, the nodal-variation prelimiter on the pressure head (or the total head),
+        Zalesak with bounds taken from s^n. bounds: 'global' (proteus's and the paper's) the retention curve's own, theta_r to theta_s of each node; 'local' the
+        head's extrema over a node and its neighbours at pH and at the old state, mapped to moisture content with the node's own curve (as fct_correct's
+        bounds='head'). mask: keep s^n at the Dirichlet nodes, as proteus's bc_mask does (without it the datum conserves sum M_L s exactly)."""
+        A = self.antidiffusive(pH)
+        sH, _ = self.m(pH); sn, _ = self.m(uold)
+        head = pH if prelimiter == 'pressure' else self.total_head(pH)
+        alpha = engine.nodal_variation(self.indptr, self.indices, self.Mc.data.copy(), head, prelimiter_power)
+        if bounds == 'global':
+            smax = np.maximum(self.theta_s[self.nodeMat], sn); smin = np.minimum(self.theta_r[self.nodeMat], sn)
+        else:
+            pmax, pmin = engine.head_extrema(self.indptr, self.indices, pH, uold)
+            smax = np.maximum(self.m(pmax)[0], sn); smin = np.minimum(self.m(pmin)[0], sn)
+        datum = engine.implicit_fct_limit(self.indptr, self.indices, self.tpos, self.Mc.data.copy(), A, self.ML, sH, sn, smax, smin, alpha, dt)
+        if mask:
+            datum[self.fixed] = sn[self.fixed]
+        return datum, alpha
+
+    def implicit_fct_step(self, uold, dt, prelimiter_power=3.0, prelimiter='pressure', tol=1e-12, norm='inf', fallback=True, bounds='global', predictor_maxit=20):
+        """One step of the implicit FCT: (1) the Galerkin predictor p^H (the low-order solution instead, if the Galerkin Newton fails and fallback is set,
+        as proteus's FCT_PREDICTOR_FALLBACK), (2) the limited datum, (3) the low-order solve M_L (s(p) - s^{n,FCT}) / dt + A~(p) u(p) = 0 started from p^H.
+        predictor_maxit caps the Galerkin Newton so that a predictor that will fail does not cost sixty iterations first. Returns the head and a dict of the Newton
+        iteration counts and whether the predictor fell back."""
+        fell = False
+        try:
+            pH, k1 = self.newton(uold, uold, dt, tol, norm, maxit=predictor_maxit, system=lambda v: self.galerkin_system(v, uold, dt))
+        except RuntimeError:
+            if not fallback:
+                raise
+            pH, k1 = self.newton(uold, uold, dt, tol, norm); fell = True
+        datum, _ = self.implicit_datum(pH, uold, dt, prelimiter_power, prelimiter, bounds=bounds)
+        u, k2 = self.newton(pH, uold, dt, tol, norm, datum=datum)
+        return u, dict(predictor=k1, final=k2, fallback=fell)
+
+    def run(self, u0, t_end, steps, fct=False, tol=1e-12, norm='inf', bounds='head', implicit=False, prelimiter_power=3.0, implicit_bounds='global'):
+        """steps backward Euler steps of dt = t_end / steps from u0; returns the final head and the Newton iteration count (implicit: the implicit FCT
+        step, with both solves' iterations counted)."""
         u = np.array(u0, dtype=float); dt = t_end / steps; its = 0
         for _ in range(steps):
             uold = u
+            if implicit:
+                u, c = self.implicit_fct_step(uold, dt, prelimiter_power, tol=tol, norm=norm, bounds=implicit_bounds); its += c['predictor'] + c['final']
+                continue
             u, k = self.newton(u, uold, dt, tol, norm); its += k
             if fct:
                 u, _ = self.fct_correct(u, uold, dt, bounds=bounds)

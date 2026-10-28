@@ -11,7 +11,9 @@
    and conserves mass.
 4. FCT bounds: on the head (continuous across soils) they are the moisture bounds for one material, and across a soil interface they stop the moisture
    bound's undershoot (a lens node drying below every head around it).
-5. Nodal materials: the node's material is the first incident element's.
+5. Implicit FCT (proteus's FCT_TYPE='implicit'): the limiter against an independent numpy version, exact conservation of the datum, the prelimiter's two
+   extremes, the Celia deck against a fine reference, and the lens (global against local bounds).
+6. Nodal materials: the node's material is the first incident element's.
 
 usage: [ADRH_MODULE=adrh_kokkos] python richards_nd_test.py
 """
@@ -175,6 +177,86 @@ def head_bounds():
     check(below == 0 and u.max() <= R2.PONDING + 1e-9, "the lens, head bounds: no node leaves [%.0f, %.1f]" % (lo, R2.PONDING))
 
 
+def reference_datum(model, A, sH, sn, smax, smin, alpha, dt):
+    """The implicit FCT limiter written out in numpy, row by row, from the algorithm (not from the engine's passes): returns s^{n,FCT} (unmasked)."""
+    ip, ix, Mc, ML = model.indptr, model.indices, model.Mc.data, model.ML
+    n = model.nn; G = np.zeros(ix.size)
+    for i in range(n):
+        for p in range(ip[i], ip[i + 1]):
+            j = ix[p]
+            if j != i:
+                G[p] = min(alpha[i], alpha[j]) * (Mc[p] * ((sH[i] - sn[i]) - (sH[j] - sn[j])) / dt + A[p])
+    Rp = np.ones(n); Rm = np.ones(n)
+    for i in range(n):
+        row = G[ip[i]:ip[i + 1]]
+        Pp, Pm = row[row > 0].sum(), row[row < 0].sum()
+        Qp, Qm = ML[i] / dt * (smax[i] - sn[i]), ML[i] / dt * (smin[i] - sn[i])
+        Rp[i] = min(1.0, Qp / Pp) if Pp > 0 else 1.0
+        Rm[i] = min(1.0, Qm / Pm) if Pm < 0 else 1.0
+    out = sn.copy()
+    for i in range(n):
+        tot = 0.0
+        for p in range(ip[i], ip[i + 1]):
+            j = ix[p]; g = G[p]
+            tot += (min(Rp[i], Rm[j]) if g > 0 else min(Rm[i], Rp[j])) * g
+        out[i] = sn[i] + dt / ML[i] * tot
+    return out
+
+
+def implicit_fct():
+    print("implicit FCT (richards_nd.py implicit_fct_step, proteus's FCT_TYPE='implicit')")
+    # the limiter against an independent numpy version, on a 2D mesh with two materials and a random state
+    rng = np.random.default_rng(3)
+    x, conn = nd.rectangle_triangles(9, 9, 1.0, 1.0)
+    material = (x[conn, 1].mean(axis=1) > 0.5).astype('i')
+    model = nd.KUpwindRichards(x, conn, material, dirichlet=([0], [-3.0]), ks=np.array([[7.9, 7.9], [0.05, 0.05]]), g=[0.0, -1.0], alpha=RL.ALPHA, n_vg=RL.N_VG,
+                               theta_r=RL.THETA_R, theta_s=RL.THETA_S, interface='element')
+    n = model.nn; dt = 0.01
+    sn = model.theta_r[model.nodeMat] + rng.uniform(0.05, 0.95, n) * (model.theta_s[model.nodeMat] - model.theta_r[model.nodeMat])
+    sH = np.clip(sn + 0.2 * rng.normal(size=n) * (model.theta_s[model.nodeMat] - model.theta_r[model.nodeMat]), model.theta_r[model.nodeMat], model.theta_s[model.nodeMat])
+    A = rng.normal(size=model.indices.size); A = A - A[model.tpos]          # antisymmetric
+    A[model.prows == model.pcols] = 0.0
+    head = rng.normal(size=n)
+    alpha = engine.nodal_variation(model.indptr, model.indices, model.Mc.data.copy(), head, 3.0)
+    smax = model.theta_s[model.nodeMat]; smin = model.theta_r[model.nodeMat]
+    got = engine.implicit_fct_limit(model.indptr, model.indices, model.tpos, model.Mc.data.copy(), A, model.ML, sH, sn, smax, smin, alpha, dt)
+    want = reference_datum(model, A, sH, sn, smax, smin, alpha, dt)
+    check(np.abs(got - want).max() < 1e-13, "the limiter against the numpy version: max |difference| %.1e (random fluxes, two materials)" % np.abs(got - want).max())
+    check(abs(float(model.ML @ (got - sn))) < 1e-13 * float(model.ML @ sn), "the datum conserves sum M_L s exactly (%.1e)" % abs(float(model.ML @ (got - sn))))
+    check((got >= smin - 1e-14).all() and (got <= smax + 1e-14).all(), "the datum stays between each node's theta_r and theta_s")
+    # the prelimiter: a monotone profile keeps 1, a local extremum of the head gets 0
+    chain = nd.KUpwindRichards(np.linspace(0, 1, 7)[:, None], np.stack([np.arange(6), np.arange(1, 7)], 1), np.zeros(6, dtype='i'), dirichlet=([0], [0.0]),
+                               alpha=[1.0], n_vg=[2.0], theta_r=[0.1], theta_s=[0.4], ks=[[1.0]], g=[-1.0])
+    a_lin = engine.nodal_variation(chain.indptr, chain.indices, chain.Mc.data.copy(), np.linspace(0, 6, 7), 3.0)
+    a_peak = engine.nodal_variation(chain.indptr, chain.indices, chain.Mc.data.copy(), np.array([0, 1, 2, 5, 2, 1, 0.0]), 3.0)
+    check(np.allclose(a_lin[1:-1], 1.0), "the prelimiter keeps 1 on a monotone head profile")
+    check(a_peak[3] == 0.0 and a_peak[1] == 1.0, "the prelimiter is 0 at a local extremum of the head (alpha %.2f) and 1 beside it" % a_peak[3])
+    check(np.allclose(engine.nodal_variation(chain.indptr, chain.indices, chain.Mc.data.copy(), np.array([0, 1, 2, 5, 2, 1, 0.0]), 0.0), 1.0), "power 0 switches it off")
+    # the Celia deck at proteus's step: bounds, no predictor failure, and the accuracy against a fine-mesh reference
+    case = rr.CASES['celia']; nn, k, frame = case.nn, 4, 500
+    import richards_implicit_fct as RI
+    coarse = RI.build(case, nn); fine = RI.build(case, (nn - 1) * k + 1)
+    uf, _, _ = RI.march(fine, case, case.steps * k, frame * k, 'post')
+    ref = np.interp(coarse.x[:, 0], fine.x[:, 0], fine.m(uf)[0])
+    err = {}
+    for kind in ('low', 'implicit'):
+        u, its, fb = RI.march(coarse, case, case.steps, frame, kind)
+        err[kind] = RI.l1(coarse.x[:, 0], coarse.m(u)[0], ref)
+        if kind == 'implicit':
+            check(u.min() >= case.bottom - 1e-9 and u.max() <= case.top + 1e-9 and fb == 0, "Celia, 500 steps: psi in [%.4f, %.4f], %d predictor fallbacks, %.1f Newton iterations per step" %
+                  (u.min(), u.max(), fb, its / frame))
+    check(err['implicit'] < 0.7 * err['low'], "Celia: the L1 error of the moisture content against the %dx finer reference is %.2e (low-order %.2e)" % (k, err['implicit'], err['low']))
+    # the lens: global bounds let a dry node's datum fall to theta_r; local bounds (the head's extrema at the predictor and the old state) hold it near the data
+    import richards_2d as R2
+    lows = {}
+    for b in ('global', 'local'):
+        model, u0 = R2.build(21, True, 'element')
+        u, its = model.run(u0, R2.T_END, 35, implicit=True, tol=1e-8, norm=2, implicit_bounds=b)
+        lows[b] = u.min()
+        print("      lens, 21 x 21 nodes, 35 steps, bounds=%r: psi in [%.2f, %.4f], initial minimum %.0f" % (b, u.min(), u.max(), u0.min()))
+    check(lows['local'] > lows['global'] and lows['local'] > -11.0, "the lens: local bounds hold the head at %.2f where global bounds let it reach %.1f" % (lows['local'], lows['global']))
+
+
 def materials():
     print("the node material is the first incident element's")
     conn = np.array([[0, 1], [1, 2], [2, 3]]); material = np.array([0, 1, 2])
@@ -189,6 +271,7 @@ if __name__ == '__main__':
     layers()
     layered_transient()
     head_bounds()
+    implicit_fct()
     materials()
     if failures:
         print("%d check(s) failed" % len(failures))

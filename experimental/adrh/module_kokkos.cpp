@@ -449,6 +449,30 @@ PYBIND11_MODULE(adrh_kokkos, m)
     }
     return out;
   });
+  m.def("nodal_variation", [](IArr indptr, IArr indices, Arr Mc, Arr head, double power) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> alpha(n);
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices);
+      adrh::DView<double> dMc = up(Mc), dh = up(head), da("alpha", n);
+      adrh::nodalVariationKokkos(n, dp, di, dMc, dh, power, da);
+      Kokkos::deep_copy(HostView(alpha.mutable_data(), n), da);
+    }
+    return alpha;
+  });
+  m.def("implicit_fct_limit", [](IArr indptr, IArr indices, IArr tpos, Arr Mc, Arr A, Arr ML, Arr sH, Arr sn, Arr smax, Arr smin, Arr alpha, double dt) {
+    py::array_t<double> datum(sH.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt_ = upInt(tpos);
+      adrh::DView<double> dMc = up(Mc), dA = up(A), dML = up(ML), dsH = up(sH), dsn = up(sn), dmax = up(smax), dmin = up(smin), dal = up(alpha),
+                          dout("datum", sH.size());
+      adrh::implicitFctLimitKokkos((int)indptr.size() - 1, dp, di, dt_, dMc, dA, dML, dsH, dsn, dmax, dmin, dal, dt, dout);
+      Kokkos::deep_copy(HostView(datum.mutable_data(), datum.size()), dout);
+    }
+    return datum;
+  });
   // ---- algebraic stabilization (lowOrder.h), on the execution space ----
   m.def("transpose_map", [](IArr indptr, IArr indices) {
     const std::vector<int> t = adrh::buildTransposeMap((int)indptr.size() - 1, indptr.data(), indices.data());

@@ -620,6 +620,28 @@ namespace adrh
       fctBoundsRowGiven(i, rowptr.data(), colidx.data(), G.data(), mL.data(), mmax.data(), mmin.data(), ML.data(), dt, Rp.data(), Rm.data());
     }
   };
+  struct NodalVariationPass
+  {
+    DView<const int> rowptr, colidx;
+    DView<const double> Mc, head;
+    double power;
+    DView<double> alpha;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      nodalVariationRow(i, rowptr.data(), colidx.data(), Mc.data(), head.data(), power, alpha.data());
+    }
+  };
+  struct FctFluxPassAlpha
+  {
+    DView<const int> rowptr, colidx, tpos;
+    DView<const double> Mc, A, sH, sn, alpha;
+    double dt;
+    DView<double> G;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      fctFluxRowAlpha(i, rowptr.data(), colidx.data(), tpos.data(), Mc.data(), A.data(), sH.data(), sn.data(), alpha.data(), dt, G.data());
+    }
+  };
   inline void upwindFluxKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const double> S, DView<const double> phi,
                                DView<const double> kr, DView<const double> dkr, DView<double> r, DView<double> J)
   {
@@ -644,6 +666,26 @@ namespace adrh
     forEachElement("adrh fct pass 2", 0, nRows, FctBoundsPass{rowptr, colidx, G, mL, moldBounds, ML, dt, Rp, Rm});
     Kokkos::fence();
     forEachElement("adrh fct pass 3", 0, nRows, FctApplyPass{rowptr, colidx, G, Rp, Rm, ML, mL, dt, mOut});
+    Kokkos::fence();
+  }
+
+  inline void nodalVariationKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const double> Mc, DView<const double> head,
+                                   double power, DView<double> alpha)
+  {
+    forEachElement("adrh nodal variation", 0, nRows, NodalVariationPass{rowptr, colidx, Mc, head, power, alpha});
+    Kokkos::fence();
+  }
+
+  inline void implicitFctLimitKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const int> tpos, DView<const double> Mc,
+                                     DView<const double> A, DView<const double> ML, DView<const double> sH, DView<const double> sn,
+                                     DView<const double> smax, DView<const double> smin, DView<const double> alpha, double dt, DView<double> datum)
+  {
+    DView<double> G("fct flux", colidx.extent(0)), Rp("R+", nRows), Rm("R-", nRows);
+    forEachElement("adrh implicit fct pass 1", 0, nRows, FctFluxPassAlpha{rowptr, colidx, tpos, Mc, A, sH, sn, alpha, dt, G});
+    Kokkos::fence();
+    forEachElement("adrh implicit fct pass 2", 0, nRows, FctBoundsPassGiven{rowptr, colidx, G, sn, smax, smin, ML, dt, Rp, Rm});
+    Kokkos::fence();
+    forEachElement("adrh implicit fct pass 3", 0, nRows, FctApplyPass{rowptr, colidx, G, Rp, Rm, ML, sn, dt, datum});
     Kokkos::fence();
   }
 

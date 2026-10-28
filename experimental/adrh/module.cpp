@@ -309,6 +309,19 @@ PYBIND11_MODULE(adrh_proto, m)
                               mmax.data(), mmin.data(), dt, out.mutable_data());
     return out;
   });
+  // implicit FCT (lowOrder.h): the nodal-variation prelimiter and the limited datum s^{n,FCT}
+  m.def("nodal_variation", [](IArrL indptr, IArrL indices, Arr Mc, Arr head, double power) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> alpha(n);
+    for (int i = 0; i < n; ++i) adrh::nodalVariationRow(i, indptr.data(), indices.data(), Mc.data(), head.data(), power, alpha.mutable_data());
+    return alpha;
+  });
+  m.def("implicit_fct_limit", [](IArrL indptr, IArrL indices, IArrL tpos, Arr Mc, Arr A, Arr ML, Arr sH, Arr sn, Arr smax, Arr smin, Arr alpha, double dt) {
+    py::array_t<double> datum(sH.size());
+    adrh::implicitFctLimit((int)indptr.size() - 1, indptr.data(), indices.data(), tpos.data(), Mc.data(), A.data(), ML.data(), sH.data(), sn.data(),
+                           smax.data(), smin.data(), alpha.data(), dt, datum.mutable_data());
+    return datum;
+  });
   // ---- algebraic stabilization (lowOrder.h) ----
   m.def("transpose_map", [](py::array_t<int, py::array::c_style | py::array::forcecast> indptr, py::array_t<int, py::array::c_style | py::array::forcecast> indices) {
     const std::vector<int> t = adrh::buildTransposeMap((int)indptr.size() - 1, indptr.data(), indices.data());

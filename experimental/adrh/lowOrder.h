@@ -26,6 +26,7 @@
 // sorted columns and a structurally symmetric pattern.
 #pragma once
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <vector>
 #include "engine.h"
@@ -356,6 +357,58 @@ namespace adrh
     for (int i = 0; i < nRows; ++i) fctFluxRowA(i, rowptr, colidx, tpos, Mc, A, mL, moldFlux, dt, G.data());
     for (int i = 0; i < nRows; ++i) fctBoundsRowGiven(i, rowptr, colidx, G.data(), mL, mmax, mmin, ML, dt, Rp.data(), Rm.data());
     for (int i = 0; i < nRows; ++i) fctApplyRow(i, rowptr, colidx, G.data(), Rp.data(), Rm.data(), ML, mL, dt, mOut);
+  }
+
+  // ---- implicit FCT (Dielmann, Kuzmin and Kees, JNMA; proteus's ImplicitFCTStep) ----------------------------------------------------------------------------
+  // The limiter is applied BEFORE the final solve, to the raw antidiffusive fluxes at the Galerkin predictor p^H, and the limited correction goes into the datum
+  // of the low-order solve:   s^{n,FCT}_i = s^n_i + (dt / M_L,i) sum_j alpha_ij g_ij,    M_L (s(p) - s^{n,FCT}) / dt + A~(p) u(p) = 0.
+  // g_ij = M_C,ij (sDot_i - sDot_j) + A_ij with sDot = (s(p^H) - s^n) / dt and A the antidiffusive flux at p^H (the Galerkin flux minus the K-upwinded one, as
+  // antidiffusiveFluxRow), so the flux pass is fctFluxRowA with mL = s(p^H), mold = s^n. Two differences from the post-step limiter: the bounds are GLOBAL
+  // (smax, smin: the retention curve's own, per node) and taken from s^n, and a nodal-variation prelimiter alpha_nv switches the correction off where the head
+  // is locally extremal (a smooth monotone profile keeps 1, a node that is a local extremum of the head gets 0):
+  //     alpha_nv,i = 1 - (|sum_j (h_i - h_j)| / sum_j |h_i - h_j|)^power,    j != i with M_C,ij > 0 (the neighbours that couple through the mass),
+  // alpha_ij = min(alpha_nv,i, alpha_nv,j) multiplies the flux, which keeps it antisymmetric. power <= 0 switches the prelimiter off.
+  ADRH_FN void nodalVariationRow(int i, const int *rowptr, const int *colidx, const double *Mc, const double *head, double power, double *alpha)
+  {
+    double num = 0.0, den = 0.0;
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j == i || Mc[p] <= 0.0) continue;
+      const double d = head[i] - head[j];
+      num += d;
+      den += d < 0.0 ? -d : d;
+    }
+    const double r = num < 0.0 ? -num : num;
+    alpha[i] = (den > 0.0 && power > 0.0) ? 1.0 - std::pow(r / den, power) : 1.0;
+  }
+
+  // pass 1 with the prelimiter: g_ij of fctFluxRowA times min(alpha_i, alpha_j), written to (i, j) and negated to (j, i)
+  ADRH_FN void fctFluxRowAlpha(int i, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *A, const double *sH,
+                               const double *sn, const double *alpha, double dt, double *G)
+  {
+    const double di = sH[i] - sn[i];
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j < i) continue;
+      if (j == i) { G[p] = 0.0; continue; }
+      const double dj = sH[j] - sn[j];
+      const double a = alpha[i] < alpha[j] ? alpha[i] : alpha[j];
+      const double g = a * (-Mc[p] * (dj - di) / dt + A[p]);
+      G[p] = g;
+      G[tpos[p]] = -g;
+    }
+  }
+
+  // the host reference: the limited datum s^{n,FCT} (no Dirichlet mask: the caller keeps s^n at the nodes it holds fixed). smax, smin must bracket s^n.
+  inline void implicitFctLimit(int nRows, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *A, const double *ML,
+                               const double *sH, const double *sn, const double *smax, const double *smin, const double *alpha, double dt, double *datum)
+  {
+    std::vector<double> G(rowptr[nRows]), Rp(nRows), Rm(nRows);
+    for (int i = 0; i < nRows; ++i) fctFluxRowAlpha(i, rowptr, colidx, tpos, Mc, A, sH, sn, alpha, dt, G.data());
+    for (int i = 0; i < nRows; ++i) fctBoundsRowGiven(i, rowptr, colidx, G.data(), sn, smax, smin, ML, dt, Rp.data(), Rm.data());
+    for (int i = 0; i < nRows; ++i) fctApplyRow(i, rowptr, colidx, G.data(), Rp.data(), Rm.data(), ML, sn, dt, datum);
   }
 
   // moldFlux: the old state the flux pass differences mL against (delta = mL - moldFlux); moldBounds: the one the local extrema are taken over
