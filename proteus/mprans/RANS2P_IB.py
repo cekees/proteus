@@ -1253,7 +1253,7 @@ class LevelModel(proteus.mprans.RANS2P.LevelModel):
         argsDict["ebqe_velocity"] = self.ebqe[('velocity', 0)]
         argsDict["flux"] = self.ebq_global[('totalFlux', 0)]
         argsDict["elementResidual_p_save"] = self.elementResidual[0]
-        argsDict["boundaryFlags"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["boundaryFlags"] = self.mesh.elementBoundaryUserFlags
         argsDict["barycenters"] = self.coefficients.barycenters
         argsDict["wettedAreas"] = self.coefficients.wettedAreas
         argsDict["netForces_p"] = self.coefficients.netForces_p
@@ -1697,7 +1697,7 @@ class LevelModel(proteus.mprans.RANS2P.LevelModel):
         argsDict["ebqe_velocity"] = self.ebqe[('velocity', 0)]
         argsDict["flux"] = self.ebq_global[('totalFlux', 0)]
         argsDict["elementResidual_p_save"] = self.elementResidual[0]
-        argsDict["boundaryFlags"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["boundaryFlags"] = self.mesh.elementBoundaryUserFlags
         argsDict["barycenters"] = self.coefficients.barycenters
         argsDict["wettedAreas"] = self.coefficients.wettedAreas
         argsDict["netForces_p"] = self.coefficients.netForces_p

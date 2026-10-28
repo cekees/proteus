@@ -118,7 +118,7 @@ from mpi4py import MPI
 c = comm.comm.tompi4py()
 mass = c.allreduce(float((u * dV).sum()), op=MPI.SUM)
 l2 = c.allreduce(float((u ** 2 * dV).sum()), op=MPI.SUM)
-interfaces = int((mesh.elementBoundaryMaterialTypes[mesh.exteriorElementBoundariesArray] == 0).sum())
+interfaces = int((mesh.elementBoundaryMaterialTypes[mesh.exteriorElementBoundariesArray] == -1).sum())
 print("RANK rank=%d interfaces=%d" % (comm.rank(), interfaces), flush=True)
 if comm.rank() == 0:
     print("RESULT ranks=%d mass=%.17e l2=%.17e" % (comm.size(), mass, l2), flush=True)

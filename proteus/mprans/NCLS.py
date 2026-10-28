@@ -1596,7 +1596,7 @@ class LevelModel(OneLevelTransport):
             argsDict["exteriorElementBoundariesArray"] = self.mesh.exteriorElementBoundariesArray
             argsDict["elementBoundaryElementsArray"] = self.mesh.elementBoundaryElementsArray
             argsDict["elementBoundaryLocalElementBoundariesArray"] = self.mesh.elementBoundaryLocalElementBoundariesArray
-            argsDict["elementBoundaryMaterialTypes"] = self.mesh.elementBoundaryMaterialTypes
+            argsDict["elementBoundaryMaterialTypes"] = self.mesh.elementBoundaryUserFlags
             argsDict["ebqe_velocity_ext"] = self.coefficients.ebqe_v
             argsDict["isDOFBoundary_u"] = self.numericalFlux.isDOFBoundary[0]
             argsDict["ebqe_bc_u_ext"] = self.numericalFlux.ebqe[('u', 0)]

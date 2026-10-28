@@ -513,7 +513,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.mesh = mesh
         self.elementMaterialTypes = mesh.elementMaterialTypes
         nBoundariesMax = int(
-            globalMax(max(self.mesh.elementBoundaryMaterialTypes))) + 1
+            globalMax(max(self.mesh.elementBoundaryUserFlags))) + 1
         self.wettedAreas = np.zeros((nBoundariesMax,), 'd')
         self.netForces_p = np.zeros((nBoundariesMax, 3), 'd')
         self.netForces_v = np.zeros((nBoundariesMax, 3), 'd')
@@ -1849,7 +1849,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["flux"] = self.ebq_global[('totalFlux', 0)]
         argsDict["elementResidual_p_save"] = self.elementResidual[0]
         argsDict["elementFlags"] = self.mesh.elementMaterialTypes
-        argsDict["boundaryFlags"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["boundaryFlags"] = self.mesh.elementBoundaryUserFlags
         argsDict["barycenters"] = self.coefficients.barycenters
         argsDict["wettedAreas"] = self.coefficients.wettedAreas
         argsDict["netForces_p"] = self.coefficients.netForces_p

@@ -92,7 +92,7 @@ class RigidBody(AuxiliaryVariables.AV_base, object):
         self.writer = Archiver.XdmfWriter()
         self.nd = model.levelModelList[-1].nSpace_global
         m = self.model.levelModelList[-1]
-        flagMax = max(m.mesh.elementBoundaryMaterialTypes)
+        flagMax = max(m.mesh.elementBoundaryUserFlags)
         # flagMin = min(m.mesh.elementBoundaryMaterialTypes)
         self.nForces = flagMax + 1
         return self

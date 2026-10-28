@@ -693,7 +693,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argDict['exteriorElementBoundariesArray'] = self.mesh.exteriorElementBoundariesArray
         argDict['elementBoundaryElementsArray'] = self.mesh.elementBoundaryElementsArray
         argDict['elementBoundaryLocalElementBoundariesArray'] = self.mesh.elementBoundaryLocalElementBoundariesArray
-        argDict['elementBoundaryMaterialTypesArray'] = self.mesh.elementBoundaryMaterialTypes
+        argDict['elementBoundaryMaterialTypesArray'] = self.mesh.elementBoundaryUserFlags
         argDict['Aij'] = self.Aij
         argDict['added_mass_i'] = self.added_mass_i
         argDict['barycenters'] = self.barycenters
