@@ -118,15 +118,20 @@ cdef class FLCBDF_integrator:
         global initialized
         initialized = True
         self.petscSys = new Sys()
+        # y is this rank's dofs (owned and ghost): the local size. Daetk's
+        # vectors are created from the GLOBAL size and take the layout of the
+        # registered example, so the example is the local REF vector and the
+        # sizes the integrator and the norm see are the sum over the ranks.
         cdef int dim=y.size
+        cdef int dimGlobal=int(_PETSc.COMM_WORLD.tompi4py().allreduce(dim))
         self.sizeVec = new Vec(REF,<double*>(y.data),dim)#this is so we have a parallel vector in the registry
         self.sizeVec.setExample()
-        self.wNormp = new WeightedL2Norm(dim)
+        self.wNormp = new WeightedL2Norm(dimGlobal)
         if isinstance(yName, bytes):
             yName = yName.decode()
         dataFilename = "data_{0:d}_{1:s}.txt".format(dim,yName).encode()
         self.data = new FullDataFile(0.0, dataFilename)
-        self.flcbdf = new FLCBDF_lite(dim, self.wNormp[0], self.data[0])
+        self.flcbdf = new FLCBDF_lite(dimGlobal, self.wNormp[0], self.data[0])
 
     def __dealloc__(self):
         del self.wNormp

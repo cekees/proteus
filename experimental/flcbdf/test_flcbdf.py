@@ -118,3 +118,18 @@ def test_hotstart_with_flcbdf_reproduces_the_uninterrupted_run(tmp_path):
     final = [l for l in out.splitlines() if l.startswith("FINAL")][0]
     errs = [float(x) for x in re.findall(r"(?:L2|Linf)=([0-9.e+-]+)", final)]
     assert len(errs) == 8 and max(errs) < 1e-10, final
+
+
+def _ode_parallel(n):
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([here, os.environ.get("PYTHONPATH", "")]))
+    out = subprocess.run(["mpiexec", "-n", str(n), sys.executable, os.path.join(here, "ode_parallel.py")],
+                         env=env, check=True, capture_output=True, text=True).stdout
+    return __import__("json").loads([l for l in out.splitlines() if l.startswith("{")][0])
+
+
+def test_step_sequence_does_not_depend_on_the_number_of_ranks():
+    """The error norm is global: one rank and two (unequal) ranks take the same steps."""
+    one, two = _ode_parallel(1), _ode_parallel(2)
+    assert len(one["dts"]) == len(two["dts"]) and len(one["dts"]) > 10
+    assert np.allclose(one["dts"], two["dts"], rtol=1e-10, atol=0.0)
+    assert abs(one["err"] - two["err"]) < 1e-10

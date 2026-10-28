@@ -27,6 +27,10 @@ sys.path.insert(0, vortex)
 
 sys.path.insert(0, here)
 import vortex2D  # noqa: E402
+# HS_PARALLEL=1 selects the PETSc linear solvers the n files use in parallel
+# (vortex2D.parallel is False, which means LU, which parallel runs reject)
+if os.environ.get("HS_PARALLEL"):
+    vortex2D.parallel = True
 # HS_TI_LS / HS_TI_VOF override the integrator of one model (ls or vof)
 vortex2D.timeIntegration_vof = os.environ.get("HS_TI_VOF", ti)
 vortex2D.timeIntegration_ls = os.environ.get("HS_TI_LS", ti)
