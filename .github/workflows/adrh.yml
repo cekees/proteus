@@ -1,0 +1,107 @@
+name: ADRH engine (experimental/adrh)
+
+# The engine's kernel tests need numpy, scipy, pybind11 and Kokkos, and proteus.Quadrature
+# from the source tree (it needs no compiled extension), so this builds in minutes and does not
+# wait for the proteus build in sdist.yml. The regressions against proteus models
+# (ad_regression.py and the like) need a built proteus and are run by hand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'experimental/adrh/**'
+      - 'proteus/Quadrature.py'
+      - '.github/workflows/adrh.yml'
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'experimental/adrh/**'
+      - 'proteus/Quadrature.py'
+      - '.github/workflows/adrh.yml'
+  # nightly device run (the gpu job below); the CPU job runs on pushes and pull requests
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+# a pull request's older run is cancelled when it is pushed to again (the macOS runners queue for hours)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  kernels:
+    # adding the "gpu" label to a pull request runs the gpu job; the CPU legs do not need to run again for it
+    if: github.event_name != 'schedule' && github.event.action != 'labeled'
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: linux-64, os: ubuntu-latest}
+          - {name: linux-aarch64, os: ubuntu-24.04-arm}
+          - {name: macos-15 (Apple Silicon), os: macos-15}
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up conda environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          python-version: "3.12"
+          activate-environment: adrh
+      - name: Install the build and test dependencies
+        run: >
+          conda install -y -c conda-forge --override-channels
+          cmake ninja compilers pybind11 numpy scipy kokkos
+      - name: Configure
+        working-directory: experimental/adrh
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DPython_EXECUTABLE="$(which python)" -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
+      - name: Build
+        working-directory: experimental/adrh
+        run: cmake --build build
+      - name: Test
+        working-directory: experimental/adrh
+        run: ctest --test-dir build --output-on-failure
+
+  # The CUDA build of the same kernels and tests on a GPU runner. Off until the organization has one: create a
+  # GitHub-hosted larger runner with a GPU (Settings > Actions > Runners > New runner > Linux GPU; the 4-core
+  # Tesla T4, Turing, sm75) and set the Actions variable ADRH_GPU_RUNNER to the runner's label, and optionally
+  # ADRH_GPU_ARCH (Kokkos architecture name, default TURING75; AMPERE80, ADA89, HOPPER90 ...). With the variable
+  # unset the job is skipped. It runs nightly, on manual dispatch, and on pull requests labelled "gpu".
+  gpu:
+    if: >-
+      vars.ADRH_GPU_RUNNER != '' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'gpu')))
+    name: CUDA ${{ vars.ADRH_GPU_ARCH || 'TURING75' }}
+    runs-on: ${{ vars.ADRH_GPU_RUNNER }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The GPU
+        run: nvidia-smi || true
+      - name: Set up conda environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          python-version: "3.12"
+          activate-environment: adrh-gpu
+      # CUDA 12.9 is the toolchain: it needs only a driver from the 12.x series, and nvcc 12.9 takes gcc 14. Kokkos is
+      # built from source (build_kokkos_cuda.sh) because conda-forge's CUDA Kokkos packages cannot be solved by conda.
+      - name: Install the build and test dependencies
+        run: >
+          conda install -y -c conda-forge --override-channels
+          cmake ninja "gxx_linux-64=14" pybind11 numpy scipy
+          "cuda-nvcc=12.9" cuda-cudart-dev cuda-driver-dev "cuda-version=12.9"
+      - name: Build Kokkos (OpenMP + CUDA) and the ADRH modules
+        working-directory: experimental/adrh
+        run: sh build_kokkos_cuda.sh "${{ vars.ADRH_GPU_ARCH || 'TURING75' }}"
+      - name: Test
+        working-directory: experimental/adrh
+        run: ctest --test-dir gpu-build/adrh-build --output-on-failure
