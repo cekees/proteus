@@ -345,6 +345,31 @@ def test_point_location_beyond_two_rings():
     far = int(np.argmin(np.linalg.norm(mesh.nodeArray - np.array([0., 0., 0.]), axis=1)))
     location = (0.37, 0.22, 0.0)
     assert g.getLocalElement(femSpace, location, far) is not None
+
+def test_point_on_a_face_takes_the_lowest_numbered_element():
+    # a point on a face between two elements is in both; a discontinuous field
+    # has a different value on each side, so the choice must not depend on
+    # which node the search started from
+    if Comm.get().size() > 1:
+        pytest.skip("calls getLocalElement directly, which only sees this rank's elements")
+    model, ic = gauge_setup(2, 100)
+    g = PointGauges(gauges=((('u0',), ((0.5, 0.5, 0),)),))
+    g.attachModel(model, None)
+    femSpace = model.levelModelList[-1].u[0].femSpace
+    mesh = femSpace.mesh
+    checked = 0
+    for eb in range(mesh.nElementBoundaries_global):
+        if mesh.elementBoundaryElementsArray[eb, 1] < 0:
+            continue  # a boundary face
+        pair = sorted(int(e) for e in mesh.elementBoundaryElementsArray[eb])
+        face = mesh.elementBoundaryNodesArray[eb]
+        midpoint = tuple(mesh.nodeArray[face].mean(axis=0))
+        for start in face:
+            assert g.getLocalElement(femSpace, midpoint, int(start)) == pair[0]
+        checked += 1
+        if checked == 50:
+            break
+    assert checked == 50
 # erdc#221: bad inputs must fail early with a message that names the problem
 
 def test_point_gauge_accepts_lists():
@@ -686,3 +711,27 @@ def test_bounding_box_prefilter_changes_no_clipping_result(nd):
         lines.append((tuple(p), tuple(q)))
     for endpoints in lines:
         assert MeshTools.getMeshIntersections(mesh, toPolyhedron, endpoints) == brute(endpoints)
+
+def test_point_a_roundoff_outside_a_curved_boundary_is_interpolated():
+    # the middle of an edge on the cylinder's circle, moved outward by roundoff:
+    # outside every element, but not on a face aligned with the bounding box.
+    # u = x + 10 y, so the interpolated value is exact; a nearest-node read is not
+    filename = 'test_curved_boundary_point.csv'
+    silent_rm(filename)
+    mesh = build_turek_cylinder_mesh().meshList[0]
+    cylinder = [eb for eb in range(mesh.nExteriorElementBoundaries_global)
+                if np.linalg.norm(mesh.nodeArray[mesh.elementBoundaryNodesArray[mesh.exteriorElementBoundariesArray[eb]]].mean(axis=0)[:2]
+                                  - [0.2, 0.2]) < 0.15]
+    face = mesh.elementBoundaryNodesArray[mesh.exteriorElementBoundariesArray[cylinder[0]]]
+    middle = mesh.nodeArray[face].mean(axis=0)
+    offMesh = np.array([0.2, 0.2, 0.0]) - middle   # toward the hole's center
+    # the face's own normal, not the radius, is what leaves the mesh by roundoff
+    edge = mesh.nodeArray[face[1]] - mesh.nodeArray[face[0]]
+    normal = np.array([edge[1], -edge[0], 0.0])/np.linalg.norm(edge)
+    point = middle + 1e-9*(normal if normal.dot(offMesh) > 0 else -normal)
+    run_gauge(PointGauges(gauges=((('u0',), (tuple(point),)),), fileName=filename),
+              [0.0], nd=2, mesh_builder=build_turek_cylinder_mesh)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    npt.assert_allclose(np.atleast_2d(data)[0, 1], point[0] + 10*point[1], rtol=1e-6)
