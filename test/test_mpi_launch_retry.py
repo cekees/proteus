@@ -225,7 +225,10 @@ def test_a_rank_that_raises_aborts_the_whole_job(tmp_path):
     assert time.time() - start < 45
 
 
-def test_the_launch_asks_its_helpers_to_dump_stacks_before_the_timeout(launch_policy):
+def test_the_launch_asks_its_helpers_to_dump_stacks_before_the_timeout(launch_policy, monkeypatch):
+    # CI sets a timeout scale (auto, or a number); the dump is 80% of the scaled timeout
+    monkeypatch.setenv('PROTEUS_TEST_TIMEOUT_SCALE', '1')
+    monkeypatch.delenv('PROTEUS_TEST_DUMP_AFTER', raising=False)
     seen = {}
 
     def run(cmd, *args, **kwargs):
