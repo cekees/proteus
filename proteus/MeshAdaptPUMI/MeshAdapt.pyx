@@ -26,6 +26,7 @@ cdef extern from "MeshAdaptPUMI/MeshAdaptPUMI.h":
         int getSimmetrixBC()
         int reconstructFromProteus(Mesh&,Mesh&,int)
         int reconstructFromProteus2(Mesh&,int*,int*)
+        int reconstructFromProteusGlobal(int,int,double*,int,int*,int*,int*,int,int*)
         int constructFromSerialPUMIMesh(Mesh&)
         int constructFromParallelPUMIMesh(Mesh&, Mesh&)
         int updateMaterialArrays(Mesh&,int, int, int)
@@ -92,6 +93,22 @@ cdef class MeshAdapt:
         return self.thisptr.updateSphereCoordinates(&sphereCenter[0])
     def reconstructFromProteus(self,cmeshTools.CMesh cmesh,cmeshTools.CMesh global_cmesh,hasModel=0):
         return self.thisptr.reconstructFromProteus(cmesh.mesh,global_cmesh.mesh,hasModel)
+    def reconstructFromProteusGlobal(self, int dim, np.ndarray[double,ndim=2,mode="c"] nodes,
+                                     np.ndarray[int,ndim=2,mode="c"] elements,
+                                     np.ndarray[int,ndim=1,mode="c"] elementOwner,
+                                     np.ndarray[int,ndim=1,mode="c"] isModelVert,
+                                     np.ndarray[int,ndim=2,mode="c"] bFaces):
+        """Collective. Rank 0 passes the global mesh, every other rank empty arrays
+        (shapes (0,3), (0,dim+1), (0,), (0,), (0,dim+2)). Writes Reconstructed.dmg
+        and a Reconstructed.smb with one part per rank, partitioned by elementOwner.
+        Returns the global element count."""
+        cdef int nn = nodes.shape[0], ne = elements.shape[0], nb = bFaces.shape[0]
+        return self.thisptr.reconstructFromProteusGlobal(dim, nn, <double*> nodes.data if nn else NULL,
+                                                         ne, <int*> elements.data if ne else NULL,
+                                                         <int*> elementOwner.data if ne else NULL,
+                                                         <int*> isModelVert.data if nn else NULL,
+                                                         nb, <int*> bFaces.data if nb else NULL)
+
     def reconstructFromProteus2(self,cmeshTools.CMesh cmesh,np.ndarray[int,ndim=1,mode="c"] isModelVert,
                                 np.ndarray[int,ndim=2,mode="c"] bFaces):
         isModelVert = np.ascontiguousarray(isModelVert)

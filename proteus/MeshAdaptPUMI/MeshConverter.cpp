@@ -1,4 +1,7 @@
 #include <algorithm>
+#include <cstdio>
+#include <memory>
+#include <vector>
 #include <valarray>
 #include "MeshAdaptPUMI.h"
 #include "PCU.h"
@@ -1412,3 +1415,87 @@ int MeshAdaptPUMIDrvr::reconstructFromProteus2(Mesh& mesh,int* isModelVert,int* 
 
 }
 
+
+int MeshAdaptPUMIDrvr::reconstructFromProteusGlobal(int dim, int nNodes, double* nodes, int nElements, int* elements,
+                                                    int* elementOwner, int* isModelVert, int nBFaces, int* bFaces){
+  // reconstructFromProteus2 builds the PUMI mesh and derives the geometric model
+  // from the whole boundary, so it cannot run on a subdomain: a partition
+  // boundary would become a model face. Build on rank 0 alone, from the global
+  // mesh, in a PCU of one rank; then spread it over the ranks with
+  // apf::repeatMdsMesh, the way SCOREC's split tool does, by Proteus's own
+  // element partition. The model is written to Reconstructed.dmg and loaded on
+  // every rank so they all classify against the same one.
+  const int nVertsPerElement = (dim == 2) ? 3 : 4;
+  const int elementType = (dim == 2) ? apf::Mesh::TRIANGLE : apf::Mesh::TET;
+  const bool isRoot = (PCU_Comm_Self(PCUObj) == 0);
+  const int nRanks = PCU_Comm_Peers(PCUObj);
+  int nGlobalElements = 0;
+
+  std::unique_ptr<pcu::PCU> selfPCU;
+  apf::Mesh2* ms = NULL;
+  if(isRoot){
+    selfPCU.reset(new pcu::PCU(MPI_COMM_SELF));
+    gmi_model* tempModel = gmi_load(".null");
+    ms = apf::makeEmptyMdsMesh(tempModel, dim, false, selfPCU.get());
+    std::valarray<apf::Gid> elementNodesArray(nElements*nVertsPerElement);
+    for(int i=0;i<nElements*nVertsPerElement;i++)
+      elementNodesArray[i] = elements[i];
+    apf::GlobalToVert outMap;
+    apf::construct(ms, &elementNodesArray[0], nElements, elementType, outMap);
+    apf::setCoords(ms, nodes, nNodes, outMap);
+
+    std::map<int,apf::MeshEntity*> globalToRegion;
+    apf::MeshIterator* it = ms->begin(dim);
+    apf::MeshEntity* ent;
+    int counter = 0;
+    while( (ent = ms->iterate(it)) ){
+      globalToRegion.insert(std::pair<int,apf::MeshEntity*>(counter, ent));
+      counter++;
+    }
+    ms->end(it);
+
+    std::unique_ptr<bool[]> isModelVert_bool(new bool[nNodes]);
+    for(int i=0;i<nNodes;i++)
+      isModelVert_bool[i] = isModelVert[i] != 0;
+
+    const int numEntries = 2+dim;
+    if(dim == 2){
+      std::vector<int> bEdges(nBFaces*4);
+      std::copy(bFaces, bFaces+nBFaces*numEntries, bEdges.begin());
+      int (*b)[4] = reinterpret_cast<int(*)[4]>(bEdges.data());
+      apf::derive2DMdlFromManifold(ms, isModelVert_bool.get(), nBFaces, b, outMap, globalToRegion);
+    }
+    else{
+      std::vector<int> bFaces3(nBFaces*5);
+      std::copy(bFaces, bFaces+nBFaces*numEntries, bFaces3.begin());
+      int (*b)[5] = reinterpret_cast<int(*)[5]>(bFaces3.data());
+      apf::deriveMdlFromManifold(ms, isModelVert_bool.get(), nBFaces, b, outMap, globalToRegion);
+    }
+    nGlobalElements = ms->count(dim);
+    gmi_write_dmg(ms->getModel(), "Reconstructed.dmg");
+  }
+  // plain MPI: the root's PCU has its own communicator
+  MPI_Allreduce(MPI_IN_PLACE, &nGlobalElements, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  gmi_model* model = gmi_load("Reconstructed.dmg");
+  apf::Migration* plan = NULL;
+  if(isRoot){
+    plan = new apf::Migration(ms);
+    apf::MeshIterator* it = ms->begin(dim);
+    apf::MeshEntity* ent;
+    int i = 0;
+    while( (ent = ms->iterate(it)) ){
+      plan->send(ent, elementOwner[i]);
+      i++;
+    }
+    ms->end(it);
+  }
+  if(isRoot)
+    ms->switchPCU(&pcuObj_);
+  m = apf::repeatMdsMesh(ms, model, plan, nRanks, &pcuObj_);
+  m->verify();
+  m->writeNative("Reconstructed.smb");
+  isReconstructed = 2;
+  return nGlobalElements;
+}

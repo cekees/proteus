@@ -38,6 +38,12 @@ class MeshAdaptPUMIDrvr{
   //Functions to construct proteus mesh data structures
   int reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int hasModel);
   int reconstructFromProteus2(Mesh& mesh, int* isModelVert, int* bFaces);
+  // Collective. Rank 0 passes the whole (pre-partition) mesh as flat arrays and
+  // every other rank passes zero entities; elementOwner[i] is the rank that owns
+  // element i. Writes Reconstructed.dmg and an nRanks-part Reconstructed.smb
+  // partitioned the way elementOwner says. Returns the global element count.
+  int reconstructFromProteusGlobal(int dim, int nNodes, double* nodes, int nElements, int* elements,
+                                   int* elementOwner, int* isModelVert, int nBFaces, int* bFaces);
   int constructFromSerialPUMIMesh(Mesh& mesh);
   int constructFromParallelPUMIMesh(Mesh& mesh, Mesh& subdomain_mesh);
   int updateMaterialArrays(Mesh& mesh,int dim, int bdryID, int GeomTag);
