@@ -302,6 +302,9 @@ class Gauges(AV_base):
         checkedElements = set()
         checkedNodes = set()
         ring = {node}
+        containing = []
+        nearMiss = (np.inf, None)
+        lastDepth = maxRings
         for depth in range(maxRings + 1):
             nextRing = set()
             for n in ring:
@@ -316,14 +319,38 @@ class Gauges(AV_base):
                     # query whether xi lies within the reference element, up to
                     # roundoff: a location on a face between elements (every
                     # end of a line gauge segment) is a roundoff outside of both
-                    if self.referenceElementViolation(femSpace.elementMaps.referenceElement, xi) <= 1e-9:
-                        return eN
+                    violation = self.referenceElementViolation(femSpace.elementMaps.referenceElement, xi)
+                    if violation <= 1e-9:
+                        containing.append(eN)
+                        lastDepth = min(lastDepth, depth + 1)
+                    elif violation < nearMiss[0]:
+                        nearMiss = (violation, eN)
                     nextRing.update(mesh.elementNodesArray[eN])
+            if containing and depth >= lastDepth:
+                # a location on a face lies in every element sharing that face,
+                # all within one ring of the first one found
+                break
             ring = nextRing - checkedNodes
             if not ring:
                 break
-        # no elements found
-        return None
+        if not containing:
+            # a location on a curved or tilted boundary can miss the mesh by
+            # roundoff, outside every element; take the element it misses least,
+            # if the miss is a roundoff of the element's size
+            if nearMiss[0] <= 1e-6:
+                return nearMiss[1]
+            # no elements found
+            return None
+        # a discontinuous space has a value from each side of a face: take the
+        # one from the element with the lowest global number, whatever the
+        # order the search found them in
+        return min(containing, key=lambda eN: (self.globalElementNumber(mesh, eN), eN))
+
+    @staticmethod
+    def globalElementNumber(mesh, eN):
+        numbering = getattr(mesh, 'elementNumbering_subdomain2global', None)
+        # a serial mesh may carry an empty numbering
+        return int(numbering[eN]) if numbering is not None and len(numbering) > eN else int(eN)
 
     def findNearestNode(self, femSpace, location):
         """Given a gauge location, attempts to locate the most suitable
@@ -341,8 +368,12 @@ class Gauges(AV_base):
 
         # determine global nearest node
         haveElement = int(local_element is not None)
-        global_have_element, owning_proc = comm.allreduce((haveElement, comm.rank),
-                                                          op=MPI.MAXLOC)
+        # the owner holds the element with the lowest global number, so a point on a
+        # face of a discontinuous space reads the same side on any rank layout
+        elementRank = (self.globalElementNumber(femSpace.mesh, local_element)
+                       if haveElement else np.iinfo(np.int32).max)
+        global_element_rank, owning_proc = comm.allreduce((elementRank, comm.rank), op=MPI.MINLOC)
+        global_have_element = int(global_element_rank != np.iinfo(np.int32).max)
         if global_have_element:
             logEvent("Gauges on element at location: [%g %g %g] assigned to %d" % (location[0], location[1], location[2],
                                                                     owning_proc), 3)

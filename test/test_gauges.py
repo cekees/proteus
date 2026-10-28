@@ -345,6 +345,31 @@ def test_point_location_beyond_two_rings():
     far = int(np.argmin(np.linalg.norm(mesh.nodeArray - np.array([0., 0., 0.]), axis=1)))
     location = (0.37, 0.22, 0.0)
     assert g.getLocalElement(femSpace, location, far) is not None
+
+def test_point_on_a_face_takes_the_lowest_numbered_element():
+    # a point on a face between two elements is in both; a discontinuous field
+    # has a different value on each side, so the choice must not depend on
+    # which node the search started from
+    if Comm.get().size() > 1:
+        pytest.skip("calls getLocalElement directly, which only sees this rank's elements")
+    model, ic = gauge_setup(2, 100)
+    g = PointGauges(gauges=((('u0',), ((0.5, 0.5, 0),)),))
+    g.attachModel(model, None)
+    femSpace = model.levelModelList[-1].u[0].femSpace
+    mesh = femSpace.mesh
+    checked = 0
+    for eb in range(mesh.nElementBoundaries_global):
+        if mesh.elementBoundaryElementsArray[eb, 1] < 0:
+            continue  # a boundary face
+        pair = sorted(int(e) for e in mesh.elementBoundaryElementsArray[eb])
+        face = mesh.elementBoundaryNodesArray[eb]
+        midpoint = tuple(mesh.nodeArray[face].mean(axis=0))
+        for start in face:
+            assert g.getLocalElement(femSpace, midpoint, int(start)) == pair[0]
+        checked += 1
+        if checked == 50:
+            break
+    assert checked == 50
 # erdc#221: bad inputs must fail early with a message that names the problem
 
 def test_point_gauge_accepts_lists():
@@ -657,6 +682,59 @@ def test_first_gauge_row_is_the_initial_condition(tmp_path, monkeypatch):
     npt.assert_allclose(data[0], [0.0, 0.5], atol=1e-12)
     npt.assert_allclose(data[-1, 1], 0.5*(1 + data[-1, 0]), rtol=1e-2)
 
+@pytest.mark.parametrize("nd", [2, 3])
+def test_bounding_box_prefilter_changes_no_clipping_result(nd):
+    # getMeshIntersections only clips the elements a line can touch; the
+    # result must equal clipping every element
+    import time
+    rng = np.random.default_rng(7)
+    if nd == 2:
+        mesh = MeshTools.MultilevelTriangularMesh(30, 30, 1, 0, 0, 0, 1, 1, 1, refinementLevels=1).meshList[0]
+        toPolyhedron = MeshTools.triangleVerticesToNormals
+    else:
+        mesh = MeshTools.MultilevelTetrahedralMesh(8, 8, 8, 0, 0, 0, 1, 1, 1, refinementLevels=1).meshList[0]
+        toPolyhedron = MeshTools.tetrahedronVerticesToNormals
+    def brute(endpoints):
+        found = set()
+        for element in mesh.elementNodesArray:
+            clipped = MeshTools.intersectPolyhedron(endpoints, toPolyhedron(mesh.nodeArray[element]))
+            if clipped and not np.array_equal(clipped[0], clipped[1]):
+                found.add((tuple(clipped[0]), tuple(clipped[1])))
+        return found
+    lines = [((0.0, 0.5, 0.5 if nd == 3 else 0.0), (1.0, 0.5, 0.5 if nd == 3 else 0.0)),  # along a mesh line
+             ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0 if nd == 3 else 0.0)),                       # through vertices
+             ((-0.5, 0.3, 0.0), (1.5, 0.3, 0.0))]                                         # leaving the mesh
+    for _ in range(10):
+        p, q = rng.uniform(-0.2, 1.2, (2, 3))
+        if nd == 2:
+            p[2] = q[2] = 0.0
+        lines.append((tuple(p), tuple(q)))
+    for endpoints in lines:
+        assert MeshTools.getMeshIntersections(mesh, toPolyhedron, endpoints) == brute(endpoints)
+
+def test_point_a_roundoff_outside_a_curved_boundary_is_interpolated():
+    # the middle of an edge on the cylinder's circle, moved outward by roundoff:
+    # outside every element, but not on a face aligned with the bounding box.
+    # u = x + 10 y, so the interpolated value is exact; a nearest-node read is not
+    filename = 'test_curved_boundary_point.csv'
+    silent_rm(filename)
+    mesh = build_turek_cylinder_mesh().meshList[0]
+    cylinder = [eb for eb in range(mesh.nExteriorElementBoundaries_global)
+                if np.linalg.norm(mesh.nodeArray[mesh.elementBoundaryNodesArray[mesh.exteriorElementBoundariesArray[eb]]].mean(axis=0)[:2]
+                                  - [0.2, 0.2]) < 0.15]
+    face = mesh.elementBoundaryNodesArray[mesh.exteriorElementBoundariesArray[cylinder[0]]]
+    middle = mesh.nodeArray[face].mean(axis=0)
+    offMesh = np.array([0.2, 0.2, 0.0]) - middle   # toward the hole's center
+    # the face's own normal, not the radius, is what leaves the mesh by roundoff
+    edge = mesh.nodeArray[face[1]] - mesh.nodeArray[face[0]]
+    normal = np.array([edge[1], -edge[0], 0.0])/np.linalg.norm(edge)
+    point = middle + 1e-9*(normal if normal.dot(offMesh) > 0 else -normal)
+    run_gauge(PointGauges(gauges=((('u0',), (tuple(point),)),), fileName=filename),
+              [0.0], nd=2, mesh_builder=build_turek_cylinder_mesh)
+    Comm.get().barrier()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    npt.assert_allclose(np.atleast_2d(data)[0, 1], point[0] + 10*point[1], rtol=1e-6)
 
 def test_slivers_at_the_end_of_a_line_are_not_selected_again():
     # a mesh node a roundoff off the line cuts the last segments into slivers
