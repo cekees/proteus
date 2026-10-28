@@ -735,3 +735,17 @@ def test_point_a_roundoff_outside_a_curved_boundary_is_interpolated():
     names, data = parse_gauge_output(filename)
     delete_file(filename)
     npt.assert_allclose(np.atleast_2d(data)[0, 1], point[0] + 10*point[1], rtol=1e-6)
+
+def test_slivers_at_the_end_of_a_line_are_not_selected_again():
+    # a mesh node a roundoff off the line cuts the last segments into slivers
+    # shorter than the pruning tolerance.  The sliver left the position within
+    # the tolerance of its own start, so it was chosen again and again: thousands
+    # of repeats of one point, each adding a little to a line integral
+    from proteus.Gauges import Gauges
+    endpoints = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    segment = lambda a, b: (a, b, np.array([[a, 0.0, 0.0], [b, 0.0, 0.0]]))
+    segments = [segment(0.0, 0.5), segment(0.5, 0.7),
+                segment(0.7, 0.7 + 1e-12), segment(0.7 + 1e-12, 0.7 + 3e-12)]
+    selected = Gauges.pruneDuplicateSegments(None, endpoints, segments)
+    assert len(selected) == 2
+    npt.assert_allclose([s[1, 0] for s in selected], [0.5, 0.7])

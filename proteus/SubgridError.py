@@ -778,6 +778,16 @@ class HamiltonJacobi_ASGS_opt(SGE_base):
         if self.lag:
             for ci in range(self.nc):
                 self.cq[('dH_sge',ci,ci)][:]= self.cq[('dH',ci,ci)]
+    def state(self):
+        """The lagged dH_sge, the only history this class keeps; None when
+        not lagging (dH_sge is then dH itself)."""
+        if not self.lag:
+            return None
+        return {'dH_sge_%d' % ci: numpy.array(self.cq[('dH_sge',ci,ci)], copy=True)
+                for ci in range(self.nc)}
+    def set_state(self, state):
+        for ci in range(self.nc):
+            self.cq[('dH_sge',ci,ci)][:] = state['dH_sge_%d' % ci]
 
 class StokesStabilization_1(SGE_base):
     def __init__(self,coefficients,nd,stabFlag='1',lag=False):

@@ -670,8 +670,11 @@ class Gauges(AV_base):
             segment_pos = 0
             covered = 0.
             while segment_pos < (1 - eps):
-                # choose the longest line from those that start at segment_pos
-                longest_segment = 0, None, None
+                # choose the longest line from those that start at segment_pos; one
+                # no longer than eps is the same position (a mesh node a roundoff off
+                # the line cuts slivers like that), and choosing it would leave its
+                # own start within eps of the new position, so it would be chosen again
+                longest_segment = eps, None, None
                 next_start = None
                 for proc_rank, proc_length_segments in enumerate(length_segments):
                     segment_id = 0
@@ -694,7 +697,7 @@ class Gauges(AV_base):
                     proc_length_segments[:] = proc_length_segments[segment_id:]
 
                 segment_length, proc_rank, segment = longest_segment
-                if segment_length == 0:
+                if segment is None:
                     # the line leaves the mesh here: skip to the next segment, or stop
                     if next_start is None:
                         break

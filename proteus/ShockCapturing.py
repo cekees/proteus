@@ -6,6 +6,35 @@ A class hierarchy for shock capturing diffusion methods
 """
 import numpy
 from . import cshockCapturing
+class DelayedLagState(object):
+    """state()/set_state() for a shock capturing that starts unlagged
+    (``numDiff_last`` aliased to ``numDiff``) and switches to lagging after
+    ``nStepsToDelay`` history updates (mprans NCLS and VOF).
+
+    The state is the machine, not just the array: ``lag``, ``nSteps``, and
+    whether ``numDiff_last`` is still the alias. ``set_state`` rebuilds the
+    separate copy that the switch makes, which writing values into an
+    aliased array cannot do.
+    """
+    def state(self):
+        alias = all(l is n for l, n in zip(self.numDiff_last, self.numDiff))
+        st = {'lag': bool(self.lag),
+              'nSteps': int(self.nSteps),
+              'alias': bool(alias)}
+        if not alias:
+            for ci, a in enumerate(self.numDiff_last):
+                st['numDiff_last_%d' % ci] = numpy.array(a, copy=True)
+        return st
+
+    def set_state(self, state):
+        self.lag = bool(state['lag'])
+        self.nSteps = int(state['nSteps'])
+        if state['alias']:
+            self.numDiff_last = list(self.numDiff)
+        else:
+            self.numDiff_last = [numpy.array(state['numDiff_last_%d' % ci], copy=True)
+                                 for ci in range(self.nc)]
+
 class ShockCapturing_base(object):
     def __init__(self,coefficients,nd,shockCapturingFactor=0.25,lag=True):
         self.nc = coefficients.nc

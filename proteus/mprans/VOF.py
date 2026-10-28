@@ -46,7 +46,7 @@ class SubgridError(SGE_base):
     def calculateSubgridError(self, q):
         pass
 
-class ShockCapturing(ShockCapturing_base):
+class ShockCapturing(proteus.ShockCapturing.DelayedLagState, ShockCapturing_base):
     def __init__(self,
                  coefficients,
                  nd,
