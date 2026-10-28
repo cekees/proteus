@@ -1224,45 +1224,89 @@ class NS_base(object):  # (HasTraits):
             if obj is not None and hasattr(obj, "state"):
                 yield owner, obj
 
+    def _solver_state_fingerprint(self, model, index):
+        """What the rank-local lag arrays are tied to: the number of ranks and this rank's
+        piece of the mesh. The arrays live at the quadrature points of the rank's elements
+        (ghosts included), which have no global numbering, so they can only be read back by
+        the same partition."""
+        import hashlib
+        mesh = model.levelModelList[-1].mesh
+        def digest(a):
+            return int.from_bytes(hashlib.sha256(numpy.ascontiguousarray(a).tobytes()).digest()[:7], "big")
+        return numpy.array([self.ar[index].size, mesh.nElements_global, mesh.nNodes_global,
+                            digest(mesh.elementNumbering_subdomain2global),
+                            digest(mesh.nodeNumbering_subdomain2global)], dtype='int64')
+
     def archiveSolverState(self, model, index, tCount):
         """Write the lag state a hot start needs to continue this step exactly.
 
         Only the part of the numerical state that a restart cannot rebuild
         from the solution: what the model's shock capturing and subgrid error
-        carry from one step to the next (their ``state()``: scalars and
-        arrays). Serial archives only (an hdf5 file open on one rank); a
-        parallel archive writes nothing and a hot start from it keeps the old
-        behaviour.
+        (and, for FLCBDF, the time integrator) carry from one step to the next
+        (their ``state()``: scalars and arrays).
+
+        Every rank writes its own copy under its own name,
+        ``solver_state/<step>/<model>/<owner>/<s|a>.<key>_p<rank>``: the scalars
+        are the same on every rank, the arrays are the rank's own (at its
+        elements' quadrature points) and are only read back by the same
+        partition, which a fingerprint next to them checks. Collective, like the
+        rest of the archive: all ranks call it in the same order.
         """
-        hdf = self.ar[index].hdfFile
-        if hdf is None or self.ar[index].size > 1:
+        ar = self.ar[index]
+        if ar.inline or ar.dataItemFormat != "HDF":
             return
+        items = [("%s/%d/%s/fingerprint" % (self.SOLVER_STATE_GROUP, tCount, model.name),
+                  self._solver_state_fingerprint(model, index))]
         for owner, obj in self._solver_state_owners(model):
             st = obj.state()
             if st is None:
                 continue
             path = self._solver_state_group_path(tCount, model, owner)
-            if path in hdf:
-                del hdf[path]
-            g = hdf.create_group(path)
             for key, value in st.items():
                 if isinstance(value, numpy.ndarray):
-                    g.create_dataset(key, data=value)
+                    items.append(("%s/a.%s" % (path, key), value))
                 else:
-                    g.attrs[key] = value
+                    items.append(("%s/s.%s" % (path, key), numpy.atleast_1d(numpy.asarray(value))))
+        #the creates are collective under mpio: a rank that wrote a different list would hang the others
+        names = [name for name, _ in items]
+        everyone = ar.comm.comm.tompi4py().allgather(names)
+        if any(n != everyone[0] for n in everyone):
+            logEvent("Archive: the ranks have different solver state to write at step %d of model %s; "
+                     "none is written and a hot start from this step rebuilds it" % (tCount, model.name), level=0)
+            return
+        for name, value in items:
+            ar.create_dataset_async("%s_p%d" % (name, ar.rank), value)
 
     def restoreSolverState(self, model, index, tCount):
         """Hot start: put back what archiveSolverState wrote at ``tCount``,
         after the spin-up has rebuilt (and so overwritten) the lag state.
-        Also drops the state of later steps, which the new run replaces."""
-        hdf = self.ar[index].hdfFile
-        if hdf is None or self.ar[index].size > 1:
+        Also drops the state of later steps, which the new run replaces.
+
+        Only for the partition that wrote it (same number of ranks and the
+        same pieces of the mesh): if any rank's fingerprint differs, none
+        restores and the run goes on as a restart, history rebuilt from the
+        restart state, with a message saying so.
+        """
+        ar = self.ar[index]
+        hdf = ar.hdfFile
+        if ar.inline or ar.dataItemFormat != "HDF" or hdf is None:
             return
         group = self.SOLVER_STATE_GROUP
         if group in hdf:
             for key in list(hdf[group].keys()):
                 if int(key) > tCount:
                     del hdf[group][key]
+        fp_name = "%s/%d/%s/fingerprint_p%d" % (group, tCount, model.name, ar.rank)
+        mine = 0
+        if fp_name in hdf:
+            mine = int(numpy.array_equal(hdf[fp_name][...], self._solver_state_fingerprint(model, index)))
+        from mpi4py import MPI
+        if not ar.comm.comm.tompi4py().allreduce(mine, op=MPI.MIN):
+            logEvent("Hot start: no solver state archived at step %d for model %s, or it was written by a "
+                     "different number of ranks or partition; restarting its history from the restart state"
+                     % (tCount, model.name), level=0)
+            return
+        suffix = "_p%d" % ar.rank
         for owner, obj in self._solver_state_owners(model):
             if obj.state() is None or not hasattr(obj, "set_state"):
                 continue
@@ -1272,9 +1316,13 @@ class NS_base(object):  # (HasTraits):
                          "restarting its history from the restart state"
                          % (tCount, owner, model.name), level=0)
                 continue
-            g = hdf[path]
-            st = {key: g.attrs[key].item() for key in g.attrs}
-            st.update({key: g[key][...] for key in g})
+            st = {}
+            for name in hdf[path]:
+                if not name.endswith(suffix):
+                    continue
+                kind, key = name[:-len(suffix)].split(".", 1)
+                value = hdf[path][name][...]
+                st[key] = value if kind == "a" else value.reshape(-1)[0].item()
             obj.set_state(st)
 
     ##save model's solution values to archive

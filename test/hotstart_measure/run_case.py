@@ -29,6 +29,10 @@ sys.path.insert(0, here)
 import vortex2D  # noqa: E402
 vortex2D.timeIntegration_vof = ti
 vortex2D.timeIntegration_ls = ti
+# HS_PARALLEL=1 selects the PETSc linear solvers the n files use in parallel
+# (vortex2D.parallel is False, which means LU, which parallel runs reject)
+if os.environ.get("HS_PARALLEL"):
+    vortex2D.parallel = True
 vortex2D.timeOrder = torder
 vortex2D.soname = "hs_%s%d" % (ti, torder)
 # decomposition switches: HS_LAG=0 turns the lagged shock capturing off,
@@ -44,6 +48,11 @@ vortex2D.soname += tag
 
 import ls_vortex_2d_p, redist_vortex_2d_p, vof_vortex_2d_p, ls_consrv_vortex_2d_p  # noqa
 import ls_vortex_2d_n, redist_vortex_2d_n, vof_vortex_2d_n, ls_consrv_vortex_2d_n  # noqa
+if os.environ.get("HS_PARALLEL"):
+    for _m in (ls_vortex_2d_n, redist_vortex_2d_n, vof_vortex_2d_n, ls_consrv_vortex_2d_n):
+        _m.l_atol_res = float(os.environ.get("HS_PARALLEL_ATOL", "1e-12"))   # the redistancing deck leaves this at the default of 1
+        _m.linTolFac = 0.0
+        _m.l_rtol_res = 0.0
 import ls_vortex_2d_so as so  # noqa
 from proteus import NumericalSolution, default_s  # noqa
 from proteus.runtime import RunOptions  # noqa
@@ -54,9 +63,11 @@ tN = N * DT
 opts = RunOptions(gatherArchive=True)
 if mode == "stop":
     so.tnList = [i * DT for i in range(N + 1)]
-elif mode == "hot":
+elif mode in ("hot", "full"):
+    # HS_ENDN: stop after this output (a short run to compare, hot or not)
     if os.environ.get("HS_ENDN"):
         so.tnList = [i * DT for i in range(int(os.environ["HS_ENDN"]) + 1)]
+if mode == "hot":
     opts.hotStart = True
     opts.hotStartTime = tN
 sList = [default_s for _ in so.pnList]
