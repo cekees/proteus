@@ -536,6 +536,35 @@ The whole FCT step is 3-6% of the yardstick on the Ada and 4% on the Mac with 12
 are a few percent of that. Upload of the CSR arrays and the state is 2-6 ms and is paid once, not per pass. Not measured: a T4 (the CI job runs the tests, not this script), and a whole Newton iteration with the
 Richards element kernel in the denominator.
 
+## Implicit FCT, the correction inside the solve (`implicit_fct_step`; `richards_implicit_fct.py`)
+
+proteus's `FCT_TYPE='implicit'` (Dielmann, Kuzmin and Kees, JNMA), the first FCT in this directory that is not applied after the solve. One step: (1) a Galerkin predictor `p^H` (consistent mass, K at the quadrature
+points; if its Newton iteration fails within `predictor_maxit` = 20 iterations the low-order solution stands in, as proteus's `FCT_PREDICTOR_FALLBACK`), (2) the raw antidiffusive fluxes at `p^H`,
+`g_ij = M_C,ij (sDot_i - sDot_j) + A_ij` with `sDot = (s(p^H) - s^n)/dt` and `A` the Galerkin flux minus the K-upwinded one, multiplied by the nodal-variation prelimiter
+`alpha_nv,i = 1 - (|sum_j (h_i - h_j)| / sum_j |h_i - h_j|)^3` (`j` over the nodes coupled by the mass matrix, `h` the pressure head; `min(alpha_i, alpha_j)` per edge), limited by Zalesak's ratios with **global**
+bounds (each node's `theta_r`..`theta_s`) taken from `s^n`, giving the datum `s^{n,FCT} = s^n + (dt/M_L) sum_j alpha_ij g_ij`, and (3) the low-order solve
+`M_L (s(p) - s^{n,FCT})/dt + A~(p) u(p) = 0` started from `p^H`. New passes in `lowOrder.h` (both modules): `nodalVariationRow`, `fctFluxRowAlpha`, `implicitFctLimit` (it reuses `fctBoundsRowGiven` and
+`fctApplyRow`, with `s^n` as the base point); `golden.py` has them (bitwise equal host and Kokkos). The limiter agrees with an independent numpy version to 0 (random fluxes, two materials), and the datum conserves
+`sum M_L s` to 4e-19. proteus keeps `s^n` at the Dirichlet nodes (`bc_mask`); so does `implicit_datum` (`mask=False` shows the exact conservation).
+
+Measured (`richards_implicit_fct.py`, 1D decks at proteus's mesh and step, first saved time, against the post-step K-upwinded FCT on a mesh 8 times finer in space and time; L1 of the moisture content; the predictor never failed):
+
+| deck | K-upwind, lumped | post-step FCT | implicit FCT | Newton iterations per step (low / post / implicit) |
+|---|---|---|---|---|
+| Celia, 12 h | 3.2e-3 (front 0.6429) | 7.2e-4 (0.6681) | 1.1e-3 (0.6656) | 3.0 / 3.4 / 5.1 |
+| HYDRUS, 5 h | 6.0e-2 (15.94) | 5.2e-2 (15.95) | 5.6e-2 (15.95) | 7.3 / 8.4 / 10.3 |
+| Szymkiewicz, 1.5 h | 0.168 (3.78) | 0.153 (3.79) | 0.161 (3.79) | 3.0 / 3.1 / 5.9 |
+
+(reference fronts 0.6736, 16.07, 4.14 m). On these decks it is **less accurate than the post-step FCT and better than the low-order scheme**, at 1.5 to 2 times the Newton iterations (two solves). Its head stays at the
+data's bounds (HYDRUS lowest psi -15.40 against the post-step FCT's -16.12). The differences from proteus's saved profiles are scheme differences: the saved `stab_2` and `FCT` columns are matched exactly by the
+low-order and post-step schemes (0.000), and the implicit one is a third scheme.
+
+**Where it fails: the lens deck** (`richards_2d.py --lens`, 21 x 21 nodes, 35 steps): with proteus's global bounds the head falls to **-174 m** (initial minimum -10; 7 nodes below it; -75 m at 41 x 41 nodes and 70 steps), because
+the global lower bound lets a dry node's datum fall to `theta_r`, where a tiny moisture change is an enormous head change; the prelimiter does not prevent it. `bounds='local'` (the head's extrema over a node and its
+neighbours at the predictor and the old state, mapped to moisture content with the node's own curve) holds it at -10.3 m, still a small undershoot (3 nodes), not zero. The Galerkin predictor fails often at the deck's
+coarse step (6 of 35 steps without the lens, 11 of 35 with it, at 21 x 21 nodes; 1 of 280 at 41 x 41) and each failure costs `predictor_maxit` iterations before the fallback. Whether proteus's implicit FCT
+does the same on a lens was not run. The post-step FCT with head bounds stays inside [-10, 0.1] on the same deck.
+
 ## Compressibility, `beta != 0` (`KUpwindRichards(..., rho=, beta=)`)
 
 `rho = rho_t exp(beta psi)` (`rho0 = 1`, the bindings' fixed value; `beta >= 0`). The total-head form of the K-upwinded flux needs the gravity term to be the gradient of a nodal head, which it is not when `rho / rho0 != 1`: the Galerkin flux is
