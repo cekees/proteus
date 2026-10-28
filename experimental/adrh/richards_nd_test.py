@@ -13,7 +13,9 @@
    bound's undershoot (a lens node drying below every head around it).
 5. Implicit FCT (proteus's FCT_TYPE='implicit'): the limiter against an independent numpy version, exact conservation of the datum, the prelimiter's two
    extremes, the Celia deck against a fine reference, and the lens (global against local bounds).
-6. Nodal materials: the node's material is the first incident element's.
+6. Compressibility, rho = exp(beta psi): the edge passes equal the nodal-head passes at beta = 0, the flux Jacobian against finite differences, the steady column against
+   an ODE (the Galerkin solution converges to it at rate 2, the K-upwinded one at rate approaching 1), the strip against the column, FCT's mass.
+7. Nodal materials: the node's material is the first incident element's.
 
 usage: [ADRH_MODULE=adrh_kokkos] python richards_nd_test.py
 """
@@ -257,6 +259,100 @@ def implicit_fct():
     check(lows['local'] > lows['global'] and lows['local'] > -11.0, "the lens: local bounds hold the head at %.2f where global bounds let it reach %.1f" % (lows['local'], lows['global']))
 
 
+def compressible_exact(beta, ALPHA=3.35, N=2.0, KS=7.967, PB=-1.0, PT=-3.0):
+    """The steady compressible column by shooting: with rho = exp(beta psi) and gravity down, the flux Q = -rho K (psi' + rho) is constant, so
+    psi' = -Q exp(-beta psi) / K(psi) - exp(beta psi); Q is found by matching psi(1) = PT. Returns the dense solution."""
+    import scipy.integrate as si
+    import scipy.optimize as so
+
+    def prof(Q):
+        rhs = lambda xx, p: [-Q * np.exp(-beta * p[0]) / (RL.kr(p[0], ALPHA, N) * KS) - np.exp(beta * p[0])]
+        dry = lambda xx, p: p[0] + 400.0
+        dry.terminal = True
+        return si.solve_ivp(rhs, (0, 1), [PB], rtol=1e-12, atol=1e-13, method='LSODA', dense_output=True, events=dry)
+
+    def f(Q):
+        try:
+            sol = prof(Q)
+        except Exception:
+            return -1e6
+        return -1e6 if (sol.status != 0 or sol.t[-1] < 1) else sol.y[0][-1] - PT
+    grid = np.linspace(-1.5, 1.5, 61); vals = [f(q) for q in grid]
+    k = next(i for i in range(len(grid) - 1) if vals[i] * vals[i + 1] < 0)
+    return prof(so.brentq(f, grid[k], grid[k + 1], xtol=1e-14)).sol
+
+
+def compressible():
+    print("compressibility, rho = exp(beta psi): the K-upwinded scheme with the edge head difference")
+    # beta = 0: the edge passes are the nodal-head passes
+    rng = np.random.default_rng(5)
+    x, conn = nd.rectangle_triangles(7, 7, 1.0, 1.0)
+    model = nd.KUpwindRichards(x, conn, np.zeros(conn.shape[0], dtype='i'), dirichlet=([0], [-3.0]), alpha=[3.35], n_vg=[2.0], theta_r=[0.102], theta_s=[0.368],
+                               ks=[[7.9, 7.9]], g=[0.0, -1.0])
+    u = rng.uniform(-6.0, -0.5, model.nn)
+    kr, dkr = model.kr(u); phi = model.total_head(u)
+    dphi, ddi, ddj = model.edge_heads(u)
+    r0, J0 = engine.upwind_flux(model.indptr, model.indices, model.S, phi, kr, dkr)
+    r1, J1 = engine.upwind_flux_edges(model.indptr, model.indices, model.S, dphi, ddi, ddj, kr, dkr)
+    C = model.stiffness(u, 2).data.copy()
+    A0 = engine.antidiffusive_flux(model.indptr, model.indices, C, model.S, phi, kr)
+    A1 = engine.antidiffusive_flux_edges(model.indptr, model.indices, C, model.S, dphi, kr)
+    check(max(np.abs(r0 - r1).max(), np.abs(J0 - J1).max(), np.abs(A0 - A1).max()) < 1e-13, "beta = 0: the edge passes equal the nodal-head passes (max |difference| %.1e)" %
+          max(np.abs(r0 - r1).max(), np.abs(J0 - J1).max(), np.abs(A0 - A1).max()))
+    # the Jacobian of the compressible flux against central differences of the residual
+    mc = nd.KUpwindRichards(x, conn, np.zeros(conn.shape[0], dtype='i'), dirichlet=([0], [-3.0]), alpha=[3.35], n_vg=[2.0], theta_r=[0.102], theta_s=[0.368],
+                            ks=[[7.9, 7.9]], g=[0.0, -1.0], beta=0.4)
+    r, Jv = mc.flux(u); J = sp_matrix(mc, Jv)
+    fd = np.zeros((mc.nn, mc.nn)); h = 1e-6
+    for j in range(mc.nn):
+        e = np.zeros(mc.nn); e[j] = h
+        fd[:, j] = (mc.flux(u + e)[0] - mc.flux(u - e)[0]) / (2 * h)
+    check(np.abs(J.toarray() - fd).max() < 1e-6 * max(1.0, np.abs(fd).max()), "beta = 0.4: the flux Jacobian against central differences, max |difference| %.1e" % np.abs(J.toarray() - fd).max())
+    # the head from the moisture content, and from the mass, round trips
+    uu = rng.uniform(-8.0, -0.2, mc.nn)
+    err = max(np.abs(mc.invert(mc.m(uu)[0], uu + off) - uu).max() for off in (-5.0, 0.7, 4.0))   # from starting guesses well away from the answer
+    check(err < 1e-9, "the head recovered from rho theta(psi) with beta = 0.4, started 5 m below to 4 m above: max |error| %.1e" % err)
+    # against the ODE: Galerkin (the same equation, discretized differently) converges at rate 2, which checks the ODE; the K-upwinded scheme to the same solution
+    for beta in (0.05, 0.5):
+        sol = compressible_exact(beta); errs = {'galerkin': [], 'upwind': []}
+        for nn in (21, 41, 81, 161):
+            xs = np.linspace(0.0, 1.0, nn)[:, None]; cn = np.stack([np.arange(nn - 1), np.arange(1, nn)], 1)
+            mdl = nd.KUpwindRichards(xs, cn, np.zeros(nn - 1, dtype='i'), dirichlet=([0, nn - 1], [-1.0, -3.0]), alpha=[3.35], n_vg=[2.0], theta_r=[0.102], theta_s=[0.368],
+                                     ks=[[7.967]], g=[-1.0], beta=beta)
+            y = xs[:, 0]; u0 = -1.0 - 2.0 * y; ex = sol(y)[0]
+            ug, _ = mdl.newton(u0, u0, 0.0, tol=1e-11, system=lambda v: mdl.galerkin_system(v, v, 0.0))
+            ul, _ = mdl.newton(u0, u0, None, tol=1e-11, maxit=100)
+            errs['galerkin'].append(np.abs(ug - ex).max()); errs['upwind'].append(np.abs(ul - ex).max())
+        rg = np.log2(errs['galerkin'][-2] / errs['galerkin'][-1]); ru = np.log2(errs['upwind'][-2] / errs['upwind'][-1])
+        print("      beta %.2f  nn 21..161  Galerkin errors %s (rate %.2f) | K-upwind errors %s (rate %.2f)" % (
+            beta, ", ".join("%.1e" % e for e in errs['galerkin']), rg, ", ".join("%.1e" % e for e in errs['upwind']), ru))
+        check(rg > 1.8, "beta = %.2f: the ODE agrees with the Galerkin solution at rate %.2f, so it is the right equation" % (beta, rg))
+        check(ru > 0.8 and errs['upwind'][-1] < 0.25 * errs['upwind'][0], "beta = %.2f: the K-upwinded scheme converges to it at rate %.2f" % (beta, ru))
+    # the strip equals the column with beta, and FCT keeps the mass
+    case = rr.CASES['celia']; ny = 41
+    xs, cn, fixed = strip(3, ny, case)
+    gD = np.where(xs[fixed, 1] == 0.0, case.bottom, case.top)
+    p = celia_parameters(case); p['ks'] = [[case.ks, case.ks]]; p['g'] = [0.0, -1.0]
+    strip_m = nd.KUpwindRichards(xs, cn, np.zeros(cn.shape[0], dtype='i'), dirichlet=(fixed, gD), beta=0.05, **p)
+    x1 = np.linspace(0.0, case.L, ny)[:, None]; c1 = np.stack([np.arange(ny - 1), np.arange(1, ny)], 1)
+    col_m = nd.KUpwindRichards(x1, c1, np.zeros(ny - 1, dtype='i'), dirichlet=([0, ny - 1], [case.bottom, case.top]), beta=0.05, **celia_parameters(case))
+    us, _ = strip_m.run(np.where(xs[:, 1] == case.L, case.top, case.bottom), 0.05, 20)
+    uc, _ = col_m.run(case.initial(x1[:, 0]).astype(float), 0.05, 20)
+    check(np.abs(us.reshape(3, ny) - uc[None, :]).max() < 1e-7, "beta = 0.05: the strip equals the column, max |difference| %.1e" % np.abs(us.reshape(3, ny) - uc[None, :]).max())
+    uold = col_m.run(case.initial(x1[:, 0]).astype(float), 0.05, 20)[0]
+    uL, _ = col_m.newton(uold, uold, 0.001)
+    uF, mF = col_m.fct_correct(uL, uold, 0.001)
+    mL, _ = col_m.m(uL)
+    check(abs(float(col_m.ML @ mF) - float(col_m.ML @ mL)) < 1e-12 * float(col_m.ML @ mL), "beta = 0.05: FCT keeps sum M_L rho theta exactly")
+    ui, c = col_m.implicit_fct_step(uold, 0.001)
+    check(ui.min() >= case.bottom - 1e-9 and ui.max() <= case.top + 1e-9, "beta = 0.05: the implicit FCT step stays in [%.2f, %.2f]: psi in [%.4f, %.4f]" % (case.bottom, case.top, ui.min(), ui.max()))
+
+
+def sp_matrix(model, Jv):
+    import scipy.sparse as sp
+    return sp.csr_matrix((Jv, model.indices, model.indptr), shape=(model.nn, model.nn))
+
+
 def materials():
     print("the node material is the first incident element's")
     conn = np.array([[0, 1], [1, 2], [2, 3]]); material = np.array([0, 1, 2])
@@ -272,6 +368,7 @@ if __name__ == '__main__':
     layered_transient()
     head_bounds()
     implicit_fct()
+    compressible()
     materials()
     if failures:
         print("%d check(s) failed" % len(failures))

@@ -588,6 +588,26 @@ namespace adrh
       antidiffusiveFluxRow(i, rowptr.data(), colidx.data(), C.data(), S.data(), phi.data(), kr.data(), A.data());
     }
   };
+  struct UpwindFluxPassE
+  {
+    DView<const int> rowptr, colidx;
+    DView<const double> S, dphi, ddi, ddj, kr, dkr;
+    DView<double> r, J;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      upwindFluxRowE(i, rowptr.data(), colidx.data(), S.data(), dphi.data(), ddi.data(), ddj.data(), kr.data(), dkr.data(), r.data(), J.data());
+    }
+  };
+  struct AntidiffusiveFluxPassE
+  {
+    DView<const int> rowptr, colidx;
+    DView<const double> C, S, dphi, kr;
+    DView<double> A;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      antidiffusiveFluxRowE(i, rowptr.data(), colidx.data(), C.data(), S.data(), dphi.data(), kr.data(), A.data());
+    }
+  };
   struct FctFluxPassA
   {
     DView<const int> rowptr, colidx, tpos;
@@ -666,6 +686,20 @@ namespace adrh
     forEachElement("adrh fct pass 2", 0, nRows, FctBoundsPass{rowptr, colidx, G, mL, moldBounds, ML, dt, Rp, Rm});
     Kokkos::fence();
     forEachElement("adrh fct pass 3", 0, nRows, FctApplyPass{rowptr, colidx, G, Rp, Rm, ML, mL, dt, mOut});
+    Kokkos::fence();
+  }
+
+  inline void upwindFluxEKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const double> S, DView<const double> dphi,
+                                DView<const double> ddi, DView<const double> ddj, DView<const double> kr, DView<const double> dkr, DView<double> r, DView<double> J)
+  {
+    forEachElement("adrh upwind flux (edges)", 0, nRows, UpwindFluxPassE{rowptr, colidx, S, dphi, ddi, ddj, kr, dkr, r, J});
+    Kokkos::fence();
+  }
+
+  inline void antidiffusiveFluxEKokkos(int nRows, DView<const int> rowptr, DView<const int> colidx, DView<const double> C, DView<const double> S,
+                                       DView<const double> dphi, DView<const double> kr, DView<double> A)
+  {
+    forEachElement("adrh antidiffusive flux (edges)", 0, nRows, AntidiffusiveFluxPassE{rowptr, colidx, C, S, dphi, kr, A});
     Kokkos::fence();
   }
 

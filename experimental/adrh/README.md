@@ -535,3 +535,26 @@ three times that per element, above; that factor was not re-measured here). K_r 
 The whole FCT step is 3-6% of the yardstick on the Ada and 4% on the Mac with 12 threads: the limiter's three row-parallel passes dominate (0.2-0.65 ms on the device, launch-bound and gather-heavy), the flux passes
 are a few percent of that. Upload of the CSR arrays and the state is 2-6 ms and is paid once, not per pass. Not measured: a T4 (the CI job runs the tests, not this script), and a whole Newton iteration with the
 Richards element kernel in the denominator.
+
+## Compressibility, `beta != 0` (`KUpwindRichards(..., rho=, beta=)`)
+
+`rho = rho_t exp(beta psi)` (`rho0 = 1`, the bindings' fixed value; `beta >= 0`). The total-head form of the K-upwinded flux needs the gravity term to be the gradient of a nodal head, which it is not when `rho / rho0 != 1`: the Galerkin flux is
+`rho K_r K_s (grad psi - (rho / rho0) g)`. The edge flux is therefore `F_ij = (rho K_r)_up c_ij dphi_ij` with `c_ij` from the unit-density stiffness `S`, the upwinded coefficient `rho K_r` taken at the upwind node, and
+`dphi_ij = u_j - u_i - rhoEdge g.(x_j - x_i)`, `rhoEdge` the mean of `rho` over the edge (what proteus's edge loop does with its salinity density). New passes `upwindFluxRowE` and
+`antidiffusiveFluxRowE` (`upwind_flux_edges`, `antidiffusive_flux_edges`; both modules, bitwise equal in `golden.py`) take `dphi` and its partials in `u_i`, `u_j` on the pattern, so the Jacobian includes the density's
+dependence on `u`; with `rho = 1` and `beta = 0` they are the nodal-head passes (1.8e-15). The storage is `rho theta` (`richards_m_nodes` has had `rho`, `beta` all along), the Galerkin predictor and the stiffness
+of the antidiffusive flux (mode 2) carry `rho` at the quadrature points, and FCT's inversion of `m = rho_t exp(beta u) theta(u)` is a bracketed, safeguarded Newton iteration per node: `m` falls below `rho_t theta_r` at very negative
+heads, where the analytic inverse does not reach.
+
+Checked against an exact solution (`richards_nd_test.py`, a steady column, `psi = -1` below and `-3` above, sand with `K_s = 7.967`): with `rho = exp(beta psi)` and gravity down the flux `Q = -rho K (psi' + rho)` is constant, so
+`psi' = -Q exp(-beta psi) / K(psi) - exp(beta psi)` and `Q` follows by shooting. The Galerkin discretization of the same equation converges to it at rate 2.00 for `beta = 0.05` and `0.5` (so the ODE is right), and the K-upwinded
+scheme converges to the same solution:
+
+| beta | nodes 21, 41, 81, 161: max error of psi | rate (finest pair) |
+|---|---|---|
+| 0.05 | 2.9e-2, 1.6e-2, 8.4e-3, 4.3e-3 | 0.96 |
+| 0.5 | 1.3e-1, 7.8e-2, 4.6e-2, 2.5e-2 | 0.87 |
+
+The flux Jacobian agrees with central differences (6e-10, beta = 0.4); the x-uniform strip equals the column (2e-12, beta = 0.05); FCT keeps `sum M_L rho theta` exactly; the implicit step stays in the data's bounds. Not done: `rho0 != 1`
+(the bindings fix it), a negative `beta`, the time-dependent compressible case against an independent solution, and a comparison with proteus's own low-order scheme at `beta != 0`, whose edge loop uses a density ratio from its salinity
+density only (no `exp(beta psi)`) and was not reproduced here; at the deck value `beta = 1e-4` and heads within 10 m the factor `exp(beta psi)` differs from 1 by 1e-3.

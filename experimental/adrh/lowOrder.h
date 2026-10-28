@@ -284,6 +284,44 @@ namespace adrh
     if (ii >= 0) J[ii] = Jii;
   }
 
+  // The same pass with the head difference of each edge given, dphi[p] = H_j - H_i for entry p = (i, j) (antisymmetric), and its partial derivatives ddi[p] = d dphi / du_i,
+  // ddj[p] = d dphi / du_j, instead of the nodal total head phi. For a compressible fluid (rho = rho_t exp(beta u)) the gravity term of the flux is not the gradient of a
+  // nodal head: the edge difference is dphi = u_j - u_i - rhoEdge (g.(x_j - x_i)) with rhoEdge the edge mean of rho / rho0, and kr (here the nodal rho kr) carries
+  // the density at the upwind node. With rho = rho0 = 1 and beta = 0, dphi = phi_j - phi_i, ddi = -1, ddj = 1 and this is upwindFluxRow.
+  ADRH_FN void upwindFluxRowE(int i, const int *rowptr, const int *colidx, const double *S, const double *dphi, const double *ddi, const double *ddj,
+                              const double *kr, const double *dkr, double *r, double *J)
+  {
+    double rsum = 0.0, Jii = 0.0;
+    int ii = -1;
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j == i) { ii = p; continue; }
+      const double c = S[p] < 0.0 ? -S[p] : 0.0, dp = dphi[p];
+      double F, dFi, dFj;
+      if (-S[p] * dp <= 0.0) { F = kr[i] * c * dp; dFi = dkr[i] * c * dp + kr[i] * c * ddi[p]; dFj = kr[i] * c * ddj[p]; }
+      else { F = kr[j] * c * dp; dFi = kr[j] * c * ddi[p]; dFj = dkr[j] * c * dp + kr[j] * c * ddj[p]; }
+      rsum -= F;
+      J[p] = -dFj;
+      Jii -= dFi;
+    }
+    r[i] = rsum;
+    if (ii >= 0) J[ii] = Jii;
+  }
+
+  // the antidiffusive flux with the edge head difference given (see upwindFluxRowE): (-C - kr_up c) dphi
+  ADRH_FN void antidiffusiveFluxRowE(int i, const int *rowptr, const int *colidx, const double *C, const double *S, const double *dphi, const double *kr, double *A)
+  {
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j == i) { A[p] = 0.0; continue; }
+      const double c = S[p] < 0.0 ? -S[p] : 0.0;
+      const double krup = (-S[p] * dphi[p] <= 0.0) ? kr[i] : kr[j];
+      A[p] = (-C[p] - krup * c) * dphi[p];
+    }
+  }
+
   // the Galerkin flux (frozen stiffness C, the matrix of mode 2) minus the K-upwinded one, into i from j: antisymmetric, the antidiffusive flux of FCT
   ADRH_FN void antidiffusiveFluxRow(int i, const int *rowptr, const int *colidx, const double *C, const double *S, const double *phi,
                                     const double *kr, double *A)

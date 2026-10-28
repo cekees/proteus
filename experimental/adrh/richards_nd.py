@@ -17,7 +17,9 @@ flux from that element's own material: the flux is split by material, F = sum_m 
 stiffness of the elements of material m alone, so an interface node gives each soil its own K_r(psi) (psi is continuous across the interface). One
 material reduces to the same scheme as interface='node'.
 
-Compressibility (beta != 0) is not in this scheme: the total-head form of the flux needs rho / rho0 = 1.
+Compressibility: rho = rho_t exp(beta psi) (rho_t, beta in the constructor; rho0 = 1, the engine's bindings). The gravity term is then not the gradient of a nodal head, so the
+flux of an edge uses the head difference dphi = u_j - u_i - rhoEdge g.(x_j - x_i) with rhoEdge the mean of rho over the edge, and the upwinded coefficient is rho K_r at the upwind
+node (upwind_flux_edges, antidiffusive_flux_edges); the storage is rho theta; FCT inverts m = rho theta(psi) for the head with a per-node Newton iteration.
 """
 import importlib
 import os
@@ -56,7 +58,7 @@ class KUpwindRichards:
     """alpha, n_vg, theta_r, theta_s: (nMaterials,); ks: (nMaterials, nd) the diagonal conductivities (dimensionless, as proteus's KsTypes); g: (nd,) the
     gravity direction (proteus's dimensionless_gravity); material: (nE,) the material of each element; dirichlet: (node numbers, values)."""
 
-    def __init__(self, x, conn, material, alpha, n_vg, theta_r, theta_s, ks, g, dirichlet, psk=0, interface='node'):
+    def __init__(self, x, conn, material, alpha, n_vg, theta_r, theta_s, ks, g, dirichlet, psk=0, interface='node', rho=1.0, beta=0.0):
         self.x = np.asarray(x, dtype=float); self.conn = np.asarray(conn, dtype='i')
         self.nn, self.nd = self.x.shape
         self.nE, self.nV = self.conn.shape
@@ -69,6 +71,8 @@ class KUpwindRichards:
         self.psk = psk
         assert interface in ('node', 'element')
         self.interface = interface
+        self.rho, self.beta = float(rho), float(beta)          # rho_t and the compressibility: rho = rho_t exp(beta psi), rho0 = 1 (the engine's bindings)
+        self.compressible = self.beta != 0.0 or self.rho != 1.0
         self.fixed = np.asarray(dirichlet[0], dtype='i'); self.gD = np.asarray(dirichlet[1], dtype=float)
         self.nodeMat = first_incident_material(self.conn, self.material, self.nn)
         self.xn = np.zeros((self.nE, self.nV, 3)); self.xn[:, :, :self.nd] = self.x[self.conn]
@@ -80,6 +84,7 @@ class KUpwindRichards:
         self.indptr, self.indices = P.indptr.astype('i'), P.indices.astype('i')
         self.tpos = engine.transpose_map(self.indptr, self.indices)
         self.prows = np.repeat(np.arange(self.nn), np.diff(self.indptr)); self.pcols = self.indices
+        self.G = (self.x[self.pcols] - self.x[self.prows]) @ self.g      # g.(x_j - x_i) on the pattern
         self.S = self.stiffness(np.zeros(self.nn), 1).data.copy()
         self.present = np.unique(self.material)
         self.S_by = {int(k): self.stiffness(np.zeros(self.nn), 1, only=k).data.copy() for k in self.present} if interface == 'element' else None
@@ -89,8 +94,9 @@ class KUpwindRichards:
         self.Mc = self.pattern_matrix(Mel)
 
     # -- the element kernels, on the fixed CSR pattern ------------------------------------------------------------------------------------------
-    def _args(self):
-        return (self.alpha, self.n_vg, self.theta_r, self.thetaSR, self.ks, self.g, 1.0, 0.0, self.material)
+    def _args(self, unit=False):
+        """The element kernel's arguments; unit: unit density and no compressibility (the stiffness S of the upwinded flux, which carries no rho)."""
+        return (self.alpha, self.n_vg, self.theta_r, self.thetaSR, self.ks, self.g, 1.0 if unit else self.rho, 0.0 if unit else self.beta, self.material)
 
     def pattern_matrix(self, Rloc):
         """Element matrices (nE, nV, nV) summed into a CSR on the pattern (explicit zeros kept, so a conductivity that underflows to 0 in a dry
@@ -106,7 +112,7 @@ class KUpwindRichards:
         """mode 1: K_s grad phi_i . grad phi_j; mode 2: the same with the relative permeability at the quadrature points of u (frozen). only: the
         elements of that material alone."""
         ue = u[self.conn].reshape(self.nE, 1, self.nV)
-        _, J = engine.richards_vgm(self.nd, "p1", *self._args()[:8], self.material, self.xn, ue, ue, self.qp, self.qw, 0.0, 0.0, self.psk, mode)
+        _, J = engine.richards_vgm(self.nd, "p1", *self._args(unit=(mode == 1))[:8], self.material, self.xn, ue, ue, self.qp, self.qw, 0.0, 0.0, self.psk, mode)
         if only is not None:
             J = np.asarray(J).reshape(self.nE, -1) * (self.material == only)[:, None]
         return self.pattern_matrix(J)
@@ -124,21 +130,45 @@ class KUpwindRichards:
         nodeMat = self.nodeMat if material is None else np.full(self.nn, material, dtype='i')
         return engine.richards_kr_nodes(self.alpha, self.n_vg, self.theta_r, self.thetaSR, self.psk, nodeMat, u)
 
+    def kr_eff(self, u, material=None):
+        """The upwinded nodal coefficient: K_r, or for a compressible fluid rho K_r with rho = rho_t exp(beta u) at the node (and its derivative in u)."""
+        kr, dkr = self.kr(u, material)
+        if not self.compressible:
+            return kr, dkr
+        e = self.rho * np.exp(self.beta * u)
+        return e * kr, e * (self.beta * kr + dkr)
+
+    def edge_heads(self, u):
+        """The edge head difference of the flux on the pattern and its partials in u_i and u_j. The gravity term of a compressible fluid is rho (rho / rho0) K_r g,
+        not the gradient of a nodal head, so the edge difference is dphi = u_j - u_i - rhoEdge g.(x_j - x_i) with rhoEdge = (rho_i + rho_j) / 2 over rho0 = 1
+        (proteus's edge loop does the same for its salinity density); with rho = 1 and beta = 0 it is phi_j - phi_i."""
+        rhom = self.rho * np.exp(self.beta * u)
+        rhohat = 0.5 * (rhom[self.prows] + rhom[self.pcols])
+        return (u[self.pcols] - u[self.prows] - rhohat * self.G, -1.0 - 0.5 * self.beta * rhom[self.prows] * self.G,
+                1.0 - 0.5 * self.beta * rhom[self.pcols] * self.G)
+
     def flux(self, u):
         """The flux part of the residual and the values of its Jacobian on the pattern."""
-        phi = self.total_head(u)
+        if self.compressible:
+            dphi, ddi, ddj = self.edge_heads(u)
+            def one(S, material):
+                kr, dkr = self.kr_eff(u, material)
+                return engine.upwind_flux_edges(self.indptr, self.indices, S, dphi, ddi, ddj, kr, dkr)
+        else:
+            phi = self.total_head(u)
+            def one(S, material):
+                kr, dkr = self.kr(u, material)
+                return engine.upwind_flux(self.indptr, self.indices, S, phi, kr, dkr)
         if self.interface == 'node':
-            kr, dkr = self.kr(u)
-            return engine.upwind_flux(self.indptr, self.indices, self.S, phi, kr, dkr)
+            return one(self.S, None)
         r = np.zeros(self.nn); Jv = np.zeros(self.indices.size)
         for k in self.present:
-            kr, dkr = self.kr(u, int(k))
-            rk, Jk = engine.upwind_flux(self.indptr, self.indices, self.S_by[int(k)], phi, kr, dkr)
+            rk, Jk = one(self.S_by[int(k)], int(k))
             r += rk; Jv += Jk
         return r, Jv
 
     def m(self, u):
-        return engine.richards_m_nodes(self.alpha, self.n_vg, self.theta_r, self.thetaSR, self.psk, self.nodeMat, u)
+        return engine.richards_m_nodes(self.alpha, self.n_vg, self.theta_r, self.thetaSR, self.psk, self.nodeMat, u, self.rho, self.beta)
 
     def mass(self, u):
         """The conserved mass, sum_i M_L,i m(u_i): FCT keeps it exactly."""
@@ -195,7 +225,38 @@ class KUpwindRichards:
     # -- FCT -----------------------------------------------------------------------------------------------------------------------------------------
     def invert(self, theta, uL):
         """The pressure head of a moisture content with each node's retention curve (the analytic inverse; Brooks-Corey's flat part inside the entry
-        pressure keeps the low-order head when the limited moisture content is saturated)."""
+        pressure keeps the low-order head when the limited moisture content is saturated). For a compressible fluid m = rho_t exp(beta u) theta(u): the analytic
+        inverse of theta = m / rho_t starts a per-node Newton iteration on m(u) = m."""
+        if self.compressible:
+            if self.beta == 0.0:                                # m = rho theta(u): the analytic inverse of theta = m / rho
+                return self._invert_incompressible(theta / self.rho, uL)
+            return self._invert_compressible(theta, uL)
+        return self._invert_incompressible(theta, uL)
+
+    def _invert_compressible(self, target, u0):
+        """The head u with m(u) = rho_t exp(beta u) theta(u) = target at every node, beta > 0: m is increasing in u (also across a Brooks-Corey flat part and
+        beyond saturation), but it falls below rho_t theta_r as u -> -infinity, which the analytic inverse cannot reach. A bracket grown from u0 by doubling steps,
+        then a safeguarded Newton iteration (a bisection step wherever Newton leaves the bracket)."""
+        f = lambda u: self.m(u)[0] - target
+        lo = np.array(u0, dtype=float); hi = lo.copy(); step = 1.0
+        for _ in range(60):
+            below, above = f(lo) > 0.0, f(hi) < 0.0
+            if not (below.any() or above.any()):
+                break
+            lo = np.where(below, lo - step, lo); hi = np.where(above, hi + step, hi); step *= 2.0
+        u = 0.5 * (lo + hi)
+        for _ in range(200):
+            mm, dm = self.m(u); fu = mm - target
+            lo = np.where(fu < 0.0, u, lo); hi = np.where(fu > 0.0, u, hi)
+            newton = u - fu / np.where(dm > 0.0, dm, np.inf)
+            un = np.where((newton > lo) & (newton < hi), newton, 0.5 * (lo + hi))
+            done = np.abs(un - u) <= 1e-14 * (1.0 + np.abs(u))
+            u = un
+            if done.all():
+                break
+        return u
+
+    def _invert_incompressible(self, theta, uL):
         s = self.nodeMat
         a, n = self.alpha[s], self.n_vg[s]
         se = (theta - self.theta_r[s]) / (self.theta_s[s] - self.theta_r[s])
@@ -208,14 +269,19 @@ class KUpwindRichards:
 
     def antidiffusive(self, u):
         """The antidiffusive flux at u on the pattern: the Galerkin flux (K at the quadrature points) minus the K-upwinded one, into i from j."""
-        phi = self.total_head(u)
+        if self.compressible:
+            dphi = self.edge_heads(u)[0]
+            def one(C, S, material):
+                return engine.antidiffusive_flux_edges(self.indptr, self.indices, C, S, dphi, self.kr_eff(u, material)[0])
+        else:
+            phi = self.total_head(u)
+            def one(C, S, material):
+                return engine.antidiffusive_flux(self.indptr, self.indices, C, S, phi, self.kr(u, material)[0])
         if self.interface == 'node':
-            kr, _ = self.kr(u)
-            return engine.antidiffusive_flux(self.indptr, self.indices, self.stiffness(u, 2).data.copy(), self.S, phi, kr)
+            return one(self.stiffness(u, 2).data.copy(), self.S, None)
         A = np.zeros(self.indices.size)                         # linear in the stiffness and in the upwinded term: the sum over materials
         for k in self.present:
-            kr, _ = self.kr(u, int(k))
-            A += engine.antidiffusive_flux(self.indptr, self.indices, self.stiffness(u, 2, only=k).data.copy(), self.S_by[int(k)], phi, kr)
+            A += one(self.stiffness(u, 2, only=k).data.copy(), self.S_by[int(k)], int(k))
         return A
 
     def fct_correct(self, uL, uold, dt, bounds_old=True, bounds='head'):
@@ -249,7 +315,7 @@ class KUpwindRichards:
         head = pH if prelimiter == 'pressure' else self.total_head(pH)
         alpha = engine.nodal_variation(self.indptr, self.indices, self.Mc.data.copy(), head, prelimiter_power)
         if bounds == 'global':
-            smax = np.maximum(self.theta_s[self.nodeMat], sn); smin = np.minimum(self.theta_r[self.nodeMat], sn)
+            smax = np.maximum(self.rho * self.theta_s[self.nodeMat], sn); smin = np.minimum(self.rho * self.theta_r[self.nodeMat], sn)
         else:
             pmax, pmin = engine.head_extrema(self.indptr, self.indices, pH, uold)
             smax = np.maximum(self.m(pmax)[0], sn); smin = np.minimum(self.m(pmin)[0], sn)

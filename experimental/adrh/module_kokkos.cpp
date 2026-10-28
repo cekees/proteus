@@ -401,6 +401,31 @@ PYBIND11_MODULE(adrh_kokkos, m)
     }
     return py::make_tuple(r, J);
   });
+  m.def("upwind_flux_edges", [](IArr indptr, IArr indices, Arr S, Arr dphi, Arr ddi, Arr ddj, Arr kr, Arr dkr) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> r(n), J(S.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices);
+      adrh::DView<double> dS = up(S), dd = up(dphi), da = up(ddi), db = up(ddj), dK = up(kr), ddK = up(dkr), dr("r", n), dJ("J", S.size());
+      adrh::upwindFluxEKokkos(n, dp, di, dS, dd, da, db, dK, ddK, dr, dJ);
+      Kokkos::deep_copy(HostView(r.mutable_data(), n), dr);
+      Kokkos::deep_copy(HostView(J.mutable_data(), J.size()), dJ);
+    }
+    return py::make_tuple(r, J);
+  });
+  m.def("antidiffusive_flux_edges", [](IArr indptr, IArr indices, Arr C, Arr S, Arr dphi, Arr kr) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> A(S.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices);
+      adrh::DView<double> dC = up(C), dS = up(S), dd = up(dphi), dK = up(kr), dA("A", S.size());
+      adrh::antidiffusiveFluxEKokkos(n, dp, di, dC, dS, dd, dK, dA);
+      Kokkos::deep_copy(HostView(A.mutable_data(), A.size()), dA);
+    }
+    return A;
+  });
   m.def("antidiffusive_flux", [](IArr indptr, IArr indices, Arr C, Arr S, Arr phi, Arr kr) {
     const int n = (int)indptr.size() - 1;
     py::array_t<double> A(S.size());

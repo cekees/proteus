@@ -281,6 +281,20 @@ PYBIND11_MODULE(adrh_proto, m)
       adrh::upwindFluxRow(i, indptr.data(), indices.data(), S.data(), phi.data(), kr.data(), dkr.data(), r.mutable_data(), J.mutable_data());
     return py::make_tuple(r, J);
   });
+  m.def("upwind_flux_edges", [](IArrL indptr, IArrL indices, Arr S, Arr dphi, Arr ddi, Arr ddj, Arr kr, Arr dkr) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> r(n), J(S.size());
+    for (int i = 0; i < n; ++i)
+      adrh::upwindFluxRowE(i, indptr.data(), indices.data(), S.data(), dphi.data(), ddi.data(), ddj.data(), kr.data(), dkr.data(), r.mutable_data(), J.mutable_data());
+    return py::make_tuple(r, J);
+  });
+  m.def("antidiffusive_flux_edges", [](IArrL indptr, IArrL indices, Arr C, Arr S, Arr dphi, Arr kr) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> A(S.size());
+    for (int i = 0; i < n; ++i)
+      adrh::antidiffusiveFluxRowE(i, indptr.data(), indices.data(), C.data(), S.data(), dphi.data(), kr.data(), A.mutable_data());
+    return A;
+  });
   m.def("antidiffusive_flux", [](IArrL indptr, IArrL indices, Arr C, Arr S, Arr phi, Arr kr) {
     const int n = (int)indptr.size() - 1;
     py::array_t<double> A(S.size());

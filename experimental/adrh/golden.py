@@ -144,6 +144,12 @@ def calls(m, nE=2000):
         At = A - A[tpos]; At[np.repeat(np.arange(n), np.diff(indptr)) == indices] = 0.0
         alpha_nv = np.asarray(m.nodal_variation(indptr, indices, Mc, uh, 3.0)) if hasattr(m, "nodal_variation") else None
         out["nodal_variation"] = ("nodal_variation", (indptr, indices, Mc, uh, 3.0))
+        # the edge-difference upwind and antidiffusive passes (compressible flux): S, dphi and its partials, kr
+        Sx = -np.abs(rng.normal(size=indices.size)); Sx = 0.5 * (Sx + Sx[tpos])
+        dph = rng.normal(size=indices.size); dph = dph - dph[tpos]
+        kr_ = rng.uniform(0.0, 1.0, n); dkr_ = rng.uniform(0.0, 1.0, n)
+        out["upwind_flux_edges"] = ("upwind_flux_edges", (indptr, indices, Sx, dph, -np.ones(indices.size), np.ones(indices.size), kr_, dkr_))
+        out["antidiffusive_flux_edges"] = ("antidiffusive_flux_edges", (indptr, indices, rng.normal(size=indices.size), Sx, dph, kr_))
         if alpha_nv is not None:
             out["implicit_fct_limit"] = ("implicit_fct_limit", (indptr, indices, tpos, Mc, At, ML, mL_, mo_, np.maximum(mL_, mo_) + 0.05, np.minimum(mL_, mo_) - 0.05, alpha_nv, 0.01))
     return out
