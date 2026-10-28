@@ -338,7 +338,8 @@ EXTENSIONS_TO_BUILD = [
                        'proteus/meshio.cpp'],
               define_macros=[('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
                              ('PROTEUS_PUMI_HAS_ZOLTAN',PROTEUS_PUMI_PARTITIONERS['zoltan']),
-                             ('PROTEUS_PUMI_HAS_METIS',PROTEUS_PUMI_PARTITIONERS['metis'])],
+                             ('PROTEUS_PUMI_HAS_METIS',PROTEUS_PUMI_PARTITIONERS['metis']),
+                             ('PROTEUS_PUMI_PROBED_DIR','"%s"' % PROTEUS_SCOREC_LIB_DIR)],
               language='c++',
               include_dirs=[numpy.get_include(),'include',
                             'proteus','proteus/MeshAdaptPUMI']+

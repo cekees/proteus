@@ -28,10 +28,9 @@ def test_petsc_partitioners_match_petscconf():
 
 def test_pumi_partitioners_match_install():
     pumi = pytest.importorskip("proteus.MeshAdaptPUMI.MeshAdapt")
-    from proteus import config
     found = pumi.pumiPartitioners()
     assert set(found) == {'zoltan', 'metis'}
-    cmake_dir = os.path.join(config.PROTEUS_SCOREC_LIB_DIR, 'cmake', 'SCOREC')
+    cmake_dir = os.path.join(pumi.pumiProbedLibDir(), 'cmake', 'SCOREC')
     for name in found:
         tgt = glob.glob(os.path.join(cmake_dir, 'apf_%s-target*.cmake' % name))
         if not tgt:

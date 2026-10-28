@@ -61,9 +61,17 @@ cdef extern from *:
     #ifndef PROTEUS_PUMI_HAS_METIS
     #define PROTEUS_PUMI_HAS_METIS -1
     #endif
+    #ifndef PROTEUS_PUMI_PROBED_DIR
+    #define PROTEUS_PUMI_PROBED_DIR ""
+    #endif
     """
+    const char* PROTEUS_PUMI_PROBED_DIR
     int PROTEUS_PUMI_HAS_ZOLTAN
     int PROTEUS_PUMI_HAS_METIS
+
+def pumiProbedLibDir():
+    """The PUMI library directory setup.py read the partitioner report from."""
+    return PROTEUS_PUMI_PROBED_DIR.decode()
 
 def pumiPartitioners():
     """Which graph partitioners the PUMI this was built against has: a dict
