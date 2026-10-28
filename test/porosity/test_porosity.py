@@ -3,10 +3,6 @@ import os
 import re
 import pytest
 
-# One xdist worker runs this file, in order: test_massConservation_wPorosity_2D reads the
-# sloshing.log test_runTwoPhaseFlow_wPorosity_2D writes.
-pytestmark = pytest.mark.xdist_group("porosity_sloshing")
-
 @pytest.mark.porosity
 
 def teardown_method():
@@ -32,8 +28,10 @@ def test_runTwoPhaseFlow_wPorosity_2D():
     currentPath = os.path.dirname(os.path.abspath(__file__))
     runCommand = "cd "+currentPath+"; parun --TwoPhaseFlow -l5 -v -C \"T=20. he=0.025 openTop=False genMesh=False\" sloshing.py;"
     subprocess.check_call(runCommand,shell=True)
-    
-def test_massConservation_wPorosity_2D(mcorr_nl_atol_res=1e-10):
+    check_massConservation_wPorosity_2D()
+
+def check_massConservation_wPorosity_2D(mcorr_nl_atol_res=1e-10):
+    """Reads the sloshing.log the run above writes, so it is part of that test."""
     currentPath = os.path.dirname(os.path.abspath(__file__))
     file=open(currentPath+'/sloshing.log','r')
     lines=file.readlines()

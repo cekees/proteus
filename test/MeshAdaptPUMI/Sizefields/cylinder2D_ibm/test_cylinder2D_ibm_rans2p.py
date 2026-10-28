@@ -12,10 +12,6 @@ import importlib
 import subprocess
 import pytest
 
-# One xdist worker runs this file, in order: test_adaptIBM_adaptMesh reads the
-# Reconstructed.* model and mesh that test_adaptIBM_genMesh writes.
-pytestmark = pytest.mark.xdist_group("cylinder2D_ibm_PUMI")
-
 
 comm = Comm.get()
 Profiling.logLevel = 7
@@ -74,13 +70,11 @@ class Test_Adapt_ibm():
             else:
                 pass
 
-    def test_adaptIBM_genMesh(self):
-        currentPath = os.path.dirname(os.path.abspath(__file__))
-        runCommand = "cd "+currentPath+"; parun -l5 cylinder_so.py -C 'T=0.01 onlySaveFinalSolution=True genMesh=True usePUMI=True';"
-        subprocess.check_call(runCommand,shell=True )
-
     def test_adaptIBM_adaptMesh(self):
         currentPath = os.path.dirname(os.path.abspath(__file__))
+        # the adapt run reads the Reconstructed.* model and mesh this one writes
+        runCommand = "cd "+currentPath+"; parun -l5 cylinder_so.py -C 'T=0.01 onlySaveFinalSolution=True genMesh=True usePUMI=True';"
+        subprocess.check_call(runCommand,shell=True )
         runCommand = "cd "+currentPath+"; parun -l5 cylinder_so.py -C 'T=0.01 onlySaveFinalSolution=True genMesh=False usePUMI=True';"
         subprocess.check_call(runCommand,shell=True )
 

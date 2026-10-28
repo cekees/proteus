@@ -4,44 +4,29 @@ import subprocess
 import os
 import pytest
 
-# One xdist worker runs this file, in order: the baseline and adapted runs read the mesh
-# test_MeshAdaptRestart_generateMesh writes, and test_MeshAdaptRestart compares
-# their pressure.csv.
-pytestmark = pytest.mark.xdist_group("gauge_compare_dambreak_2D")
+RUN = "cd %s; parun -C \"gen_mesh={gen} usePUMI=True adapt={adapt} fixedTimeStep=False\" -D \"{name}\" dambreak_Colagrossi_so.py;"
 
 #@pytest.mark.slowTest
 
-def test_MeshAdaptRestart_generateMesh(verbose=0):
-    """Generate Mesh for PUMI"""
+def test_MeshAdaptRestart(verbose=0):
+    """Generate the PUMI mesh, run the baseline and the adapted restart, and compare their gauges.
+
+    The runs read the mesh the first one writes and the comparison reads their output, so they
+    are one test: it does not depend on another test having run, or on the worker that ran it.
+
+    The point gauges (pressure) and the line integral gauges (equivalent water height) are
+    rebuilt after each adapt, and must continue the baseline's output."""
     currentPath = os.path.dirname(os.path.abspath(__file__))
-    runCommand = "cd "+currentPath+"; parun -C \"gen_mesh=True usePUMI=True adapt=0 fixedTimeStep=False\" -D \"baseline\" dambreak_Colagrossi_so.py;"
-    subprocess.check_call(runCommand,shell=True)
-
-def test_MeshAdaptRestart_adaptiveTime_BackwardEuler_baseline(verbose=0):
-    """Get baseline data"""
-    currentPath = os.path.dirname(os.path.abspath(__file__))
-    runCommand = "cd "+currentPath+"; parun -C \"gen_mesh=False usePUMI=True adapt=0 fixedTimeStep=False\" -D \"baseline\" dambreak_Colagrossi_so.py;"
-    subprocess.check_call(runCommand,shell=True)
-    assert(True)
-
-
-def test_MeshAdaptRestart_adaptiveTime_BackwardEuler(verbose=0):
-    """Test restart workflow"""
-    currentPath = os.path.dirname(os.path.abspath(__file__))
-    runCommand = "cd "+currentPath+"; parun -C \"gen_mesh=False usePUMI=True adapt=1 fixedTimeStep=False\" -D \"adapt_0\" dambreak_Colagrossi_so.py;"
-    subprocess.check_call(runCommand,shell=True)
-    assert(True)
-
-@pytest.mark.parametrize("gauge_file", ["pressure.csv", "vof_height.csv"])
-def test_MeshAdaptRestart(gauge_file, verbose=0):
-    """The point gauges (pressure) and the line integral gauges (equivalent water height)
-    are rebuilt after each adapt, and must continue the baseline's output."""
+    for gen_mesh, adapt, name in (("True", 0, "baseline"),  # generate the PUMI mesh
+                                  ("False", 0, "baseline"),  # baseline data
+                                  ("False", 1, "adapt_0")):  # restart workflow
+        subprocess.check_call(RUN.format(gen=gen_mesh, adapt=adapt, name=name) % currentPath, shell=True)
     #subprocess.call("diff normal adapt_0/pressure.csv baseline/pressure.csv")
-    currentPath = os.path.dirname(os.path.abspath(__file__))
-    with open(currentPath+'/baseline/'+gauge_file) as file1, open(currentPath+'/adapt_0/'+gauge_file) as file2:
-        rows = 0
-        for line1, line2 in zip(file1, file2):
-            rows += 1
-            if(line1 != line2):
-                pytest.fail("%s values are not the same!\n" % gauge_file)
-        assert rows > 1, "%s has no samples" % gauge_file
+    for gauge_file in ("pressure.csv", "vof_height.csv"):
+        with open(currentPath+'/baseline/'+gauge_file) as file1, open(currentPath+'/adapt_0/'+gauge_file) as file2:
+            rows = 0
+            for line1, line2 in zip(file1, file2):
+                rows += 1
+                if(line1 != line2):
+                    pytest.fail("%s values are not the same!\n" % gauge_file)
+            assert rows > 1, "%s has no samples" % gauge_file
