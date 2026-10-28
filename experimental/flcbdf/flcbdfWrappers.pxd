@@ -62,6 +62,10 @@ cdef extern from "FLCBDF_lite.h" namespace "Daetk":
         double retryStep_solverFailure() except +
         double retryStep_errorFailure() except +
         double getCurrentAlpha() const
+        void shiftLevel(const Vec&)
+        double lastError() const
+        double lastStep() const
+        int lastOrder() const
         vector[double] packState() except +
         void unpackState(const vector[double]&) except +
         Vec yn,ynprime,yCminusyP,tempvec

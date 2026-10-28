@@ -62,12 +62,24 @@ public:
   //Layout is private to the class; unpackState needs a vector from packState of an integrator of the same size.
   std::vector<double> packState() const;
   void unpackState(const std::vector<double>& s);
+  //Call after the step's error check and before stepTaken: yProjected is what the next step starts
+  //from (the solution after redistancing, mass correction, ...). The history keeps the derivative
+  //of the step as taken and moves only its level, so a projection that does not shrink with the
+  //step does not show up as a derivative or in the next error estimate.
+  void shiftLevel(const Vec& yProjected);
+  double lastError() const { return error; }  //weighted error of the last errorForStepTooLarge
+  double lastStep() const { return h; }
+  int lastOrder() const { return k; }
   double getCurrentAlpha() const;//mwf for building off-diagonal jacobians, not necessarily best idea
   Vec yn,ynprime,yCminusyP,tempvec;
   //the initial state given to initializeTimeHistory, kept so that a change of
   //the first step size (setDT) can rebuild the history and coefficients for it
   Vec y0Saved,yp0Saved;
   bool historyInitialized;
+  //a change of the solution after the step (projection) that is not part of the dynamics:
+  //it moves the level of the history, not the derivatives (see shiftLevel)
+  Vec levelShift;
+  bool hasLevelShift;
 private:
   
   bool firstStep,

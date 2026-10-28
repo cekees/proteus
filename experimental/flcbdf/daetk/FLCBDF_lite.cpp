@@ -140,6 +140,8 @@ FLCBDF_lite::FLCBDF_lite(int dim,
   y0Saved(dim,0.0),
   yp0Saved(dim,0.0),
   historyInitialized(false),
+  levelShift(dim,0.0),
+  hasLevelShift(false),
   alphaS(0.0),
   alphaoNp1(0.0),
   alphaOld(0.0),
@@ -232,6 +234,16 @@ real FLCBDF_lite::setDT(const real& hin)
       step();
     }
   return  h;
+}
+
+void FLCBDF_lite::shiftLevel(const Vec& yProjected)
+{
+  //the step took yn (the predictor) to yn + yCminusyP; the history gets that
+  //value at the start of the next step, and the shift moves it to yProjected
+  levelShift = yProjected;
+  levelShift -= yn;
+  levelShift -= yCminusyP;
+  hasLevelShift = true;
 }
 
 real FLCBDF_lite::estimateError(const Vec& y)
@@ -545,6 +557,11 @@ void FLCBDF_lite::updateCoefficients()
 #else
 	  axpy(1.0,phiN[i+1],phiN[i]);
 #endif
+        }
+      if (hasLevelShift)
+        {
+          phiN[0] += levelShift;
+          hasLevelShift = false;
         }
     }
   
@@ -1019,7 +1036,7 @@ namespace Daetk
 #define FLCBDF_STATE_BOOLS(X) X(firstStep) X(prepareJacobian) X(predictorAlreadyUpdated) X(firstCallToSolver) \
   X(jacobianIsOld) X(correctorStepFailed) X(kRaisedOnLastStep) X(USE_FIXED_STEP) X(USE_FIXED_ORDER) \
   X(UPDATE_JACOBIANS) X(STEP_EXACT) X(inInitializationPhase) X(recomputeNonlinearConvergenceRate) \
-  X(stepFailed) X(useOldChooseStepSize) X(historyInitialized)
+  X(stepFailed) X(useOldChooseStepSize) X(historyInitialized) X(hasLevelShift)
 #define FLCBDF_STATE_INTS(X) X(neq) X(k) X(kLast) X(constStepsTaken) X(constStepsTakenSave) X(kLastUpdate) \
   X(constStepsTakenLastUpdate) X(constStepsTakenLastUpdateSave) X(stepsFailed) X(errorFailures) \
   X(MAX_FAILURES) X(shortCutFactor) X(kFixed) X(iStep)
@@ -1039,7 +1056,7 @@ std::vector<double> FLCBDF_lite::packState() const
   for (int i=0;i<6;i++) s.push_back(betaNp1[i]);
   for (int i=0;i<6;i++) s.push_back(gammaNp1[i]);
   const int n = yn.ldim();
-  const Vec* vs[] = {&phiN[0],&phiN[1],&phiN[2],&phiN[3],&phiN[4],&phiN[5],&phiN[6],&yn,&ynprime,&y0Saved,&yp0Saved};
+  const Vec* vs[] = {&phiN[0],&phiN[1],&phiN[2],&phiN[3],&phiN[4],&phiN[5],&phiN[6],&yn,&ynprime,&y0Saved,&yp0Saved,&levelShift};
   for (const Vec* v : vs)
     for (int i=0;i<n;i++) s.push_back((*v)[i]);
   return s;
@@ -1049,8 +1066,8 @@ void FLCBDF_lite::unpackState(const std::vector<double>& s)
 {
   size_t j = 0;
   const int n = yn.ldim();
-  const size_t nScalars = 16 + 14 + 19 + 7+7+6+6+6;
-  if (s.size() != nScalars + 11*static_cast<size_t>(n))
+  const size_t nScalars = 17 + 14 + 19 + 7+7+6+6+6;
+  if (s.size() != nScalars + 12*static_cast<size_t>(n))
     throw std::runtime_error("FLCBDF_lite::unpackState: state does not match this integrator (size or version)");
 #define POP_B(m) m = (s[j++] != 0.0);
 #define POP_I(m) m = static_cast<int>(s[j++]);
@@ -1064,7 +1081,7 @@ void FLCBDF_lite::unpackState(const std::vector<double>& s)
   for (int i=0;i<6;i++) alphaNp1[i]=s[j++];
   for (int i=0;i<6;i++) betaNp1[i]=s[j++];
   for (int i=0;i<6;i++) gammaNp1[i]=s[j++];
-  Vec* vs[] = {&phiN[0],&phiN[1],&phiN[2],&phiN[3],&phiN[4],&phiN[5],&phiN[6],&yn,&ynprime,&y0Saved,&yp0Saved};
+  Vec* vs[] = {&phiN[0],&phiN[1],&phiN[2],&phiN[3],&phiN[4],&phiN[5],&phiN[6],&yn,&ynprime,&y0Saved,&yp0Saved,&levelShift};
   for (Vec* v : vs)
     for (int i=0;i<n;i++) (*v)[i] = s[j++];
 }

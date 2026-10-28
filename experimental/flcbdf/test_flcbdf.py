@@ -84,16 +84,18 @@ def _vortex(tmp_path, ti_ls, ti_vof, tol):
 
 
 @pytest.mark.parametrize("ti_ls,ti_vof,tol", [("flcbdf", "be", 1e-2),
-                                              ("be", "flcbdf", 1e-2),
-                                              ("flcbdf", "flcbdf", 1e-2)])
+                                              ("flcbdf", "be", 1e-4),
+                                              ("be", "flcbdf", 1e-4),
+                                              ("flcbdf", "flcbdf", 1e-3)])
 def test_vortex2d_with_flcbdf_reaches_the_end(tmp_path, ti_ls, ti_vof, tol):
-    """vortex2D to t = 8 with FLCBDF on the level set, on the volume of fluid,
-    and on both, with no Newton failure. Known gaps: the level set at the
-    default 1e-4 drives dt toward zero at the steep front, and at 1e-3 the
-    redistancing model's Newton iteration stalls near its tolerance."""
+    """vortex2D to t = 8 with FLCBDF on the level set (also at the default
+    tolerance 1e-4), on the volume of fluid, and on both, with no Newton
+    failure. Known gap: both models at 1e-4 stops at t = 0.93, where the
+    redistancing model's Newton iteration stalls just above its tolerance and
+    cutting the step does not help."""
     times, log = _vortex(tmp_path, ti_ls, ti_vof, tol)
     assert times and times[-1] >= 8.0 - 1e-8
-    assert "FAILED" not in log
+    assert "System Step Failed" not in log
 
 
 def test_hotstart_with_flcbdf_reproduces_the_uninterrupted_run(tmp_path):

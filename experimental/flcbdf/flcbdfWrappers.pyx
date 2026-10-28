@@ -62,6 +62,11 @@ cdef class FLCBDF_integrator:
         self.flcbdf.estimateError(yVec[0])
         del yVec
         
+    def shiftLevel(self, np.ndarray y):
+        cdef Vec *yVec = new Vec(REF,<double*>(y.data),self.flcbdf.yn.ldim_)
+        self.flcbdf.shiftLevel(yVec[0])
+        del yVec
+
     def retryStep_errorFailure(self):
         cdef double h
         h = self.flcbdf.retryStep_errorFailure()
@@ -103,6 +108,10 @@ cdef class FLCBDF_integrator:
         cdef vector[double] v
         v.assign(<double*>s.data, <double*>s.data + s.size)
         self.flcbdf.unpackState(v)
+
+    def diagnostics(self):
+        """(weighted error of the last step, step size, order); for diagnostics."""
+        return (self.flcbdf.lastError(), self.flcbdf.lastStep(), self.flcbdf.lastOrder())
 
     def getCurrentAlpha(self):
         cdef double alpha
