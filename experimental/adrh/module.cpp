@@ -261,6 +261,18 @@ PYBIND11_MODULE(adrh_proto, m)
     }
     return py::make_tuple(kr, dkr);
   });
+  // nodal storage m = rho theta_w and dm/du with each node's own material (the low-order scheme's lumped mass is nodal)
+  m.def("richards_m_nodes", [](Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, int psk, IArrL nodeMat, Arr u, double rho, double beta) {
+    const int n = (int)u.size();
+    py::array_t<double> mm(n), dm(n);
+    for (int i = 0; i < n; ++i)
+    {
+      const int s = nodeMat.data()[i];
+      adrh::mNode(u.data()[i], alpha.data()[s], n_vg.data()[s], thetaR.data()[s], thetaSR.data()[s], psk, rho, beta, mm.mutable_data()[i], dm.mutable_data()[i]);
+    }
+    return py::make_tuple(mm, dm);
+  }, py::arg("alpha"), py::arg("n_vg"), py::arg("thetaR"), py::arg("thetaSR"), py::arg("psk"), py::arg("nodeMat"), py::arg("u"), py::arg("rho") = 1.0,
+     py::arg("beta") = 0.0);
   // the flux part of the residual (r) and its Jacobian values on the pattern: S the stiffness (mode 1), phi the total head, kr/dkr nodal
   m.def("upwind_flux", [](IArrL indptr, IArrL indices, Arr S, Arr phi, Arr kr, Arr dkr) {
     const int n = (int)indptr.size() - 1;
@@ -284,6 +296,19 @@ PYBIND11_MODULE(adrh_proto, m)
     return out;
   }, py::arg("indptr"), py::arg("indices"), py::arg("tpos"), py::arg("Mc"), py::arg("A"), py::arg("ML"), py::arg("mL"), py::arg("mold"), py::arg("dt"),
      py::arg("bounds_old") = true);
+  // FCT with the bounds given (the head's local extrema mapped to moisture content by each node's own curve; see headExtremaRow)
+  m.def("head_extrema", [](IArrL indptr, IArrL indices, Arr a, Arr b) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> pmax(n), pmin(n);
+    for (int i = 0; i < n; ++i) adrh::headExtremaRow(i, indptr.data(), indices.data(), a.data(), b.data(), pmax.mutable_data(), pmin.mutable_data());
+    return py::make_tuple(pmax, pmin);
+  });
+  m.def("fct_limit_flux_bounded", [](IArrL indptr, IArrL indices, IArrL tpos, Arr Mc, Arr A, Arr ML, Arr mL, Arr mold, Arr mmax, Arr mmin, double dt) {
+    py::array_t<double> out(mL.size());
+    adrh::fctLimitFluxBounded((int)indptr.size() - 1, indptr.data(), indices.data(), tpos.data(), Mc.data(), A.data(), ML.data(), mL.data(), mold.data(),
+                              mmax.data(), mmin.data(), dt, out.mutable_data());
+    return out;
+  });
   // ---- algebraic stabilization (lowOrder.h) ----
   m.def("transpose_map", [](py::array_t<int, py::array::c_style | py::array::forcecast> indptr, py::array_t<int, py::array::c_style | py::array::forcecast> indices) {
     const std::vector<int> t = adrh::buildTransposeMap((int)indptr.size() - 1, indptr.data(), indices.data());

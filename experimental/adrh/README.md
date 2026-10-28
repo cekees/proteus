@@ -484,3 +484,34 @@ from one material and the density factor assumes `beta = 0` (true of every deck)
 * **On the GPU**, Celia, Szymkiewicz and HYDRUS with `--upwind --fct` print the same differences from the saved profiles as the host (RTX 6000 Ada, `adrh_kokkos` CUDA module).
 * **Not done.** One material per run for the nodal `kr` (the node's material number is an argument, but the decks use one); `beta != 0`; 2D and 3D decks; the cost of the new passes (they are the same
   row-parallel gathers as the dissipation pass, 2 to 4% of the assembly there); FCT iterated inside the Newton loop.
+
+## Heterogeneous media and 2D: `richards_nd.py`, `richards_nd_test.py`, `richards_2d.py`
+
+The K-upwinded scheme on a general P1 mesh (`KUpwindRichards`, 1, 2 or 3 dimensions), built from the same passes as the 1D `Column` (which stays pinned to proteus's saved profiles): the element kernel in
+mode 1 and 2, `richards_kr_nodes`, the new `richards_m_nodes` (the nodal storage `m` and `dm/du` with each node's own retention curve, in both modules), `upwind_flux`, `antidiffusive_flux` and the FCT limiter.
+
+* **Nodal materials.** `K_s` is the element's. The storage and the upwind relative permeability are nodal, so a node has one retention curve, the first incident element's, which is what proteus does
+  (`Richards.py`, `nodeMaterialTypes_n`). `first_incident_material` does it.
+* **`interface='element'`** takes the upwind `K_r` of an element's flux from that element's own material: the flux is split by material, `F = sum_m kr_m(psi_up) c_m (phi_j - phi_i)`, `c_m` the upwinding weight of the stiffness of
+  the elements of material `m` alone (psi is continuous across the interface). For one material it is the same scheme. Measured on the two-layer steady column of `richards_layers.py` against the ODE (shooting) solution:
+
+  | nodes | proteus's rule (`interface='node'`) | `interface='element'` |
+  |---|---|---|
+  | 21 | 5.8e-1 | 6.3e-3 |
+  | 41 | 4.7e-1 (rate 0.32) | 3.3e-3 (0.91) |
+  | 81 | 3.4e-1 (0.44) | 1.7e-3 (0.96) |
+  | 161 | 2.3e-1 (0.57) | 8.7e-4 (0.98) |
+  | 321 | 1.4e-1 (0.68) | 4.4e-4 (0.99) |
+
+  Proteus's rule converges, slowly, because the one element above the interface takes `K_r` from the soil below it. The storage stays nodal in both so that FCT can invert the moisture content analytically.
+* **FCT bounds on the head** (`fct_correct(bounds='head')`, the default; `'moisture'` is proteus's). The moisture contents of two soils at one head are not comparable, so a moisture bound across an interface lets a node dry
+  below every head around it: in the lens deck (`richards_2d.py --lens --fct`, 41 x 41 nodes) the head falls to -11.3 m after 70 steps and to -15.7 m after 280, from an initial minimum of -10. Bounding the head
+  (`head_extrema` over a node's row, mapped to moisture content with the node's own curve, `fct_limit_flux_bounded`) keeps it at -10 and is the moisture bound for one material (equal to 1e-12). The moisture bound is
+  proteus's; whether proteus has the same undershoot on a lens was not run.
+* **Tests** (`richards_nd_test.py`, both modules, in CTest): the 1D Celia deck against `Column`, low-order 8e-14 and FCT 8e-13; the Celia column as a strip of triangles (x-uniform) equals the 1D solution to 3e-9 (low-order),
+  and FCT keeps the mass exactly and stays in the data's bounds; the layered column and its strip; a transient layered FCT run; the head bounds against the moisture bounds; `golden.py` has the three new passes
+  (bitwise equal host and Kokkos).
+* **The 2D deck** (`richards_2d.py`): proteus's `re_vgm_sand_10x10m_2d` (10 m x 10 m sand, ponded on the middle third of the top, 0.35 d) with an optional lens of a finer soil. There is no saved reference for the deck; it
+  checks the bounds, and host and Kokkos agree (570 Newton iterations, the same mass, on the lens with FCT). Not done: a comparison with a proteus run of the same deck, and 3D.
+
+Compressibility (`beta != 0`) is not in the K-upwinded scheme: the total-head form of the flux needs `rho / rho0 = 1`.

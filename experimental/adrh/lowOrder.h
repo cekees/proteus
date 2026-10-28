@@ -314,6 +314,50 @@ namespace adrh
     }
   }
 
+  // FCT bounds from the HEAD, for a medium whose nodes have different retention curves: the local extrema of the moisture content over a node and its
+  // neighbours are not comparable across soils (the same head is a different moisture content), so the limiter bounds the head, which is continuous
+  // across a soil interface, and maps the bounds to moisture content with the node's own curve, m_i(max_j psi_j) and m_i(min_j psi_j). For one material
+  // this is the bound of fctBoundsRow (m is increasing in psi). headExtremaRow: the extrema over row i of two states a and b (the low-order and old
+  // heads; pass the same array twice to bound over one state alone).
+  ADRH_FN void headExtremaRow(int i, const int *rowptr, const int *colidx, const double *a, const double *b, double *pmax, double *pmin)
+  {
+    double hi = a[i] > b[i] ? a[i] : b[i], lo = a[i] < b[i] ? a[i] : b[i];
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      const double h = a[j] > b[j] ? a[j] : b[j], l = a[j] < b[j] ? a[j] : b[j];
+      if (h > hi) hi = h;
+      if (l < lo) lo = l;
+    }
+    pmax[i] = hi; pmin[i] = lo;
+  }
+
+  // pass 2 of FCT with the bounds mmax_i, mmin_i given (as fctBoundsRow, which takes them over mL and mold)
+  ADRH_FN void fctBoundsRowGiven(int i, const int *rowptr, const int *colidx, const double *G, const double *mL, const double *mmax, const double *mmin,
+                                 const double *ML, double dt, double *Rp, double *Rm)
+  {
+    double Pp = 0.0, Pm = 0.0;
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const double g = G[p];
+      if (g > 0.0) Pp += g; else Pm += g;
+    }
+    const double Qp = ML[i] / dt * (mmax[i] - mL[i]), Qm = ML[i] / dt * (mmin[i] - mL[i]);
+    const double rp = Pp > 0.0 ? Qp / Pp : 1.0, rm = Pm < 0.0 ? Qm / Pm : 1.0;
+    Rp[i] = rp < 1.0 ? rp : 1.0;
+    Rm[i] = rm < 1.0 ? rm : 1.0;
+  }
+
+  // the host reference: fctLimitFlux with the bounds given
+  inline void fctLimitFluxBounded(int nRows, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *A, const double *ML,
+                                  const double *mL, const double *moldFlux, const double *mmax, const double *mmin, double dt, double *mOut)
+  {
+    std::vector<double> G(rowptr[nRows]), Rp(nRows), Rm(nRows);
+    for (int i = 0; i < nRows; ++i) fctFluxRowA(i, rowptr, colidx, tpos, Mc, A, mL, moldFlux, dt, G.data());
+    for (int i = 0; i < nRows; ++i) fctBoundsRowGiven(i, rowptr, colidx, G.data(), mL, mmax, mmin, ML, dt, Rp.data(), Rm.data());
+    for (int i = 0; i < nRows; ++i) fctApplyRow(i, rowptr, colidx, G.data(), Rp.data(), Rm.data(), ML, mL, dt, mOut);
+  }
+
   // moldFlux: the old state the flux pass differences mL against (delta = mL - moldFlux); moldBounds: the one the local extrema are taken over
   // together with mL (pass mL itself to take them over the low-order state alone, as proteus's non-monolithic FCTStep does)
   inline void fctLimitFlux(int nRows, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *A, const double *ML,

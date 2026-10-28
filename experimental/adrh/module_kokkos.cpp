@@ -225,6 +225,20 @@ namespace adrh
     }
   };
 
+  struct MNodesPass
+  {
+    DView<const double> alpha, n, thetaR, thetaSR, u;
+    DView<const int> nodeMat;
+    int psk;
+    double rho, beta;
+    DView<double> mm, dm;
+    KOKKOS_INLINE_FUNCTION void operator()(const int i) const
+    {
+      const int s = nodeMat(i);
+      mNode(u(i), alpha(s), n(s), thetaR(s), thetaSR(s), psk, rho, beta, mm(i), dm(i));
+    }
+  };
+
 }
 
 PYBIND11_MODULE(adrh_kokkos, m)
@@ -359,6 +373,21 @@ PYBIND11_MODULE(adrh_kokkos, m)
     }
     return py::make_tuple(kr, dkr);
   });
+  m.def("richards_m_nodes", [](Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, int psk, IArr nodeMat, Arr u, double rho, double beta) {
+    const int n = (int)u.size();
+    py::array_t<double> mm(n), dm(n);
+    {
+      py::gil_scoped_release release;
+      adrh::DView<double> da = up(alpha), dn = up(n_vg), dtr = up(thetaR), dts = up(thetaSR), du = up(u), dmv("m", n), ddmv("dm", n);
+      adrh::DView<int> dmat = upInt(nodeMat);
+      adrh::forEachElement("adrh m nodes", 0, n, adrh::MNodesPass{da, dn, dtr, dts, du, dmat, psk, rho, beta, dmv, ddmv});
+      Kokkos::fence();
+      Kokkos::deep_copy(HostView(mm.mutable_data(), n), dmv);
+      Kokkos::deep_copy(HostView(dm.mutable_data(), n), ddmv);
+    }
+    return py::make_tuple(mm, dm);
+  }, py::arg("alpha"), py::arg("n_vg"), py::arg("thetaR"), py::arg("thetaSR"), py::arg("psk"), py::arg("nodeMat"), py::arg("u"), py::arg("rho") = 1.0,
+     py::arg("beta") = 0.0);
   m.def("upwind_flux", [](IArr indptr, IArr indices, Arr S, Arr phi, Arr kr, Arr dkr) {
     const int n = (int)indptr.size() - 1;
     py::array_t<double> r(n), J(S.size());
@@ -396,6 +425,30 @@ PYBIND11_MODULE(adrh_kokkos, m)
     return out;
   }, py::arg("indptr"), py::arg("indices"), py::arg("tpos"), py::arg("Mc"), py::arg("A"), py::arg("ML"), py::arg("mL"), py::arg("mold"), py::arg("dt"),
      py::arg("bounds_old") = true);
+  m.def("head_extrema", [](IArr indptr, IArr indices, Arr a, Arr b) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> pmax(n), pmin(n);
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices);
+      adrh::DView<double> da = up(a), db = up(b), dmax("pmax", n), dmin("pmin", n);
+      adrh::headExtremaKokkos(n, dp, di, da, db, dmax, dmin);
+      Kokkos::deep_copy(HostView(pmax.mutable_data(), n), dmax);
+      Kokkos::deep_copy(HostView(pmin.mutable_data(), n), dmin);
+    }
+    return py::make_tuple(pmax, pmin);
+  });
+  m.def("fct_limit_flux_bounded", [](IArr indptr, IArr indices, IArr tpos, Arr Mc, Arr A, Arr ML, Arr mL, Arr mold, Arr mmax, Arr mmin, double dt) {
+    py::array_t<double> out(mL.size());
+    {
+      py::gil_scoped_release release;
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt_ = upInt(tpos);
+      adrh::DView<double> dMc = up(Mc), dA = up(A), dML = up(ML), dmL = up(mL), dmo = up(mold), dmax = up(mmax), dmin = up(mmin), dout("out", mL.size());
+      adrh::fctLimitFluxBoundedKokkos((int)indptr.size() - 1, dp, di, dt_, dMc, dA, dML, dmL, dmo, dmax, dmin, dt, dout);
+      Kokkos::deep_copy(HostView(out.mutable_data(), out.size()), dout);
+    }
+    return out;
+  });
   // ---- algebraic stabilization (lowOrder.h), on the execution space ----
   m.def("transpose_map", [](IArr indptr, IArr indices) {
     const std::vector<int> t = adrh::buildTransposeMap((int)indptr.size() - 1, indptr.data(), indices.data());
