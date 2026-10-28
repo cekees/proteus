@@ -387,7 +387,11 @@ class SSP(BackwardEuler_cfl):
 
 class FLCBDF(TI_base):
     def __init__(self,transport):
-        from . import flcbdfWrappers
+        try:
+            from . import flcbdfWrappers
+        except ImportError:
+            #experimental build: experimental/flcbdf/setup.py, on PYTHONPATH
+            import flcbdfWrappers
         TI_base.__init__(self,transport)
         self.initCalls=0
         #masses

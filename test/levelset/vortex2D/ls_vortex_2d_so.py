@@ -22,7 +22,7 @@ elif not onlyVOF:
 else:
     pnList = [("vof_vortex_2d_p","vof_vortex_2d_n")]
 
-if "FLCBDF" in [timeIntegration_vof,timeIntegration_ls]:
+if "flcbdf" in [timeIntegration_vof,timeIntegration_ls]:
     systemStepControllerType = Sequential_MinFLCBDFModelStep
 else:
     systemStepControllerType = Sequential_MinAdaptiveModelStep
