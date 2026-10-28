@@ -1,9 +1,11 @@
 # A type of -*- python -*- file
 from libcpp.vector cimport vector
+from libcpp.string cimport string
 from mpi4py.libmpi cimport MPI_Comm
 cimport mesh
 
 cdef extern from "partitioning.h" namespace "proteus":
+    extern string c_petscPartitioners "proteus::petscPartitioners" ()
     extern int c_ensurePetscInitialized "proteus::ensurePetscInitialized" ()
     extern bint c_petscIsInitialized "proteus::petscIsInitialized" ()
     extern int c_generateCartesianSubdomain "proteus::generateCartesianSubdomain" (const MPI_Comm& PROTEUS_COMM_WORLD,
