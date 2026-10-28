@@ -1253,7 +1253,7 @@ class LevelModel(proteus.mprans.RANS2P.LevelModel):
         argsDict["ebqe_velocity"] = self.ebqe[('velocity', 0)]
         argsDict["flux"] = self.ebq_global[('totalFlux', 0)]
         argsDict["elementResidual_p_save"] = self.elementResidual[0]
-        argsDict["boundaryFlags"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["boundaryFlags"] = self.mesh.elementBoundaryUserFlags
         argsDict["barycenters"] = self.coefficients.barycenters
         argsDict["wettedAreas"] = self.coefficients.wettedAreas
         argsDict["netForces_p"] = self.coefficients.netForces_p
@@ -1340,7 +1340,7 @@ class LevelModel(proteus.mprans.RANS2P.LevelModel):
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["eb_adjoint_sigma"] = self.eb_adjoint_sigma
-        argsDict["elementDiameter"] = self.elementDiameter,  # mesh.elementDiametersArray
+        argsDict["elementDiameter"] = self.elementDiameter  # mesh.elementDiametersArray
         argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["hFactor"] = self.stabilization.hFactor
         argsDict["nElements_global"] = self.mesh.nElements_global
@@ -1571,7 +1571,7 @@ class LevelModel(proteus.mprans.RANS2P.LevelModel):
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
         argsDict["eb_adjoint_sigma"] = self.eb_adjoint_sigma
-        argsDict["elementDiameter"] = self.elementDiameter,  # mesh.elementDiametersArray
+        argsDict["elementDiameter"] = self.elementDiameter  # mesh.elementDiametersArray
         argsDict["nodeDiametersArray"] = self.mesh.nodeDiametersArray
         argsDict["hFactor"] = self.stabilization.hFactor
         argsDict["nElements_global"] = self.mesh.nElements_global
@@ -1697,7 +1697,7 @@ class LevelModel(proteus.mprans.RANS2P.LevelModel):
         argsDict["ebqe_velocity"] = self.ebqe[('velocity', 0)]
         argsDict["flux"] = self.ebq_global[('totalFlux', 0)]
         argsDict["elementResidual_p_save"] = self.elementResidual[0]
-        argsDict["boundaryFlags"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["boundaryFlags"] = self.mesh.elementBoundaryUserFlags
         argsDict["barycenters"] = self.coefficients.barycenters
         argsDict["wettedAreas"] = self.coefficients.wettedAreas
         argsDict["netForces_p"] = self.coefficients.netForces_p

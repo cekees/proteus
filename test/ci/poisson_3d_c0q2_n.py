@@ -13,8 +13,11 @@ nDTout = 1
 #finite element spaces
 femSpaces = {0:C0_AffineLagrangeOnCubeWithNodalBasis}
 #numerical quadrature choices
-elementQuadrature = CubeGaussQuadrature(nd,5)
-elementBoundaryQuadrature = CubeGaussQuadrature(nd-1,5)
+# Points per axis (see poisson_3d_c0q1_n.py): the triquadratic basis with
+# coefficients linear in x gives integrands of degree <= 5 per axis, which three
+# Gauss points integrate exactly (27 points per hexahedron, not the 125 of order 5).
+elementQuadrature = CubeGaussQuadrature(nd,3)
+elementBoundaryQuadrature = CubeGaussQuadrature(nd-1,3)
 
 #number of nodes in x,y,z
 nnx = 6

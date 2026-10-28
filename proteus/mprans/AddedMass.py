@@ -16,6 +16,8 @@ from proteus.SubgridError import SGE_base
 from proteus.ShockCapturing import ShockCapturing_base
 from . import cAddedMass, cArgumentsDict
 from mpi4py import MPI
+import proteus.NumericalFlux
+import proteus.Transport
 
 class NumericalFlux(proteus.NumericalFlux.ConstantAdvection_Diffusion_SIPG_exterior):
     def __init__(self,
@@ -691,7 +693,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argDict['exteriorElementBoundariesArray'] = self.mesh.exteriorElementBoundariesArray
         argDict['elementBoundaryElementsArray'] = self.mesh.elementBoundaryElementsArray
         argDict['elementBoundaryLocalElementBoundariesArray'] = self.mesh.elementBoundaryLocalElementBoundariesArray
-        argDict['elementBoundaryMaterialTypesArray'] = self.mesh.elementBoundaryMaterialTypes
+        argDict['elementBoundaryMaterialTypesArray'] = self.mesh.elementBoundaryUserFlags
         argDict['Aij'] = self.Aij
         argDict['added_mass_i'] = self.added_mass_i
         argDict['barycenters'] = self.barycenters

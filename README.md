@@ -1,4 +1,4 @@
-# Proteus: Computational Methods and Simulation Toolkit [![Build Status](https://github.com/cekees/proteus/actions/workflows/sdist.yml/badge.svg?branch=main)](https://github.com/cekees/proteus/actions/workflows/sdist.yml) [![DOI](https://zenodo.org/badge/2212385.svg)](https://zenodo.org/badge/latestdoi/2212385)
+# Proteus: Computational Methods and Simulation Toolkit [![Build Status](https://github.com/proteustoolkit/proteus/actions/workflows/sdist.yml/badge.svg?branch=main)](https://github.com/proteustoolkit/proteus/actions/workflows/sdist.yml) [![DOI](https://zenodo.org/badge/2212385.svg)](https://zenodo.org/badge/latestdoi/2212385)
 
 
 Proteus (https://proteustoolkit.org) is a Python package for
@@ -61,6 +61,18 @@ wildcard on every MPI-linked package: `hdf5`, `h5py`, `scorec`, `zoltan`).
   invoked` (exit code 14) -- see the comment header in
   `environment-mpich-dev.yml` for the reproduction and verification details.
   If you hit this, switch to `environment-openmpi-dev.yml`.
+
+  **On macOS, set `FI_PROVIDER=tcp` with MPICH.** conda-forge's MPICH runs
+  over libfabric, which on macOS picks its `sockets` provider. That provider
+  starts two connection threads that busy-poll at 100% CPU each from
+  `MPI_Init` on, in every process, so each MPI rank holds about three cores,
+  half of it system time. Its `tcp` provider has no such threads and runs
+  multi-rank jobs just as well. `import proteus` sets `FI_PROVIDER=tcp` on
+  macOS unless it is already set, which covers `parun` and anything that
+  imports proteus before MPI starts. Set it yourself (`export FI_PROVIDER=tcp`)
+  for `mpiexec` runs of other programs, or when your own script imports
+  `mpi4py.MPI` or `petsc4py.PETSc` before `proteus`. Seen with MPICH 4.3.2,
+  5.0.1 and 5.0.2 and libfabric 2.2.0 and 2.6.0; Open MPI is not affected.
 
 On macOS/arm64 (Apple Silicon), `environment-openmpi-dev.yml` requires
 `scorec >=4.2.1` and will not solve with anything older. conda-forge's `scorec`
@@ -293,19 +305,13 @@ depend on that specific fork -- if your site already has its own PETSc
 checkout, copying `config/BuildSystem/config/packages/{proteus,chrono,pumi,numpy,h5py}.py`
 into it works the same way.
 
-See https://github.com/erdc/proteus/wiki/How-to-Build-Proteus for old information on building the entire stack by hand.
+See https://github.com/proteustoolkit/proteus/wiki/How-to-Build-Proteus for old information on building the entire stack by hand.
 
 # Developer Information
 
-Development happens on the primary repository,
+Development happens on
 
-https://github.com/cekees/proteus
+https://github.com/proteustoolkit/proteus
 
-which is where pull requests go and where CI runs. The issue tracker and the
-wiki are on
-
-https://github.com/erdc/proteus
-
-which is also where releases are published. `RELEASE.md` describes how the
-two relate, including the convention for referring to an issue from a commit
-message (the numbering is per-repository, so references need qualifying).
+which is where pull requests go, where CI runs, and where the issue tracker,
+the wiki and the releases live. `RELEASE.md` describes how a release is cut.

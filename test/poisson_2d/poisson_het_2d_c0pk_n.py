@@ -59,21 +59,27 @@ if parallel:
     #type of partition
     parallelPartitioningType = MeshParallelPartitioningTypes.node
     linearSolverConvergenceTest= 'r-true'
-    from petsc4py import PETSc
-    OptDB = PETSc.Options()
-    OptDB.clear()
-    if direct:
-        OptDB.setValue('ksp_type','preonly')
-        OptDB.setValue('pc_type','lu')
-        OptDB.setValue('pc_factor_type','superlu_dist')
-    else:
-        OptDB.setValue('ksp_type','bcgsl')
-        OptDB.setValue('pc_type','asm')
-        OptDB.setValue('pc_asm_type','basic')
-        OptDB.setValue('pc_asm_overlap',2)
-        OptDB.setValue('sub_ksp_type','preonly')
-        OptDB.setValue('sub_pc_type','lu')
-        OptDB.setValue('sub_pc_factor_type','superlu')
+    #the options below configure KSP; a run without petsc4py has to pick one of
+    #proteus's own solvers instead (MGM, say), and must still be able to load this
+    try:
+        from petsc4py import PETSc
+    except ImportError:
+        PETSc = None
+    if PETSc is not None:
+        OptDB = PETSc.Options()
+        OptDB.clear()
+        if direct:
+            OptDB.setValue('ksp_type','preonly')
+            OptDB.setValue('pc_type','lu')
+            OptDB.setValue('pc_factor_type','superlu_dist')
+        else:
+            OptDB.setValue('ksp_type','bcgsl')
+            OptDB.setValue('pc_type','asm')
+            OptDB.setValue('pc_asm_type','basic')
+            OptDB.setValue('pc_asm_overlap',2)
+            OptDB.setValue('sub_ksp_type','preonly')
+            OptDB.setValue('sub_pc_type','lu')
+            OptDB.setValue('sub_pc_factor_type','superlu')
 else:
     multilevelLinearSolver = LU
     levelLinearSolver = LU

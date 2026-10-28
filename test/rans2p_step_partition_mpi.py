@@ -1,0 +1,54 @@
+#!/usr/bin/env python
+"""RANS2P single-phase step flow on an element partition without overlap.
+
+Run by ``test_rank_interface_flux.py`` under ``mpiexec``. Prints the sums over
+owned nodes of p, u and v squared and unsummed, which a serial run must match.
+The system is test/solver_tests/import_modules/step2d, solved with a direct
+solver so the comparison is not limited by a Krylov tolerance. The mesh is
+partitioned by the domain's MeshOptions, which also decides how the residual is
+assembled, so both are set there.
+"""
+import os
+import sys
+
+from proteus import Comm
+
+comm = Comm.init()
+
+import numpy as np
+from petsc4py import PETSc
+
+from proteus import Context, MeshTools, NumericalSolution, default_s, defaults, runtime
+
+MODULES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "solver_tests", "import_modules")
+sys.path.insert(0, MODULES)
+Context.contextOptionsString = "he=0.1 schur_solver='petsc_ASM'"
+so = defaults.load_system("step2d_so", MODULES)
+p = defaults.load_physics("twp_navier_stokes_step2d_p", MODULES)
+n = defaults.load_numerics("twp_navier_stokes_step2d_n", MODULES)
+n.linearSmoother = None
+options = PETSc.Options()
+options.setValue("rans2p_ksp_type", "preonly")
+options.setValue("rans2p_pc_type", "lu")
+options.setValue("rans2p_pc_factor_mat_solver_type", "superlu_dist" if comm.size() > 1 else "superlu")
+p.name = so.name = "step2d_part"
+so.sList = [default_s]
+mesh_options = p.domain.MeshOptions
+mesh_options.parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.element
+mesh_options.nLayersOfOverlapForParallel = int(os.environ.get("NLAYERS", "0"))
+ns = NumericalSolution.NS_base(so, [p], [n], so.sList, runtime.RunOptions())
+ns.calculateSolution("step2d_part")
+model = ns.modelList[0].levelModelList[-1]
+mesh = model.mesh
+owned = mesh.nNodes_owned
+from mpi4py import MPI
+c = comm.comm.tompi4py()
+result = {}
+for i, name in enumerate(("p", "u", "v")):
+    dof = model.u[i].dof[:owned]
+    result[name + "2"] = c.allreduce(float((dof ** 2).sum()), op=MPI.SUM)
+    result[name + "s"] = c.allreduce(float(dof.sum()), op=MPI.SUM)
+interfaces = int((mesh.elementBoundaryMaterialTypes[mesh.exteriorElementBoundariesArray] == -1).sum())
+print("RANK rank=%d interfaces=%d" % (comm.rank(), interfaces), flush=True)
+if comm.rank() == 0:
+    print("RESULT ranks=%d " % comm.size() + " ".join("%s=%.17e" % kv for kv in result.items()), flush=True)

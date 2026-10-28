@@ -4,6 +4,8 @@ import numpy
 from proteus.Profiling import logEvent
 from proteus import MeshTools
 from proteus import SimTools
+import proteus.Domain
+import proteus.mprans
 
 #try making a class that's build on top of NS_base for these functions 
 class PUMI_helper:
@@ -90,7 +92,7 @@ class PUMI_helper:
         nLayersOfOverlapForParallel = n0.nLayersOfOverlapForParallel
         parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.element
         domain = p0.domain
-        domain.MeshOptions.setParallelPartitioningType('element')
+        MeshTools.getMeshOptions(domain).setParallelPartitioningType('element')
 
         logEvent("Generating %i-level mesh from PUMI mesh" % (nLevels,))
         if domain.nd == 3:

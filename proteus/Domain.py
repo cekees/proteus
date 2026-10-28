@@ -7,7 +7,6 @@ A class hierarchy and tools for building domains of PDE's.
 import sys
 import numpy as np
 from proteus.Profiling import logEvent
-from proteus import MeshTools
 try:
     from proteus.MeshAdaptPUMI import MeshAdapt
 except ImportError:
@@ -52,11 +51,6 @@ class D_base(object):
         self.boundaryTags = {}
         self.BC = {}
         self.BCbyFlag = {}
-        # use_gmsh hack
-        self.use_gmsh = False
-        self.MeshOptions = MeshTools.MeshOptions(self.nd)
-        # use plex hack
-        self.use_plex = False
         # for PUMI compatibility
         self.faceList=[] #list of the boundary IDs that have corresponding BCs, might be the same as self.facets[]
         self.regList=[] # list of regions in the domain, this might be the same as self.regions[]
@@ -66,6 +60,97 @@ class D_base(object):
         self.useSpatialTools = False
         # default value for barycenters (compatibility with TwoPhaseFlow)
         self.barycenters = None
+
+    # ------------------------------------------------------------------
+    # Meshing policy is not part of the domain description.  How fine the
+    # elements are, which generator runs, how the mesh is partitioned --
+    # none of that says anything about what the domain *is*, and a domain
+    # that has never been meshed should carry none of it.  So it lives in
+    # proteus.MeshTools, which owns both the MeshOptions class and the
+    # options attached to any particular domain.
+    #
+    # The properties below are the spellings the rest of Proteus has always
+    # used, kept working and forwarding to that one owner.
+    #
+    # .. deprecated:: 2.0
+    #    They are kept for compatibility and **will be removed in 2.1**. New
+    #    code asks :func:`proteus.MeshTools.getMeshOptions` for the options
+    #    object and goes through that.
+    #
+    # They do not warn by default: proteus itself still uses these spellings
+    # in 347 places, so a warning today would mostly be proteus shouting at
+    # proteus. Set ``MeshTools.warnOnDomainMeshForwarding = True`` to find
+    # them -- that switch is how the 2.1 removal gets done by sweeping rather
+    # than by hoping.
+    # ------------------------------------------------------------------
+    @property
+    def MeshOptions(self):
+        """The MeshTools.MeshOptions governing how this domain is meshed.
+
+        .. deprecated:: 2.0
+           Removed in 2.1; use ``MeshTools.getMeshOptions(domain)``.
+        """
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("MeshOptions")
+        return MeshTools.getMeshOptions(self)
+
+    @MeshOptions.setter
+    def MeshOptions(self, meshOptions):
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("MeshOptions")
+        MeshTools.setMeshOptions(self, meshOptions)
+
+    @property
+    def use_gmsh(self):
+        """True to mesh with gmsh rather than triangle/tetgen.
+
+        .. deprecated:: 2.0
+           Removed in 2.1; use ``MeshTools.getMeshOptions(domain).use_gmsh``.
+        """
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("use_gmsh")
+        return MeshTools.getMeshOptions(self).use_gmsh
+
+    @use_gmsh.setter
+    def use_gmsh(self, flag):
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("use_gmsh")
+        MeshTools.getMeshOptions(self).use_gmsh = flag
+
+    @property
+    def use_plex(self):
+        """True to build the mesh from a PETSc DMPlex.
+
+        .. deprecated:: 2.0
+           Removed in 2.1; use ``MeshTools.getMeshOptions(domain).use_plex``.
+        """
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("use_plex")
+        return MeshTools.getMeshOptions(self).use_plex
+
+    @use_plex.setter
+    def use_plex(self, flag):
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("use_plex")
+        MeshTools.getMeshOptions(self).use_plex = flag
+
+    @property
+    def regionConstraints(self):
+        """Maximum element area/volume per region, parallel to self.regions.
+
+        .. deprecated:: 2.0
+           Removed in 2.1; use
+           ``MeshTools.getMeshOptions(domain).regionConstraints``.
+        """
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("regionConstraints")
+        return MeshTools.getMeshOptions(self).regionConstraints
+
+    @regionConstraints.setter
+    def regionConstraints(self, constraints):
+        from proteus import MeshTools
+        MeshTools._warnDomainMeshForwarding("regionConstraints")
+        MeshTools.getMeshOptions(self).regionConstraints = constraints
 
     #Get the mesh entity to model entity classification for every entity
     def isOnLine(self,pointA,pointB,testPoint):
@@ -596,13 +681,15 @@ class GMSH_3D_Domain(D_base):
     geofile : str
               The base filename of the main .geo file
     he : float
-         The maximum element diameter (this should go way)
+         Deprecated.  The maximum element diameter is meshing policy, not
+         part of the domain; it is forwarded to MeshTools.getMeshOptions(self)
+         and should be set there instead.
     name : str
            A name for the domain
     units : str
             The units of length
     """
-    def __init__(self, geofile, he,
+    def __init__(self, geofile, he=None,
                  name="GMSH_Domain",
                  units="m",
                  length_scale=1.0,
@@ -610,7 +697,8 @@ class GMSH_3D_Domain(D_base):
         D_base.__init__(self, 3, name, units)
         self.geofile=geofile+".geo"
         self.polyfile=geofile
-        self.he = he
+        if he is not None:
+            self.MeshOptions.he = he
         self.length_scale=length_scale
         self.permute_dims=permute_dims
 
@@ -893,10 +981,17 @@ property float z
 
 class InterpolatedBathymetryDomain(PlanarStraightLineGraphDomain):
     """
-    2D domains with an attached bathymetry data set.
-    Meshes are generated by locally refining the PSLG until the interpolation error for a bathymetry point cloud meets a prescribed tolerance.
+    A PSLG with a bathymetry field over it.
 
-    Intial support measures interpolation error in the :math:`L_{\\infty}` norm.
+    The region is the boundary representation its parent class describes; the
+    bathymetry is a point cloud sampled over the interior, so the domain is
+    only fully given by the two together. Both are description, and both are
+    what this class holds.
+
+    How that pair becomes a mesh -- refining locally until the interpolation
+    error for the point cloud falls under a tolerance -- is meshing policy,
+    and lives in :class:`proteus.MeshTools.InterpolatedBathymetryMesh`, which
+    takes the tolerances.
     """
     def __init__(self,fileprefix=None,vertices=None,segments=None,
                  holes=None,regions=None,vertexFlags=None,segmentFlags=None,regionFlags=None,
@@ -916,7 +1011,7 @@ class TriangulatedSurfaceDomain(D_base):
     def __init__(self,vertices,triangles,
                  name="DefaultTriangulatedSurfaceDomain",units="m"):
         D_base.__init__(self,3,name,units)
-        self.nodes=nodes
+        self.nodes=vertices
         self.triangles=triangles
     def readSTL(self,fileprefix):
         """

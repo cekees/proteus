@@ -152,6 +152,7 @@ class NS_base(object):  # (HasTraits):
             self.femSpaceWritten={}
             tmp  = Archiver.XdmfArchive(opts.dataDir,so.name,useTextArchive=opts.useTextArchive,
                                         gatherAtClose=opts.gatherArchive,hotStart=opts.hotStart,
+                                        mode=getattr(opts,'archiveMode',None),driver=getattr(opts,'archiveDriver',None),
                                         useGlobalXMF=(not opts.subdomainArchives),
                                         global_sync=opts.global_sync)
             if self.fastArchive==True:
@@ -160,10 +161,12 @@ class NS_base(object):  # (HasTraits):
                 self.ar = dict([(i,tmp) for i in range(len(self.pList))])
         elif len(self.pList) == 1:
             self.ar = {0:Archiver.XdmfArchive(opts.dataDir,so.name,useTextArchive=opts.useTextArchive,
-                                              gatherAtClose=opts.gatherArchive,hotStart=opts.hotStart)} #reuse so.name if possible
+                                              gatherAtClose=opts.gatherArchive,hotStart=opts.hotStart,
+                                        mode=getattr(opts,'archiveMode',None),driver=getattr(opts,'archiveDriver',None))} #reuse so.name if possible
         else:
             self.ar = dict([(i,Archiver.XdmfArchive(opts.dataDir,p.name,useTextArchive=opts.useTextArchive,
-                                                    gatherAtClose=opts.gatherArchive,hotStart=opts.hotStart)) for i,p in enumerate(self.pList)])
+                                                    gatherAtClose=opts.gatherArchive,hotStart=opts.hotStart,
+                                        mode=getattr(opts,'archiveMode',None),driver=getattr(opts,'archiveDriver',None))) for i,p in enumerate(self.pList)])
         #by default do not save quadrature point info
         self.archive_q                 = dict([(i,False) for i in range(len(self.pList))]);
         self.archive_ebq_global        = dict([(i,False) for i in range(len(self.pList))]);
@@ -208,41 +211,7 @@ class NS_base(object):  # (HasTraits):
             else:
                 logEvent("Generating mesh for "+p.name)
             #support for old-style domain input
-            if p.domain is None:
-                if p.nd == 1:
-                    p.domain = Domain.RectangularDomain(L=p.L[:1],
-                                                        x=p.x0[:1],
-                                                        name=p.name)
-                elif p.nd == 2:
-                    if p.polyfile is not None:
-                        p.domain = Domain.PlanarStraightLineGraphDomain(fileprefix=p.polyfile,name=p.polyfile)
-                    elif p.meshfile != None:
-                        p.domain = Domain.Mesh2DMDomain(p.meshfile)
-                    else:
-                        p.domain = Domain.RectangularDomain(L=p.L[:2],
-                                                            x=p.x0[:2],
-                                                            name=p.name)
-                elif p.nd == 3:
-                    if p.polyfile is not None:
-                        p.domain = Domain.PiecewiseLinearComplexDomain(fileprefix=p.polyfile,name=p.polyfile)
-                    elif p.meshfile is not None:
-                        p.domain = Domain.Mesh3DMDomain(p.meshfile)
-                    else:
-                        p.domain = Domain.RectangularDomain(L=p.L[:3],
-                                                            x=p.x0[:3],
-                                                            name=p.name)
-                else:
-                    raise RuntimeError("No support for domains in more than three dimensions")
-
-                #Ensuring backwards compatibility with isolated mesh generation routines
-                p.domain.MeshOptions.nnx, p.domain.MeshOptions.nny,p.domain.MeshOptions.nnz= n.nnx,n.nny,n.nnz
-                p.domain.MeshOptions.nn = n.nn 
-                p.domain.MeshOptions.nLevels = n.nLevels
-                p.domain.MeshOptions.hex = n.hex
-                p.domain.MeshOptions.quad = n.quad
-                p.domain.MeshOptions.triangleFlag=n.triangleFlag
-                p.domain.MeshOptions.triangleOptions=n.triangleOptions
-                p.domain.MeshOptions.genMesh=p.genMesh
+            MeshTools.setDomainFromPhysics(p, n)
         try:
             mlMesh = self.pList[0].domain.mesh
         except:
@@ -435,6 +404,7 @@ class NS_base(object):  # (HasTraits):
                 parallelUsesFullOverlap=(n.nLayersOfOverlapForParallel > 0 or n.parallelPartitioningType == MeshTools.MeshParallelPartitioningTypes.node),
                 par_duList=model.par_duList,
                 solver_options_prefix=linear_solver_options_prefix,
+                coarseSolver=n.linearCoarseSolver,
                 computeEigenvalues = n.computeEigenvalues,
                 linearSmootherOptions = n.linearSmootherOptions)
             self.lsList.append(multilevelLinearSolver)
@@ -479,7 +449,10 @@ class NS_base(object):  # (HasTraits):
                 maxLSits=n.maxLineSearches,
                 #\todo need to add logic in multilevel NL solver chooser to account for numerical method's stencil as well
                 parallelUsesFullOverlap=(n.nLayersOfOverlapForParallel > 0 or n.parallelPartitioningType == MeshTools.MeshParallelPartitioningTypes.node),
-                nonlinearSolverNorm = n.nonlinearSolverNorm))
+                nonlinearSolverNorm = n.nonlinearSolverNorm,
+                nonlinearSolverUNorm = getattr(n, 'nonlinearSolverUNorm', None),
+                relativeToleranceDu = getattr(n, 'nl_rtol_du', 1.0e-4),
+                absoluteToleranceDu = getattr(n, 'nl_atol_du', 1.0e-16)))
             model.solver=self.nlsList[-1]
             model.viewer = Viewers.V_base(p,n,s)
             Profiling.memory("MultilevelNonlinearSolver for"+p.name)
@@ -500,18 +473,24 @@ class NS_base(object):  # (HasTraits):
         for index,p,n,m,simOutput in zip(list(range(len(self.modelList))),self.pList,self.nList,self.modelList,self.simOutputList):
             if self.opts.hotStart:
                 logEvent("Setting initial conditions from hot start file for "+p.name)
-                tCount = int(self.ar[index].tree.getroot()[-1][-1][-1][0].attrib['Name'])
-                offset=0
-                while tCount > 0:
-                    time = float(self.ar[index].tree.getroot()[-1][-1][-1-offset][0].attrib['Value'])
-                    if time <= self.opts.hotStartTime:
-                        break
-                    else:
-                        tCount -=1
-                        offset +=1
-                self.ar[index].n_datasets = tCount + 1
-                if len(self.ar[index].tree.getroot()[-1][-1]) - offset - 1 > 0:
-                    dt = time - float(self.ar[index].tree.getroot()[-1][-1][-1-offset-1][0].attrib['Value'])
+                # The archive's own record of the times it holds, rather
+                # than walking four levels of [-1] into the XML tree to
+                # reach a <Time> element's attributes. That walk read the
+                # last child of Domain, its last grid, and that grid's
+                # first child, and broke silently if any of those
+                # positions moved.
+                archiveTimes = self.ar[index].archived_times
+                assert archiveTimes, \
+                    ("hot start archive %s records no timesteps"
+                     % (self.ar[index].filename,))
+                # the latest step at or before the requested time
+                tCount = len(archiveTimes) - 1
+                while tCount > 0 and archiveTimes[tCount] > self.opts.hotStartTime:
+                    tCount -= 1
+                time = archiveTimes[tCount]
+                self.ar[index].continue_from(tCount)
+                if tCount > 0:
+                    dt = time - archiveTimes[tCount - 1]
                 else:
                     logEvent("Not enough steps in hot start file set set dt, setting dt to 1.0")
                     dt = 1.0
@@ -539,6 +518,10 @@ class NS_base(object):  # (HasTraits):
                     lm.calculateSolutionAtQuadrature()
             else:
                 logEvent("No initial conditions provided for model "+p.name)
+        for model in self.modelList:
+            for av in self.auxiliaryVariables[model.name]:
+                # auxiliary variables need not derive from AV_base
+                getattr(av, "calculate_initial_solution", lambda: None)()
         if self.opts.hotStart:
             if time >= self.tnList[-1] - 1.0e-5:
                 logEvent("Modifying time interval to be tnList[-1] + tnList since tnList hasn't been modified already")
@@ -635,8 +618,8 @@ class NS_base(object):  # (HasTraits):
             if not self.opts.hotStart:
                 logEvent("Archiving initial conditions")
                 self.archiveInitialSolution(m,index)
-            else:
-                self.ar[index].domain = self.ar[index].tree.find("Domain")
+            #a hot-started archive seeded its domain with the collections
+            #the archive already has when it was opened
             #if(not hasattr(self.pList[0].domain,'PUMIMesh') and not self.opts.hotStart):
             self.initializeViewSolution(m)
             logEvent("Estimating initial time derivative and initializing time history for model "+p.name)
@@ -650,7 +633,9 @@ class NS_base(object):  # (HasTraits):
                     for ci in range(0,lm.coefficients.nc):
                         lm.u_store[ci] = lm.u[ci].copy()
 
-                    lm.setUnknowns(m.uList[0])
+                    # lu is this level's unknown vector; uList[0] is the coarsest,
+                    # and setUnknowns indexes it from C with no bounds check.
+                    lm.setUnknowns(lu)
                     for ci in range(lm.coefficients.nc):
                         lm.u[ci].dof_last_last[:] = lm.u[ci].dof_last
                         lm.u[ci].dof_last[:] = lm.u[ci].dof
@@ -726,12 +711,12 @@ class NS_base(object):  # (HasTraits):
         if self.opts.save_dof:
             import copy
             for m in self.modelList:
-                for lm in m.levelModelList:
+                for level, lm in enumerate(m.levelModelList):
                     lm.u_store = lm.u.copy()
                     for ci in range(0,lm.coefficients.nc):
                         lm.u_store[ci] = lm.u[ci].copy()
 
-                    lm.setUnknowns(m.uList[0])
+                    lm.setUnknowns(m.uList[level])
                     for ci in range(lm.coefficients.nc):
                         lm.u[ci].dof_last_last[:] = lm.u[ci].dof_last
                         lm.u[ci].dof_last[:] = lm.u[ci].dof
@@ -796,11 +781,19 @@ class NS_base(object):  # (HasTraits):
                     if self.opts.save_dof:
                         import copy
                         for m in self.modelList:
-                            for lm in m.levelModelList:
+                            # uList is per level: with nLevels > 1 this used
+                            # uList[0] for every level model, so every level
+                            # above the coarsest handed setUnknowns a vector
+                            # shorter than its own dof count.
+                            # copyBetweenFreeUnknownsAndGlobalUnknowns indexes
+                            # it from C without bounds checking, which read off
+                            # the end -- harmless-looking in serial, corrupting
+                            # in parallel.
+                            for level, lm in enumerate(m.levelModelList):
                                 lm.u_store = lm.u.copy()
                                 for ci in range(lm.coefficients.nc):
                                     lm.u_store[ci] = lm.u[ci].copy()
-                                lm.setUnknowns(m.uList[0])
+                                lm.setUnknowns(m.uList[level])
                                 for ci in range(lm.coefficients.nc):
                                     lm.u[ci].dof_last_last[:] = lm.u[ci].dof_last
                                     lm.u[ci].dof_last[:] = lm.u[ci].dof
@@ -1141,13 +1134,12 @@ class NS_base(object):  # (HasTraits):
     ##save model's initial solution values to archive
     def archiveInitialSolution(self,model,index):
         if True if self.fastArchive == False else 'clsvof' in model.name:
-            import xml.etree.ElementTree as ElementTree
             if self.archiveFlag == ArchiveFlags.UNDEFINED:
                 return
             logEvent("Writing initial mesh for  model = "+model.name,level=3)
             logEvent("Writing initial conditions for  model = "+model.name,level=3)
-            if not self.so.useOneArchive or index==0:
-                self.ar[index].domain = ElementTree.SubElement(self.ar[index].tree.getroot(),"Domain")
+            #the archive owns its domain (Archiver.ArchiveDomain) from
+            #construction; the writers add their collections to it
             if self.so.useOneArchive:
                 model.levelModelList[-1].archiveFiniteElementSolutions(self.ar[index],self.tnList[0],self.tCount,initialPhase=True,
                                                                        writeVectors=True,meshChanged=True,femSpaceWritten=self.femSpaceWritten,
@@ -1185,88 +1177,12 @@ class NS_base(object):  # (HasTraits):
                 model.levelModelList[-1].archiveExteriorElementBoundaryQuadratureValues(self.ar[index],self.tnList[0],self.tCount,
                                                                                         scalarKeys=scalarKeys,vectorKeys=vectorKeys,tensorKeys=tensorKeys,
                                                                                         initialPhase=True,meshChanged=True)
-            try:
-                phi_s = {}
-                phi_s[0] = model.levelModelList[-1].coefficients.phi_s
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       phi_s,
-                                                                       res_name_base='phi_s')
-                logEvent("Writing initial phi_s at DOFs for = "+model.name+" at time t="+str(t),level=3)
-            except:
-                pass
-            try:
-                phi_sp = {}
-                phi_sp[0] = model.levelModelList[-1].coefficients.phi_sp
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       phi_sp,
-                                                                       res_name_base='phi_sp')
-                logEvent("Writing initial phi_sp at DOFs for = "+model.name+" at time t="+str(self.tnList[0]),level=3)
-            except:
-                pass
-            if 'clsvof' in model.name:
-                vofDOFs = {}
-                vofDOFs[0] = model.levelModelList[-1].vofDOFs
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       vofDOFs,
-                                                                       res_name_base='vof')
-                logEvent("Writing initial vof from clsvof at time t="+str(0),level=3)
-            #For aux quantity of interest (MQL)
-            try:
-                if model.levelModelList[-1].coefficients.outputQuantDOFs==True:
-                    quantDOFs = {}
-                    quantDOFs[0] = model.levelModelList[-1].quantDOFs
-                    model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                           self.tnList[0],
-                                                                           self.tCount,
-                                                                           quantDOFs,
-                                                                           res_name_base='quantDOFs_for_'+model.name)
-                    logEvent("Writing initial quantity of interest at DOFs for = "+model.name+" at time t="+str(0),level=3)
-            except:
-                pass
-            #Extra model-supplied derived nodal scalars (e.g. m_comp_co2 flash
-            #fields Sg/X/c_brine) -> XDMF, alongside the primary unknowns.
-            try:
-                extra = getattr(model.levelModelList[-1].coefficients,
-                                'archive_scalar_dofs', None)
-                if extra:
-                    for _nm, _arr in extra.items():
-                        model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                               self.tnList[0],
-                                                                               self.tCount,
-                                                                               {0: _arr},
-                                                                               res_name_base=_nm)
-            except:
-                pass
-            #Write bathymetry for Shallow water equations (MQL)
-            try:
-                bathymetry = {}
-                bathymetry[0] = model.levelModelList[-1].coefficients.b.dof
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       bathymetry,
-                                                                       res_name_base='bathymetry')
-                logEvent("Writing bathymetry for = "+model.name,level=3)
-            except:
-                pass
-            #write eta=h+bathymetry for SWEs (MQL)
-            try:
-                eta = {}
-                eta[0] = model.levelModelList[-1].coefficients.b.dof+model.levelModelList[-1].u[0].dof
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       eta,
-                                                                       res_name_base='eta')
-                logEvent("Writing bathymetry for = "+model.name,level=3)
-            except:
-                pass
+            #Fields the model's coefficients declare for themselves. Replaces
+            #six hand-rolled try/except-pass blocks; see proteus.ArchiveFields.
+            model.levelModelList[-1].archiveDeclaredFields(self.ar[index],
+                                                           self.tnList[0],
+                                                           self.tCount,
+                                                           model_name=model.name)
             #for nonlinear POD
             if self.archive_pod_residuals[index] == True:
                 res_space = {}; res_mass = {}
@@ -1333,91 +1249,13 @@ class NS_base(object):  # (HasTraits):
                 model.levelModelList[-1].archiveExteriorElementBoundaryQuadratureValues(self.ar[index],t,self.tCount,
                                                                                         scalarKeys=scalarKeys,vectorKeys=vectorKeys,tensorKeys=tensorKeys,
                                                                                         initialPhase=False,meshChanged=True)
+            #Fields the model's coefficients declare for themselves. Replaces
+            #six hand-rolled try/except-pass blocks; see proteus.ArchiveFields.
             if self.fastArchive==False:
-                try:
-                    phi_s = {}
-                    phi_s[0] = model.levelModelList[-1].coefficients.phi_s
-                    model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                           self.tnList[0],
-                                                                           self.tCount,
-                                                                           phi_s,
-                                                                           res_name_base='phi_s')
-                    logEvent("Writing phi_s at DOFs for = "+model.name+" at time t="+str(t),level=3)
-                except:
-                    pass
-                try:
-                    phi_sp = {}
-                    phi_sp[0] = model.levelModelList[-1].coefficients.phi_sp
-                    model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                           t,
-                                                                           self.tCount,
-                                                                           phi_sp,
-                                                                           res_name_base='phi_sp')
-                    logEvent("Writing phi_sp at DOFs for = "+model.name+" at time t="+str(t),level=3)
-                except:
-                    pass
-            if 'clsvof' in model.name and self.fastArchive==False:
-                vofDOFs = {}
-                vofDOFs[0] = model.levelModelList[-1].vofDOFs
-                model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                       self.tnList[0],
-                                                                       self.tCount,
-                                                                       vofDOFs,
-                                                                       res_name_base='vof')
-                logEvent("Writing initial vof from clsvof at time t="+str(t),level=3)
-            if self.fastArchive==False:
-                try:
-                    if model.levelModelList[-1].coefficients.outputQuantDOFs==True:
-                        quantDOFs = {}
-                        quantDOFs[0] = model.levelModelList[-1].quantDOFs
-                        model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                               self.tnList[0],
-                                                                               self.tCount,
-                                                                               quantDOFs,
-                                                                               res_name_base='quantDOFs_for_'+model.name)
-                        logEvent("Writing quantity of interest at DOFs for = "+model.name+" at time t="+str(t),level=3)
-                except:
-                    pass
-            #Extra model-supplied derived nodal scalars (e.g. m_comp_co2 flash
-            #fields Sg/X/c_brine) -> XDMF, alongside the primary unknowns.
-            if self.fastArchive==False:
-                try:
-                    extra = getattr(model.levelModelList[-1].coefficients,
-                                    'archive_scalar_dofs', None)
-                    if extra:
-                        for _nm, _arr in extra.items():
-                            model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                                   self.tnList[0],
-                                                                                   self.tCount,
-                                                                                   {0: _arr},
-                                                                                   res_name_base=_nm)
-                except:
-                    pass
-            #Write bathymetry for Shallow water equations (MQL)
-            if self.fastArchive==False:
-                try:
-                    bathymetry = {}
-                    bathymetry[0] = model.levelModelList[-1].coefficients.b.dof
-                    model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                           self.tnList[0],
-                                                                           self.tCount,
-                                                                           bathymetry,
-                                                                           res_name_base='bathymetry')
-                    logEvent("Writing bathymetry for = "+model.name,level=3)
-                except:
-                    pass
-                #write eta=h+bathymetry for SWEs (MQL)
-                try:
-                    eta = {}
-                    eta[0] = model.levelModelList[-1].coefficients.b.dof+model.levelModelList[-1].u[0].dof
-                    model.levelModelList[-1].archiveFiniteElementResiduals(self.ar[index],
-                                                                           self.tnList[0],
-                                                                           self.tCount,
-                                                                           eta,
-                                                                           res_name_base='eta')
-                    logEvent("Writing bathymetry for = "+model.name,level=3)
-                except:
-                    pass
+                model.levelModelList[-1].archiveDeclaredFields(self.ar[index],
+                                                               t,
+                                                               self.tCount,
+                                                               model_name=model.name)
 
             #for nonlinear POD
             if self.archive_pod_residuals[index] == True and self.fastArchive==False:

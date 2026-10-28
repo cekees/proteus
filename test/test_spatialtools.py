@@ -299,13 +299,13 @@ class TestShapeRANS(unittest.TestCase):
                                sampleRate = 0.5,
                                fileName = 'point1.csv')
         tank.attachLineGauges('kappa',
-                               gauges = ((('k', ),((0.,0.,0.),(0.,0.,1.))),),
+                               gauges = ((('k', ),(((0.,0.,0.),(0.,0.,1.)),)),),
                                activeTime = (0.,2.),
                                sampleRate = 0.5,
                                fileName = 'line1.csv')
         tank.attachLineIntegralGauges('vof',
                                       gauges=(
-                                      (('vof',), ((0., 0., 0.), (0., 0., 1.))),),
+                                      (('vof',), (((0., 0., 0.), (0., 0., 1.)),)),),
                                       activeTime=(0., 2.),
                                       sampleRate=0.5,
                                       fileName='line_int1.csv')

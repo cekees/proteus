@@ -276,6 +276,7 @@ docs:
 	@echo "************************************"
 
 	-${PROTEUS_ENV} pip3 install sphinx sphinx_rtd_theme breathe exhale
+	@${PROTEUS_ENV} sh -c 'command -v dot' >/dev/null || { echo "graphviz 'dot' not found; inheritance diagrams need it (conda install graphviz)"; exit 1; }
 	cd docs && ${PROTEUS_ENV} PROTEUS=${PWD} make html
 
 	@echo "**********************************"
@@ -383,5 +384,5 @@ proteus_pkg:
 	sed -i '/sources:/c\#sources:' stack/pkgs/proteus.yaml
 	sed -i '/- key:/c\# -key:' stack/pkgs/proteus.yaml
 	sed -i '/  url:/c\#  url:' stack/pkgs/proteus.yaml
-	./stack/hit/bin/hit fetch https://github.com/erdc/proteus/archive/${PROTEUS_VERSION}.zip >> stack/pkgs/proteus.yaml
+	./stack/hit/bin/hit fetch https://github.com/proteustoolkit/proteus/archive/${PROTEUS_VERSION}.zip >> stack/pkgs/proteus.yaml
 	cd stack && ${PROTEUS}/stack/hit/bin/hit build -j ${N} -v proteus_stack.yaml

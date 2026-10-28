@@ -4,6 +4,11 @@ from proteus.Comm import globalMax
 import numpy as np
 from proteus.Transport import OneLevelTransport
 from . import cArgumentsDict
+import proteus.NumericalFlux
+import proteus.ShockCapturing
+import proteus.SubgridError
+import proteus.Transport
+import proteus.TransportCoefficients
 
 class SubgridError(proteus.SubgridError.SGE_base):
     def __init__(self, coefficients, nd, lag=False, nStepsToDelay=0, hFactor=1.0):
@@ -822,7 +827,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["vel_grad_test_trace_ref"] = self.u[1].femSpace.grad_psi_trace
         argsDict["normal_ref"] = self.u[0].femSpace.elementMaps.boundaryNormals
         argsDict["boundaryJac_ref"] = self.u[0].femSpace.elementMaps.boundaryJacobians
-        argsDict["elementDiameter"] = self.elementDiameter,  # mesh.elementDiametersArray
+        argsDict["elementDiameter"] = self.elementDiameter  # mesh.elementDiametersArray
         argsDict["nElements_global"] = self.mesh.nElements_global
         argsDict["useRBLES"] = self.coefficients.useRBLES
         argsDict["useMetrics"] = self.coefficients.useMetrics

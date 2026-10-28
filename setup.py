@@ -218,9 +218,7 @@ def get_pybind_include_dirs():
     """Include path for the pybind11 extensions.
 
     These need pybind11, numpy and proteus's own headers (`proteus/pyarray.h`
-    in particular, via the `proteus` entry). They used to also need
-    xtl/xtensor/xtensor-python; proteus::pyarray replaced xt::pyarray, so
-    those are gone.
+    in particular, via the `proteus` entry).
     """
     return [str(get_pybind_include()),
             str(get_pybind_include(user=True)),
@@ -307,6 +305,7 @@ EXTENSIONS_TO_BUILD = [
                        "proteus/cpartitioning.pyx",
                        "proteus/cmeshTools.pxd",
                        "proteus/mesh.h",
+                       "proteus/index_type.h",
                        'proteus/mesh.cpp',
                        'proteus/meshio.cpp'],
               define_macros=[('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H)],
@@ -417,7 +416,17 @@ EXTENSIONS_TO_BUILD = [
         language='c++',
         extra_compile_args=PROTEUS_OPT+['-std=c++20'],
     ),
-   
+    Extension(
+        # proteus/richards/ADR.py does `from .cADR import *`. This entry was
+        # dropped in merge 9e2aca55 (2026-08-12); see erdc/proteus#1285.
+        'richards.cADR',
+        sources=['proteus/richards/cADR.cpp'],
+        depends=['proteus/richards/ADR.h', 'proteus/mprans/ArgumentsDict.h', 'proteus/pyarray.h', 'proteus/ModelFactory.h', 'proteus/CompKernel.h'],
+        include_dirs=get_pybind_include_dirs(),
+        language='c++',
+        extra_compile_args=PROTEUS_OPT+['-std=c++20'],
+    ),
+
     Extension(
         'm_comp_co2.cm_comp_co2',
         sources=['proteus/m_comp_co2/cm_comp_co2.cpp'],
@@ -798,13 +807,16 @@ EXTENSIONS_TO_BUILD = [
     Extension("cpartitioning",
               sources=["proteus/cpartitioning.pyx",
                        "proteus/partitioning.cpp",
+                       "proteus/cartesianPartitioning.cpp",
                        'proteus/mesh.cpp',
                        'proteus/meshio.cpp',],
               depends=["proteus/partitioning.h",
                        "proteus/partitioning.cpp",
+                       "proteus/cartesianPartitioning.cpp",
                        "proteus/cpartitioning.pyx",
                        "proteus/cmeshTools.pxd",
                        "proteus/mesh.h",
+                       "proteus/index_type.h",
                        'proteus/mesh.cpp',
                        'proteus/meshio.cpp'],
               define_macros=[('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
@@ -1077,6 +1089,18 @@ def setup_given_extensions(extensions):
               'mpi4py',
               'petsc4py',
               'h5py',
+              # The archive of record is a .ymf file written through
+              # ymf.archive (pyyaml only). The heavy front end,
+              # ymf[symbolic]/ymf[frontend] (sympy, strictyaml, pint), is
+              # deliberately not required. ymf is not on PyPI or
+              # conda-forge yet, so install it first (the environment
+              # files do, from git). Not a direct "ymf @ git+..."
+              # reference: pip re-fetches those even when ymf is
+              # installed, which fails on offline compute nodes and
+              # replaces an editable checkout. No version floor either:
+              # a --no-build-isolation build without setuptools_scm
+              # reports ymf as 0.0.0.
+              'ymf',
           ],
           extras_require={
               'test': ['pytest', 'pytest-cov', 'pytest-xdist', 'pytest-forked', 'matplotlib'],
@@ -1096,7 +1120,9 @@ def setup_given_extensions(extensions):
                       'proteus.SWFlow.utils',
                       'proteus.SWFlow.models',
                       'proteus.MeshAdaptPUMI',
+                      'proteus.cli',
           ],
+          entry_points={'console_scripts': ['pro = proteus.cli:main']},
           cmdclass = {'build_ext':custom_build_ext},
           ext_package='proteus',
           ext_modules=extensions,

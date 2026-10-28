@@ -8,6 +8,7 @@
 *.petsc_mat
 *.petsc_vec
 *.xmf
+*.ymf
 *.h5
 *.egg-info
 *~
@@ -84,3 +85,4 @@ proteus/superluWrappers.c
 proteus/MeshAdaptPUMI/MeshAdapt.cpp
 proteus/tests/ci/meshNoVessel.edge
 proteus/tests/ci/meshNoVessel.neigh
+docs/source/_generated/

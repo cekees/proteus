@@ -46,11 +46,11 @@ Proteus can be installed through conda with:::
   % conda install proteus -c conda-forge
 
 Proteus is available as source from our public
-`GitHub <https://github.com/erdc/proteus>`_
+`GitHub <https://github.com/proteustoolkit/proteus>`_
 repository. For a development installation, the installation of
 dependencies and the compilation of Proteus from source is done with:::
 
-  % git clone https://github.com/erdc/proteus
+  % git clone https://github.com/proteustoolkit/proteus
   % cd proteus
   % conda env create -f environment-dev.yml
   % conda activate proteus-dev
@@ -60,12 +60,12 @@ Alternatively, if you already have compilers (C,C++, and Fortran!)
 installed on your system, you can install Proteus through hashdist
 with the following commands:::
 
-  % git clone https://github.com/erdc/proteus
+  % git clone https://github.com/proteustoolkit/proteus
   % cd proteus
   % make develop
   % make test
 
-More information is available on our `Wiki <https://github.com/erdc/proteus/wiki>`_, and you can ask for help on
+More information is available on our `Wiki <https://github.com/proteustoolkit/proteus/wiki>`_, and you can ask for help on
 the `Developers' Mailing List <https://groups.google.com/forum/#!forum/proteus-dev>`_.
 
 .. _running-sec:
@@ -78,8 +78,25 @@ If you have successfully compiled and tested Proteus then you should be able to 
    % cd $PROTEUS/tests/ci
    % $PROTEUS_PREFIX/bin/parun poisson_3d_p.py poisson_3d_c0p1_n.py
 
-The solution will be saved in a file ending in .xmf, which can be
-opened with ParaView or Ensight.
+The solution will be saved in an HDF5 file ending in .h5, described by
+a YMF document ending in .ymf. To open it in ParaView or VisIt, write an
+XDMF view of it first::
+
+   % ymf2xmf poisson_3d_c0p1pe1.ymf
+
+and open the resulting .xmf.
+
+Threads and MPI
+---------------
+
+Run under MPI with more than one rank, Proteus gives each rank one thread: it sets
+``OMP_NUM_THREADS``, ``OPENBLAS_NUM_THREADS``, ``MKL_NUM_THREADS`` and ``VECLIB_MAXIMUM_THREADS``
+to 1 (``proteus/_threads.py``), because one rank per core is how a node is filled and
+OpenBLAS would otherwise start a thread per core in every rank. A value you set yourself
+is kept, so ``OMP_NUM_THREADS=4 mpiexec -n 8 parun ...`` runs eight ranks of four threads.
+A serial run is not touched and uses whatever threads the libraries choose. The variables
+are read when numpy is imported: import ``proteus`` before numpy, or install
+``threadpoolctl``, which lets Proteus limit libraries that are already loaded.
 
 .. _capabilities-sec:
 
@@ -312,6 +329,7 @@ Source Code Documentation
 
    tools/spatial_tools
    tools/wave_tools
+   tools/gauges
 
 .. toctree::
    :maxdepth: 1

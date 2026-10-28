@@ -1,3 +1,60 @@
 [build-system]
 requires = ["setuptools>=61.0","cython>=3.0,<4","pybind11>=2.11,<4","numpy>=1.25,<3","mpi4py"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+# CI runs with --import-mode=importlib, which does not put a test's own
+# directory on sys.path. Without this, local runs use the default prepend
+# mode, which does, so a test can import a sibling module by bare name
+# (`from test_x import helper`), pass locally, and then fail to collect in
+# CI -- where one collection error aborts the whole run. Running every
+# invocation in CI's mode makes that fail here first. Import a helper
+# relatively (`from . import x`, in a directory with __init__.py) or load
+# it by path.
+addopts = "--import-mode=importlib"
+
+# Coverage of the proteus package itself: what the suite exercises of the
+# code that ships, measured so that code nothing runs is visible. The test
+# and scripts directories are not measured -- a test that is never run is
+# a different problem from code that is never run -- and neither are the
+# decks under proteus/tests. Cython extensions are not measured either: that
+# needs a build with linetrace on, which is a separate, slower build.
+#
+#   python -m pytest --cov=proteus --cov-report=term-missing:skip-covered ../test
+#
+# runs the suite under coverage (pytest-cov >= 7, coverage >= 7.10); CI does
+# so on one leg and keeps coverage.xml and the HTML report as artifacts.
+[tool.coverage.run]
+source = ["proteus"]
+branch = true
+# every process writes its own data file and they are combined at the end:
+# the xdist workers, and every interpreter a test starts -- parun, the
+# helpers run under mpiexec -- which `patch = subprocess` makes measure
+# themselves too (coverage >= 7.10; before that only the workers were seen)
+parallel = true
+patch = ["subprocess", "_exit"]
+concurrency = ["thread", "multiprocessing"]
+omit = [
+    "proteus/tests/*",
+    "proteus/test_utils/*",
+    "*/proteus/tests/*",
+    "*/proteus/test_utils/*",
+]
+
+[tool.coverage.paths]
+# CI installs proteus rather than running it in place, so the measured
+# files live in site-packages; report them as the checkout's
+source = [
+    "proteus/",
+    "*/site-packages/proteus/",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "except ImportError:",
+]

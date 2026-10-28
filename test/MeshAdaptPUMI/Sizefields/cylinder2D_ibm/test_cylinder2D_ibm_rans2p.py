@@ -1,5 +1,7 @@
 """Tests for 2d flow around an immersed boundary cylinder with rans2p"""
-from proteus.iproteus import *
+import os
+import sys
+from proteus import Profiling
 from proteus import Comm
 from proteus import Context
 from proteus import MeshTools
@@ -9,6 +11,10 @@ import h5py
 import importlib
 import subprocess
 import pytest
+
+# One xdist worker runs this file, in order: test_adaptIBM_adaptMesh reads the
+# Reconstructed.* model and mesh that test_adaptIBM_genMesh writes.
+pytestmark = pytest.mark.xdist_group("cylinder2D_ibm_PUMI")
 
 
 comm = Comm.get()
@@ -48,7 +54,7 @@ class Test_Adapt_ibm():
                     #'Reconstructed.dmg', #can't remove since teardown is called after each test
                     #'Reconstructed0.smb',
                     'proteus.log',
-                    'cylinder.xmf',
+                    'cylinder.xmf', 'cylinder.ymf',
                     'cylinder.h5',
                     'finalMesh0.smb',
                     'particle_forceHistory.txt',

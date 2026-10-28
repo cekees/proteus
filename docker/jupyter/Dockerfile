@@ -12,7 +12,7 @@ ENV F77 mpif77
 ENV F90 mpif90
 
 RUN rm -rf proteus && \
-    git clone https://github.com/erdc/proteus && \
+    git clone https://github.com/proteustoolkit/proteus && \
     cd proteus && \
     git checkout main && \
     git submodule update --init --recursive && \

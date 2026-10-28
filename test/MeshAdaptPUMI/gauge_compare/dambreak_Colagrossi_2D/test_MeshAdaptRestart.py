@@ -4,6 +4,11 @@ import subprocess
 import os
 import pytest
 
+# One xdist worker runs this file, in order: the baseline and adapted runs read the mesh
+# test_MeshAdaptRestart_generateMesh writes, and test_MeshAdaptRestart compares
+# their pressure.csv.
+pytestmark = pytest.mark.xdist_group("gauge_compare_dambreak_2D")
+
 #@pytest.mark.slowTest
 
 def test_MeshAdaptRestart_generateMesh(verbose=0):
@@ -27,11 +32,16 @@ def test_MeshAdaptRestart_adaptiveTime_BackwardEuler(verbose=0):
     subprocess.check_call(runCommand,shell=True)
     assert(True)
 
-def test_MeshAdaptRestart(verbose=0):
+@pytest.mark.parametrize("gauge_file", ["pressure.csv", "vof_height.csv"])
+def test_MeshAdaptRestart(gauge_file, verbose=0):
+    """The point gauges (pressure) and the line integral gauges (equivalent water height)
+    are rebuilt after each adapt, and must continue the baseline's output."""
     #subprocess.call("diff normal adapt_0/pressure.csv baseline/pressure.csv")
     currentPath = os.path.dirname(os.path.abspath(__file__))
-    with open(currentPath+'/baseline/pressure.csv') as file1, open(currentPath+'/adapt_0/pressure.csv') as file2:
+    with open(currentPath+'/baseline/'+gauge_file) as file1, open(currentPath+'/adapt_0/'+gauge_file) as file2:
+        rows = 0
         for line1, line2 in zip(file1, file2):
+            rows += 1
             if(line1 != line2):
-                pytest.fail("pressure gauge values are not the same!\n")
-            
+                pytest.fail("%s values are not the same!\n" % gauge_file)
+        assert rows > 1, "%s has no samples" % gauge_file

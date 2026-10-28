@@ -2,7 +2,9 @@
 """
 Test module for CLSVOF
 """
-from proteus.iproteus import *
+import proteus
+from importlib import reload
+from proteus import Profiling, default_n, default_s
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=1
@@ -49,7 +51,7 @@ class TestCLSVOF(object):
         np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['u_t2']).flatten(),decimal=10)
         actual.close()
 
-    def test_case_1(self):
+    def test_case_1(self, opts):
         # Set parameters for this test
         parameters.ct.test_case=1
         # RELOAD MODULES
@@ -78,7 +80,7 @@ class TestCLSVOF(object):
         # COMPARE VS SAVED FILES #
         self.compare_files('comparison_files',self.so.name)
 
-    def test_case_2(self):
+    def test_case_2(self, opts):
         # Set parameters for this test
         parameters.ct.test_case=2
         # RELOAD MODULES
@@ -107,7 +109,7 @@ class TestCLSVOF(object):
         # COMPARE VS SAVED FILES #
         self.compare_files('comparison_files',self.so.name)
         
-    def test_case_3(self):
+    def test_case_3(self, opts):
         # Set parameters for this test
         parameters.ct.test_case=3
         # RELOAD MODULES
@@ -136,7 +138,7 @@ class TestCLSVOF(object):
         # COMPARE VS SAVED FILES #
         self.compare_files('comparison_files',self.so.name)
 
-    def test_case_4(self):
+    def test_case_4(self, opts):
         # Set parameters for this test
         parameters.ct.test_case=4
         # RELOAD MODULES

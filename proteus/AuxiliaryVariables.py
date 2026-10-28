@@ -7,7 +7,6 @@ Classes for calculating auxiliary variables based on the numerical solution.
 import numpy
 from . import Viewers
 from . import Archiver
-from xml.etree.ElementTree import *
 
 from . import Profiling
 from .Profiling import logEvent
@@ -31,25 +30,25 @@ class AV_base(object):
     def attachAuxiliaryVariables(self,avDict):
         pass
     def writeScalarXdmf(self,u,name):
-        #get the current spatial grid
-        for child in self.ar.domain:
-            if child.tag == "Grid" and child.attrib["Name"] == "Mesh Spatial_Domain":
-                self.arGridCollection = child
-        assert self.arGridCollection is not None
-        self.arGrid = self.arGridCollection[-1]
-        #write the attribute
-        attribute = SubElement(self.arGrid,"Attribute",{"Name":name,
-                                                        "AttributeType":"Scalar",
-                                                        "Precision":"8",
-                                                        "Center":"Grid"})
-        values    = SubElement(attribute,"DataItem",
-                               {"Format":"XML",
-                                "DataType":"Float",
-                                "Precision":"8",
-                                "Dimensions":"1"})
-        values.text = str(u)
+        """Record one number for the step, inline in the archive document."""
+        from ymf.archive import attribute, data_item_for
+        #the current spatial grid
+        self.arGridCollection = self.ar.domain.get("Mesh Spatial_Domain")
+        assert self.arGridCollection is not None, \
+            "no Mesh Spatial_Domain collection; the mesh is archived first"
+        self.arGrid = self.arGridCollection.grid
+        assert self.arGrid is not None, \
+            "Mesh Spatial_Domain has no grid for this step yet"
+        #a grid-centred attribute holding the value itself
+        item = data_item_for(numpy.asarray(u).reshape((1,)), inline=True)
+        self.arGrid["attributes"].append(
+            attribute(name, item, center="Grid", attribute_type="Scalar"))
     def calculate_init(self):
         self.calculate()
+    def calculate_initial_solution(self):
+        """Called once the initial conditions of every model are set (calculate_init
+        is called before, while the solution is still zero)."""
+        pass
     def calculate(self):
         pass
 
@@ -94,8 +93,8 @@ class BoundaryForce(AV_base):
         self.writer = Archiver.XdmfWriter()
         self.nd = model.levelModelList[-1].nSpace_global
         m = self.model.levelModelList[-1]
-        flagMax = max(m.mesh.elementBoundaryMaterialTypes)
-        flagMin = min(m.mesh.elementBoundaryMaterialTypes)
+        flagMax = max(m.mesh.elementBoundaryUserFlags)
+        flagMin = min(m.mesh.elementBoundaryUserFlags)
         assert(flagMin == 0)
         assert(flagMax >= 0)
         self.nForces=flagMax+1
@@ -121,7 +120,7 @@ class BoundaryForce(AV_base):
         for m,F in zip(self.model.levelModelList,self.levelFlist):
             F.flat[:]=0.0
             if self.nd ==3:
-                cfemIntegrals.calculateExteriorElementBoundaryStress3D(m.mesh.elementBoundaryMaterialTypes,
+                cfemIntegrals.calculateExteriorElementBoundaryStress3D(m.mesh.elementBoundaryUserFlags,
                                                                        m.mesh.exteriorElementBoundariesArray,
                                                                        m.mesh.elementBoundaryElementsArray,
                                                                        m.mesh.elementBoundaryLocalElementBoundariesArray,
@@ -133,7 +132,7 @@ class BoundaryForce(AV_base):
                                                                        m.ebqe[('n')],
                                                                        F)
             if self.nd == 2:
-                cfemIntegrals.calculateExteriorElementBoundaryStress2D(m.mesh.elementBoundaryMaterialTypes,
+                cfemIntegrals.calculateExteriorElementBoundaryStress2D(m.mesh.elementBoundaryUserFlags,
                                                                        m.mesh.exteriorElementBoundariesArray,
                                                                        m.mesh.elementBoundaryElementsArray,
                                                                        m.mesh.elementBoundaryLocalElementBoundariesArray,
@@ -183,6 +182,45 @@ class BoundaryForce(AV_base):
 #         Viewers.newPlot()
 #         Viewers.newWindow()
 
+def _write_profile(ar, name, values):
+    """Write a 1-D diagnostic profile into the archive's HDF5 file.
+
+    Replaces ``ar.hdfFile.createArray("/", name, values)``. ``createArray``
+    is a PyTables method; ``h5py.File`` has no such attribute, so every
+    call raised ``AttributeError`` from the PyTables-to-h5py migration
+    onwards.
+
+    Serial only, and deliberately explicit about it. These profiles hold
+    one value per boundary node *this rank owns*, so their length differs
+    per rank, while ``create_dataset`` on an MPI-opened file is collective
+    and requires every rank to agree on name and shape. Writing them in
+    parallel therefore needs either per-rank dataset names agreed
+    collectively or a gather -- a decision about what the diagnostic should
+    mean across subdomains, not a mechanical fix. Until that is made, a
+    parallel run logs and skips rather than deadlocking.
+    """
+    if ar.hdfFile is None:
+        return
+    from . import Comm
+
+    comm = Comm.get()
+    if comm.size() > 1:
+        logEvent(
+            "Not writing the %r profile: it is one value per owned boundary "
+            "node, so its length differs per rank, and creating an HDF5 "
+            "dataset on an MPI-opened file is collective. Run serially to "
+            "record it." % (name,), level=1)
+        return
+    data = numpy.asarray(values, dtype="d")
+    if data.size == 0:
+        logEvent("Not writing the %r profile: no nodes matched the flag"
+                 % (name,), level=2)
+        return
+    if name in ar.hdfFile:
+        del ar.hdfFile[name]
+    ar.hdfFile.create_dataset(name, data=data)
+
+
 class PressureProfile(AV_base):
     def __init__(self,flag=0,center=(0.0,0.0),radius=1.0):
         self.flag=flag
@@ -211,8 +249,10 @@ class PressureProfile(AV_base):
                 pass
             self.levelPlist.append(p)
             self.levelThetalist.append(theta)
-        if self.ar.hdfFile is not None:
-            self.ar.hdfFile.createArray("/",'theta',theta)
+        # levelThetalist[-1] is the same list the loop above left in `theta`,
+        # named explicitly rather than relying on the loop variable leaking.
+        if self.levelThetalist:
+            _write_profile(self.ar, 'theta', self.levelThetalist[-1])
         #self.historyP=[]
         #self.historyP.append(copy.deepcopy(self.levelPlist))
 #         try:
@@ -236,8 +276,9 @@ class PressureProfile(AV_base):
                     if m.mesh.nodeMaterialTypes[nN] == self.flag:
                         p.append(m.u[0].dof[nN])
             self.levelPlist.append(p)
-        if self.ar.hdfFile is not None:
-            self.ar.hdfFile.createArray("/","pressure"+str(self.tCount),p)
+        if self.levelPlist:
+            _write_profile(self.ar, "pressure"+str(self.tCount),
+                           self.levelPlist[-1])
         self.tCount+=1
 #         if self.dataStorage is not None:
 #             tmp = self.dataStorage['PressureHistory']
@@ -446,8 +487,8 @@ class BoundaryPressure(AV_base):
         m = self.model.levelModelList[-1]
         #figure out the number of pressures might compute based on different boundary types
         #listed in mesh
-        flagMax = max(m.mesh.elementBoundaryMaterialTypes)
-        flagMin = min(m.mesh.elementBoundaryMaterialTypes)
+        flagMax = max(m.mesh.elementBoundaryUserFlags)
+        flagMin = min(m.mesh.elementBoundaryUserFlags)
         assert(flagMin == 0)
         assert(flagMax >= 0)
         self.nPressures=flagMax+1
@@ -470,7 +511,7 @@ class BoundaryPressure(AV_base):
         for m,P,A in zip(self.model.levelModelList,self.levelPlist,self.levelAlist):
             P.flat[:]=0.0
             A.flat[:]=0.0
-            cfemIntegrals.accumulateExteriorElementPressureIntegrals(m.mesh.elementBoundaryMaterialTypes,
+            cfemIntegrals.accumulateExteriorElementPressureIntegrals(m.mesh.elementBoundaryUserFlags,
                                                                      m.mesh.exteriorElementBoundariesArray,
                                                                      m.ebqe[('u',0)],#pressure
                                                                      m.ebqe[('dS_u',0)],#dS

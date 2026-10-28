@@ -9,6 +9,12 @@ import numpy as np
 from math import *
 import math #to disambiguate math.log and log
 from .LinearAlgebraTools import *
+# The nonlinear smoothers and FasTwoLevel each hold a placeholder LinearSolver
+# so that NonlinearSolver's machinery has something to talk to; without this
+# import every one of them raised NameError on construction, which is why the
+# whole FAS stack had never run. LinearSolvers does not import this module, so
+# there is no cycle.
+from .LinearSolvers import LinearSolver
 from .Profiling import *
 
 from . import csmoothers
@@ -41,9 +47,47 @@ class NonlinearEquation(object):
         self.nonlinear_function_jacobian_evaluations = 0
 
 
+def resolveNorm(spec, F):
+    """Return the norm function selected by `spec` for the nonlinear equation `F`.
+
+    `spec` is a callable taking the owned entries of a vector (e.g. l2Norm), or one of
+    the finite element norms of a nodal vector x, which the model F must provide:
+
+    'L2'        ||x||_{L^2} = sqrt(x^T M_C x), M_C the consistent mass matrix (F.femL2Norm)
+    'L2_lumped' sqrt(x^T M_L x), M_L the lumped mass matrix (F.femL2Norm(x, lumped=True))
+
+    The finite element norms take the full local vector (owned and ghost entries), since
+    M_C x at an owned row needs the ghost values; they are marked with full_vector = True.
+    """
+    if spec is None or callable(spec):
+        return spec
+    if spec in ('L2', 'L2_lumped'):
+        if not hasattr(F, 'femL2Norm'):
+            raise ValueError("norm '%s' needs a model with femL2Norm(x, lumped=False); %s has none"
+                             % (spec, type(F).__name__))
+        lumped = (spec == 'L2_lumped')
+        def fem_norm(x):
+            return F.femL2Norm(x, lumped=lumped)
+        fem_norm.full_vector = True
+        fem_norm.__name__ = 'femL2Norm_lumped' if lumped else 'femL2Norm'
+        return fem_norm
+    raise ValueError("unknown norm specification %r (use a callable, 'L2' or 'L2_lumped')" % (spec,))
+
+
 class NonlinearSolver(object):
     """
     The base class for nonlinear solvers.
+
+    Convergence tests (convergenceTest):
+
+    'r'        ||r_k|| < rtol_r ||r_0|| + atol_r (norm)
+    'u'        s ||du_k|| < tol_du, s = rho/(1-rho) from the observed contraction rho (unorm)
+    'du'       ||du_k|| < rtol_du ||u_k|| + atol_du: the last increment relative to the
+               current iterate (unorm). unorm='L2' with atol_du = 0 gives the criterion
+               ||p^{k+1}-p^k||_{L2} < tol ||p^{k+1}||_{L2}
+    'r_and_du' both 'r' and 'du' (the increment test alone does not control the residual,
+               i.e. the discrete mass balance)
+    'its', 'rits' fixed iteration counts (with 'rits' also stopping on 'r')
     """
 
     def __init__(self,
@@ -114,10 +158,12 @@ class NonlinearSolver(object):
         self.computeRates = computeRates
         self.printInfo = printInfo
         self.norm_function = norm
+        unorm = resolveNorm(unorm, F)
         if unorm is not None:
             self.unorm_function = unorm
         else:
             self.unorm_function = self.norm_function
+        self.u_current = None  # the iterate the 'du' tests compare against (set by solve)
         self.tol_du = tol_du
         self.infoString=''
         self.convergenceHistoryIsCorrupt=False
@@ -137,6 +183,8 @@ class NonlinearSolver(object):
 
 
     def unorm(self,u):
+        if getattr(self.unorm_function, 'full_vector', False):
+            return self.unorm_function(u)
         try:
             return self.unorm_function(u[self.F.owned_local])
         except AttributeError:
@@ -166,6 +214,31 @@ class NonlinearSolver(object):
                 self.J.matvec(u,r)
             if b is not None:
                 r-=b
+
+    def refreshGhosts(self,par_u):
+        """Make the ghost entries of u agree with their owners again.
+
+        A smoother updates the entries it owns and subtracts the update from the
+        whole local vector, ghosts included, but a ghost entry's update belongs
+        to whichever rank owns it. The next residual reads ghosts, so they have
+        to be replaced by the owners' values first. Serial runs pass par_u=None.
+        A ParVec is ghosted on every rank or on none, so `is not None` is the
+        test: the refresh is collective and a rank with no ghosts must join it.
+        """
+        if par_u is not None and getattr(par_u,'nghosts',None) is not None:
+            par_u.scatter_forward_insert()
+
+    def refreshResidualGhosts(self,par_u,r):
+        """Give the residual's ghost entries their owners' values (see
+        LinearSolver.refreshResidualGhosts): a Schwarz smoother reads them."""
+        if par_u is None or getattr(par_u,'nghosts',None) is None:
+            return
+        par_r = getattr(self,'par_r_work',None)
+        if par_r is None or par_r.proteus_array is not r:
+            if r.size != par_u.proteus_array.size:
+                return
+            par_r = self.par_r_work = par_u.duplicate_with_array(r)
+        par_r.scatter_forward_insert()
 
     def solveInitialize(self,u,r,b):
         if r is None:
@@ -269,7 +342,10 @@ class NonlinearSolver(object):
         self.convergedFlag = False
         if self.its != 0:
             self.norm_r = self.norm(r)
-        if self.computeRates == True or self.convergenceTest == 'u':
+        du_test = self.convergenceTest in ('du', 'r_and_du')
+        if du_test and self.its != 0 and getattr(self, 'par_du', None) is not None:
+            self.par_du.scatter_forward_insert()  # ghost values of du for full-vector norms
+        if self.computeRates == True or self.convergenceTest == 'u' or (du_test and self.its != 0):
             self.norm_du = self.unorm(self.du)
         if self.computeRates ==  True:
             self.computeConvergenceRates()
@@ -285,6 +361,20 @@ class NonlinearSolver(object):
             if (self.convergingIts != 0 and
                 self.s * self.norm_du < self.tol_du):
                 self.convergedFlag = True
+        if du_test and self.its != 0:
+            if self.u_current is None:
+                raise RuntimeError("convergenceTest '%s' needs the current iterate (set u_current)"
+                                   % self.convergenceTest)
+            self.norm_u = self.unorm(self.u_current)
+            du_ok = self.norm_du < self.rtol_du*self.norm_u + self.atol_du
+            r_ok = self.norm_r < self.rtol_r*self.norm_r0 + self.atol_r
+            logEvent("   %s it %d: ||du|| = %12.5e  ||u|| = %12.5e  ||du||/(rtol_du ||u|| + atol_du) = %g  "
+                     "||r||/(rtol_r ||r0|| + atol_r) = %g"
+                     % (type(self).__name__, self.its, self.norm_du, self.norm_u,
+                        self.norm_du/max(self.rtol_du*self.norm_u + self.atol_du, 1.0e-300),
+                        self.norm_r/max(self.rtol_r*self.norm_r0 + self.atol_r, 1.0e-300)), level=2)
+            if du_ok and (r_ok or self.convergenceTest == 'du'):
+                self.convergedFlag = True
         if self.convergedFlag == True and self.computeRates == True:
             self.computeAverages()
         if self.printInfo == True:
@@ -297,7 +387,7 @@ class NonlinearSolver(object):
         if self.linearSolverFailed == True:
             self.failedFlag = True
             return self.failedFlag
-        if self.its == self.maxIts and self.convergenceTest in ['r','u']:
+        if self.its == self.maxIts and self.convergenceTest in ['r','u','du','r_and_du']:
             self.solveCalls_failed +=1
             self.recordedIts_failed +=self.its
             self.failedFlag = True
@@ -379,7 +469,8 @@ class Newton(NonlinearSolver):
                  fullNewton=True,
                  directSolver=False,
                  EWtol=True,
-                 maxLSits = 100):
+                 maxLSits = 100,
+                 unorm = None):
         import copy
         self.par_du = par_du
         if par_du is not None:
@@ -393,7 +484,8 @@ class Newton(NonlinearSolver):
                                  norm,
                                  convergenceTest,
                                  computeRates,
-                                 printInfo)
+                                 printInfo,
+                                 unorm=unorm)
         self.updateJacobian=True
         self.fullNewton=fullNewton
         self.linearSolver = linearSolver
@@ -411,6 +503,65 @@ class Newton(NonlinearSolver):
             self.JLsolver=LU(self.J_t_J,computeEigenvalues=True)
             self.dJLsolver=LU(self.dJ_t_dJ,computeEigenvalues=True)
             self.u0 = numpy.zeros(self.F.dim,'d')
+
+    def _scatterResidual(self, r, par_r):
+        if par_r is not None:
+            if not self.par_fullOverlap:
+                par_r.scatter_reverse_add()
+            else:
+                par_r.scatter_forward_insert()
+
+    def lschemeRetry(self, hybrid, u, r, b, par_u, par_r):
+        """Hybrid Newton/L-scheme step test, called after the Newton update u -= du and r = F(u).
+
+        Trigger 'residual': the Newton step did not reduce ||r|| (where a line search would start).
+        Trigger 'theta': also when Deuflhard's affine-covariant contraction estimate
+        Theta_k = ||J_k^{-1} F(u_{k+1})|| / ||du_k|| exceeds hybrid['theta_max'] (Theta ~ h_k/2 in
+        the Newton-Kantorovich ball test; one extra back-solve with the current factorization).
+        On a trigger the Newton step is undone and replaced by hybrid['its'] L-scheme iterations
+        (F.setLScheme), after which Newton resumes. Returns True if the line search is to be skipped.
+        """
+        norm_r_cur = self.norm(r)
+        if numpy.isfinite(norm_r_cur) and norm_r_cur <= self.rtol_r*self.norm_r0 + self.atol_r:
+            return True
+        trigger = (not numpy.isfinite(norm_r_cur)) or norm_r_cur >= 0.9999*self.norm_r
+        theta = None
+        if not trigger and hybrid['trigger'] == 'theta':
+            du_k = numpy.copy(self.du)
+            self.du[:] = 0.0
+            self.linearSolver.solve(u=self.du, b=r, par_u=self.par_du, par_b=par_r)
+            theta = self.norm(self.du)/max(self.norm(du_k), 1.0e-300)
+            self.du[:] = du_k
+            self.theta_hist.append(theta)
+            trigger = theta > hybrid['theta_max']
+        if not trigger:
+            return True
+        logEvent("   Newton it %d: %s, replacing the step by %d L-scheme iteration(s)"
+                 % (self.its, ("Theta = %.3g" % theta) if theta is not None else "no residual decrease",
+                    hybrid['its']), level=1)
+        u += self.du
+        if par_u is not None:
+            par_u.scatter_forward_insert()
+        self.lscheme_retries += 1
+        self.F.setLScheme(True)
+        try:
+            for k in range(hybrid['its']):
+                self.computeResidual(u, r, b)          # assembles the L-scheme matrix too
+                self._scatterResidual(r, par_r)
+                self.F.getJacobian(self.J)
+                self.linearSolver.prepare(b=r, newton_its=self.its-1)
+                self.du[:] = 0.0
+                self.linearSolver.solve(u=self.du, b=r, par_u=self.par_du, par_b=par_r)
+                u -= self.du
+                if par_u is not None:
+                    par_u.scatter_forward_insert()
+                self.lscheme_its += 1
+        finally:
+            self.F.setLScheme(False)
+        self.computeResidual(u, r, b)                  # back to Newton (re-assembles its Jacobian)
+        self._scatterResidual(r, par_r)
+        self.updateJacobian = True
+        return True
 
     def setLinearSolverTolerance(self,r):
         """
@@ -488,13 +639,30 @@ class Newton(NonlinearSolver):
         if par_u is not None:
             #allow linear solver to know what type of assembly to use
             self.linearSolver.par_fullOverlap = self.par_fullOverlap
-            #no overlap
+        # Implicit FCT (Richards FCT_TYPE='implicit'): keep the predictor's initial guess so a
+        # failed Galerkin predictor can be redone with the low-order operator (fctPredictorFallback).
+        fct_u0 = numpy.copy(u) if getattr(self.F, 'fct_phase', None) == 'predictor' else None
+        # Hybrid Newton/L-scheme (e.g. Richards NONLINEAR_SOLVER='hybrid'): see lschemeRetry.
+        hybrid = self.F.nonlinearHybridOptions() if hasattr(self.F, 'nonlinearHybridOptions') else None
+        self.lscheme_its = 0
+        self.lscheme_retries = 0
+        self.theta_hist = []
+        self.u_current = u  # updated in place by the iteration; used by the 'du' tests
+        r=self.solveInitialize(u,r,b)
+        if par_u is not None:
+            #The residual just computed is a sum over this rank's elements. With no
+            #overlap a shared dof's residual is the sum over the ranks that share it,
+            #so it has to be assembled before the first linear solve uses it; this
+            #used to run before the residual was computed, on the previous solve's
+            #array, so the first Newton step of every solve took a partial right hand
+            #side at the shared dofs (the later steps assemble after computing).
             if not self.par_fullOverlap:
                 par_r.scatter_reverse_add()
             else:
                 #no overlap or overlap (until we compute norms over only owned dof)
                 par_r.scatter_forward_insert()
-        r=self.solveInitialize(u,r,b)
+            self.norm_r0 = self.norm(r)
+            self.norm_r = self.norm_r0
         self.norm_r_hist = []
         self.norm_du_hist = []
         self.gammaK_max=0.0
@@ -547,6 +715,9 @@ class Newton(NonlinearSolver):
                     par_r.scatter_forward_insert()
 
             #print "global r",r
+            skipLineSearch = False
+            if hybrid is not None and not linear:
+                skipLineSearch = self.lschemeRetry(hybrid, u, r, b, par_u, par_r)
             if self.linearSolver.computeEigenvalues:
                 #approximate Lipschitz constant of J
                 logEvent("Calculating eigenvalues of dJ^t dJ")
@@ -587,15 +758,19 @@ class Newton(NonlinearSolver):
                 print("norm_J",self.norm_2_J_current)
                 print("lambda_min",min(self.linearSolver.eigenvalues_r))
                 print("lambda_i_min",min(self.linearSolver.eigenvalues_i))
-            if self.lineSearch:
+            if self.lineSearch and not skipLineSearch:
                 norm_r_cur = self.norm(r)
                 ls_its = 0
                     #print norm_r_cur,self.atol_r,self.rtol_r
     #                 while ( (norm_r_cur >= 0.99 * self.norm_r + self.atol_r) and
     #                         (ls_its < self.maxLSits) and
     #                         norm_r_cur/norm_r_last < 1.0):
-                if norm_r_cur > self.rtol_r*self.norm_r0 + self.atol_r:#make sure hasn't converged already
-                    while ( (norm_r_cur >= 0.9999 * self.norm_r) and
+                # A non-finite trial residual (e.g. a step that leaves the
+                # constitutive laws' domain) compares False against everything,
+                # so test it explicitly; otherwise the line search is skipped
+                # and Newton continues from a NaN iterate.
+                if not numpy.isfinite(norm_r_cur) or norm_r_cur > self.rtol_r*self.norm_r0 + self.atol_r:#make sure hasn't converged already
+                    while ( (not numpy.isfinite(norm_r_cur) or norm_r_cur >= 0.9999 * self.norm_r) and
                             (ls_its < self.maxLSits)):
                         self.convergingIts = 0
                         ls_its +=1
@@ -671,11 +846,23 @@ class Newton(NonlinearSolver):
                 % (self.its,self.norm_r,(self.norm_r/(self.rtol_r*self.norm_r0+self.atol_r))),level=1)
             if hasattr(self.F.coefficients,'FCT') and self.F.coefficients.FCT==True:
                 if self.failedFlag:
+                    if fct_u0 is not None and getattr(self.F, 'fctPredictorFallback', None) is not None \
+                       and self.F.fctPredictorFallback():
+                        logEvent("Implicit FCT: Galerkin predictor failed, using the low-order predictor")
+                        u[:] = fct_u0
+                        return self.solve(u, r, b, par_u, par_r)
                     logEvent("Skipping FCT Step After Newton due to nonlinear solver failure")
                 else:
                     logEvent("FCT Step After Newton")
                     self.F.FCTStep()
                     u[:] = self.F.u[0].dof
+                    # Implicit FCT (Richards FCT_TYPE='implicit'): the FCT step limited the
+                    # fluxes of the predictor just computed and needs one more solve, the
+                    # low-order problem with the corrected datum, from the same initial guess.
+                    if getattr(self.F, 'fct_resolve', False):
+                        self.F.fct_resolve = False
+                        logEvent("Implicit FCT: final low-order solve")
+                        return self.solve(u, r, b, par_u, par_r)
             logEvent(memory("Exiting Newton.solve","NonlinearSolvers"),level=4)
             return self.failedFlag
         logEvent("  NumericalAnalytics NewtonIteration: %d, NewtonNorm: %12.5e"
@@ -809,7 +996,7 @@ class ExplicitConsistentMassMatrixShallowWaterEquationsSolver(Newton):
 
 class ExplicitLumpedMassMatrix(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """
@@ -851,7 +1038,7 @@ class ExplicitLumpedMassMatrix(Newton):
         
 class ExplicitLumpedMassMatrixForRichards(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """
@@ -877,7 +1064,7 @@ class ExplicitLumpedMassMatrixForRichards(Newton):
 
 class ExplicitConsistentMassMatrixWithRedistancing(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """
@@ -982,7 +1169,7 @@ class ExplicitConsistentMassMatrixWithRedistancing(Newton):
 
 class ExplicitConsistentMassMatrixForVOF(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """
@@ -1018,7 +1205,7 @@ class ExplicitConsistentMassMatrixForVOF(Newton):
 
 class ExplicitConsistentMassMatrixForRichards(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """
@@ -1054,7 +1241,7 @@ class ExplicitConsistentMassMatrixForRichards(Newton):
 
 class NewtonWithL2ProjectionForMassCorrection(Newton):
     """
-     This is a fake solver meant to be used with optimized code
+    This is a fake solver meant to be used with optimized code
     A simple iterative solver that is Newton's method
     if you give it the right Jacobian
     """
@@ -2713,6 +2900,7 @@ class NLJacobi(NonlinearSolver):
             elif type(self.J).__name__ == "SparseMatrix":
                 csmoothers.jacobi_NR_solve(self.J,self.M,r,self.node_order,self.du)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
         else:
             return self.failedFlag
@@ -2787,8 +2975,16 @@ class NLGaussSeidel(NonlinearSolver):
                             rhat -= self.J[i,j]*self.du[j]
                     self.du[i] = self.M[i]*rhat
             elif type(self.J).__name__ == "SparseMatrix":
+                #An owned node's update subtracts its ghost neighbours' updates, and
+                #those come from the ghosts' residuals. A ghost row of the subdomain
+                #residual is assembled from elements the rank holds partially, so left
+                #as it is the sweep has no fixed point at the solution: owned
+                #residuals vanish, ghost ones do not, and the iteration stalls short
+                #of it. The owners' values restore that.
+                self.refreshResidualGhosts(par_u,r)
                 csmoothers.gauss_seidel_NR_solve(self.J,self.M,r,self.node_order,self.du)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
         else:
             return self.failedFlag
@@ -2855,7 +3051,7 @@ class NLStarILU(NonlinearSolver):
                     self.subdomainIndecesList[i][J].update([i,j])
         elif type(self.J).__name__ == 'SparseMatrix':
             self.node_order=numpy.arange(self.F.dim-1,-1,-1,dtype='i')
-            self.asmFactorObject = self.csmoothers.ASMFactor(self.J)
+            self.asmFactorObject = csmoothers.ASMFactor(self.J)
 
     def prepareSubdomains(self):
         if type(self.J).__name__ == 'ndarray':
@@ -2872,7 +3068,7 @@ class NLStarILU(NonlinearSolver):
                 self.subdomainSolvers.append(LU(self.subdomainJ[i]))
                 self.subdomainSolvers[i].prepare()
         elif type(self.J).__name__ == 'SparseMatrix':
-            self.csmoothers.asm_NR_prepare(self.J,self.asmFactorObject)
+            csmoothers.asm_NR_prepare(self.J,self.asmFactorObject)
 
     def solve(self,u,r=None,b=None,par_u=None,par_r=None):
         r=self.solveInitialize(u,r,b)
@@ -2902,8 +3098,26 @@ class NLStarILU(NonlinearSolver):
                     for J,j in enumerate(self.connectionList[i]):
                         self.du[j] += self.subdomainDU[i][J+1]
             elif type(self.J).__name__ == 'SparseMatrix':
-                self.csmoothers.asm_NR_solve(self.J,self.w,self.asmFactorObject,self.node_order,r,self.du)
+                #a Schwarz star takes its right-hand side from every node of the star,
+                #ghosts included, so those entries have to be their owners' values
+                self.refreshResidualGhosts(par_u,r)
+                #In parallel sweep only the stars centred on nodes this rank owns: such a
+                #star is a correct square system (the owned row carries all its columns),
+                #one centred on a ghost node comes from a row the subdomain holds only
+                #partially. The subdomain lists its owned nodes first. See
+                #LinearSolvers.StarILU.
+                if par_u is not None:
+                    ownedNodes = par_u.dim_proc
+                    #the serial sweep runs from the last node down; sweeping "the
+                    #first ownedNodes" of that order would take the ghosts, so the
+                    #parallel order is ascending, which lists the owned nodes first
+                    nodeOrder = numpy.arange(self.F.dim,dtype='i')
+                else:
+                    ownedNodes = -1
+                    nodeOrder = self.node_order
+                csmoothers.asm_NR_solve(self.J,self.w,self.asmFactorObject,nodeOrder,r,self.du,ownedNodes)
             u -= self.du
+            self.refreshGhosts(par_u)
             self.computeResidual(u,r,b)
         else:
             return self.failedFlag
@@ -2929,7 +3143,8 @@ class FasTwoLevel(NonlinearSolver):
                  norm = l2Norm,
                  convergenceTest = 'r',
                  computeRates = True,
-                 printInfo = True):
+                 printInfo = True,
+                 par_u_coarse=None):
         NonlinearSolver.__init__(self,F,J,du,
                                  rtol_r,
                                  atol_r,
@@ -2959,6 +3174,16 @@ class FasTwoLevel(NonlinearSolver):
         self.crFAS = Vec(prolong.shape[1])
         self.cdu = Vec(prolong.shape[1])
         self.cu = Vec(prolong.shape[1])
+        #The coarse level's work vectors belong to this solver, so nothing else
+        #holds a parallel counterpart for them; without one the coarse solve
+        #and the smoothers below it run on stale ghost values. par_u_coarse is
+        #any ParVec with the coarse level's layout (see LinearSolvers.TwoLevel).
+        if par_u_coarse is not None:
+            self.par_cb = par_u_coarse.duplicate_with_array(self.cb)
+            self.par_crFAS = par_u_coarse.duplicate_with_array(self.crFAS)
+            self.par_cdu = par_u_coarse.duplicate_with_array(self.cdu)
+        else:
+            self.par_cb = self.par_crFAS = self.par_cdu = None
         self.cError = 'FAS-chord'#'linear'#'FAS'#'FAS-chord'#'linear'
 
     def fullNewtonOff(self):
@@ -2985,14 +3210,15 @@ class FasTwoLevel(NonlinearSolver):
         r=self.solveInitialize(u,r,b)
         while (not self.converged(r) and
                not self.failed()):
-            self.preSmoother.solve(u,r,b)
+            self.preSmoother.solve(u,r,b,par_u=par_u,par_r=par_r)
             self.restrict.matvec(r,self.cb)
             if self.cError == 'linear':
                 self.coarseSolver.fullResidualOff()
                 self.coarseSolver.fullNewtonOff()
                 lsSave = self.coarseSolver.lineSearch
                 self.coarseSolver.lineSearch = False
-                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb)
+                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb,
+                                        par_u=self.par_cdu,par_r=self.par_crFAS)
                 self.coarseSolver.lineSearch = lsSave
                 self.coarseSolver.fullNewtonOn()
                 self.coarseSolver.fullResidualOn()
@@ -3007,7 +3233,8 @@ class FasTwoLevel(NonlinearSolver):
                 self.cb+=self.cr
                 self.cdu[:]=self.cu
                 self.coarseSolver.fullNewtonOff()
-                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb)
+                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb,
+                                        par_u=self.par_cdu,par_r=self.par_crFAS)
                 self.coarseSolver.fullNewtonOn()
                 self.cdu-=self.cu
             else:
@@ -3020,11 +3247,12 @@ class FasTwoLevel(NonlinearSolver):
                 self.cF.getResidual(self.cu,self.cr)
                 self.cb+=self.cr
                 self.cdu[:]=self.cu
-                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb)
+                self.coarseSolver.solve(u=self.cdu,r=self.crFAS,b=self.cb,
+                                        par_u=self.par_cdu,par_r=self.par_crFAS)
                 self.cdu-=self.cu
             self.prolong.matvec(self.cdu,self.du)
             u-=self.du
-            self.postSmoother.solve(u,r,b)
+            self.postSmoother.solve(u,r,b,par_u=par_u,par_r=par_r)
         else:
             return self.failedFlag
 
@@ -3042,7 +3270,8 @@ class FAS(object):
                  postSmootherList,
                  coarseSolver,
                  mgItsList=[],
-                 printInfo=True):
+                 printInfo=True,
+                 par_uList=None):
         self.solverList=[coarseSolver]
         for i in range(1,len(FList)):
             if mgItsList ==[]:
@@ -3058,11 +3287,12 @@ class FAS(object):
                             F = FList[i],
                             maxIts = mgItsList[i],
                             convergenceTest = 'its',
-                            printInfo=False))
+                            printInfo=False,
+                            par_u_coarse = par_uList[i-1] if par_uList else None))
         self.fasSolver = self.solverList[len(FList)-1]
 
     def solve(self,u,r=None,b=None,par_u=None,par_r=None):
-        self.fasSolver.solve(u,r,b)
+        self.fasSolver.solve(u,r,b,par_u=par_u,par_r=par_r)
         return self.fasSolver.failedFlag
 
 
@@ -3290,7 +3520,10 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                      EWtol=True,
                                      maxLSits=100,
                                      parallelUsesFullOverlap = True,
-                                     nonlinearSolverNorm = l2Norm):
+                                     nonlinearSolverNorm = l2Norm,
+                                     nonlinearSolverUNorm = None,
+                                     relativeToleranceDu = 1.0e-4,
+                                     absoluteToleranceDu = 1.0e-16):
     if (levelNonlinearSolverType == TwoStageNewton):
         levelNonlinearSolverType = TwoStageNewton
     elif (levelNonlinearSolverType == ExplicitLumpedMassMatrixShallowWaterEquationsSolver):
@@ -3320,6 +3553,13 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
     multilevelNonlinearSolver=None
     levelNonlinearSolverList=[]
     if levelNonlinearSolverType == FAS:
+        from . import Comm
+        if Comm.get().size() > 1 and len(prolongList) > 1 and not hasattr(prolongList[1],'mat'):
+            #FAS acts on the stacked free unknowns, which need the distributed stacked
+            #operators; a global SparseMatrix cannot act on a rank's subdomain vector
+            raise ValueError("FAS in parallel needs distributed stacked transfer operators, "
+                             "which Transport builds when the system's components are "
+                             "interleaved and share one space type; this problem has none")
         preSmootherList=[]
         postSmootherList=[]
         mgItsList=[]
@@ -3343,7 +3583,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                                      du=duList[l],
                                                      weight=relaxationFactor,
                                                      maxIts=postSmooths,
-                                                     convergenceTest=smootherFullNewtonFlag,
+                                                     convergenceTest=smootherConvergenceTest,
                                                      computeRates = computeSmootherRates,
                                                      printInfo=printSmootherInfo,
                                                      fullNewton=smootherFullNewtonFlag))
@@ -3404,7 +3644,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                             du=duList[l],
                                             weight=relaxationFactor,
                                             maxIts=postSmooths,
-                                            convergenceTest=smootherFullNewtonFlag,
+                                            convergenceTest=smootherConvergenceTest,
                                             computeRates = computeSmootherRates,
                                             printInfo=printSmootherInfo,
                                             fullNewton=smootherFullNewtonFlag,
@@ -3450,7 +3690,8 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                    postSmootherList = postSmootherList,
                                    coarseSolver = coarseSolver,
                                    mgItsList = mgItsList,
-                                   printInfo=printLevelSolverInfo)
+                                   printInfo=printLevelSolverInfo,
+                                   par_uList = par_duList)
         levelNonlinearSolverList = levelNonlinearSolver.solverList
     elif levelNonlinearSolverType == Newton:
         for l in range(nLevels):
@@ -3473,7 +3714,10 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                                    fullNewton=levelSolverFullNewtonFlag,
                                                    directSolver=linearDirectSolverFlag,
                                                    EWtol=EWtol,
-                                                   maxLSits=maxLSits ))
+                                                   maxLSits=maxLSits,
+                                                   rtol_du=relativeToleranceDu,
+                                                   atol_du=absoluteToleranceDu,
+                                                   unorm=nonlinearSolverUNorm))
     elif levelNonlinearSolverType in [POD_Newton,POD_DEIM_Newton]:
         for l in range(nLevels):
             if par_duList is not None and len(par_duList) > 0:
@@ -3658,7 +3902,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                                        EWtol=EWtol,
                                                        maxLSits=maxLSits ))
         except:
-            raise RuntimeError("Unknown level nonlinear solver "+ levelNonlinearSolverType)
+            raise RuntimeError("Unknown level nonlinear solver %r" % (levelNonlinearSolverType,))
     if multilevelNonlinearSolverType == NLNI:
         multilevelNonlinearSolver = NLNI(fList = nonlinearOperatorList,
                                          solverList = levelNonlinearSolverList,
@@ -3684,7 +3928,7 @@ def multilevelNonlinearSolverChooser(nonlinearOperatorList,
                                                               computeRates = computeSolverRates,
                                                               printInfo = printSolverInfo)
     else:
-        raise RuntimeError("!!!!!!!!!!!!!!!!!!!!!!!!!Unknown multilevelNonlinearSolverType " + multilevelNonlinearSolverType)
+        raise RuntimeError("!!!!!!!!!!!!!!!!!!!!!!!!!Unknown multilevelNonlinearSolverType %r" % (multilevelNonlinearSolverType,))
 
     #add minimal configuration for parallel?
     for levelSolver in multilevelNonlinearSolver.solverList:

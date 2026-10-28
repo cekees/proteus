@@ -22,6 +22,12 @@ from proteus.NonlinearSolvers import ExplicitLumpedMassMatrix,ExplicitConsistent
 from proteus import TimeIntegration
 from . import cVOS3P
 from . import cArgumentsDict
+import proteus.NumericalFlux
+import proteus.ShockCapturing
+import proteus.SubgridError
+import proteus.TimeIntegration
+import proteus.Transport
+import proteus.TransportCoefficients
 
 
 class SubgridError(SGE_base):

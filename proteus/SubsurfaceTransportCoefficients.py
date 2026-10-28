@@ -463,7 +463,7 @@ class ConservativeHeadRichardsMualemVanGenuchten(TC_base):
                 ebN = mesh.exteriorElementBoundariesArray[ebNE]
                 #print "eb flag",mesh.elementBoundaryMaterialTypes[ebN]
                 #print self.getSeepageFace(mesh.elementBoundaryMaterialTypes[ebN])
-                self.isSeepageFace[ebNE] = self.getSeepageFace(mesh.elementBoundaryMaterialTypes[ebN])
+                self.isSeepageFace[ebNE] = self.getSeepageFace(mesh.elementBoundaryUserFlags[ebN])
         #print self.isSeepageFace
     def initializeElementQuadrature(self,t,cq):
         self.materialTypes_q = self.elementMaterialTypes
@@ -1209,12 +1209,12 @@ class TwophaseDarcyFlow_base(TC_base):
     #
 
 class TwophaseDarcy_fc(TwophaseDarcyFlow_base):
-    """continuity equation for each phase
+    r"""continuity equation for each phase
 
     .. math::
 
-        \\pd{m_w}{t} - \\deld (\ten{a}_w \\grad \\phi_w) + r_w = 0
-        \\pd{m_n}{t} - \\deld (\ten{a}_n \\grad \\phi_n) + r_n = 0
+        \pd{m_w}{t} - \deld (\ten{a}_w \grad \phi_w) + r_w = 0
+        \pd{m_n}{t} - \deld (\ten{a}_n \grad \phi_n) + r_n = 0
 
     """
     # (normalized) mass for each phase
@@ -1587,12 +1587,12 @@ class FullyCoupledSimplePSKs(TwophaseDarcy_fc):
 
 
 class TwophaseDarcy_fc_pp(TwophaseDarcyFlow_base):
-    """continuity equation for each phase
+    r"""continuity equation for each phase
 
     .. math::
 
-      \\pd{m_w}{t} - \\deld (\ten{a}_w \\grad \\phi_w) + r_w = 0
-      \\pd{m_n}{t} - \\deld (\ten{a}_n \\grad \\phi_n) + r_n = 0
+      \pd{m_w}{t} - \deld (\ten{a}_w \grad \phi_w) + r_w = 0
+      \pd{m_n}{t} - \deld (\ten{a}_n \grad \phi_n) + r_n = 0
     
     """
     

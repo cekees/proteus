@@ -5,6 +5,7 @@ A class hierarchy for numerical flux (numerical trace) computations
    :parts: 1
 """
 from . import cfemIntegrals,cnumericalFlux
+from . import MeshTools
 import numpy
 from .Profiling import logEvent,memory
 from .EGeometry import enorm
@@ -13,10 +14,76 @@ from .EGeometry import enorm
 #  ? allow flux bc's to have type flags too?
 #
 #
+#: Flux classes that are not known to work on a partitioned mesh: 22 that no
+#: model, test or document in this repository uses (checked 2026-10-25,
+#: boundary-condition pathways sweep), and HamiltonJacobi_DiagonalLesaintRaviart,
+#: which only DG models use and which the repository's own parallel runs replace
+#: with DoNothing. The exterior flux several of them apply to the faces between
+#: ranks is not known to be right there, so they refuse to be built on more than
+#: one rank. Matched by exact class name, so subclasses (mprans NCLS's
+#: NumericalFlux) are unaffected. The unused ones are to be deleted in 2.0.
+UNUSED_FLUX_CLASSES_REFUSED_IN_PARALLEL = frozenset([
+    "Advection_DiagonalUpwind_Diffusion_LDG",
+    "Advection_DiagonalUpwind_exterior",
+    "Advection_Diagonal_average",
+    "ConstantAdvection_Diffusion_IIPG_exterior",
+    "ConstantAdvection_Diffusion_NIPG_exterior",
+    "ConvexOneSonicPointNumericalFlux",
+    "Curvature_exterior",
+    "DarcyFCFF_IIPG_exterior",
+    "DarcyFCPP_IIPG_exterior",
+    "DarcyFC_IIPG_exterior",
+    "DarcySplitPressure_IIPG_exterior",
+    "HamiltonJacobi_DiagonalChengShu",
+    "HamiltonJacobi_DiagonalLesaintRaviart",
+    "HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_IIPG",
+    "HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_SIPG_exterior",
+    "HamiltonJacobi_Pressure_DiagonalLesaintRaviart_Diffusion_SIPG_exterior",
+    "MixedDarcy_exterior",
+    "RusanovLDG",
+    "RusanovNumericalFlux_Diagonal",
+    "RusanovNumericalFlux_Diagonal_Diffusion_IIPG",
+    "StokesP_Advection_DiagonalUpwind_Diffusion_IIPG_exterior",
+    "Stokes_Advection_DiagonalUpwind_Diffusion_IIPG_exterior",
+    "Stress_SIPG_exterior",
+])
+
+
 class NF_base(object):
     useWeakDirichletConditions=True
     useStrongDirichletConstraints=False
     hasInterior=True
+
+    @property
+    def rankInterfaceExteriorMask(self):
+        """Which exterior faces of this rank's mesh are not domain boundary.
+
+        The faces shared with a neighbouring rank are exterior faces of the
+        subdomain although they are interior to the global mesh, so a boundary
+        flux applied there is applied to the inside of the domain. ``None`` in
+        serial. See :func:`proteus.MeshTools.rankInterfaceExteriorMask`, which
+        also says why the mask has to be applied after the kernel runs rather
+        than by passing it a shorter face list.
+        """
+        return MeshTools.rankInterfaceExteriorMask(self.mesh)
+
+    def zeroAdvectiveFluxOnRankInterfaces(self,ebqe,ci,cj):
+        """Undo the advective boundary flux on the faces shared with a neighbour.
+
+        Globally those faces are interior and carry no boundary term at all,
+        so zeroing reproduces the serial residual exactly. Zeroing
+        ``dadvectiveFlux_left`` is also what keeps the Jacobian consistent:
+        :c:func:`updateGlobalExteriorNumericalAdvectiveFluxJacobian` builds its
+        contribution from that array alone.
+        """
+        mask = self.rankInterfaceExteriorMask
+        if mask is None:
+            return
+        if ('advectiveFlux',ci) in ebqe:
+            ebqe[('advectiveFlux',ci)][mask] = 0.0
+        if ('dadvectiveFlux_left',ci,cj) in ebqe:
+            ebqe[('dadvectiveFlux_left',ci,cj)][mask] = 0.0
+
     def __init__(self,vt,
                  getPointwiseBoundaryConditions,
                  getAdvectiveFluxBoundaryConditions,
@@ -24,6 +91,16 @@ class NF_base(object):
                  getPeriodicBoundaryConditions=None,
                  parallelPeriodic=False):
         import copy
+        name = type(self).__name__
+        if name in UNUSED_FLUX_CLASSES_REFUSED_IN_PARALLEL:
+            from . import Comm
+            comm = Comm.get()
+            if comm is not None and comm.size() > 1:
+                raise NotImplementedError(
+                    "%s has not been used or tested on a partitioned mesh (see "
+                    "NumericalFlux.UNUSED_FLUX_CLASSES_REFUSED_IN_PARALLEL); run it on one "
+                    "rank, or use a flux class listed in the tests"
+                    % name)
         self.hasInterior=NF_base.hasInterior
         self.includeBoundaryAdjoint=False
         self.includeBoundaryAdjointInteriorOnly=False # tjp added
@@ -155,7 +232,7 @@ class NF_base(object):
                 ebN = self.mesh.exteriorElementBoundariesArray[ebNE]
                 eN_global = self.mesh.elementBoundaryElementsArray[ebN,0]
                 ebN_element = self.mesh.elementBoundaryLocalElementBoundariesArray[ebN,0]
-                materialFlag = self.mesh.elementBoundaryMaterialTypes[ebN]
+                materialFlag = self.mesh.elementBoundaryUserFlags[ebN]
                 for k in range(vt.nElementBoundaryQuadraturePoints_elementBoundary):
                     x = vt.ebqe['x'][ebNE,k]
                     try:
@@ -321,12 +398,15 @@ class StrongDirichlet(NF_base):
                                                                                 ebqe[('df',ci,cj)],
                                                                                 ebqe[('advectiveFlux',ci)],
                                                                                 ebqe[('dadvectiveFlux_left',ci,cj)])
+                    self.zeroAdvectiveFluxOnRankInterfaces(ebqe,ci,cj)
     def updateExteriorNumericalFluxJacobian(self,l2g,inflowFlag,q,ebqe,dphi,fluxJacobian_exterior,fluxJacobian_eb,fluxJacobian_hj):
         for ci,cjDict in self.vt.coefficients.advection.items():
             if ((self.fluxBoundaryConditions[ci] == 'outFlow' or
                  self.fluxBoundaryConditions[ci] == 'mixedFlow') and
                 self.vt.timeIntegration.advectionIsImplicit[ci]):
                 for cj in cjDict:
+                    # not an ordering assumption on calculateExteriorNumericalFlux
+                    self.zeroAdvectiveFluxOnRankInterfaces(ebqe,ci,cj)
                     cnumericalFlux.updateExteriorNumericalAdvectiveFluxJacobian(self.mesh.exteriorElementBoundariesArray,
                                                                                 self.mesh.elementBoundaryElementsArray,
                                                                                 self.mesh.elementBoundaryLocalElementBoundariesArray,
@@ -335,9 +415,18 @@ class StrongDirichlet(NF_base):
                                                                                 ebqe[('v',cj)],
                                                                                 fluxJacobian_exterior[ci][cj])
 
-def StrongDirichletFactory(fluxBoundaryConditionsDict={}):
+def StrongDirichletFactory(fluxBoundaryConditionsDict={}, keepDOFs=False):
+    """Strong Dirichlet conditions with the given flux boundary conditions.
+
+    By default the Dirichlet degrees of freedom are eliminated from the
+    global system. With ``keepDOFs`` they stay in it and their rows are
+    replaced by u = g instead, which is the layout the parallel and petsc4py
+    linear solvers (KSP_petsc4py) expect.
+    """
     class MyStrongDirichlet(StrongDirichlet):
         hasInterior=False
+        useWeakDirichletConditions=keepDOFs
+        useStrongDirichletConstraints=keepDOFs
         def setFluxBoundaryConditions(self):
             self.fluxBoundaryConditions=fluxBoundaryConditionsDict
     return MyStrongDirichlet
@@ -923,6 +1012,114 @@ class Advection_DiagonalUpwind_Diffusion_IIPG_exterior(NF_base):
                                                                                                 ebqe[('grad(v)',cj)],
                                                                                                 ebqe['penalty'],
                                                                                                 fluxJacobian_exterior[ci][cj])
+def RobinFactory(getRobinConditions, base=None):
+    """A Robin condition ``alpha*u + beta*(q.n) = g`` on the exterior boundary.
+
+    Rearranged, the outward diffusive flux is ``q.n = (g - alpha*u)/beta``,
+    which is a *function of the solution's trace*. That is the whole reason
+    this class has to exist: Proteus's diffusiveFluxBoundaryConditions take
+    ``(x, t)`` and nothing else, and
+    OneLevelTransport.calculateExteriorElementBoundaryCoefficients zeroes
+    ``dadvectiveFlux_left`` where one is set -- the existing design states
+    that a prescribed flux does not depend on u. A Robin flux does.
+
+    Parameters
+    ----------
+    getRobinConditions : dict
+        ``{ci: f(x, flag)}``, each returning ``None`` where the component has
+        no Robin condition, or a callable ``(x, t) -> (alpha, beta, g)``.
+        beta must be non-zero: beta = 0 is a Dirichlet condition, which
+        belongs in dirichletConditions where it can be imposed strongly.
+    base : class, optional
+        The numerical flux to build on, for everything that is not a Robin
+        point. The default is :func:`StrongDirichletFactory` with no flux
+        boundary conditions; pass one built with the problem's own
+        ``fluxBoundaryConditions`` to keep its outflow handling.
+
+        It must be an exterior-only, strongly-Dirichlet base, and the
+        default's two class attributes are why: ``NF_base`` has
+        ``hasInterior = True``, which makes Transport set up interior
+        numerical fluxes a CG discretization has no terms for, and
+        ``useWeakDirichletConditions = True``, which stops the Dirichlet
+        nodes being eliminated while nothing imposes them weakly either --
+        the system comes out singular rather than wrong, which at least
+        fails loudly.
+
+    A point carrying a Robin condition must not also carry a Dirichlet or a
+    diffusive-flux condition: those are applied after this class runs and
+    would overwrite it. :class:`ADRProblem` keeps them apart.
+    """
+    base = StrongDirichletFactory() if base is None else base
+
+    class Robin(base):
+        def __init__(self, vt, getPointwiseBoundaryConditions,
+                     getAdvectiveFluxBoundaryConditions,
+                     getDiffusiveFluxBoundaryConditions,
+                     getPeriodicBoundaryConditions=None):
+            base.__init__(self, vt, getPointwiseBoundaryConditions,
+                          getAdvectiveFluxBoundaryConditions,
+                          getDiffusiveFluxBoundaryConditions,
+                          getPeriodicBoundaryConditions)
+            #: ci -> [(ebNE, k, value(x, t)), ...]
+            self.robinConditions = {}
+            mesh = self.mesh
+            nq = self.vt.nElementBoundaryQuadraturePoints_elementBoundary
+            for ci in range(self.nc):
+                get = getRobinConditions.get(ci)
+                if get is None:
+                    continue
+                here = []
+                for ebNE in range(mesh.nExteriorElementBoundaries_global):
+                    ebN = mesh.exteriorElementBoundariesArray[ebNE]
+                    flag = mesh.elementBoundaryUserFlags[ebN]
+                    for k in range(nq):
+                        x = self.vt.ebqe['x'][ebNE, k]
+                        value = get(x, flag)
+                        if value is not None:
+                            here.append((ebNE, k, x, value))
+                            # not a Dirichlet point: the trace is unknown here
+                            self.isDOFBoundary[ci][ebNE, k] = 0
+                if here:
+                    self.robinConditions[ci] = here
+
+        def _robin(self, ci, ebNE, k, x, value, ebqe):
+            """(flux, d(flux)/du) at one Robin point."""
+            alpha, beta, g = value(x, self.vt.timeIntegration.t)
+            if beta == 0.0:
+                raise ValueError(
+                    "robin condition on component %d at %s has beta = 0, which "
+                    "is a Dirichlet condition; impose it strongly instead"
+                    % (ci, numpy.array(x[:3])))
+            u = ebqe[('u', ci)][ebNE, k]
+            return (g - alpha * u) / beta, -alpha / beta
+
+        def calculateExteriorNumericalFlux(self, inflowFlag, q, ebqe):
+            base.calculateExteriorNumericalFlux(self, inflowFlag, q, ebqe)
+            for ci, points in self.robinConditions.items():
+                for ck in range(self.nc):
+                    if ('diffusiveFlux', ck, ci) not in ebqe:
+                        continue
+                    for ebNE, k, x, value in points:
+                        flux, _ = self._robin(ci, ebNE, k, x, value, ebqe)
+                        ebqe[('diffusiveFlux', ck, ci)][ebNE, k] = flux
+
+        def updateExteriorNumericalFluxJacobian(self, l2g, inflowFlag, q, ebqe, dphi,
+                                                fluxJacobian_exterior, fluxJacobian_eb,
+                                                fluxJacobian_hj):
+            base.updateExteriorNumericalFluxJacobian(
+                self, l2g, inflowFlag, q, ebqe, dphi,
+                fluxJacobian_exterior, fluxJacobian_eb, fluxJacobian_hj)
+            # d(q.n)/du = -alpha/beta, exactly; chain it onto the trial
+            # functions the way the C kernels do for the other fluxes.
+            for ci, points in self.robinConditions.items():
+                for ebNE, k, x, value in points:
+                    _, dflux = self._robin(ci, ebNE, k, x, value, ebqe)
+                    fluxJacobian_exterior[ci][ci][ebNE, k, :] += (
+                        dflux * ebqe[('v', ci)][ebNE, k, :])
+    Robin.__name__ = "Robin_" + base.__name__
+    return Robin
+
+
 class ConstantAdvection_Diffusion_IIPG_exterior(NF_base):
     hasInterior=False
     def __init__(self,vt,getPointwiseBoundaryConditions,
@@ -4511,7 +4708,7 @@ class RusanovNumericalFlux(RusanovNumericalFlux_Diagonal):
 
     .. math::
 
-       \bar{\lamda}= max |\vec f^{\prime} \cdot n\|
+       \bar{\lambda}= max |\vec f^{\prime} \cdot n\|
 
     Then we just apply apply numerical flux
 

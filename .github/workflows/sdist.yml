@@ -13,14 +13,45 @@ on:
   push:
     branches: [main, 1.9.x]
   pull_request:
+  # The macOS Intel legs do not run on pull requests (see matrix.exclude below); a manual run has them.
+  workflow_dispatch:
+
+# Why: the standard macOS runners are the bottleneck. Measured over the last ~80 runs, Linux jobs start at once
+# (median wait 0 min) and macOS jobs wait a median of 7-9 h (p90 17-21 h) for a runner, then run for 20-90 min; a
+# Team plan allows about 5 concurrent macOS jobs. A new push to a pull request leaves its previous run queued, and
+# each run is four macOS jobs and about 200 macOS minutes, so superseded runs were what kept the queue full.
+# A pull request's older run is cancelled when it is pushed to again. Runs for pushes to main and 1.9.x each get
+# their own group: every commit there keeps its own result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.leg.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
+        # macOS Intel is the slowest leg (89 min, 54 with the FSI tests) and the scarcest runner. It failed alone, with
+        # Apple Silicon passing, in 3 of 118 comparable job pairs (Apple Silicon failed alone in 3 as well), so a break
+        # that only Intel sees now shows up after the merge instead of before it: the legs run on every push to main
+        # (and on a manual run), not on pull requests. They are excluded here, not with a job-level `if`, because the
+        # matrix context is not available in one.
+        # TODO: drop the macOS Intel legs altogether after the 1.9.1 release (cekees, 2026-10-28); the platform is kept
+        # until then because 1.9.1 is meant to build on it (the 1.9.x line still runs it on pull requests).
+        exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"leg":{"os":"macos-15-intel"}}]' || '[]') }}
+        # Each leg runs twice: the suite without the two FSI IBM tests
+        # (suite: main), and those two tests alone (suite: fsi). Each of the
+        # two is a full 1 s simulation, 200 steps in serial; serially on these
+        # runners they take 535 s + 395 s (macOS arm64) to 972 s + 502 s
+        # (macOS Intel), against about 8 min of CPU for all the other tests
+        # together. In the main run under xdist they set the job's wall time
+        # wherever they were scheduled: last, they ran alone after the other
+        # workers had finished; first, they shared the cores with the rest
+        # of the suite for the whole run and slowed down 1.6x (Intel) to 3.7x
+        # (arm64), sdf taking 1975 s on arm64 (cekees/proteus#57).
+        suite: [main, fsi]
+        leg:
           # Full test suite (PUMI mesh-adaptation + Chrono FSI included).
           # conda-forge ships the scorec package (PUMI) on linux-64, osx-64,
           # linux-aarch64 and osx-arm64. As of scorec 4.2.1 *build 1* it ships
@@ -46,6 +77,12 @@ jobs:
             os: ubuntu-latest
             python: "3.12.5"
             env_file: environment-openmpi-dev.yml
+            # This leg runs the suite under coverage (pyproject.toml,
+            # [tool.coverage]) and keeps coverage.xml and the HTML report as
+            # the job's artifacts: what the suite exercises of the proteus
+            # package, so code nothing runs is visible. One leg, since
+            # measuring slows the run and the answer is the same on all.
+            coverage: "yes"
           # This leg's python matches the pin in the environment files, so it is the
           # one that tests the committed lock verbatim; the others relax it.
           - name: linux-64 / py3.13 (locked)
@@ -56,6 +93,12 @@ jobs:
             os: macos-15-intel
             python: "3.12.5"
             env_file: environment-openmpi-dev.yml
+            # This runner is shared and slow: a suite that takes 15 min on
+            # Linux has taken 2 h 15 min here, and the tests' subprocess
+            # timeouts (sized for a workstation) then report hangs that were
+            # not. A fixed scale, since the load average on a shared VM says
+            # little about the slice this job gets.
+            timeout_scale: "3"
           # These two ran without PUMI/Chrono while conda-forge lacked the binaries
           # and while pychrono crashed on osx-arm64. Both reasons are gone: scorec
           # 4.2.1 and pychrono 10.0.0 are published for linux-64, osx-64,
@@ -73,22 +116,22 @@ jobs:
             os: macos-15
             python: "3.12.5"
             env_file: environment-mpich-dev.yml
-    name: ${{ matrix.name }}
+    name: ${{ matrix.leg.name }}${{ matrix.suite == 'fsi' && ' / FSI IBM' || '' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Build environment file for this leg
         shell: bash
         run: |
-          cp "${{ matrix.env_file }}" environment-ci.yml
+          cp "${{ matrix.leg.env_file }}" environment-ci.yml
           # the openmpi/mpich files declare different env names; normalize so
           # activate-environment below matches whichever one this leg copied
           sed -i.bak "s/^name: .*/name: proteus-dev/" environment-ci.yml
           FILE_PY=$(sed -n 's/^  - python =\(.*\)$/\1/p' environment-ci.yml)
-          if [ "${{ matrix.python }}" = "$FILE_PY" ]; then
+          if [ "${{ matrix.leg.python }}" = "$FILE_PY" ]; then
             # This leg's python IS the one the file pins, so use the file verbatim:
             # that is the only leg that actually tests the committed lock.
-            echo "-- python ${{ matrix.python }} matches the file's pin; using the lock as-is"
+            echo "-- python ${{ matrix.leg.python }} matches the file's pin; using the lock as-is"
           else
             # Every exact "=x.y.z" pin in the dev environment files is part of one
             # lock chosen together with python =$FILE_PY, and many of those builds
@@ -115,10 +158,10 @@ jobs:
             # serial HDF5, and a flood of "h5py was built without MPI support"
             # failures. Verified on linux-64 py3.12: 376 packages, openblas 0.3.34,
             # h5py mpi_openmpi_*, libgfortran 16.1.0.
-            echo "-- python ${{ matrix.python }} differs from the file's pin $FILE_PY; converting exact pins to floors"
+            echo "-- python ${{ matrix.leg.python }} differs from the file's pin $FILE_PY; converting exact pins to floors"
             sed -i.bak -E 's/^(  - [a-z0-9_.-]+) *=([0-9][^ =]*)(=[^ ]*)$/\1 >=\2\3/' environment-ci.yml
             sed -i.bak -E 's/^(  - [a-z0-9_.-]+) *=([0-9][^ =]*)$/\1 >=\2/' environment-ci.yml
-            sed -i.bak "s/^  - python >=.*/  - python =${{ matrix.python }}/" environment-ci.yml
+            sed -i.bak "s/^  - python >=.*/  - python =${{ matrix.leg.python }}/" environment-ci.yml
           fi
           rm -f environment-ci.yml.bak
           cat environment-ci.yml
@@ -128,6 +171,60 @@ jobs:
           miniforge-version: latest
           environment-file: environment-ci.yml
           activate-environment: proteus-dev
+
+      # ymf comes from "git+https://github.com/proteustoolkit/ymf.git@main" in the
+      # environment file -- a moving branch, resolved at run time, because ymf
+      # is on neither PyPI nor conda-forge. So the same proteus commit passes
+      # or fails depending on when it ran relative to an ymf merge, and the
+      # skew is invisible until it surfaces as a few hundred KeyErrors deep in
+      # the suite. cekees/proteus#46 lost a debugging session to exactly that:
+      # 272 failures, all of them ymf.archive still writing the capitalized
+      # keys this branch had already renamed, because the run started 11 hours
+      # before cekees/ymf#2 merged.
+      #
+      # Record what this leg actually resolved, so the next one is a glance
+      # rather than a bisect across two repositories. Diagnostics only: every
+      # lookup is guarded, and nothing here can fail the build.
+      - name: Record the ymf this leg resolved
+        shell: bash -l {0}
+        run: |
+          python - <<'PY'
+          import json
+          import importlib.metadata as md
+
+          try:
+              dist = md.distribution("ymf")
+              print("ymf version:   %s" % dist.version)
+              raw = dist.read_text("direct_url.json")
+              info = json.loads(raw) if raw else {}
+              vcs = info.get("vcs_info") or {}
+              if vcs.get("commit_id"):
+                  url = info.get("url", "")
+                  print("ymf commit:    %s" % vcs["commit_id"])
+                  print("ymf requested: %s @ %s"
+                        % (url or "?", vcs.get("requested_revision", "?")))
+                  print("ymf commit at: %s/commit/%s"
+                        % (url.removesuffix(".git"), vcs["commit_id"]))
+              elif info.get("dir_info") is not None:
+                  print("ymf source:    local directory %s (editable=%s)"
+                        % (info.get("url", "?"), info["dir_info"].get("editable", False)))
+              else:
+                  print("ymf source:    not a direct URL install (%s)"
+                        % (info or "no direct_url.json",))
+          except Exception as exc:
+              print("ymf provenance unavailable: %r" % (exc,))
+
+          # The vocabulary proteus.Archiver reads back out of ymf.archive.
+          # A disagreement here is what a proteus/ymf skew looks like before
+          # it becomes a KeyError in a few hundred tests.
+          try:
+              import numpy
+              from ymf.archive import data_item_for
+              item = data_item_for(numpy.zeros(1), data="f.h5:/x")
+              print("ymf DataItem:  %s" % " ".join(sorted(item)))
+          except Exception as exc:
+              print("ymf DataItem keys unavailable: %r" % (exc,))
+          PY
 
       - name: Build sdist
         shell: bash -l {0}
@@ -149,16 +246,31 @@ jobs:
         shell: bash -l {0}
         run: |
           export MPLBACKEND="AGG"
-          # OpenBLAS's pthread-based threading isn't fork-safe: a child forked
-          # by pytest-forked can inherit the parent's BLAS thread-pool state
-          # and abort (SIGABRT) the first time it calls into BLAS/LAPACK, even
-          # for something as innocuous as numpy.polynomial.legendre.leggauss
-          # at module-import time (proteus/Quadrature.py). Seen as
-          # "Fatal Python error: Aborted" during test collection on the
-          # arm64 macOS leg (macos-14 at the time; now macos-15). Force
-          # single-threaded BLAS instead.
+          # One BLAS thread per process: the tests run on pytest-xdist
+          # workers, one per core, and a threaded BLAS in each would
+          # oversubscribe the cores. (It was set first for pytest-forked:
+          # OpenBLAS's pthread pool isn't fork-safe, and a forked child
+          # inheriting it aborted in leggauss at collection on arm64 macOS.)
           export OPENBLAS_NUM_THREADS=1
           export OMP_NUM_THREADS=1
+          # The tests' subprocess timeouts, scaled for the runner (see
+          # test/conftest.py: a number, or auto for the load average per
+          # core); and the Python stack of any crash, in the workers and in
+          # every interpreter a test launches.
+          export PROTEUS_TEST_TIMEOUT_SCALE="${{ matrix.leg.timeout_scale || 'auto' }}"
+          export PYTHONFAULTHANDLER=1
+          # conda-forge's MPICH runs over libfabric (ch4:ofi), and on macOS
+          # libfabric picks its "sockets" provider, whose two connection
+          # threads (sock_conn_listener_thread, sock_ep_cm_thread) busy-poll
+          # kevent at 100% CPU each, from MPI_Init on, in every process, even
+          # a single-rank one. So every MPICH process held three cores, half
+          # of it system time, and the 3-vCPU arm64 runner ran each test 2-7x
+          # slower whenever more than one ran. Seen with MPICH 4.3.2, 5.0.1
+          # and 5.0.2 and libfabric 2.2.0 and 2.6.0. The tcp provider has no
+          # such threads (one thread, no system time, multi-rank jobs fine).
+          case "${{ matrix.leg.env_file }}" in
+            *mpich*) export FI_PROVIDER=tcp ;;
+          esac
           mkdir test_output && cd test_output
           # These are known-failing (real numerics/environment issues, not
           # collection errors) and deliberately left unskipped in source so
@@ -218,5 +330,86 @@ jobs:
             --ignore=../test/richards/WRR_input_files
             --ignore=../test/richards/WRR_draft
           )
-          python -m pytest -v --forked --import-mode=importlib \
-            "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" ../test
+          # One xdist worker per core, given tests one at a time. Each worker
+          # runs in test_output/<worker id> (test/conftest.py), since tests
+          # write files under fixed names. A file whose tests depend on each
+          # other's output declares an xdist_group, which loadgroup keeps on
+          # one worker in order. No --forked: the tests no longer share
+          # process state (each takes a fresh opts), and every test file
+          # passes alone in a fresh process.
+          #
+          # The sampler records what the runner is doing while the tests run
+          # (load, CPU user/sys split, busiest processes and their thread
+          # counts, memory); the next step prints it. It is left running, not
+          # killed: the runner reaps it at the end of the job, and pytest
+          # stays this step's last command, so its status is the step's.
+          # (Two earlier versions failed the step after every test had
+          # passed: an "exit $status", which on Ubuntu goes through
+          # ~/.bash_logout in this login shell, and a "kill" of a sampler
+          # that had already died on "ps | head"'s broken pipe on macOS.)
+          ( set +e
+            P="$RUNNER_TEMP/ps.txt"
+            while sleep 30; do
+              echo "=== $(date -u +%H:%M:%S) $(uptime)"
+              if [ "$RUNNER_OS" = macOS ]; then
+                top -l 1 -n 0 > "$RUNNER_TEMP/top.txt"
+                grep -E '^(Load|CPU usage|PhysMem|VM)' "$RUNNER_TEMP/top.txt"
+                ps -Ao pid,ppid,pcpu,rss,etime,command -r > "$P"
+              else
+                free -m | sed -n 1,3p
+                ps -eo pid,ppid,pcpu,rss,etime,args --sort=-pcpu > "$P"
+              fi
+              sed -n 1,8p "$P" | cut -c1-160
+              for pid in $(sed -n 2,5p "$P" | awk '{print $1}'); do
+                if [ "$RUNNER_OS" = macOS ]; then
+                  n=$(ps -M -p "$pid" | sed 1d | wc -l)
+                else
+                  n=$(ls /proc/"$pid"/task 2>/dev/null | wc -l)
+                fi
+                echo "threads of $pid: $n"
+              done
+            done ) > "$RUNNER_TEMP/runner_load.txt" 2>&1 < /dev/null &
+          # The two FSI IBM tests run in their own job (see the matrix): the
+          # main suite deselects them, and the fsi suite runs only them, one
+          # per worker. These are node ids, relative to the checkout (pytest's
+          # rootdir), which is what --deselect matches; run from here, the
+          # same tests as arguments are ../<node id>.
+          FSI_IBM_TESTS=(
+            test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_sdf
+            test/FSI/test_FSI.py::TestIBM::test_fallingCylinderIBM_ball
+          )
+          # Under coverage on the leg that asks for it: the installed proteus
+          # package is what runs, and [tool.coverage.paths] reports it as the
+          # checkout's files. Every interpreter the tests start (parun, the
+          # helpers under mpiexec) measures itself too ([tool.coverage.run]
+          # patch = subprocess), and pytest-cov combines them all.
+          COV_ARGS=()
+          if [ "${{ matrix.leg.coverage }}" = yes ] && [ "${{ matrix.suite }}" != fsi ]; then
+            # an absolute path: each xdist worker runs in test_output/<worker id>
+            COV_ARGS=(--cov=proteus --cov-config="$GITHUB_WORKSPACE/pyproject.toml"
+                      --cov-report=xml:coverage.xml --cov-report=html:htmlcov
+                      --cov-report=term-missing:skip-covered)
+          fi
+          if [ "${{ matrix.suite }}" = fsi ]; then
+            python -m pytest -v -n 2 --dist load --import-mode=importlib \
+              --durations=5 "${FSI_IBM_TESTS[@]/#/../}"
+          else
+            python -m pytest -v -n auto --dist loadgroup --import-mode=importlib \
+              --durations=30 "${COV_ARGS[@]}" "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" \
+              "${FSI_IBM_TESTS[@]/#/--deselect=}" ../test
+          fi
+
+      - name: Show runner load during the tests
+        if: always()
+        shell: bash
+        run: cat "$RUNNER_TEMP/runner_load.txt" || true
+
+      - name: Keep the coverage report
+        if: always() && matrix.leg.coverage == 'yes' && matrix.suite != 'fsi'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.leg.os }}-py${{ matrix.leg.python }}
+          path: |
+            test_output/coverage.xml
+            test_output/htmlcov
+          if-no-files-found: warn

@@ -4,7 +4,6 @@ from proteus.Domain import InterpolatedBathymetryDomain
 from proteus.MeshTools import InterpolatedBathymetryMesh
 from proteus.Archiver import XdmfArchive
 
-import xml.etree.ElementTree as ElementTree
 import pytest
 
 @pytest.mark.MeshTools
@@ -27,8 +26,8 @@ class TestInterpolatedBathy(object):
     def teardown_method(self,method):
         filenames = []
         for aux_name in self.aux_names:
-            filenames.extend([aux_name+'.'+post for post in ['xmf','h5','2dm']])
-            filenames.extend([aux_name+'0.'+post for post in ['xmf','h5','2dm']])
+            filenames.extend([aux_name+'.'+post for post in ['xmf','ymf','h5','2dm']])
+            filenames.extend([aux_name+'0.'+post for post in ['xmf','ymf','h5','2dm']])
         filenames.extend(['tetgen'+'.'+post for post in ['ele','node','face']])
         filenames.extend(['proteus_default.log','interpolatedBathySimpleTest.poly'])
         for f in filenames:
@@ -99,7 +98,6 @@ class TestInterpolatedBathy(object):
                                           bathyAssignmentScheme="localAveraging",errorNormType="L1")
         outfile = "interpolatedBathySimpleTest_L1_"
         archive = XdmfArchive(dataDir='.',filename = outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         self.aux_names.append(outfile)
@@ -117,7 +115,6 @@ class TestInterpolatedBathy(object):
                                           errorNormType="L2")
         outfile = "interpolatedBathySimpleTest_L2_"
         archive = XdmfArchive(dataDir='.',filename = outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         self.aux_names.append(outfile)
@@ -134,7 +131,6 @@ class TestInterpolatedBathy(object):
                                           errorNormType="Linfty")
         outfile = "interpolatedBathySimpleTest_Linfty_"
         archive = XdmfArchive(dataDir='.',filename=outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         self.aux_names.append(outfile)
@@ -152,7 +148,6 @@ class TestInterpolatedBathy(object):
                                           errorNormType="L1")
         outfile = "interpolatedBathySimpleTest_L1_interp_"
         archive = XdmfArchive(dataDir='.',filename=outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         self.aux_names.append(outfile)
@@ -170,7 +165,6 @@ class TestInterpolatedBathy(object):
                                           errorNormType="L2")
         outfile = "interpolatedBathySimpleTest_L2_interp_"
         archive = XdmfArchive(dataDir='.',filename=outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         self.aux_names.append(outfile)
@@ -188,7 +182,6 @@ class TestInterpolatedBathy(object):
                                           errorNormType="Linfty")
         outfile = "interpolatedBathySimpleTest_Linfty_interp_"
         archive = XdmfArchive(dataDir='.',filename=outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         self.aux_names.append(outfile)
@@ -206,7 +199,6 @@ class TestInterpolatedBathy(object):
                                           errorNormType="L1")
         outfile = "interpolatedBathySimpleTest_grid_L1_"
         archive = XdmfArchive(dataDir='.',filename=outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         self.aux_names.append(outfile)
@@ -224,7 +216,6 @@ class TestInterpolatedBathy(object):
                                           errorNormType="L2")
         outfile = "interpolatedBathySimpleTest_grid_L2_"
         archive = XdmfArchive(dataDir='.',filename=outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         self.aux_names.append(outfile)
@@ -242,7 +233,6 @@ class TestInterpolatedBathy(object):
                                           errorNormType="Linfty")
         outfile = "interpolatedBathySimpleTest_grid_Linfty_"
         archive = XdmfArchive(dataDir='.',filename=outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         self.aux_names.append(outfile)
@@ -260,7 +250,6 @@ class TestInterpolatedBathy(object):
                                           errorNormType="L1")
         outfile = "interpolatedBathySimpleTest_grid_L1_interp_"
         archive = XdmfArchive(dataDir='.',filename=outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         self.aux_names.append(outfile)
@@ -278,7 +267,6 @@ class TestInterpolatedBathy(object):
                                           errorNormType="L2")
         outfile = "interpolatedBathySimpleTest_grid_L2_interp_"
         archive = XdmfArchive(dataDir='.',filename=outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         self.aux_names.append(outfile)
@@ -296,7 +284,6 @@ class TestInterpolatedBathy(object):
                                           errorNormType="Linfty")
         outfile = "interpolatedBathySimpleTest_grid_Linfty_interp_"
         archive = XdmfArchive(dataDir='.',filename=outfile, global_sync=False)
-        archive.domain = ElementTree.SubElement(archive.tree.getroot(),"Domain")
         mesh.meshList[-1].writeMeshXdmf(ar=archive,init=True)
         archive.sync(); archive.close()
         mesh.meshList[-1].writeMeshADH("interpolatedBathySimpleTest_grid_Linfty_interp_")

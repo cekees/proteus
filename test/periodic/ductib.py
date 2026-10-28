@@ -636,6 +636,9 @@ if opts.periodic:
 else:
     n.parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.node
 n.nLayersOfOverlapForParallel = 0
+# the mesh is made from the domain's options, which n's only follow in the assembly
+p.domain.MeshOptions.parallelPartitioningType = n.parallelPartitioningType
+p.domain.MeshOptions.nLayersOfOverlapForParallel = n.nLayersOfOverlapForParallel
 
 ##############
 #System input#

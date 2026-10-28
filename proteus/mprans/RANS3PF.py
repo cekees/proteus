@@ -21,6 +21,12 @@ from proteus.ShockCapturing import ShockCapturing_base
 from . import cRANS3PF
 from . import cRANS3PF2D
 from . import cArgumentsDict
+import proteus.NumericalFlux
+import proteus.Profiling
+import proteus.ShockCapturing
+import proteus.SubgridError
+import proteus.Transport
+import proteus.TransportCoefficients
 
 class SubgridError(proteus.SubgridError.SGE_base):
 
@@ -735,7 +741,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.mesh = mesh
         self.elementMaterialTypes = mesh.elementMaterialTypes
         nBoundariesMax = int(
-            globalMax(max(self.mesh.elementBoundaryMaterialTypes))) + 1
+            globalMax(max(self.mesh.elementBoundaryUserFlags))) + 1
         self.wettedAreas = np.zeros((nBoundariesMax,), 'd')
         self.netForces_p = np.zeros((nBoundariesMax, 3), 'd')
         self.netForces_v = np.zeros((nBoundariesMax, 3), 'd')
@@ -1099,6 +1105,35 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
                 self.particle_vforceHistory.flush()
                 self.particle_momentHistory.write("%21.15e %21.16e %21.16e\n" % tuple(self.particle_netMoments[0, :]))
                 self.particle_momentHistory.flush()
+
+    def archiveFields(self, lm):
+        """Archive the solid-phase signed distance alongside the solution.
+
+        Previously written from ``NumericalSolution.py`` through
+        ``archiveFiniteElementResiduals`` -- phi_s is not a residual -- inside
+        a bare ``try/except: pass`` that also swallowed a ``NameError`` on
+        every call. See :mod:`proteus.ArchiveFields`.
+
+        ``phi_s`` is allocated in :meth:`initializeMesh`, which runs during
+        model setup and so before any archiving. The guard is here only
+        because this method must not raise for a model that somehow archives
+        before its mesh is initialized; unlike the code it replaces, it says
+        so in the log rather than passing silently.
+        """
+        from ..ArchiveFields import ArchiveField
+
+        yield from super().archiveFields(lm)
+        phi_s = getattr(self, "phi_s", None)
+        if phi_s is None:
+            logEvent("phi_s is not allocated yet; not archiving it "
+                     "(initializeMesh should have run first)", level=1)
+        else:
+            #phi_s is sized mesh.nodeArray.shape[0] -- one value per
+            #mesh vertex -- so it belongs on the base mesh grid. Routing
+            #it through this model's solution space declared that space's
+            #DOF count instead: with a C0P2 velocity that wrote 25 values
+            #into a DataItem claiming 81, which a viewer reads as garbage.
+            yield ArchiveField("phi_s", phi_s, on_mesh_nodes=True)
 
 
 class LevelModel(proteus.Transport.OneLevelTransport):
@@ -2483,7 +2518,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["flux"] = self.ebq_global[('totalFlux', 0)]
         argsDict["elementResidual_p_save"] = self.elementResidual[0]
         argsDict["elementFlags"] = self.mesh.elementMaterialTypes
-        argsDict["boundaryFlags"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["boundaryFlags"] = self.mesh.elementBoundaryUserFlags
         argsDict["barycenters"] = self.coefficients.barycenters
         argsDict["wettedAreas"] = self.coefficients.wettedAreas
         argsDict["netForces_p"] = self.coefficients.netForces_p

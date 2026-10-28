@@ -41,6 +41,16 @@ class SparseMatrix(object):
         x (input) :  numpy array
         y (output) : numpy array
         """
+        # SparseMatrix_matvec is compiled with boundscheck=False, so a matrix
+        # larger than the vectors it is handed writes past the end of y and
+        # reads past the end of x instead of raising -- silent heap corruption
+        # that surfaces much later, in an unrelated allocation. The dimensions
+        # here are exactly the precondition the loop needs, and checking them
+        # is O(1) against the O(nnz) product.
+        if self.nc > len(x) or self.nr > len(y):
+            raise ValueError(
+                "matvec: matrix is %ix%i but x has %i and y has %i entries"
+                % (self.nr, self.nc, len(x), len(y)))
         SparseMatrix_matvec(self._cSparseMatrix, x, y)
 
     def fwrite(self, filename, base):
@@ -85,7 +95,9 @@ class SparseMatrix(object):
             (rowptr, colind, nzvals)
         """
         assert range_start >= 0 ; assert range_end <= self.nr
-        assert range_end > range_start
+        #an empty range is legitimate: a rank can own no rows of a small
+        #(coarse) level, and still has to take part in assembling it
+        assert range_end >= range_start
         _rows = range_end - range_start
         assert _rows <= self.nr
 

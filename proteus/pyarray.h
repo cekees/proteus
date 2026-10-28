@@ -4,41 +4,27 @@
 // proteus::pyarray<T> -- a non-owning view of a numpy array, built on
 // pybind11 and the numpy C-API only.
 //
-// This replaces xt::pyarray<T> (xtensor-python), which proteus used purely
-// as an array-view type: of xtensor's very large API, the extensions used
-// data(), size(), shape(i), operator[] and operator(), and nothing else.
-// Carrying xtl/xtensor/xtensor-python for that has cost more in dependency
-// breakage than the type is worth (see ROADMAP_1.9_2.0.md Phase 2 item 1).
-//
-// Semantics deliberately kept identical to xt::pyarray for the operations
-// proteus uses:
+// The contract:
 //
 //   * The view does not copy. It holds a reference to the numpy array, so
 //     writes through it are visible in Python -- which every kernel here
 //     relies on for its output arrays.
-//   * operator()(i0, i1, ...) uses xtensor's index alignment rule: with m
-//     indices and rank n, if m == n the indices are used as given; if m < n
-//     the indices align with the *trailing* n - m dimensions; if m > n the
-//     leading m - n indices are ignored.
+//   * It converts nothing. The array must already be of T's dtype and
+//     C-contiguous, or the call fails: a dtype mismatch fails the pybind11
+//     load quietly, letting overload resolution move on, while a
+//     right-dtype array with the wrong layout throws, since nothing else
+//     could have been meant by it. A view that silently converted would be
+//     merely wasteful for an input array and a correctness trap for an
+//     output one, because the kernel would write into the copy and Python
+//     would never see the result.
+//   * operator()(i0, i1, ...) aligns indices to the *trailing* dimensions:
+//     with m indices and rank n, if m == n they are used as given; if m < n
+//     they align with the last n - m dimensions; if m > n the leading m - n
+//     are ignored.
 //   * operator[](i) is operator()(i). On a C-contiguous array the trailing
 //     stride is 1, so for rank >= 1 this is the flat index i -- which is
 //     what the extensions assume, since they freely mix arr[i] with
 //     arr.data()[i] on the same array.
-//
-// One behaviour is deliberately NOT preserved. xt::pyarray's caster built its
-// view with PyArray_FromAny(..., NPY_ARRAY_ENSUREARRAY | NPY_ARRAY_FORCECAST),
-// so it accepted *anything* array-like -- a tuple, a list, a float32 array
-// where double was wanted, a strided slice -- by silently making a converted
-// copy. For an input array that is merely wasteful; for an output array it is
-// a correctness trap, because the kernel then writes into the copy and Python
-// never sees the result. (It had also been quietly papering over eleven
-// `argsDict[...] = arr,` typos on the Python side -- a trailing comma makes
-// the value a 1-tuple -- all of which are now fixed.)
-//
-// So this view converts nothing: the array must already be of T's dtype and
-// C-contiguous, or the call fails. A dtype mismatch fails the pybind11 load
-// quietly, letting overload resolution move on; a right-dtype array with the
-// wrong layout throws, since nothing else could have been meant by it.
 
 #include <algorithm>
 #include <array>
@@ -79,8 +65,8 @@ namespace proteus
         using iterator = T*;
         using const_iterator = const T*;
 
-        // Minimal stand-in for xtensor's shape container: enough for
-        // shape().size() / shape()[i] / iteration.
+        // Minimal shape container: enough for shape().size(),
+        // shape()[i] and iteration.
         class shape_view
         {
         public:
@@ -145,17 +131,16 @@ namespace proteus
         reference operator[](size_type i) noexcept { return (*this)(i); }
         const_reference operator[](size_type i) const noexcept { return (*this)(i); }
 
-        // Bounds-checked access, matching xt::pyarray::at. Same index
-        // alignment as operator(), plus the two checks xtensor makes:
-        // more indices than the rank is an error here (operator() silently
-        // drops the leading ones), and each index is range-checked against
-        // its axis. An axis of length 1 is exempt, as it is in xtensor,
-        // where it exists to let broadcasting through.
+        // Bounds-checked access. Same index alignment as operator(), plus
+        // two checks: more indices than the rank is an error here (where
+        // operator() silently drops the leading ones), and each index is
+        // range-checked against its axis. An axis of length 1 is exempt, so
+        // that broadcasting can pass through.
         //
-        // Note the alignment applies to the check too: at(i) on a rank-2
-        // array checks i against the *last* dimension, not the first. That
-        // is xtensor's behaviour, surprising as it is; every call site in
-        // proteus is on a rank-1 array, where it is simply the flat bound.
+        // The alignment applies to the check too: at(i) on a rank-2 array
+        // checks i against the *last* dimension, not the first. Surprising,
+        // but every call site in proteus is on a rank-1 array, where it is
+        // simply the flat bound.
         template <class... Args>
         reference at(Args... args)
         {
@@ -259,8 +244,8 @@ namespace proteus
         }
 
         // const_cast: proteus's kernels write their results into the arrays
-        // handed in from Python, which is the whole point of the view. numpy's
-        // own writeable flag is not consulted, matching xt::pyarray.
+        // handed in from Python, which is the whole point of the view.
+        // numpy's own writeable flag is not consulted.
         m_data = static_cast<T*>(const_cast<void*>(arr.data()));
     }
 
@@ -349,9 +334,8 @@ namespace proteus
      ****************/
 
     // pybind11 resolves the numpy C-API lazily, on first use. Modules call
-    // this at import time so that a broken/missing numpy is reported when the
-    // extension is imported rather than in the middle of a solve -- the same
-    // guarantee xt::import_numpy() gave.
+    // this at import time so that a broken or missing numpy is reported when
+    // the extension is imported rather than in the middle of a solve.
     inline void import_numpy()
     {
         pybind11::detail::npy_api::get();

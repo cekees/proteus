@@ -1,4 +1,5 @@
-from proteus import iproteus as ip
+from proteus import runtime
+runtime.start()
 from proteus import default_p as p
 from proteus import default_n as n
 from proteus import default_s,default_so
@@ -125,7 +126,7 @@ from proteus import *
 opts = None
 simFlagsList = [{}]
 simFlagsList[0]['storeQuantities'] = ['u',"q:('velocity',0)"]
-ns = NumericalSolution.NS_base(so,[p],[n],so.sList,ip.opts,simFlagsList)
+ns = NumericalSolution.NS_base(so,[p],[n],so.sList,runtime.RunOptions(),simFlagsList)
 import pdb
 pdb.set_trace()
 

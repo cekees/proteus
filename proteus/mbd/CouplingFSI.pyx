@@ -50,9 +50,32 @@ import h5py
 cimport ChronoHeaders as ch
 # chrono Python headers
 from proteus.mprans import BodyDynamics as bd
-from proteus.Archiver import indentXML
 import pychrono as chrono
 from pychrono import fea as chrono_fea
+
+
+def indentXML(elem, level=0):
+    """Pretty-print an ElementTree in place.
+
+    This module still writes its own XDMF for the bodies and cables it
+    moves (one ``.xmf`` per object, with the per-step fragments stored in
+    the HDF5 file the way proteus <= 1.9.x did). proteus's own archive no
+    longer builds XML, so the helper that used to live in Archiver lives
+    here until these writers go through the archive too.
+    """
+    i = "\n" + level*"  "
+    if len(elem):
+        if not elem.text or not elem.text.strip():
+            elem.text = i + "  "
+        for e in elem:
+            indentXML(e, level+1)
+            if not e.tail or not e.tail.strip():
+                e.tail = i + "  "
+        if not e.tail or not e.tail.strip():
+            e.tail = i
+    else:
+        if level and (not elem.tail or not elem.tail.strip()):
+            elem.tail = i
 
 # needed for sphinx docs
 __all__ = ['ProtChSystem',
@@ -1179,13 +1202,15 @@ cdef class ProtChBody:
             Angular velocity of body (default: False. Set to True to record).
         ang_acc: bool
             Angular acceleration of body (default: False. Set to True to record).
+
         Notes
         -----
-        To add another value manually, add to dictionary self.record_dict:
-        key: header of the column in .csv
-        value: list of length 2: [variable name, index within variable]
-                                                 (if no index, use None)
-        e.g. self.record_dict['m']['mass', None]
+        To add another value manually, add to dictionary self.record_dict::
+
+            key: header of the column in .csv
+            value: list of length 2: [variable name, index within variable]
+                   (if no index, use None)
+            e.g. self.record_dict['m']['mass', None]
         """
         if all_values is True:
             pos = rot = F = M = acc = vel = ang_acc = ang_vel = h_predict = True
@@ -1921,7 +1946,8 @@ cdef class ProtChSystem:
     def log_bodies_text(self, d_time, l_logging_info):
         """
         Logs the chrono information into a text file at each timestep
-                Parameters
+
+        Parameters
         ----------
         self: object
             ProtChSystem being referenced
@@ -1931,6 +1957,7 @@ cdef class ProtChSystem:
             Contains the information to be logged. Structure is [body number, type]
             with multiple entries being included as a 2d list. Valid types are
             'position', 'rotation', 'force', and 'torque'.
+
         Returns
         -------
         None. Data is logged to a text file
@@ -1984,6 +2011,7 @@ cdef class ProtChSystem:
     def log_bodies_h5(self, l_logging_info):
         """
         Logs the chrono information into a h5 file at each timestep
+
         Parameters
         ----------
         self: object
@@ -1992,6 +2020,7 @@ cdef class ProtChSystem:
             Contains the information to be logged. Structure is [body number, type]
             with multiple entries being included as a 2d list. Valid types are
             'position', 'rotation', 'force', and 'torque'.
+
         Returns
         -------
         None. Data is saved to an h5 file.

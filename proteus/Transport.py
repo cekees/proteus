@@ -14,6 +14,7 @@ from .EGeometry import *
 from .LinearAlgebraTools import *
 from .LinearSolvers import *
 from .MeshTools import *
+from . import MeshTools
 from .FemTools import *
 from . import Quadrature
 from .TimeIntegration import *
@@ -25,7 +26,7 @@ from . import cnumericalFlux
 from . import Comm
 from . import csparsity
 from .Profiling import logEvent
-from petsc4py import PETSc as p4pyPETSc
+from .petsc_optional import PETSc as p4pyPETSc, HAVE_PETSC4PY
 from . import superluWrappers
 import numpy as np
 
@@ -37,6 +38,27 @@ class StorageSet(set):
     def allocate(self,storageDict):
         for k in self:
             storageDict[k] = numpy.zeros(self.shape,self.storageType)
+
+class _DeclaredFieldFunction(object):
+    """Adapts an :class:`~proteus.ArchiveFields.ArchiveField` to the shape
+    ``FemSpace.writeFunctionXdmf`` expects: ``.dof``, ``.name``,
+    ``.femSpace``.
+
+    ``archiveFiniteElementResiduals`` defines an equivalent ``dummy`` class
+    inline. That inline class is why every auxiliary field in Proteus got
+    written through a function named "residuals": it was the only adapter
+    available. This one is named for what it does and carries the field's
+    metadata along, so it can be the general path.
+    """
+
+    __slots__ = ("dof", "name", "femSpace", "field")
+
+    def __init__(self, field, name, femSpace):
+        self.field = field
+        self.dof = field.value
+        self.name = name
+        self.femSpace = femSpace
+
 
 class OneLevelTransport(NonlinearEquation):
     r""" A class for finite element discretizations of multicomponent
@@ -76,6 +98,9 @@ class OneLevelTransport(NonlinearEquation):
         a discontinous velocity field.
 
     """
+    #share the storage of weighted shape arrays whose quadrature weights are equal
+    #(see makeAliasForEqualWeights in __init__); a class attribute so it can be turned off
+    shareWeightedArrays = True
     def __init__(self,
                  uDict,
                  phiDict,
@@ -911,6 +936,13 @@ class OneLevelTransport(NonlinearEquation):
         if self.forceStrongConditions:
             for cj in range(self.nc):
                 self.dirichletConditionsForceDOF[cj] = DOFBoundaryConditions(self.u[cj].femSpace,dofBoundaryConditionsSetterDict[cj],weakDirichletConditions=False)
+                # A DOF of a periodic pair is one unknown shared with its
+                # partner, and periodicity wins over a Dirichlet value there,
+                # as it does where Dirichlet DOFs are eliminated.
+                for nodeSet in self.dirichletConditions[cj].periodicDOFDict.values():
+                    for dofN in nodeSet:
+                        self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.pop(dofN,None)
+                        self.dirichletConditionsForceDOF[cj].DOFBoundaryPointDict.pop(dofN,None)
         #
         # element boundary quadrature global
         #
@@ -1027,6 +1059,29 @@ class OneLevelTransport(NonlinearEquation):
                     sd[kw] = sd[kv]
                     aliased=True
             return aliased
+        def makeAliasForEqualWeights(sd,k):
+            """Share storage with an array already allocated for the same shape
+            function (same test component) under another integral (m, f, a, r,
+            ...) when both are weighted by the same quadrature weights: the
+            values are then identical, and each is a full (elements, points,
+            dofs[, space]) array."""
+            name = k[0]
+            if not self.shareWeightedArrays or 'dV_' not in name:
+                return False
+            base, I = name.rsplit('dV_',1)
+            w = self.elementQuadratureWeights.get((I,)+tuple(reversed(k[1:])))
+            if w is None:
+                return False
+            for kk in sd:
+                if (kk == k or not isinstance(kk,tuple) or kk[-1] != k[-1]
+                    or not kk[0].startswith(base+'dV_')):
+                    continue
+                wJ = self.elementQuadratureWeights.get((kk[0][len(base)+3:],)+tuple(reversed(kk[1:])))
+                if wJ is not None and numpy.array_equal(w,wJ):
+                    logEvent("Shallow copy of %s is being used for %s " % (kk,k),level=4)
+                    sd[k] = sd[kk]
+                    return True
+            return False
         def makeAliasForComponent1(sd,k,entryStrings,refi=0):
             aliased=False
             #need to add combinatorial options
@@ -1074,8 +1129,8 @@ class OneLevelTransport(NonlinearEquation):
                     'd')
         logEvent(memory("element quadrature, test/trial functions phi_trial_shape","OneLevelTransport"),level=4)
         #allocate test shape functions
-        for k in self.test_shape_quadrature:
-            if not makeAlias(self.q,k):
+        for k in sorted(self.test_shape_quadrature):
+            if not makeAlias(self.q,k) and not makeAliasForEqualWeights(self.q,k):
                 self.q[k]=numpy.zeros(
                     (self.mesh.nElements_global,
                      self.nQuadraturePoints_element,
@@ -1103,8 +1158,8 @@ class OneLevelTransport(NonlinearEquation):
                     'd')
         logEvent(memory("element quadrature, test/trial functions phi_trial_shapeGradient","OneLevelTransport"),level=4)
         #allocate test shape function gradients
-        for k in self.test_shapeGradient_quadrature:
-            if not makeAlias(self.q,k):
+        for k in sorted(self.test_shapeGradient_quadrature):
+            if not makeAlias(self.q,k) and not makeAliasForEqualWeights(self.q,k):
                 self.q[k]=numpy.zeros(
                     (self.mesh.nElements_global,
                      self.nQuadraturePoints_element,
@@ -1553,6 +1608,13 @@ class OneLevelTransport(NonlinearEquation):
             for nDOF_trial_element_ci in self.nDOF_trial_element:
                 if nDOF_trial_element_ci != self.nDOF_trial_element[0]:
                     interleave_DOF=False
+            # Interleaving needs the same number of unknowns in every
+            # component. Equal spaces give that, unless periodic pairs are
+            # merged differently: a component that is Dirichlet at a
+            # periodic corner keeps both copies there, one that is not
+            # merges them.
+            if len(set(self.nFreeDOF_global)) > 1:
+                interleave_DOF=False
         else:
             interleave_DOF=False
         self.setupFieldStrides(interleaved=interleave_DOF)
@@ -1779,6 +1841,13 @@ class OneLevelTransport(NonlinearEquation):
 #                         for k in range(self.nElementBoundaryQuadraturePoints_elementBoundary):
 #                             for I in range(self.nSpace_global):
 #                                 self.ebqe[('velocity',ci)][ebNE,k,I] += self.ebqe['xt'][ebNE,k,I]
+    def forcedDOF_global(self,cj,dofN):
+        """The global row (and column) of a kept Dirichlet DOF of component cj.
+
+        Its free number, not its DOF number: the two differ when periodic
+        DOFs are merged into one unknown, and are the same otherwise.
+        """
+        return self.offset[cj]+self.stride[cj]*self.dirichletConditions[cj].global2freeGlobal[dofN]
     def getResidual(self,u,r):
         """
         Calculate the element residuals and add in to the global residual
@@ -1792,7 +1861,7 @@ class OneLevelTransport(NonlinearEquation):
         if self.forceStrongConditions:
             for cj in range(len(self.dirichletConditionsForceDOF)):
                 for dofN,g in self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.items():
-                    u[self.offset[cj]+self.stride[cj]*dofN] = g(self.dirichletConditionsForceDOF[cj].DOFBoundaryPointDict[dofN],self.timeIntegration.t)#load the BC value directly into the global array
+                    u[self.forcedDOF_global(cj,dofN)] = g(self.dirichletConditionsForceDOF[cj].DOFBoundaryPointDict[dofN],self.timeIntegration.t)#load the BC value directly into the global array
         #Load the unknowns into the finite element dof
         self.timeIntegration.calculateU(u)
         self.setUnknowns(self.timeIntegration.u)
@@ -1819,7 +1888,7 @@ class OneLevelTransport(NonlinearEquation):
         if self.forceStrongConditions:#
             for cj in range(len(self.dirichletConditionsForceDOF)):#
                 for dofN,g in self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.items():
-                    r[self.offset[cj]+self.stride[cj]*dofN] = self.u[cj].dof[dofN] - g(self.dirichletConditionsForceDOF[cj].DOFBoundaryPointDict[dofN],self.timeIntegration.t)
+                    r[self.forcedDOF_global(cj,dofN)] = self.u[cj].dof[dofN] - g(self.dirichletConditionsForceDOF[cj].DOFBoundaryPointDict[dofN],self.timeIntegration.t)
         #for keeping solver statistics
         self.nonlinear_function_evaluations += 1
         #cek debug
@@ -1861,7 +1930,7 @@ class OneLevelTransport(NonlinearEquation):
         if self.forceStrongConditions:
             for cj in range(self.nc):
                 for dofN in list(self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.keys()):
-                    global_dofN = self.offset[cj]+self.stride[cj]*dofN
+                    global_dofN = self.forcedDOF_global(cj,dofN)
                     self.nzval[numpy.where(self.colind == global_dofN)] = 0.0 #column
                     self.nzval[self.rowptr[global_dofN]:self.rowptr[global_dofN+1]] = 0.0 #row
                     zeroRow=True
@@ -3608,18 +3677,28 @@ class OneLevelTransport(NonlinearEquation):
                                                                                     self.ebqe[('df',ci,cj)],
                                                                                     self.ebqe[('advectiveFlux',ci)],
                                                                                     self.ebqe[('dadvectiveFlux_left',ci,cj)])
+                        # The faces shared with another rank are exterior
+                        # faces of this subdomain and interior to the global
+                        # mesh, so the flux just computed on them is applied
+                        # to the inside of the domain. Mask it off afterwards:
+                        # the kernel indexes every ebqe array by its own loop
+                        # counter, so it cannot be given a shorter face list.
+                        _mask = MeshTools.rankInterfaceExteriorMask(self.mesh)
+                        if _mask is not None:
+                            self.ebqe[('advectiveFlux',ci)][_mask] = 0.0
+                            self.ebqe[('dadvectiveFlux_left',ci,cj)][_mask] = 0.0
         for ci,fbcObject  in self.fluxBoundaryConditionsObjectsDict.items():
-            for t,g in fbcObject.advectiveFluxBoundaryConditionsDict.items():
-                if ci in self.coefficients.advection:
-                    self.ebqe[('advectiveFlux',ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
-                    for cj in list(self.coefficients.advection[ci].keys()):
-                        self.ebqe[('dadvectiveFlux_left',ci,cj)][t[0],t[1]] = 0.0
+            if ci in self.coefficients.advection:
+                i0,i1 = fbcObject.evaluate('advective',fbcObject.advectiveFluxBoundaryConditionsDict,
+                                           self.ebqe['x'],self.ebqe[('advectiveFlux',ci)],self.timeIntegration.t)
+                for cj in list(self.coefficients.advection[ci].keys()):
+                    self.ebqe[('dadvectiveFlux_left',ci,cj)][i0,i1] = 0.0
             for ck,diffusiveFluxBoundaryConditionsDict in fbcObject.diffusiveFluxBoundaryConditionsDictDict.items():
-                for t,g in diffusiveFluxBoundaryConditionsDict.items():
-                    self.ebqe[('diffusiveFlux',ck,ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
+                fbcObject.evaluate(('diffusive',ck),diffusiveFluxBoundaryConditionsDict,
+                                   self.ebqe['x'],self.ebqe[('diffusiveFlux',ck,ci)],self.timeIntegration.t)
         for ci,sbcObject  in self.stressFluxBoundaryConditionsObjectsDict.items():
-            for t,g in sbcObject.stressFluxBoundaryConditionsDict.items():
-                self.ebqe[('stressFlux',ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
+            sbcObject.evaluate('stress',sbcObject.stressFluxBoundaryConditionsDict,
+                               self.ebqe['x'],self.ebqe[('stressFlux',ci)],self.timeIntegration.t)
 
     def calculateQuadrature(self):
         logEvent(memory("ElementQuadrature","OneLevelTransport"),level=4)
@@ -4268,6 +4347,17 @@ class OneLevelTransport(NonlinearEquation):
                                         self.ebqe[('advectiveFlux',ci)],
                                         self.inflowFlux[ci])
     def setUnknowns(self,free_u):
+        # copyBetweenFreeUnknownsAndGlobalUnknowns indexes free_u from C with no
+        # bounds checking, so handing it a vector shorter than this level needs
+        # corrupts whatever happens to follow it in memory instead of raising --
+        # typically the dof arrays' own headers, which then surface far away as
+        # a nonsensical shape. Callers iterating a multilevel model have passed
+        # uList[0] for every level more than once, so check the contract here.
+        if free_u.size < self.dim:
+            raise ValueError(
+                "setUnknowns needs at least %i free unknowns for this level but "
+                "was given %i; a caller is probably passing the coarsest level's "
+                "vector for every level" % (self.dim, free_u.size))
         for cj in range(self.nc):
             assert len(self.dirichletConditions[cj].global2freeGlobal_global_dofs) == len(self.dirichletConditions[cj].global2freeGlobal_free_dofs)
             fromFreeToGlobal=1 #direction copying
@@ -5623,6 +5713,67 @@ class OneLevelTransport(NonlinearEquation):
         for ci in res_dict.keys():
             self.u[ci].femSpace.writeFunctionXdmf(archive,dummy(ci,res_dict[ci],self.u[ci].femSpace),tCount)
 
+    def archiveDeclaredFields(self, archive, t, tCount, model_name=None):
+        """Write every field this model's coefficients declare.
+
+        Replaces the sixteen hand-rolled ``try/except: pass`` blocks that
+        used to live in ``NumericalSolution.py`` -- see
+        :mod:`proteus.ArchiveFields` for what was wrong with them.
+
+        Errors are deliberately not caught. A field that was declared and
+        silently not written is exactly the failure this replaces; if a
+        declaration is broken, the run should say so.
+
+        ``model_name`` is the owning multilevel model's name; it expands
+        ``{model}`` in field names, which matters when several models share
+        one archive. Defaults to this level model's own name.
+
+        ASSUMES archiveFiniteElementSolutions has already been called for
+        ``t``/``tCount`` -- the mesh and grid elements for this timestep
+        must exist before fields can be attached to them.
+        """
+        from .ArchiveFields import archive_fields_for, ArchiveFieldError
+
+        for field in archive_fields_for(self, model_name or getattr(self, "name", None)):
+            femSpace = field.resolve_fem_space(self)
+            name = field.archive_name
+            try:
+                if field.on_mesh_nodes:
+                    #A field defined on the mesh itself, not on a solution
+                    #space: write it straight onto the mesh's own grid. Same
+                    #shape as the nodal writer in FemTools -- the DataItem
+                    #covers the global node count while each rank
+                    #contributes the nodes it owns.
+                    mesh = femSpace.mesh
+                    if archive.global_sync:
+                        owned = mesh.globalMesh.nodeOffsets_subdomain_owned
+                        rank = archive.comm.rank()
+                        archive.write_field(
+                            mesh.arGrid, name, field.value, tCount,
+                            center=field.center, rank=field.rank,
+                            dimensions=[mesh.globalMesh.nNodes_global],
+                            sync_offsets=owned,
+                            sync_data=field.value[:(owned[rank+1] - owned[rank])])
+                    else:
+                        archive.write_field(
+                            mesh.arGrid, name, field.value, tCount,
+                            center=field.center, rank=field.rank,
+                            dimensions=[mesh.nNodes_global])
+                else:
+                    femSpace.writeFunctionXdmf(
+                        archive, _DeclaredFieldFunction(field, name, femSpace), tCount
+                    )
+            except Exception as exc:
+                raise ArchiveFieldError(
+                    "failed writing archive field %r at t=%s (tCount=%s): %s"
+                    % (name, t, tCount, exc)
+                ) from exc
+            logEvent(
+                "Wrote archive field %s for model %s at t=%s"
+                % (name, getattr(self, "name", "?"), t),
+                level=3,
+            )
+
     def initializeMassJacobian(self):
         """
         Setup the storage for the mass jacobian and return as a ```SparseMat``` or ```Mat``` based on self.matType
@@ -5854,20 +6005,28 @@ class OneLevelTransport(NonlinearEquation):
                                                                                     self.ebqe[('df',ci,cj)],
                                                                                     self.ebqe[('advectiveFlux',ci)],
                                                                                     self.ebqe[('dadvectiveFlux_left',ci,cj)])
+                        # The faces shared with another rank are exterior
+                        # faces of this subdomain and interior to the global
+                        # mesh, so the flux just computed on them is applied
+                        # to the inside of the domain. Mask it off afterwards:
+                        # the kernel indexes every ebqe array by its own loop
+                        # counter, so it cannot be given a shorter face list.
+                        _mask = MeshTools.rankInterfaceExteriorMask(self.mesh)
+                        if _mask is not None:
+                            self.ebqe[('advectiveFlux',ci)][_mask] = 0.0
+                            self.ebqe[('dadvectiveFlux_left',ci,cj)][_mask] = 0.0
         for ci,fbcObject  in self.fluxBoundaryConditionsObjectsDict.items():
-            for t,g in fbcObject.advectiveFluxBoundaryConditionsDict.items():
-                if ci in self.coefficients.advection:
-                    self.ebqe[('advectiveFlux',ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
-                    for cj in list(self.coefficients.advection[ci].keys()):
-                        #
-                        self.ebqe[('dadvectiveFlux_left',ci,cj)][t[0],t[1]] = 0.0
+            if ci in self.coefficients.advection:
+                i0,i1 = fbcObject.evaluate('advective',fbcObject.advectiveFluxBoundaryConditionsDict,
+                                           self.ebqe['x'],self.ebqe[('advectiveFlux',ci)],self.timeIntegration.t)
+                for cj in list(self.coefficients.advection[ci].keys()):
+                    self.ebqe[('dadvectiveFlux_left',ci,cj)][i0,i1] = 0.0
             for ck,diffusiveFluxBoundaryConditionsDict in fbcObject.diffusiveFluxBoundaryConditionsDictDict.items():
-                for t,g in diffusiveFluxBoundaryConditionsDict.items():
-                    #
-                    self.ebqe[('diffusiveFlux',ck,ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
+                fbcObject.evaluate(('diffusive',ck),diffusiveFluxBoundaryConditionsDict,
+                                   self.ebqe['x'],self.ebqe[('diffusiveFlux',ck,ci)],self.timeIntegration.t)
         for ci,sbcObject  in self.stressFluxBoundaryConditionsObjectsDict.items():
-            for t,g in sbcObject.stressFluxBoundaryConditionsDict.items():
-                self.ebqe[('stressFlux',ci)][t[0],t[1]] = g(self.ebqe[('x')][t[0],t[1]],self.timeIntegration.t)
+            sbcObject.evaluate('stress',sbcObject.stressFluxBoundaryConditionsDict,
+                               self.ebqe['x'],self.ebqe[('stressFlux',ci)],self.timeIntegration.t)
 
         #
         for key in list(ebqe_save.keys()):
@@ -5944,7 +6103,7 @@ class OneLevelTransport(NonlinearEquation):
         if self.forceStrongConditions:
             for cj in range(self.nc):
                 for dofN in list(self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.keys()):
-                    global_dofN = self.offset[cj]+self.stride[cj]*dofN
+                    global_dofN = self.forcedDOF_global(cj,dofN)
                     for i in range(self.rowptr[global_dofN],self.rowptr[global_dofN+1]):
                         if (self.colind[i] == global_dofN):
                             self.nzval[i] = 1.0
@@ -5995,7 +6154,7 @@ class OneLevelTransport(NonlinearEquation):
         if self.forceStrongConditions:#
             for cj in range(len(self.dirichletConditionsForceDOF)):#
                 for dofN,g in self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.items():
-                    r[self.offset[cj]+self.stride[cj]*dofN] = 0
+                    r[self.forcedDOF_global(cj,dofN)] = 0
     def getMassResidual(self,u,r):
         """
         Calculate the portion of the element residuals associated with the temporal term and assemble into a global residual
@@ -6041,7 +6200,7 @@ class OneLevelTransport(NonlinearEquation):
         if self.forceStrongConditions:#
             for cj in range(len(self.dirichletConditionsForceDOF)):#
                 for dofN,g in self.dirichletConditionsForceDOF[cj].DOFBoundaryConditionsDict.items():
-                    r[self.offset[cj]+self.stride[cj]*dofN] = 0
+                    r[self.forcedDOF_global(cj,dofN)] = 0
 
     def attachLaplaceOperator(self,nu=1.0):
         """Attach a Discrete Laplace Operator to the Transport Class.
@@ -6164,6 +6323,8 @@ class OneLevelTransport(NonlinearEquation):
 #end Transport definition
 class MultilevelTransport(object):
     """Nonlinear ADR on a multilevel mesh"""
+    #None or False: distributed transfer operators only when there is more than one rank
+    distributedTransfers = False
     def __init__(self,problem,numerics,mlMesh,OneLevelTransportType=OneLevelTransport):
         self.name = problem.name
         #cek temporary fix to get everything weaned off the old BC's
@@ -6263,6 +6424,17 @@ class MultilevelTransport(object):
         for  cj in list(TrialSpaceTypeDict.keys()):
             self.trialSpaceListDict[cj]=[]
             self.bcListDict[cj]=[]
+        # In parallel the transfer operators are built per rank from the
+        # subdomain spaces (see useParallelTransfers); a single level has no
+        # transfers at all.
+        from . import Comm
+        _comm = Comm.get()
+        #Distributed (PETSc Mat) transfers are what parallel runs need. A serial run
+        #uses the global SparseMatrix ones unless distributedTransfers is True, which
+        #lets a one-rank run use exactly the code a many-rank run does -- PETSc's PCMG
+        #needs it, and so does a scaling study with a one-rank baseline.
+        self.parallelTransfers = ((_comm.size() > 1 or self.distributedTransfers)
+                                  and len(mlMesh.meshList) > 1)
         for mesh in mlMesh.meshList:
             
             sdmesh = mesh.subdomainMesh # Linoj: mesh.subdomainMesh.nodeArray[:,2]=all zeros
@@ -6308,8 +6480,15 @@ class MultilevelTransport(object):
                                               for (cj,trialSpace) in trialSpaceDict.items()])
             else:
                 logEvent("Setting Boundary Conditions-2b")
+                # Strong Dirichlet constraints kept in the system
+                # (StrongDirichletFactory(keepDOFs=True), for KSP_petsc4py)
+                # still merge periodic pairs; a weak-Dirichlet flux leaves
+                # periodicity to the flux, as it always has.
+                keptStrong = (numericalFluxType is not None and
+                              getattr(numericalFluxType,'useStrongDirichletConstraints',False))
                 dirichletConditionsDict=dict([(cj,DOFBoundaryConditions(
-                    trialSpace,dirichletConditionsSetterDict[cj],useWeakDirichletConditions,options.periodicDirichletConditions[cj]))
+                    trialSpace,dirichletConditionsSetterDict[cj],useWeakDirichletConditions,options.periodicDirichletConditions[cj],
+                    mergeKeptPeriodicDOFs=keptStrong))
                                               for (cj,trialSpace) in trialSpaceDict.items()])
             logEvent("Setting Boundary Conditions-3")
             self.bcDictList.append(dirichletConditionsDict)
@@ -6466,8 +6645,45 @@ class MultilevelTransport(object):
                 for ts in list(trialSpaceDict.values()):
                     if ts.dofMap.nDOF_all_processes != par_N:
                         mixed=True
-                assert(options.multilevelLinearSolver == KSP_petsc4py or
-                       options.levelLinearSolver == KSP_petsc4py), "Must use KSP_petsc4py in parallel"
+                #proteus's own smoothers refresh the ghost entries of their
+                #iterate through par_u after each local update, so they are
+                #usable in parallel: Jacobi's update is pointwise and gives the
+                #same iterates as in serial, while GaussSeidel becomes
+                #processor-block Gauss-Seidel and StarILU/StarBILU are already
+                #Schwarz methods. MGM and NI drive those.
+                #
+                #LU is still refused. It would factor the *subdomain* matrix,
+                #which is a block-Jacobi approximation rather than the direct
+                #solve the caller asked for, and would quietly return a
+                #different answer in parallel than in serial.
+                #StarILU is usable once two things hold: its sweep is
+                #restricted to stars centred on nodes this rank owns, and the
+                #residual's ghost entries carry their owners' values before the
+                #local solves read them. Both are handled in LinearSolvers.
+                #
+                #StarBILU is absent because it returns a zero solution even in
+                #serial on the problems tested here, which is its own question;
+                #there is nothing to preserve in parallel until that is fixed.
+                #
+                #LU is absent for a different reason: it would factor the
+                #subdomain matrix, which is a block-Jacobi approximation rather
+                #than the direct solve the caller asked for.
+                parallelCapableSolvers = (KSP_petsc4py,Jacobi,GaussSeidel,StarILU,MGM,NI,petsc_MG)
+                for (what,solver) in (("multilevelLinearSolver",options.multilevelLinearSolver),
+                                      ("levelLinearSolver",options.levelLinearSolver),
+                                      ("linearSmoother",getattr(options,'linearSmoother',None))):
+                    if solver is None:
+                        continue
+                    #the KSP_Preconditioner family (petsc_ASM, petsc_LU, the Schur
+                    #complement preconditioners such as SimpleNavierStokes2D) sets up
+                    #PETSc preconditioners on the global parallel matrix for
+                    #KSP_petsc4py; it is how parallel Navier-Stokes is run
+                    assert (solver in parallelCapableSolvers or
+                            (isinstance(solver,type) and issubclass(solver,KSP_Preconditioner))), (
+                        "%s=%s cannot be used in parallel: it would return a "
+                        "different answer than in serial. Use one of %s."
+                        % (what,getattr(solver,'__name__',solver),
+                           [c.__name__ for c in parallelCapableSolvers]+["KSP_Preconditioner subclasses"]))
                 if mixed:
                     #
                     #calculate dimensions mixed multicomponent system
@@ -6695,8 +6911,13 @@ class MultilevelTransport(object):
                     logEvent("Allocating ghosted parallel vectors on rank %i" % comm.rank(),level=2)
                     par_u = ParVec_petsc4py(u,par_bs,par_n,par_N,par_nghost,subdomain2global)
                     par_r = ParVec_petsc4py(r,par_bs,par_n,par_N,par_nghost,subdomain2global)
-                    logEvent("Allocating un-ghosted parallel vectors on rank %i" % comm.rank(),level=2)
-                    par_du = ParVec_petsc4py(du,par_bs,par_n,par_N)
+                    logEvent("Allocating ghosted parallel vectors on rank %i" % comm.rank(),level=2)
+                    #du is ghosted like u and r. KSP never needed it to be --
+                    #it only ever reads the owned range -- but proteus's own
+                    #smoothers compute residuals with the subdomain matrix,
+                    #whose owned rows couple to ghost columns, so they have to
+                    #be able to refresh du's ghost entries after each update.
+                    par_du = ParVec_petsc4py(du,par_bs,par_n,par_N,par_nghost,subdomain2global)
                     logEvent("Allocating matrix on rank %i" % comm.rank(),level=2)
                     
                     try:
@@ -6720,16 +6941,32 @@ class MultilevelTransport(object):
                 for ts in list(trialSpaceDict.values()):
                     if ts.dofMap.nDOF_all_processes != par_N:
                         mixed=True
+                # Serial periodic conditions on kept strong Dirichlet DOFs
+                # merge each periodic pair into one unknown
+                # (DOFBoundaryConditions), so the system has
+                # transport.nFreeDOF_global[ci] unknowns per component, not
+                # the space's DOF count. In serial its numbering is the
+                # identity, whatever the component layout, so it goes
+                # through the per-component (mixed) path with block size 1.
+                # Where nothing was merged, nothing changes.
+                serialPeriodic = any(transport.nFreeDOF_global[ci] != ts.dofMap.nDOF_all_processes
+                                     for ci,ts in trialSpaceDict.items())
+                if serialPeriodic:
+                    mixed = True
                 par_nghost = 0
                 subdomain2global = trialSpaceDict[0].dofMap.subdomain2global
                 max_dof_neighbors= trialSpaceDict[0].dofMap.max_dof_neighbors
                 logEvent("Allocating ghosted parallel vectors on rank %i" % comm.rank(),level=2)
                 
                 if mixed:
-                    par_N = par_n = sum([ts.dofMap.nDOF_all_processes for ts in list(trialSpaceDict.values())])
+                    if serialPeriodic:
+                        par_N = par_n = sum(transport.nFreeDOF_global)
+                        subdomain2global = numpy.arange(par_n, dtype='i')
+                    else:
+                        par_N = par_n = sum([ts.dofMap.nDOF_all_processes for ts in list(trialSpaceDict.values())])
+                        subdomain2global = numpy.hstack([offset+ts.dofMap.subdomain2global for
+                                                         offset,ts in zip(transport.offset,list(trialSpaceDict.values()))])
                     transport.owned_local = numpy.arange(par_n)
-                    subdomain2global = numpy.hstack([offset+ts.dofMap.subdomain2global for
-                                                     offset,ts in zip(transport.offset,list(trialSpaceDict.values()))])
                     par_u = ParVec_petsc4py(u,1,par_n,par_N,par_nghost,subdomain2global[:par_n])
                     par_r = ParVec_petsc4py(r,1,par_n,par_N,par_nghost,subdomain2global[:par_n])
                     logEvent("Allocating un-ghosted parallel vectors on rank %i" % comm.rank(),level=2)
@@ -6783,16 +7020,224 @@ class MultilevelTransport(object):
         logEvent("Building Mesh Transfers",level=2)
         
         MultilevelProjectionOperatorType = MultilevelProjectionOperators
-        self.meshTransfers = MultilevelProjectionOperatorType(
-            mlMesh,
-            self.trialSpaceDictList,
-            self.offsetListList,
-            self.strideListList,
-            self.bcDictList)
+        if self.parallelTransfers:
+            #only the container: the distributed operators are installed into it
+            self.meshTransfers = MultilevelProjectionOperatorType(
+                mlMesh,
+                self.trialSpaceDictList,
+                self.offsetListList,
+                self.strideListList,
+                self.bcDictList,
+                build=False)
+            self.useParallelTransfers(mlMesh)
+        else:
+            #a hierarchy generated in pieces has no global levels; on one rank its
+            #pieces are the whole levels, related by subdomainHierarchy
+            self.meshTransfers = MultilevelProjectionOperatorType(
+                mlMesh.subdomainHierarchy() if getattr(mlMesh,'generated',False) else mlMesh,
+                self.trialSpaceDictList,
+                self.offsetListList,
+                self.strideListList,
+                self.bcDictList)
         logEvent(memory("mesh transfers","MultilevelTransport"),level=4)
         #mwf hack keep reference to mlMesh in Transport ctor for now
         self.mlMeshSave = mlMesh
         
+    def useParallelTransfers(self,mlMesh):
+        """Replace the transfer operators with distributed ones where possible.
+
+        MultilevelProjectionOperators builds global matrices, which cannot act
+        on a subdomain's vectors. For a nodally nested hierarchy of spaces whose
+        dofs are the mesh vertices the operators follow from the node parents
+        alone, so each rank can assemble the rows it owns and PETSc applies
+        them -- see LinearAlgebraTools.nodalProlongationMat. The parents have to
+        be read in the partitioned node numbering, which is what
+        partitionedNodeParents does.
+
+        There are two families of operators and they act on different vectors.
+        prolongList/restrictList act on the *free* unknowns of the stacked
+        system, which is what the linear multigrid solvers see. The
+        *_bcListDict operators act on each component's full dof array,
+        Dirichlet dofs included, which is what the nonlinear nested iteration
+        and the post-processing see. Parallel runs require weak Dirichlet
+        conditions (OneLevelTransport asserts it), so no dof is ever eliminated
+        and the two families are the same matrix up to how the vectors are laid
+        out -- which is why one prolongation Mat serves both. Strong
+        elimination of Dirichlet dofs is a serial-only variant: the free
+        numbering stops coinciding with the vertex numbering, and
+        nodalTransfersApply declines it.
+
+        Anything that does not qualify -- higher-order, modal, discontinuous
+        and non-conforming spaces, hierarchies that are not nodally nested --
+        takes useGeneralParallelTransfers.
+        """
+        #the nodal route reads node parents through the partitioner's node
+        #renumbering, which only node partitioning records
+        if hasattr(mlMesh,'hasPartitionedNumbering'):
+            permuted = mlMesh.hasPartitionedNumbering()
+        else:
+            permuted = all(getattr(mesh,'nodeNumbering_global_old2new',None) is not None
+                           for mesh in mlMesh.meshList)
+        if not permuted or not FemTools.nodalTransfersApply(mlMesh,
+                                                            self.trialSpaceDictList,
+                                                            self.bcDictList):
+            self.useGeneralParallelTransfers(mlMesh)
+            return
+        if not getattr(mlMesh,'generated',False):
+            mlMesh.vertexInterpolation()
+        nc = len(self.trialSpaceDictList[0])
+        cache = {}
+        def levelMats(l):
+            if l not in cache:
+                interpolation = mlMesh.partitionedVertexInterpolation(l)
+                coarseOffsets = np.asarray(mlMesh.meshList[l].nodeOffsets_subdomain_owned)
+                fineOffsets = np.asarray(mlMesh.meshList[l+1].nodeOffsets_subdomain_owned)
+                prolongMat = vertexProlongationMat(*interpolation,
+                                                   coarseNodeOffsets=coarseOffsets,
+                                                   fineNodeOffsets=fineOffsets)
+                injectionMat = vertexProlongationMat(*interpolation,
+                                                     coarseNodeOffsets=coarseOffsets,
+                                                     fineNodeOffsets=fineOffsets,
+                                                     inheritedOnly=True)
+                rowSums = nodalRestrictionScaling(prolongMat)
+                stackedMat = prolongMat if nc == 1 else vertexProlongationMat(
+                    *interpolation,coarseNodeOffsets=coarseOffsets,
+                    fineNodeOffsets=fineOffsets,blockSize=nc)
+                cache[l] = (prolongMat,injectionMat,rowSums,stackedMat)
+            return cache[l]
+        self.installParallelTransfers(mlMesh,
+                                      lambda l,cj: levelMats(l)[:3],
+                                      lambda l: levelMats(l)[3])
+
+    def useGeneralParallelTransfers(self,mlMesh):
+        """Distributed transfers for any space, built from each rank's own subdomain.
+
+        The nodal route needs a dof to be a vertex. Otherwise the operators come
+        from the geometric construction in MultilevelProjectionOperators --
+        coarse basis functions evaluated at the fine interpolation points --
+        run on the *subdomain* spaces over the subdomain parent/child relations
+        (MultilevelMesh.subdomainHierarchy). That gives each rank a prolongation
+        between its subdomain dofs, complete on the rows it owns, because a finer
+        level inherits the coarser one's partition (MultilevelMesh.partitionLevels)
+        and so every fine element touching an owned dof has its parent here.
+        The owned rows are translated to global dof numbers and assembled into a
+        distributed Mat (LinearAlgebraTools.subdomainProlongationMat); nothing is
+        gathered, and no space or operator is built on the global mesh.
+
+        An owned row with no entries means the partitions were not
+        level-consistent, and raises rather than building a wrong operator.
+        """
+        nc = len(self.trialSpaceDictList[0])
+        hierarchy = mlMesh.subdomainHierarchy()
+        ops = FemTools.MultilevelProjectionOperators(
+            hierarchy,self.trialSpaceDictList,self.offsetListList,self.strideListList,
+            self.bcDictList)
+        def csr(sparseMat):
+            rowptr,colind,nzval = sparseMat.getCSRrepresentation()
+            return (np.asarray(rowptr),np.asarray(colind),np.asarray(nzval))
+        def maps(l,cj):
+            fine = self.trialSpaceDictList[l+1][cj].dofMap
+            coarse = self.trialSpaceDictList[l][cj].dofMap
+            return (fine.subdomain2global,coarse.subdomain2global,
+                    np.asarray(fine.dof_offsets_subdomain_owned),
+                    np.asarray(coarse.dof_offsets_subdomain_owned))
+        cache = {}
+        def mats(l,cj):
+            if (l,cj) not in cache:
+                P = csr(ops.prolong_bcListDict[cj][l+1])
+                build = lambda c,**kw: subdomainProlongationMat(*c,*maps(l,cj),**kw)
+                prolongMat = build(P)
+                #entries equal to one are what the injection keeps, as in the
+                #global operators' interp_bc
+                injectionMat = build(filterCSR(*P,lambda w: np.abs(w-1.0) < 1.0e-8),
+                                     allowEmptyRows=True)
+                #restricted solutions are divided by the row sums of |P|
+                absMat = build(filterCSR(*P,lambda w: np.ones(w.shape,dtype=bool),np.abs))
+                cache[(l,cj)] = (prolongMat,injectionMat,nodalRestrictionScaling(absMat))
+            return cache[(l,cj)]
+        def stackedMat(l):
+            if nc == 1:
+                return mats(l,0)[0]
+            fineS2G,coarseS2G,fineOff,coarseOff = maps(l,0)
+            return subdomainProlongationMat(*csr(ops.prolong_bcListDict[0][l+1]),
+                                            fineS2G,coarseS2G,fineOff,coarseOff,blockSize=nc)
+        self.installParallelTransfers(mlMesh,mats,stackedMat,sameSpaces=len(
+            set((type(ts.dofMap).__name__) for ts in self.trialSpaceDictList[0].values())) == 1)
+
+    def installParallelTransfers(self,mlMesh,mats,stackedMat,sameSpaces=True):
+        """Put distributed operators into the mesh transfers.
+
+        mats(l,cj) gives (prolongation, injection, restriction row sums) from
+        level l to l+1 for component cj, as distributed Mats; stackedMat(l)
+        gives the prolongation of the whole interleaved system.
+        """
+        nc = len(self.trialSpaceDictList[0])
+        #The stacked system's operator is P (x) I only if its vectors interleave
+        #the components node by node, so that component c of node i is entry
+        #nc*i + c on every level. Nodal spaces give that whenever weak Dirichlet
+        #conditions apply, which parallel runs require, but it is a property of
+        #how Transport laid the system out, so read it back rather than assume.
+        stacked = sameSpaces and all(
+            list(self.offsetListList[l]) == list(range(nc)) and
+            list(self.strideListList[l]) == [nc]*nc and
+            getattr(self.par_uList[l],'bs',1) == nc
+            for l in range(len(mlMesh.meshList)))
+        if not stacked:
+            logEvent("free-unknown transfers stay global: the system's "
+                     "components are not interleaved node by node, which the "
+                     "distributed stacked operator assumes (the per-component "
+                     "ones are built)",level=2)
+        mt = self.meshTransfers
+        prolongList = [[]]
+        restrictList = [[]]
+        restrictSumList = [[]]
+        prolong_bc = dict((cj,[[]]) for cj in range(nc))
+        restrict_bc = dict((cj,[[]]) for cj in range(nc))
+        scaled_restrict_bc = dict((cj,[[]]) for cj in range(nc))
+        interp_bc = dict((cj,[[]]) for cj in range(nc))
+        restrict_bcSum = dict((cj,[[]]) for cj in range(nc))
+        for l in range(len(mlMesh.meshList)-1):
+            if stacked:
+                stackedP = stackedMat(l)
+                prolongList.append(ParTransferOperator(
+                    stackedP,self.par_uList[l],self.par_uList[l+1]))
+                restrictList.append(ParTransposeTransferOperator(
+                    stackedP,self.par_uList[l],self.par_uList[l+1]))
+                #FAS divides a restricted *solution* by these row sums (the paper's
+                #I-tilde); ghosts included, since the next residual reads them
+                coarseU = self.par_uList[l]
+                rowSums = np.zeros(coarseU.proteus_array.size)
+                rowSums[:coarseU.dim_proc] = nodalRestrictionScaling(stackedP).getArray()
+                coarseU.duplicate_with_array(rowSums).scatter_forward_insert()
+                restrictSumList.append(rowSums)
+            for cj in range(nc):
+                prolongMat,injectionMat,rowSums = mats(l,cj)
+                coarse = self.uDictList[l][cj].par_dof
+                fine = self.uDictList[l+1][cj].par_dof
+                prolong_bc[cj].append(ParTransferOperator(prolongMat,coarse,fine))
+                restrict_bc[cj].append(ParTransposeTransferOperator(prolongMat,coarse,fine))
+                scaled_restrict_bc[cj].append(
+                    ParScaledTransposeTransferOperator(prolongMat,coarse,fine,rowSums))
+                #the injection's transpose, so it lands coarse <- fine like the
+                #restrictions; entries are 1 on the nodes the refinement inherited
+                interp_bc[cj].append(ParTransposeTransferOperator(injectionMat,coarse,fine))
+                #NLNI divides a restricted solution by these, ghosts included
+                sums = np.zeros(coarse.proteus_array.size)
+                sums[:coarse.dim_proc] = rowSums.getArray()
+                coarse.duplicate_with_array(sums).scatter_forward_insert()
+                restrict_bcSum[cj].append(sums)
+        if stacked:
+            mt.prolongList = prolongList
+            mt.restrictList = restrictList
+            mt.restrictSumList = restrictSumList
+        mt.prolong_bcListDict = prolong_bc
+        mt.restrict_bcListDict = restrict_bc
+        mt.scaled_restrict_bcListDict = scaled_restrict_bc
+        mt.interp_bcListDict = interp_bc
+        mt.restrict_bcSumListDict = restrict_bcSum
+        logEvent("mesh transfers assembled as distributed matrices over %i levels"
+                 % (len(mlMesh.meshList),),level=2)
+
     def setInitialConditions(self,getInitialConditionsDict,T=0.0):
         logEvent("Setting initial conditions on model "+self.name)
         self.t=T

@@ -1,8 +1,5 @@
 """
 Tools for calculating norms on function spaces.
-
-.. inheritance-diagram:: proteus.Norms
-   :parts: 1
 """
 from .FemTools import *
 from .Quadrature import *
@@ -238,14 +235,14 @@ def globalScalarDomainIntegral(abs_det_J,quadratureWeightArray,nValueArray):
 #just compute the mass in the domain
 def fluxDomainBoundaryIntegral(dS,nValueArray,mesh):
     partialSum = cfemIntegrals.fluxDomainBoundaryIntegral(mesh.nElementBoundaries_owned,
-                                                          mesh.elementBoundaryMaterialTypes,
+                                                          mesh.elementBoundaryUserFlags,
                                                           mesh.exteriorElementBoundariesArray,
                                                           dS,
                                                           nValueArray)
     return globalSum(partialSum)
 def fluxDomainBoundaryIntegralFromVector(dS,nValueArray,normal,mesh):
     partialSum = cfemIntegrals.fluxDomainBoundaryIntegralFromVector(mesh.nElementBoundaries_owned,
-                                                                    mesh.elementBoundaryMaterialTypes,
+                                                                    mesh.elementBoundaryUserFlags,
                                                                     mesh.exteriorElementBoundariesArray,
                                                                     dS,
                                                                     nValueArray,

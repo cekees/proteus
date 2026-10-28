@@ -51,13 +51,23 @@ clean:
 	rm -rf source/api
 	rm -rf source/capi
 
-html: $(BUILDDIR)/capi/html/files.html source/api/modules.rst
+html: $(BUILDDIR)/capi/html/files.html source/api/proteus.rst
 	$(SPHINXBUILD) -b html $(ALLSPHINXOPTS) $(BUILDDIR)
 	@echo
 	@echo "Build finished. The HTML pages are in $(BUILDDIR)."
 
-source/api/modules.rst:
-	sphinx-apidoc --output-dir=source/api ../proteus "../**/*.so" "../proteus/tests" "../proteus/test_utils" "../proteus/config" --maxdepth=1 --separate --module-first --templatedir=source/_templates/apidoc
+source/api/proteus.rst:
+	# flcbdfWrappers.pyx: extension is commented out in setup.py (unbuilt,
+	# dead code) -- no compiled .so exists for autodoc to import.
+	# SWFlow/utils/SWEs_so.py: a parun-driven split-operator driver script,
+	# not an importable API module -- its top-level code sniffs sys.argv
+	# for a case file to __import__() by name, which only makes sense when
+	# invoked by parun itself and raises ModuleNotFoundError otherwise.
+	# --no-toc: apicapi.rst links directly to api/proteus.html (the
+	# top-level package page), never to the modules.rst index apidoc
+	# generates by default -- that page would be orphaned (not reachable
+	# from any toctree) and Sphinx warns accordingly, so skip generating it.
+	sphinx-apidoc --output-dir=source/api ../proteus "../**/*.so" "../proteus/tests" "../proteus/test_utils" "../proteus/config" "../proteus/flcbdfWrappers.pyx" "../proteus/SWFlow/utils/SWEs_so.py" --maxdepth=1 --separate --module-first --no-toc --templatedir=source/_templates/apidoc
 
 $(BUILDDIR)/capi/html/files.html:
 	mkdir -p ./build

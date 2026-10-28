@@ -90,4 +90,4 @@ useEisenstatWalker = False#True
 maxNonlinearIts = 50
 maxLineSearches = 0
 
-auxiliaryVariables = ct.domain.auxiliaryVariables['vof']
+auxiliaryVariables = ct.domain.auxiliaryVariables['vof'] + [ct.height_gauges]

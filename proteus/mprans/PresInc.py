@@ -17,6 +17,8 @@ from proteus.SubgridError import SGE_base
 from proteus.ShockCapturing import ShockCapturing_base
 from . import cPresInc
 from . import cArgumentsDict
+import proteus.NumericalFlux
+import proteus.Transport
 
 
 class NumericalFlux(proteus.NumericalFlux.ConstantAdvection_Diffusion_SIPG_exterior):
@@ -31,14 +33,14 @@ class NumericalFlux(proteus.NumericalFlux.ConstantAdvection_Diffusion_SIPG_exter
 
 
 class Coefficients(TC_base):
-    """
+    r"""
     The coefficients for pressure increment solution
 
     Update is given by
 
     .. math::
 
-       \nabla\\cdot( -a \nabla \\phi^{k+1} - \\mathbf{q^t}^{k+1} ) = 0
+       \nabla\cdot( -a \nabla \phi^{k+1} - \mathbf{q^t}^{k+1} ) = 0
        a = \frac{\tau (1-\theta_s)}{\rho_f} + \frac{\tau \theta_s}{\rho_s}
        q^t = (1-\theta_s) v_f + \theta_s v_s
     """
@@ -708,6 +710,15 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.comm = comm
         if comm.size() > 1:
             assert numericalFluxType is not None and numericalFluxType.useWeakDirichletConditions, "You must use a numerical flux to apply weak boundary conditions for parallel runs"
+            if self.coefficients.fixNullSpace:
+                # fixNullSpace pins dof 0 on rank 0 by rewriting its row. Under a
+                # partition without overlap that dof can be shared, and the other
+                # rank adds its partial row back, so the pin is wrong. The
+                # increment is determined up to a constant, which is what the
+                # constant null space of the KSP solve removes.
+                self.coefficients.fixNullSpace = False
+                self.coefficients.nullSpace = 'ConstantComponentsNullSpace'
+                self.coefficients.nullSpaceComponents = [0]
 
         log(memory("stride+offset", "OneLevelTransport"), level=4)
         if numericalFluxType is not None:

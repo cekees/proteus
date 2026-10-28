@@ -3553,9 +3553,10 @@ extern "C"
     memset(mesh.elementBoundaryBarycentersArray,0,mesh.nElementBoundaries_global*3*sizeof(double));
     memset(mesh.nodeDiametersArray,0,mesh.nNodes_global*sizeof(double));
     memset(mesh.nodeSupportArray,0,mesh.nNodes_global*sizeof(double));
-    mesh.hMin = edgeLength(mesh.elementNodesArray[0],
-                           mesh.elementNodesArray[1],
-                           mesh.nodeArray);
+    //a subdomain mesh is empty on a rank that owns nothing
+    mesh.hMin = mesh.nElements_global > 0 ? edgeLength(mesh.elementNodesArray[0],
+                                                       mesh.elementNodesArray[1],
+                                                       mesh.nodeArray) : 0.0;
     const double nNperElemInv = 1.0/double(mesh.nNodes_element);
     const double nNperElemBInv= 1.0/double(mesh.nNodes_elementBoundary);
     for (int ebN=0;ebN<mesh.nElementBoundaries_global;ebN++)
@@ -3668,9 +3669,10 @@ extern "C"
     memset(mesh.nodeDiametersArray,0,mesh.nNodes_global*sizeof(double));
     memset(mesh.nodeSupportArray,0,mesh.nNodes_global*sizeof(double));
 
-    mesh.hMin = edgeLength(mesh.elementNodesArray[0],
-                           mesh.elementNodesArray[1],
-                           mesh.nodeArray);
+    //a subdomain mesh is empty on a rank that owns nothing
+    mesh.hMin = mesh.nElements_global > 0 ? edgeLength(mesh.elementNodesArray[0],
+                                                       mesh.elementNodesArray[1],
+                                                       mesh.nodeArray) : 0.0;
     //const double nNperElemInv = 1.0/double(mesh.nNodes_element);
     //const double nNperElemBInv= 1.0/double(mesh.nNodes_elementBoundary);
     for (int ebN=0;ebN<mesh.nElementBoundaries_global;ebN++)
@@ -3774,9 +3776,10 @@ extern "C"
     memset(mesh.elementBoundaryBarycentersArray,0,mesh.nElementBoundaries_global*3*sizeof(double));
     memset(mesh.nodeDiametersArray,0,mesh.nNodes_global*sizeof(double));
     memset(mesh.nodeSupportArray,0,mesh.nNodes_global*sizeof(double));
-    mesh.hMin = edgeLength(mesh.elementNodesArray[0],
-                           mesh.elementNodesArray[1],
-                           mesh.nodeArray);
+    //a subdomain mesh is empty on a rank that owns nothing
+    mesh.hMin = mesh.nElements_global > 0 ? edgeLength(mesh.elementNodesArray[0],
+                                                       mesh.elementNodesArray[1],
+                                                       mesh.nodeArray) : 0.0;
     for (int ebN=0;ebN<mesh.nElementBoundaries_global;ebN++)
       mesh.elementBoundaryDiametersArray[ebN] = edgeLength(mesh.elementBoundaryNodesArray[ebN*2+0],
                                                            mesh.elementBoundaryNodesArray[ebN*2+1],
@@ -3870,9 +3873,10 @@ extern "C"
     memset(mesh.elementBoundaryDiametersArray,0,mesh.nElementBoundaries_global*sizeof(double));
     memset(mesh.nodeDiametersArray,0,mesh.nNodes_global*sizeof(double));
     memset(mesh.nodeSupportArray,0,mesh.nNodes_global*sizeof(double));
-    mesh.hMin = edgeLength(mesh.elementNodesArray[0],
-                           mesh.elementNodesArray[1],
-                           mesh.nodeArray);
+    //a subdomain mesh is empty on a rank that owns nothing
+    mesh.hMin = mesh.nElements_global > 0 ? edgeLength(mesh.elementNodesArray[0],
+                                                       mesh.elementNodesArray[1],
+                                                       mesh.nodeArray) : 0.0;
     for (int ebN=0;ebN<mesh.nElementBoundaries_global;ebN++)
       mesh.elementBoundaryDiametersArray[ebN] = edgeLength(mesh.elementBoundaryNodesArray[ebN*2+0],
                                                            mesh.elementBoundaryNodesArray[ebN*2+1],
@@ -3944,9 +3948,10 @@ extern "C"
     memset(mesh.elementBoundaryBarycentersArray,0,mesh.nElementBoundaries_global*3*sizeof(double));
     memset(mesh.nodeDiametersArray,0,mesh.nNodes_global*sizeof(double));
     memset(mesh.nodeSupportArray,0,mesh.nNodes_global*sizeof(double));
-    mesh.hMin = edgeLength(mesh.elementNodesArray[0],
-                           mesh.elementNodesArray[1],
-                           mesh.nodeArray);
+    //a subdomain mesh is empty on a rank that owns nothing
+    mesh.hMin = mesh.nElements_global > 0 ? edgeLength(mesh.elementNodesArray[0],
+                                                       mesh.elementNodesArray[1],
+                                                       mesh.nodeArray) : 0.0;
     const double nNperElemInv = 1.0/double(mesh.nNodes_element);
     const double nNperElemBInv= 1.0/double(mesh.nNodes_elementBoundary);
     for (int eN=0;eN<mesh.nElements_global;eN++)

@@ -7,9 +7,9 @@ Tools for creating and manipulating 1,2, and 3D meshes.
 from .EGeometry import *
 import numpy as np
 import array
+import inspect
 import h5py
 import os
-from xml.etree import ElementTree as ET
 from .Archiver import *
 from .LinearAlgebraTools import ParVec_petsc4py
 from .Profiling import logEvent,memory, memHardLimit
@@ -479,11 +479,235 @@ class Hexahedron(Polyhedron):
         self.elementBoundaries = self.quadrilaterals
 
 #todo add enum34 and replace with real Python enum
+#: Material type of a face (or node) that the partitioner cut: interior to the
+#: global mesh, exterior to a subdomain. Reserved: domains use 0 for "no tag" and
+#: positive values for conditions.
+RANK_INTERFACE_FLAG = -1
+
 class MeshParallelPartitioningTypes(object):
     """
     fake an enum for parallel partitioning options
     """
     element = 0 ;  node     = 1
+
+def _cartesianChunkStarts(nn, p):
+    """Where each of p near-equal chunks of 0..nn-1 starts, plus nn: the first
+    nn % p chunks are one longer, as in the partitioners' default partition."""
+    return np.cumsum([0] + [nn // p + (nn % p > a) for a in range(p)])
+
+def _cartesianBrickStarts(nn, p, level=0):
+    """Where each of p bricks along an axis of nn coarsest-level nodes starts, as a node index on the
+    grid refined `level` times, plus the node count.
+
+    The bricks are cut on coarse *cells*: the nn-1 cells are split among the p ranks as evenly
+    as the partitioners' default chunks, a node belongs to the brick of the cell it starts, and
+    the last node to the last brick. Each rank then owns whole coarse cells' worth of fine nodes
+    -- nodes 0..19 and 20..40 for 10 cells over 2 ranks at 3 levels, where cutting on coarse
+    *nodes* gave 24 and 17 (the 6 and 5 coarse nodes, scaled up, with the trailing fine layers
+    going to the lower brick), a factor 2.8 in 3D. It is exactly balanced when the cells divide
+    evenly and off by at most one coarse cell otherwise. Every parent of a fine node is a
+    node of the coarse cell the fine node lies in, so it is the owner's or its neighbour's.
+    An axis with fewer cells than ranks cannot be cut that way and keeps the node chunks.
+    """
+    if nn == 1:
+        return _cartesianChunkStarts(nn, p)
+    if nn - 1 < p:
+        return np.minimum(_cartesianChunkStarts(nn, p) << level, ((nn - 1) << level) + 1)
+    cells = _cartesianChunkStarts(nn - 1, p)
+    return np.append(cells[:-1] << level, ((nn - 1) << level) + 1)
+
+def weightedBisection(points, weights, nParts):
+    """Recursive coordinate bisection: the part (0..nParts-1) of each point, parts of equal weight.
+
+    Each step splits the points of a part along the longest side of their bounding box, at the
+    weighted quantile that gives each side the share of the weight that its share of the parts
+    asks for (nParts need not be a power of two: 7 parts split 3|4 and the cut falls at 3/7).
+    The parts are boxes, so their surface is as small as the point set allows -- which is what a
+    graph partitioner cutting a *coarse* level into ~30 nodes per rank does not deliver, and what
+    shows up eight times larger once the cut is scaled up to the finest level. Deterministic:
+    ties in a coordinate go by index. A part is empty only when there are more parts than points.
+    """
+    points = np.asarray(points, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    owner = np.zeros(len(points), dtype=np.intc)
+    def split(index, first, n):
+        if n == 1 or len(index) == 0:
+            owner[index] = first
+            return
+        pts = points[index]
+        extent = pts.max(axis=0) - pts.min(axis=0)
+        axis = int(np.argmax(extent))
+        order = index[np.lexsort((index, points[index, axis]))]
+        nLow = n // 2
+        cumulative = np.cumsum(weights[order])
+        target = cumulative[-1] * nLow / float(n)
+        k = int(np.searchsorted(cumulative, target))
+        # the cut falls on whichever side of the target is closer
+        if k > 0 and abs(cumulative[k - 1] - target) < abs(cumulative[min(k, len(order) - 1)] - target):
+            k -= 1
+        k = min(max(k + 1, 1 if len(order) > 1 else 0), len(order) - (1 if len(order) > 1 else 0))
+        split(order[:k], first, nLow)
+        split(order[k:], first + nLow, n - nLow)
+    split(np.arange(len(points)), 0, int(nParts))
+    return owner
+
+def cartesianRankGrid(nnx, nny, nnz, size):
+    """The rank grid (px, py, pz), px*py*pz == size, with the least ghost surface.
+
+    Cutting an nnx x nny x nnz node grid into px x py x pz bricks puts
+    (px-1)*nny*nnz + (py-1)*nnx*nnz + (pz-1)*nnx*nny nodes on the cuts; the
+    factorization of size with the fewest wins. An axis with one node is never
+    cut. Ties go to the smaller largest brick, then to more cuts along x, then
+    along y, so the choice is deterministic.
+    """
+    best = None
+    for px in range(1, size + 1):
+        if size % px:
+            continue
+        for py in range(1, size // px + 1):
+            if (size // px) % py:
+                continue
+            pz = size // (px * py)
+            if (nnx == 1 and px > 1) or (nny == 1 and py > 1) or (nnz == 1 and pz > 1):
+                continue
+            surface = (px - 1) * nny * nnz + (py - 1) * nnx * nnz + (pz - 1) * nnx * nny
+            biggest = -(-nnx // px) * -(-nny // py) * -(-nnz // pz)
+            key = (surface, biggest, -px, -py)
+            if best is None or key < best[0]:
+                best = (key, (px, py, pz))
+    if best is None:
+        raise ValueError("a %d x %d x %d node grid cannot be cut among %d ranks" % (nnx, nny, nnz, size))
+    return best[1]
+
+def cartesianSubdomain(kind, nn, L, rankGrid=None, nLayersOfOverlap=1, triangleFlag=1, level=0,
+                       origin=(0.0, 0.0, 0.0)):
+    """This rank's piece of a regular grid, generated without the global mesh.
+
+    kind is 'quad', 'hex', 'tri' or 'tet', nn the node counts (nnx, nny[, nnz])
+    and L the lengths, as for generateQuadrilateralMeshFromRectangularGrid,
+    generateHexahedralMeshFromRectangularGrid,
+    generateTriangularMeshFromRectangularGrid (with triangleFlag, whose
+    default this shares) and generateTetrahedralMeshFromRectangularGrid.
+    Returns a mesh that stands for the global one -- the global counts only, no
+    arrays -- with subdomainMesh and the partition's offsets and
+    subdomain-to-global maps set exactly as partitionMesh sets them for that
+    global mesh and the node owners cartesianNodeOwners gives for rankGrid
+    (default cartesianRankGrid). nodeOld2New and elementOld2New map generator
+    numbers to the partition's, in place of the nodeNumbering_global_old2new
+    and elementNumbering_global_old2new arrays.
+
+    level > 0 generates the grid refined that many times, cut by the level-0
+    bricks scaled (cartesianNodeOwners(level=...)); nn stays the coarsest
+    counts. origin shifts the nodes as MeshTools shifts a generated mesh.
+    """
+    from . import cmeshTools, cpartitioning, Comm
+    comm = Comm.get()
+    flat = kind in ('quad', 'tri')
+    nn = tuple(nn) + (1,) * (3 - len(nn))
+    L = tuple(L) + (1.0,) * (3 - len(L))
+    if rankGrid is None:
+        rankGrid = cartesianRankGrid(nn[0], nn[1], 1 if flat else nn[2], comm.size())
+    rankGrid = tuple(rankGrid) + (1,) * (3 - len(rankGrid))
+    mesh = {'quad': QuadrilateralMesh, 'hex': HexahedralMesh, 'tri': TriangularMesh, 'tet': TetrahedralMesh}[kind]()
+    mesh.comm = comm
+    mesh.cmesh = cmeshTools.CMesh()
+    mesh.subdomainMesh = mesh.__class__()
+    mesh.subdomainMesh.globalMesh = mesh
+    mesh.subdomainMesh.cmesh = cmeshTools.CMesh()
+    mesh.nLayersOfOverlap = nLayersOfOverlap
+    mesh.parallelPartitioningType = MeshParallelPartitioningTypes.node
+    (mesh.elementOffsets_subdomain_owned,
+     mesh.elementNumbering_subdomain2global,
+     mesh.nodeOffsets_subdomain_owned,
+     mesh.nodeNumbering_subdomain2global,
+     mesh.elementBoundaryOffsets_subdomain_owned,
+     mesh.elementBoundaryNumbering_subdomain2global,
+     mesh.edgeOffsets_subdomain_owned,
+     mesh.edgeNumbering_subdomain2global) = cpartitioning.generateCartesianSubdomain(
+         comm.comm.tompi4py(), kind, triangleFlag, nn, L, rankGrid, nLayersOfOverlap,
+         mesh.cmesh, mesh.subdomainMesh.cmesh, level, origin)
+    (mesh.nNodes_global, mesh.nElements_global,
+     mesh.nElementBoundaries_global, mesh.nEdges_global) = cpartitioning.cartesianGlobalCounts(kind, triangleFlag, nn, level)
+    #the per-element counts and the largest node star, as the C++ set them
+    (_, _, mesh.nNodes_element, mesh.nNodes_elementBoundary, mesh.nElementBoundaries_element,
+     _, _, _, _, _, mesh.max_nNodeNeighbors_node) = cmeshTools.buildPythonMeshInterfaceNoArrays(mesh.cmesh)[:11]
+    mesh.rankGrid = rankGrid
+    mesh.cartesianLevel = level
+    mesh.nodeNumbering_global_old2new = None
+    mesh.elementNumbering_global_old2new = None
+    mesh.nodeOld2New = lambda old: cpartitioning.cartesianNumbering(kind, triangleFlag, nn, rankGrid, False, old, level)
+    mesh.elementOld2New = lambda old: cpartitioning.cartesianNumbering(kind, triangleFlag, nn, rankGrid, True, old, level)
+    mesh._finishPartitioning(comm)
+    mesh.subdomainMesh.rankInterfacesMarked = True     #generateCartesianSubdomain flags the cut faces -1
+    #the global scalars a mesh reports, from the pieces
+    mpi = comm.comm.tompi4py()
+    from mpi4py import MPI
+    sd = mesh.subdomainMesh
+    mesh.h = mpi.allreduce(sd.h, op=MPI.MAX)
+    mesh.hMin = mpi.allreduce(sd.hMin if sd.nElements_global > 0 else np.inf, op=MPI.MIN)
+    mesh.sigmaMax = mpi.allreduce(sd.sigmaMax, op=MPI.MAX)
+    mesh.volume = float(np.prod(L[:3 if kind in ('hex', 'tet') else 2]))
+    if comm.size() == 1:
+        #On one rank the piece is the whole grid, in the global numbering, so the
+        #global mesh's arrays are the subdomain's (views, not copies) and code
+        #that reads the global mesh in serial -- the serial-only dof maps, say --
+        #sees a complete mesh.
+        for name in _cartesianSerialGlobalArrays:
+            setattr(mesh, name, getattr(sd, name))
+    return mesh
+
+
+#the subdomain arrays a one-rank generated mesh shares as its global ones
+_cartesianSerialGlobalArrays = (
+    'nInteriorElementBoundaries_global', 'nExteriorElementBoundaries_global', 'max_nElements_node',
+    'elementNodesArray', 'nodeElementsArray', 'nodeElementOffsets', 'elementNeighborsArray',
+    'elementBoundariesArray', 'elementBoundaryNodesArray', 'elementBoundaryElementsArray',
+    'elementBoundaryLocalElementBoundariesArray', 'interiorElementBoundariesArray',
+    'exteriorElementBoundariesArray', 'edgeNodesArray', 'nodeStarArray', 'nodeStarOffsets',
+    'elementMaterialTypes', 'elementBoundaryMaterialTypes', 'nodeMaterialTypes', 'nodeArray',
+    'elementDiametersArray', 'elementInnerDiametersArray', 'elementBoundaryDiametersArray',
+    'elementBarycentersArray', 'elementBoundaryBarycentersArray', 'nodeDiametersArray',
+    'nodeSupportArray')
+
+def cartesianNodeOwners(nnx, nny, nnz, rankGrid=None, size=None, fastest='x', level=0):
+    """The rank that owns each node of a regular nnx x nny x nnz node grid cut into bricks.
+
+    Rank (a, b, c) of the px x py x pz rankGrid, which is rank a + px*(b + py*c),
+    owns the nodes with indices in its brick [i0,i1) x [j0,j1) x [k0,k1). Along
+    each axis the bricks are the near-equal chunks the partitioners use for
+    their default partition, so they may be uneven, and a brick is empty when an
+    axis has more ranks than nodes. rankGrid defaults to
+    cartesianRankGrid(nnx, nny, nnz, size), size to the number of ranks.
+
+    The owners are in the generator's own node numbering, which fastest names:
+    'x' for i + nnx*(j + nny*k), as the triangle, tetrahedron and hexahedron
+    generators number them, or 'y' for j + nny*i, as the (2D) quadrilateral
+    generator does. Passed to Mesh.partitionMesh as nodeOwners, they replace
+    the graph partitioner, and the partitioner then needs no PETSc.
+
+    level > 0 gives the owners on the grid refined that many times (every cell
+    halved along each axis), cut by the same bricks scaled -- the partition of
+    each level of a generated hierarchy (cartesianSubdomain(level=...)).
+    nnx, nny, nnz stay the coarsest level's counts.
+    """
+    if rankGrid is None:
+        if size is None:
+            from . import Comm
+            size = Comm.get().size()
+        rankGrid = cartesianRankGrid(nnx, nny, nnz, size)
+    px, py, pz = rankGrid
+    def starts(nn, p):
+        return _cartesianBrickStarts(nn, p, level)
+    a, b, c = (np.repeat(np.arange(p), np.diff(starts(nn, p)))
+               for nn, p in ((nnx, px), (nny, py), (nnz, pz)))
+    if fastest == 'x':
+        owners = a[None, None, :] + px * (b[None, :, None] + py * c[:, None, None])
+    elif fastest == 'y':
+        assert nnz == 1 and pz == 1, "the y-fastest (quadrilateral) numbering is 2D"
+        owners = a[:, None] + px * b[None, :]
+    else:
+        raise ValueError("fastest must be 'x' or 'y', not %r" % (fastest,))
+    return np.ascontiguousarray(owners.ravel(), dtype=np.intc)
 
 class Mesh(object):
     """A partition of a domain in R^n into elements.
@@ -573,7 +797,26 @@ class Mesh(object):
         self.arGrid=None
         self.nLayersOfOverlap = None
         self.parallelPartitioningType = MeshParallelPartitioningTypes.element
-    def partitionMesh(self,nLayersOfOverlap=1,parallelPartitioningType=MeshParallelPartitioningTypes.node):
+    @property
+    def elementBoundaryUserFlags(self):
+        """The element boundary flags as user code and the kernels see them.
+
+        ``elementBoundaryMaterialTypes`` carries the partitioner's reserved
+        ``-1`` on the faces it cut. A user's boundary-condition function, or a
+        kernel that indexes an array by the flag, must see 0 there ("no tag"),
+        as it always has; this is that array. It is the flags themselves when
+        nothing was marked.
+        """
+        flags = self.elementBoundaryMaterialTypes
+        if self.__dict__.get('rankInterfacesMarked') and flags is not None:
+            cached = self.__dict__.get('_elementBoundaryUserFlags')
+            if cached is None or cached.shape != flags.shape:
+                cached = np.ascontiguousarray(np.maximum(flags, 0), dtype=flags.dtype)
+                self.__dict__['_elementBoundaryUserFlags'] = cached
+            return cached
+        return flags
+
+    def partitionMesh(self,nLayersOfOverlap=1,parallelPartitioningType=MeshParallelPartitioningTypes.node,nodeOwners=None,elementOwners=None,nodeWeights=None):
         from . import cmeshTools
         from . import Comm
         from . import cpartitioning
@@ -585,7 +828,18 @@ class Mesh(object):
         self.subdomainMesh.globalMesh = self
         self.subdomainMesh.cmesh=cmeshTools.CMesh()
         self.nLayersOfOverlap = nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
+        if comm.size() == 1:
+            #one rank owns everything, which is what the graph partitioner would
+            #say; prescribing it keeps a serial run from initializing PETSc
+            if parallelPartitioningType == MeshParallelPartitioningTypes.node and nodeOwners is None:
+                nodeOwners = np.zeros(self.nNodes_global,dtype=np.intc)
+            elif parallelPartitioningType != MeshParallelPartitioningTypes.node and elementOwners is None:
+                elementOwners = np.zeros(self.nElements_global,dtype=np.intc)
         logEvent(memory("partitionMesh 2","MeshTools"),level=4)
+        #the global exterior faces, by node set, before partitioning rearranges the global arrays
+        realBoundary = set(map(tuple, np.sort(self.elementBoundaryNodesArray[self.exteriorElementBoundariesArray],
+                                              axis=1).tolist())) if comm.size() > 1 else None
+        nodesBefore = np.array(self.nodeArray, copy=True) if comm.size() > 1 else None
         if parallelPartitioningType == MeshParallelPartitioningTypes.node:
             #mwf for now always gives 1 layer of overlap
             (self.elementOffsets_subdomain_owned,
@@ -598,8 +852,11 @@ class Mesh(object):
              self.edgeNumbering_subdomain2global) = cpartitioning.partitionNodes(comm.comm.tompi4py(),
                                                                                  nLayersOfOverlap,
                                                                                  self.cmesh,
-                                                                                 self.subdomainMesh.cmesh)
+                                                                                 self.subdomainMesh.cmesh,
+                                                                                 nodeOwners,
+                                                                                 nodeWeights)
         else:
+            assert nodeOwners is None and nodeWeights is None, "prescribed owners and node weights need node partitioning"
             (self.elementOffsets_subdomain_owned,
              self.elementNumbering_subdomain2global,
              self.nodeOffsets_subdomain_owned,
@@ -610,9 +867,83 @@ class Mesh(object):
              self.edgeNumbering_subdomain2global) = cpartitioning.partitionElements(comm.comm.tompi4py(),
                                                                                     nLayersOfOverlap,
                                                                                     self.cmesh,
-                                                                                    self.subdomainMesh.cmesh)
+                                                                                    self.subdomainMesh.cmesh,
+                                                                                    elementOwners)
         #
         logEvent(memory("partitionMesh 3","MeshTools"),level=4)
+        #Partitioning renumbered the global nodes; keep the permutation so that
+        #anything built against the original numbering -- the multilevel
+        #hierarchy's node parents, for one -- can be read in the numbering
+        #nodeNumbering_subdomain2global refers to.
+        self.nodeNumbering_global_old2new = cpartitioning.getNodeNumbering_global_old2new(self.cmesh)
+        self.elementNumbering_global_old2new = cpartitioning.getElementNumbering_global_old2new(self.cmesh)
+        self._finishPartitioning(comm)
+        if realBoundary is not None:
+            self._markRankInterfaces(realBoundary, nodesBefore)
+
+    def _nodePermutationFromCoordinates(self, nodesBefore):
+        """old2new for the nodes, by matching rows of the node array before and after.
+
+        None if two nodes share coordinates (then the match is ambiguous)."""
+        after = np.asarray(self.nodeArray)
+        if after.shape != nodesBefore.shape:
+            return None
+        before_order = np.lexsort(nodesBefore.T[::-1])
+        after_order = np.lexsort(after.T[::-1])
+        a, b = nodesBefore[before_order], after[after_order]
+        if not np.array_equal(a, b):
+            return None
+        if len(a) > 1 and np.any(np.all(a[1:] == a[:-1], axis=1)):
+            return None
+        old2new = np.empty(len(a), dtype=np.int64)
+        old2new[before_order] = after_order
+        return old2new
+
+    def _markRankInterfaces(self, realBoundary, nodesBefore):
+        """Give the faces a rank shares with its neighbours the reserved flag -1.
+
+        A rank's exterior faces are the real boundary of the domain plus the
+        faces cut by the partition. The domain's flags are copied to the
+        subdomain unchanged, and a face that is interior to the global mesh
+        carries 0 there, so a cut face and an untagged real boundary face look
+        the same. The global mesh tells them apart: a subdomain exterior face
+        is a real boundary face exactly when its nodes, in the global
+        numbering, are the nodes of an exterior face of the global mesh.
+        ``realBoundary`` is that set, taken before partitioning (which
+        rearranges the global arrays): sorted original node numbers per face.
+
+        Only faces whose flag is 0 are marked; a positive flag on a cut face is
+        a condition the domain put there and is kept. ``-1`` is reserved for the
+        partitioner. Nothing else sets it.
+        """
+        sub = self.subdomainMesh
+        exterior = sub.exteriorElementBoundariesArray
+        old2new = self.nodeNumbering_global_old2new
+        if old2new is None:
+            #An element partition renumbers the global nodes in place without
+            #saying how; recover the permutation from the coordinates.
+            old2new = self._nodePermutationFromCoordinates(nodesBefore)
+            if old2new is None:
+                logEvent("Rank interfaces not marked: the nodes of this mesh do not "
+                         "have distinct coordinates, so the partitioner's renumbering "
+                         "cannot be recovered", level=2)
+                return
+        old2new = np.asarray(old2new)
+        new2old = np.empty_like(old2new)
+        new2old[old2new] = np.arange(len(old2new), dtype=old2new.dtype)
+        nodes = new2old[np.asarray(self.nodeNumbering_subdomain2global)[sub.elementBoundaryNodesArray[exterior]]]
+        keys = np.sort(nodes, axis=1).tolist()
+        cut = np.fromiter((tuple(k) not in realBoundary for k in keys), dtype=bool, count=len(keys))
+        flags = sub.elementBoundaryMaterialTypes
+        faces = exterior[cut]
+        flags[faces[flags[faces] == 0]] = RANK_INTERFACE_FLAG
+        sub.__dict__.pop('_elementBoundaryUserFlags', None)
+        sub.rankInterfacesMarked = True
+
+    def _finishPartitioning(self,comm):
+        """What every partitioner does once the C++ has built the subdomain mesh
+        and the maps: the Python view of the subdomain, the owned counts, and
+        the node diameters on the ghosts."""
         self.subdomainMesh.buildFromC(self.subdomainMesh.cmesh)
         self.subdomainMesh.nElements_owned = self.elementOffsets_subdomain_owned[comm.rank()+1] - self.elementOffsets_subdomain_owned[comm.rank()]
         self.subdomainMesh.nNodes_owned = self.nodeOffsets_subdomain_owned[comm.rank()+1] - self.nodeOffsets_subdomain_owned[comm.rank()]
@@ -717,6 +1048,11 @@ class Mesh(object):
         #
         logEvent(memory("partitionMesh 3","MeshTools"),level=4)
         self.buildFromCNoArrays(self.cmesh)
+        #Partitioning renumbered the global nodes; keep the permutation so that
+        #anything built against the original numbering -- the multilevel
+        #hierarchy's node parents, for one -- can be read in the numbering
+        #nodeNumbering_subdomain2global refers to.
+        self.nodeNumbering_global_old2new = cpartitioning.getNodeNumbering_global_old2new(self.cmesh)
         self.subdomainMesh.buildFromC(self.subdomainMesh.cmesh)
         self.subdomainMesh.nElements_owned = self.elementOffsets_subdomain_owned[comm.rank()+1] - self.elementOffsets_subdomain_owned[comm.rank()]
         self.subdomainMesh.nNodes_owned = self.nodeOffsets_subdomain_owned[comm.rank()+1] - self.nodeOffsets_subdomain_owned[comm.rank()]
@@ -752,236 +1088,135 @@ class Mesh(object):
         # logEvent(memory("Without global mesh","Mesh"),level=1)
         # comm.endSequential()
     def writeMeshXdmf(self,ar,name='',t=0.0,init=False,meshChanged=False,Xdmf_ElementTopology="Triangle",tCount=0, EB=False):
+        """Describe this mesh in the archive at time ``t``; with ``EB`` its element boundaries too.
+
+        The grid -- a ymf grid dict in the collection ``Mesh <name>`` (and
+        ``EBMesh <name>``) -- is built on every pass through the archive's
+        builders; the arrays behind it are written only when ``init or
+        meshChanged``. The material types are written on every pass, as
+        they were; the local-to-global maps, which ``collect.py`` and a
+        hot start from a global archive read, only with the arrays.
+        """
         if self.arGridCollection is not None:
             init = False
         elif not init:
-            grids = ar.domain.findall("Grid")
-            self.arGridCollection = grids[0]
+            self.arGridCollection = ar.domain[0]
             if EB:
-                assert(len(grids) > 1)
-                self.arEBGridCollection = grids[1]
+                assert(len(ar.domain) > 1)
+                self.arEBGridCollection = ar.domain[1]
         if init:
-            self.arGridCollection = SubElement(ar.domain,"Grid",{"Name":"Mesh "+name,
-                                                               "GridType":"Collection",
-                                                               "CollectionType":"Temporal"})
+            self.arGridCollection = ar.domain.collection("Mesh "+name)
             if EB:
-                self.arEBGridCollection = SubElement(ar.domain,"Grid",{"Name":"EBMesh "+name,
-                                                                       "GridType":"Collection",
-                                                                       "CollectionType":"Temporal"})
-        if self.arGrid is None or self.arTime.get('Value') != "{0:e}".format(t):
+                self.arEBGridCollection = ar.domain.collection("EBMesh "+name)
+        if not self.arGridCollection.is_current(t):
+            rank = ar.comm.rank()
             #
             #topology and geometry
             #
             if ar.global_sync:
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":"%e" % (t,),"Name":"%i" % (tCount,)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.globalMesh.nElements_global,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
-                                       "Dimensions":"%i %i" % (self.globalMesh.nElements_global,self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
-                                       "Dimensions":"%i %i" % (self.globalMesh.nNodes_global,3)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+name+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_sync('elements'+name+str(tCount),
-                                               offsets=self.globalMesh.elementOffsets_subdomain_owned,
-                                               data=self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
-                        ar.create_dataset_sync('nodes'+name+str(tCount),
-                                               offsets=self.globalMesh.nodeOffsets_subdomain_owned,
-                                               data=self.nodeArray[:self.nNodes_owned])
-                else:
-                    assert False, "global_sync not  supported with text heavy data"
+                assert ar.writesDatasets, "global_sync not  supported with text heavy data"
+                n_elements       = self.globalMesh.nElements_global
+                nodes_dims       = [self.globalMesh.nNodes_global, 3]
+                elements_dataset = 'elements'+name+str(tCount)
+                nodes_dataset    = 'nodes'+name+str(tCount)
+                elements_dtype   = self.globalMesh.nodeNumbering_subdomain2global
             else:
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":"%e" % (t,),"Name":"%i" % (tCount,)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.nElements_owned,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
-                                       "Dimensions":"%i %i" % (self.nElements_owned,self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
-                                       "Dimensions":"%i %i" % (self.nNodes_global,3)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+str(ar.comm.rank())+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+str(ar.comm.rank())+name+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_async('elements'+str(ar.comm.rank())+name+str(tCount),data=self.elementNodesArray[:self.nElements_owned])
-                        ar.create_dataset_async('nodes'+str(ar.comm.rank())+name+str(tCount),data=self.nodeArray)
+                n_elements       = self.nElements_owned
+                nodes_dims       = [self.nNodes_global, 3]
+                elements_dataset = 'elements'+str(rank)+name+str(tCount)
+                nodes_dataset    = 'nodes'+str(rank)+name+str(tCount)
+                elements_dtype   = self.elementNodesArray
+            self.arGrid = ar.write_grid(self.arGridCollection, None, t, tCount)
+            ar.write_topology(self.arGrid, Xdmf_ElementTopology, n_elements,
+                              [n_elements, self.nNodes_element],
+                              elements_dataset, 'elements'+name, dtype=elements_dtype)
+            ar.write_geometry(self.arGrid, nodes_dims, nodes_dataset, 'nodes'+name,
+                              dtype=self.nodeArray)
+            if init or meshChanged:
+                if ar.global_sync:
+                    ar.create_dataset_sync(elements_dataset,
+                                           offsets=self.globalMesh.elementOffsets_subdomain_owned,
+                                           data=self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
+                    ar.create_dataset_sync(nodes_dataset,
+                                           offsets=self.globalMesh.nodeOffsets_subdomain_owned,
+                                           data=self.nodeArray[:self.nNodes_owned])
+                elif ar.writesDatasets:
+                    ar.create_dataset_async(elements_dataset,data=self.elementNodesArray[:self.nElements_owned])
+                    ar.create_dataset_async(nodes_dataset,data=self.nodeArray)
                 else:
-                    SubElement(elements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elements"+name+".txt"})
-                    SubElement(nodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+name+".txt"})
-                    if init or meshChanged:
-                        numpy.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
-                        numpy.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
+                    numpy.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
+                    numpy.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
             #
             #element boundary topology and geometry
             #
             if EB:
-                self.arEBGrid = SubElement(self.arEBGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arEBTime = SubElement(self.arEBGrid,"Time",{"Value":"%e" % (t,),"Name":"%i" % (tCount,)})
                 Xdmf_ElementEBTopology = "Triangle" #cek hack
-                ebtopology = SubElement(self.arEBGrid,"Topology",
-                                    {"Type":Xdmf_ElementEBTopology,
-                                     "NumberOfElements":"%i" % (self.nElementBoundaries_global,)})
-                ebelements = SubElement(ebtopology,"DataItem",
-                                    {"Format":ar.dataItemFormat,
-                                     "DataType":"Int",
-                                     "Dimensions":"%i %i" % (self.nElementBoundaries_global,self.nNodes_elementBoundary)})
-                ebgeometry = SubElement(self.arEBGrid,"Geometry",{"Type":"XYZ"})
-                ebnodes    = SubElement(ebgeometry,"DataItem",
-                                    {"Format":ar.dataItemFormat,
-                                     "DataType":"Float",
-                                     "Precision":"8",
-                                     "Dimensions":"%i %i" % (self.nNodes_global,3)})
-                if ar.hdfFile is not None:
-                    ebelements.text = ar.hdfFilename+":/elementBoundaries"+str(ar.comm.rank())+name+str(tCount)
-                    ebnodes.text = ar.hdfFilename+":/nodes"+str(ar.comm.rank())+name+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_async('elementBoundaries'+str(ar.comm.rank())+name+str(tCount), data = self.elementBoundaryNodesArray)
-                        #ar.create_dataset_async('nodes'+`ar.comm.rank()`+name+`tCount`, data = self.nodeArray)
-                else:
-                    SubElement(ebelements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elementBoundaries"+name+".txt"})
-                    SubElement(ebnodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+name+".txt"})
-                    if init or meshChanged:
+                self.arEBGrid = ar.write_grid(self.arEBGridCollection, None, t, tCount)
+                #the boundary grid shares the mesh's nodes dataset
+                ar.write_topology(self.arEBGrid, Xdmf_ElementEBTopology, self.nElementBoundaries_global,
+                                  [self.nElementBoundaries_global, self.nNodes_elementBoundary],
+                                  'elementBoundaries'+str(rank)+name+str(tCount),
+                                  'elementBoundaries'+name, dtype=self.elementBoundaryNodesArray)
+                ar.write_geometry(self.arEBGrid, [self.nNodes_global, 3],
+                                  'nodes'+str(rank)+name+str(tCount), 'nodes'+name,
+                                  dtype=self.nodeArray)
+                if init or meshChanged:
+                    if ar.writesDatasets:
+                        ar.create_dataset_async('elementBoundaries'+str(rank)+name+str(tCount), data = self.elementBoundaryNodesArray)
+                    else:
                         np.savetxt(ar.textDataDir+"/elementBoundaries"+name+".txt",self.elementBoundaryNodesArray,fmt='%d')
 
             # Add the local->global index maps for collect.py and for
-            # reverse mapping in hotstarts from a global XDMF file.
+            # reverse mapping in hotstarts from a global archive.
             if self.globalMesh is not None and not ar.global_sync:
-                nodeMapAtt = SubElement(self.arGrid,"Attribute",
-                                        {"Name":"NodeMapL2G",
-                                         "AttributeType":"Scalar",
-                                         "Center":"Node"})
-                nodeMap = SubElement(nodeMapAtt,"DataItem",
-                                     {"Format":ar.dataItemFormat,
-                                      "DataType":"Int",
-                                      "Precision":"4",
-                                      "Dimensions":"%i" % (self.nNodes_global,)})
-                elemMapAtt = SubElement(self.arGrid,"Attribute",
-                                        {"Name":"CellMapL2G",
-                                         "AttributeType":"Scalar",
-                                         "Center":"Cell"})
-                elemMap = SubElement(elemMapAtt,"DataItem",
-                                     {"Format":ar.dataItemFormat,
-                                      "DataType":"Int",
-                                      "Precision":"4",
-                                      "Dimensions":"%i" % (self.nElements_owned,)})
-
-                if ar.hdfFile is not None:
-                    nodeMap.text = ar.hdfFilename+":/nodeMapL2G"+str(ar.comm.rank())+name+str(tCount)
-                    elemMap.text = ar.hdfFilename+":/cellMapL2G"+str(ar.comm.rank())+name+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_async('nodeMapL2G'+str(ar.comm.rank())+name+str(tCount), data=self.globalMesh.nodeNumbering_subdomain2global)
-                        ar.create_dataset_async('cellMapL2G'+str(ar.comm.rank())+name+str(tCount), data=self.globalMesh.elementNumbering_subdomain2global[:self.nElements_owned])
-                else:
-                    SubElement(nodeMap,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodeMapL2G"+name+".txt"})
-                    SubElement(nodeMap,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/cellMapL2G"+name+".txt"})
-                    if init or meshChanged:
-                        np.savetxt(ar.textDataDir+"/nodeMapL2G"+name+".txt",self.globalMesh.nodeNumbering_subdomain2global)
-                        np.savetxt(ar.textDataDir+"/cellMapL2G"+name+".txt",self.globalMesh.elementNumbering_subdomain2global[:self.nElements_owned])
+                ar.write_field(self.arGrid, "NodeMapL2G",
+                               self.globalMesh.nodeNumbering_subdomain2global, tCount,
+                               dimensions=[self.nNodes_global],
+                               dataset='nodeMapL2G'+str(rank)+name+str(tCount),
+                               text_stem='nodeMapL2G'+name,
+                               write_data=init or meshChanged)
+                ar.write_field(self.arGrid, "CellMapL2G",
+                               self.globalMesh.elementNumbering_subdomain2global[:self.nElements_owned], tCount,
+                               center="Cell", dimensions=[self.nElements_owned],
+                               dataset='cellMapL2G'+str(rank)+name+str(tCount),
+                               text_stem='cellMapL2G'+name,
+                               write_data=init or meshChanged)
             #
             #material types
             #
             if ar.global_sync:
-                nodeMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"nodeMaterialTypes",
-                                                                        "AttributeType":"Scalar",
-                                                                        "Center":"Node"})
-                nodeMaterialTypesValues = SubElement(nodeMaterialTypes,"DataItem",
-                                                     {"Format":ar.dataItemFormat,
-                                                      "DataType":"Int",
-                                                      "Dimensions":"%i" % (self.globalMesh.nNodes_global,)})
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
-                                                         "Dimensions":"%i" % (self.globalMesh.nElements_global,)})
+                ar.write_field(self.arGrid, "nodeMaterialTypes", self.nodeMaterialTypes, tCount,
+                               dimensions=[self.globalMesh.nNodes_global],
+                               sync_offsets=self.globalMesh.nodeOffsets_subdomain_owned,
+                               sync_data=self.nodeMaterialTypes[:self.nNodes_owned])
+                ar.write_field(self.arGrid, "elementMaterialTypes", self.elementMaterialTypes, tCount,
+                               center="Cell", dimensions=[self.globalMesh.nElements_global],
+                               sync_offsets=self.globalMesh.elementOffsets_subdomain_owned,
+                               sync_data=self.elementMaterialTypes[:self.nElements_owned])
                 if EB:
-                    ebnodeMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"ebnodeMaterialTypes",
-                                                                          "AttributeType":"Scalar",
-                                                                          "Center":"Node"})
-                    ebnodeMaterialTypesValues = SubElement(ebnodeMaterialTypes,"DataItem",
-                                                       {"Format":ar.dataItemFormat,
-                                                        "DataType":"Int",
-                                                        "Dimensions":"%i" % (self.globalMesh.nNodes_global,)})
-                    elementBoundaryMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"elementBoundaryMaterialTypes",
-                                                                                             "AttributeType":"Scalar",
-                                                                                             "Center":"Cell"})
-                    elementBoundaryMaterialTypesValues = SubElement(elementBoundaryMaterialTypes,"DataItem",
-                                                          {"Format":ar.dataItemFormat,
-                                                           "DataType":"Int",
-                                                           "Dimensions":"%i" % (self.globalMesh.nElementBoundaries_global,)})
-                if ar.hdfFile is not None:
-                    nodeMaterialTypesValues.text = ar.hdfFilename+":/"+"nodeMaterialTypes"+"_t"+str(tCount)
-                    ar.create_dataset_sync("nodeMaterialTypes"+"_t"+str(tCount), offsets=self.globalMesh.nodeOffsets_subdomain_owned, data=self.nodeMaterialTypes[:self.nNodes_owned])
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_t"+str(tCount)
-                    ar.create_dataset_sync("elementMaterialTypes"+"_t"+str(tCount), offsets=self.globalMesh.elementOffsets_subdomain_owned, data=self.elementMaterialTypes[:self.nElements_owned])
-                    if EB:
-                        ebnodeMaterialTypesValues.text = ar.hdfFilename+":/"+"nodeMaterialTypes"+"_t"+str(tCount)
-                        elementBoundaryMaterialTypesValues.text = ar.hdfFilename+":/"+"elementBoundaryMaterialTypes"+"_t"+str(tCount)
-                        ar.create_dataset_sync("elementBoundaryMaterialTypes"+"_t"+str(tCount), offsets = self.globalMesh.elementBoundaryOffsets_subdomain_owned, data=self.elementBoundaryMaterialTypes[:self.nElementBoundaries_owned])
-                else:
-                    assert False, "global_sync  not  supported with text heavy data"
+                    #the boundary grid's node types are the mesh's, just written
+                    ar.write_field(self.arEBGrid, "ebnodeMaterialTypes", self.nodeMaterialTypes, tCount,
+                                   dimensions=[self.globalMesh.nNodes_global],
+                                   dataset="nodeMaterialTypes_t"+str(tCount), write_data=False)
+                    ar.write_field(self.arEBGrid, "elementBoundaryMaterialTypes",
+                                   self.elementBoundaryMaterialTypes, tCount,
+                                   center="Cell", dimensions=[self.globalMesh.nElementBoundaries_global],
+                                   sync_offsets=self.globalMesh.elementBoundaryOffsets_subdomain_owned,
+                                   sync_data=self.elementBoundaryMaterialTypes[:self.nElementBoundaries_owned])
             else:
-                nodeMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"nodeMaterialTypes",
-                                                                        "AttributeType":"Scalar",
-                                                                        "Center":"Node"})
-                nodeMaterialTypesValues = SubElement(nodeMaterialTypes,"DataItem",
-                                                     {"Format":ar.dataItemFormat,
-                                                      "DataType":"Int",
-                                                      "Dimensions":"%i" % (self.nNodes_global,)})
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
-                                                         "Dimensions":"%i" % (self.nElements_owned,)})
+                ar.write_field(self.arGrid, "nodeMaterialTypes", self.nodeMaterialTypes, tCount,
+                               dimensions=[self.nNodes_global])
+                ar.write_field(self.arGrid, "elementMaterialTypes",
+                               self.elementMaterialTypes[:self.nElements_owned], tCount,
+                               center="Cell", dimensions=[self.nElements_owned])
                 if EB:
-                    ebnodeMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"ebnodeMaterialTypes",
-                                                                          "AttributeType":"Scalar",
-                                                                          "Center":"Node"})
-                    ebnodeMaterialTypesValues = SubElement(ebnodeMaterialTypes,"DataItem",
-                                                       {"Format":ar.dataItemFormat,
-                                                        "DataType":"Int",
-                                                        "Dimensions":"%i" % (self.nNodes_global,)})
-                    elementBoundaryMaterialTypes = SubElement(self.arEBGrid,"Attribute",{"Name":"elementBoundaryMaterialTypes",
-                                                                                             "AttributeType":"Scalar",
-                                                                                             "Center":"Cell"})
-                    elementBoundaryMaterialTypesValues = SubElement(elementBoundaryMaterialTypes,"DataItem",
-                                                          {"Format":ar.dataItemFormat,
-                                                           "DataType":"Int",
-                                                           "Dimensions":"%i" % (self.nElementBoundaries_global,)})
-                if ar.hdfFile is not None:
-                    nodeMaterialTypesValues.text = ar.hdfFilename+":/"+"nodeMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                    ar.create_dataset_async("nodeMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount), data=self.nodeMaterialTypes)
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                    ar.create_dataset_async("elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount), data=self.elementMaterialTypes[:self.nElements_owned])
-                    if EB:
-                        ebnodeMaterialTypesValues.text = ar.hdfFilename+":/"+"nodeMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                        elementBoundaryMaterialTypesValues.text = ar.hdfFilename+":/"+"elementBoundaryMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                        ar.create_dataset_async("elementBoundaryMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount), data=self.elementBoundaryMaterialTypes)
-                else:
-                    numpy.savetxt(ar.textDataDir+"/"+"nodeMaterialTypes"+str(tCount)+".txt",self.nodeMaterialTypes)
-                    SubElement(nodeMaterialTypesValues,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"nodeMaterialTypes"+str(tCount)+".txt"})
-                    numpy.savetxt(ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt",self.elementMaterialTypes[:self.nElements_owned])
-                    SubElement(elementMaterialTypesValues,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt"})
+                    ar.write_field(self.arEBGrid, "ebnodeMaterialTypes", self.nodeMaterialTypes, tCount,
+                                   dimensions=[self.nNodes_global],
+                                   dataset="nodeMaterialTypes_p"+str(rank)+"_t"+str(tCount),
+                                   write_data=False)
+                    ar.write_field(self.arEBGrid, "elementBoundaryMaterialTypes",
+                                   self.elementBoundaryMaterialTypes, tCount,
+                                   center="Cell", dimensions=[self.nElementBoundaries_global])
             #done with material types
     def buildFromC(self,cmesh):
         from . import cmeshTools
@@ -1684,11 +1919,20 @@ class Mesh(object):
           self.buildFromC(self.cmesh)
         logEvent("meshInfo says : \n"+self.meshInfo())
 
+class _SubdomainHierarchy(object):
+    """Parent/child relations over subdomain meshes; see MultilevelMesh.subdomainHierarchy."""
+    def hasVertexInterpolation(self):
+        #the vertex route reads global node parents, which this does not have;
+        #the geometric construction needs only the element relations
+        return False
+
+
 class MultilevelMesh(Mesh):
     """A hierchical multilevel mesh"""
     def __init__(self,levels=1):
         self.meshList=[]
         self.elementParents=None
+        self.nodeParentsArrayList=None
     def buildFromC(self,cmultilevelMesh):
         from . import cmeshTools
         self.cmultilevelMesh = cmultilevelMesh
@@ -1697,6 +1941,353 @@ class MultilevelMesh(Mesh):
          self.elementParentsArrayList,
          self.elementChildrenArrayList,
          self.elementChildrenOffsetsList) = cmeshTools.buildPythonMultilevelMeshInterface(cmultilevelMesh)
+    #Whether a finer level inherits the partition of the coarser one. Turn it
+    #off to partition every level independently, as proteus always used to.
+    levelConsistentPartitioning = True
+    #Whether the coarsest level's graph partition weighs each node by the work of everything
+    #below it that inherits its owner (descendantWeights) instead of counting nodes.
+    weightedCoarsePartition = True
+    #What cuts the coarsest level when it is not prescribed: 'graph' (the graph partitioner, PETSc's
+    #MatPartitioning) or 'rcb' (weightedBisection on the node coordinates: boxes, compact, no PETSc).
+    coarsePartitioner = 'graph'
+    #A function f(mesh, parallelPartitioningType) of the coarsest level's mesh
+    #returning the rank that owns each of its nodes (node partitioning) or
+    #elements (element partitioning), in place of the graph partitioner -- for a
+    #regular grid, cartesianNodeOwners. With level-consistent partitioning the
+    #finer levels inherit from it, so the whole hierarchy is partitioned without
+    #PETSc. Like the switch above it is read while the constructor partitions,
+    #so set it on the class.
+    coarsestLevelOwners = None
+    #How a regular grid (and its hierarchy) is built: 'generated' -- every rank
+    #generates only its own pieces (cartesianSubdomain), with no global mesh,
+    #no graph partitioner and no global-sized array -- or 'global', the global
+    #mesh partitioned by the graph partitioner. MeshOptions.regularGrid selects
+    #it per run (and the constructors' regularGrid argument); this is the
+    #default for constructors called without one.
+    regularGrid = 'generated'
+    generated = False
+
+    def generatesInPieces(self, kind, triangleFlag, nLayersOfOverlap, parallelPartitioningType,
+                          regularGrid=None):
+        """Whether this regular grid's hierarchy is generated in pieces.
+
+        The cases the generated path does not cover take the global path and
+        say so: union-jack and left-leaning triangles (they do not refine into
+        themselves), overlap other than one layer, and element partitioning
+        (which DG uses).
+        """
+        if regularGrid is None:
+            regularGrid = self.regularGrid
+        if regularGrid not in ('generated', 'global'):
+            raise ValueError("regularGrid is 'generated' or 'global', not %r" % (regularGrid,))
+        if regularGrid == 'global':
+            logEvent("regular grid: the global mesh, partitioned (regularGrid='global')", level=2)
+            return False
+        reasons = []
+        if kind == 'tri' and triangleFlag != 0:
+            reasons.append("triangleFlag %d (only right-leaning triangles, triangleFlag 0, are generated)"
+                           % triangleFlag)
+        if nLayersOfOverlap != 1:
+            reasons.append("%d layers of overlap (only one is generated)" % nLayersOfOverlap)
+        if parallelPartitioningType != MeshParallelPartitioningTypes.node:
+            reasons.append("element partitioning (only node partitioning is generated)")
+        if reasons:
+            logEvent("regular grid: the global mesh, partitioned, because of " + "; ".join(reasons), level=1)
+            return False
+        logEvent("regular grid: generated in pieces (regularGrid='generated')", level=2)
+        return True
+
+    def generateCartesianHierarchy(self, kind, counts, origin, L, nLevels, triangleFlag=0):
+        """A hierarchy of regular grids, each rank generating only its pieces.
+
+        Level l is the coarsest grid refined l times (cells halved along each
+        axis), generated by cartesianSubdomain(level=l): quadrilaterals and
+        hexahedra as generateStructuredHierarchy makes them, triangles
+        (triangleFlag 0) and tetrahedra as the generators' Kuhn splits at each
+        level's own resolution, which are nested. Every level is cut into the
+        coarsest level's bricks scaled, so the partition is level-consistent by
+        construction: every parent of a fine node a rank owns is in its coarse
+        subdomain. meshList holds meshes that stand for the global levels by
+        their counts only; the inter-level operators come from
+        partitionedVertexInterpolation and subdomainHierarchy, computed per rank.
+        """
+        from . import Comm
+        flat = kind in ('quad', 'tri')
+        dim = 2 if flat else 3
+        counts = tuple(counts[:dim])
+        rankGrid = cartesianRankGrid(counts[0], counts[1], 1 if flat else counts[2], Comm.get().size())
+        self.cartesian = dict(kind=kind, counts=counts, triangleFlag=triangleFlag, rankGrid=rankGrid)
+        self.generated = True
+        self.meshList = []
+        for l in range(nLevels):
+            mesh = cartesianSubdomain(kind, counts, tuple(L)[:dim], rankGrid=rankGrid,
+                                      triangleFlag=triangleFlag, level=l, origin=tuple(origin))
+            mesh.levelConsistent = l > 0
+            self.meshList.append(mesh)
+        self.nLevels = nLevels
+        self.cmultilevelMesh = None
+        #a diagnostic for test runs: which hierarchies were generated in pieces
+        log = os.environ.get('PROTEUS_GENERATED_HIERARCHY_LOG')
+        if log and Comm.get().rank() == 0:
+            with open(log, 'a') as f:
+                f.write("%s %s %d levels %d ranks\n" % (kind, 'x'.join(map(str, counts)), nLevels, Comm.get().size()))
+        #there are no global parent/child arrays: see subdomainHierarchy
+        self.elementParentsArrayList = None
+        self.elementChildrenArrayList = None
+        self.elementChildrenOffsetsList = None
+
+    def hasPartitionedNumbering(self):
+        """Whether the vertex route can read the hierarchy in the partitioned
+        numbering: node partitioning kept each level's permutation, or the
+        hierarchy was generated in that numbering."""
+        return self.generated or all(getattr(mesh, 'nodeNumbering_global_old2new', None) is not None
+                                     for mesh in self.meshList)
+
+    def partitionLevels(self,nLayersOfOverlap=1,
+                        parallelPartitioningType=MeshParallelPartitioningTypes.node):
+        """Partition every level, each finer one inheriting the coarser one's.
+
+        Partitioning the levels independently gives each its own graph cut, so
+        the rank that owns a fine node is unrelated to the ranks that own its
+        coarse parents and a transfer between levels is an all-to-all. Here the
+        coarsest level is cut by the graph partitioner and every finer level is
+        *assigned* from it.
+
+        Node partitioning: a node the refinement inherited stays where it was,
+        and a node it added goes to the owner of one of its parents. Every
+        parent of a fine node then lies in the node star of an owned coarse
+        node, so it is in this rank's subdomain -- owned or ghost -- and a
+        prolongation row needs only data the rank already has. Which parent a
+        new node takes is balanced rather than "the first": the k-th row picks
+        parent k mod (number of parents), so edge midpoints split between their
+        two endpoints' owners instead of piling onto one.
+
+        Element partitioning: a fine element goes to the owner of its parent.
+
+        mesh.levelConsistent records that a level inherited. Falls back to
+        independent partitioning, and says so, when the hierarchy does not
+        support it: a single rank, or -- for node partitioning -- levels that
+        are not nodally nested (weakly non-hierarchical refinement, coarsened
+        fine meshes), which have no vertex interpolation to read the parents
+        from.
+        """
+        from . import Comm
+        byNodes = parallelPartitioningType == MeshParallelPartitioningTypes.node
+        consistent = (self.levelConsistentPartitioning and
+                      Comm.get().size() > 1 and len(self.meshList) > 1)
+        if consistent and byNodes and not self.hasVertexInterpolation():
+            logEvent("levels are partitioned independently: the hierarchy is not "
+                     "nodally nested, so a finer level has no parents to inherit from",level=2)
+            consistent = False
+        #a plain function set on the class would otherwise come back bound
+        coarsestLevelOwners = inspect.getattr_static(self,'coarsestLevelOwners')
+        for l,mesh in enumerate(self.meshList):
+            owners = None
+            weights = None
+            if l == 0 and coarsestLevelOwners is not None:
+                owners = np.asarray(coarsestLevelOwners(mesh,parallelPartitioningType),dtype=np.intc)
+            elif l == 0 and consistent and byNodes and self.coarsePartitioner == 'rcb':
+                from . import Comm as _Comm
+                owners = weightedBisection(mesh.nodeArray,self.descendantWeights(),_Comm.get().size())
+            elif l == 0 and consistent and byNodes and self.weightedCoarsePartition:
+                #the graph partitioner cuts the coarsest level; weigh its nodes by what
+                #inherits from them
+                weights = self.descendantWeights()
+            if consistent and l > 0:
+                owners = (self.inheritedNodeOwners(l-1) if byNodes
+                          else self.inheritedElementOwners(l-1))
+            mesh.partitionMesh(nLayersOfOverlap=nLayersOfOverlap,
+                               parallelPartitioningType=parallelPartitioningType,
+                               nodeOwners=owners if byNodes else None,
+                               elementOwners=None if byNodes else owners,
+                               nodeWeights=weights)
+            mesh.levelConsistent = owners is not None
+
+    def descendantWeights(self):
+        """What each node of the coarsest level will cost its owner, over the whole hierarchy.
+
+        Every finer level inherits the coarsest level's partition (inheritedNodeOwners), so
+        the rank that owns a coarse node also owns -- and does the work for -- the fine nodes
+        that descend from it under the same parent rule. This counts them: for each level, the
+        number of its nodes whose chain of parents ends at each coarsest-level node, summed
+        over levels (a node is a node of every level from the one that creates it down to the
+        finest, and each level's smoothing and assembly touch it). Handing these to the graph
+        partitioner makes it balance the finest level's work, which dominates, instead of
+        counting coarse nodes: a coarse node on the boundary has about half the descendants
+        of an interior one, and with ~30 coarse nodes per rank that is not noise.
+
+        Returns an int array over the coarsest level's nodes, all >= 1.
+        """
+        n0 = self.meshList[0].nNodes_global
+        ancestor = np.arange(n0)
+        weights = np.ones(n0,dtype=np.int64)
+        for l in range(len(self.meshList)-1):
+            rowptr,colind,nzval = self.vertexInterpolation()[l+1]
+            ancestor = ancestor[self._parentPick(rowptr,colind)]
+            weights += np.bincount(ancestor,minlength=n0)
+        return weights.astype('i')
+
+    def inheritedElementOwners(self,l):
+        """The rank that owns each element of level l+1, in level l+1's own numbering:
+        the owner of its parent on the partitioned level l."""
+        coarse = self.meshList[l]
+        old2new = np.asarray(coarse.elementNumbering_global_old2new)
+        offsets = np.asarray(coarse.elementOffsets_subdomain_owned)
+        coarseOwner = np.searchsorted(offsets[1:],old2new,side='right')
+        return coarseOwner[np.asarray(self.elementParentsArrayList[l+1])].astype('i')
+
+    def globalElementsOfSubdomain(self,l):
+        """For every element of level l's subdomain mesh, its index on level l's global mesh.
+
+        Partitioning keeps the permutation it applied to a level's elements, so
+        this is a table lookup. Where it was not kept (a partitioner that does
+        not record it) an element is matched through its nodes instead: each
+        subdomain element's nodes are taken back to the global (original) node
+        numbers and compared with the global mesh's elements by sorted node
+        tuple. Either way exact, or it raises: a silent mismatch here would hand
+        a transfer operator the wrong parent.
+        """
+        mesh = self.meshList[l]
+        sd = mesh.subdomainMesh
+        elementOld2New = getattr(mesh,'elementNumbering_global_old2new',None)
+        if elementOld2New is not None:
+            elementOld2New = np.asarray(elementOld2New)
+            elementNew2Old = np.empty_like(elementOld2New)
+            elementNew2Old[elementOld2New] = np.arange(elementOld2New.size,dtype=elementOld2New.dtype)
+            return elementNew2Old[np.asarray(mesh.elementNumbering_subdomain2global)].astype('i')
+        old2new = np.asarray(mesh.nodeNumbering_global_old2new)
+        new2old = np.empty_like(old2new)
+        new2old[old2new] = np.arange(old2new.size,dtype=old2new.dtype)
+        def keyOf(nodes):
+            tuples = np.ascontiguousarray(np.sort(nodes,axis=1),dtype=np.int64)
+            return tuples.view(np.dtype((np.void,tuples.dtype.itemsize*tuples.shape[1]))).ravel()
+        sdOld = new2old[np.asarray(mesh.nodeNumbering_subdomain2global)[np.asarray(sd.elementNodesArray)]]
+        sdKeys = keyOf(sdOld)
+        globalKeys = keyOf(np.asarray(mesh.elementNodesArray))
+        order = np.argsort(globalKeys)
+        pos = np.searchsorted(globalKeys[order],sdKeys)
+        pos[pos == order.size] = 0
+        found = order[pos]
+        if not np.array_equal(globalKeys[found],sdKeys):
+            raise ValueError("level %i: a subdomain element has no counterpart on the global mesh" % l)
+        if np.unique(found).size != found.size:
+            raise ValueError("level %i: subdomain elements are not distinct on the global mesh" % l)
+        return found.astype('i')
+
+    def subdomainHierarchy(self):
+        """The parent/child relations of the levels *as each rank sees them*.
+
+        The global relations (elementParentsArrayList, elementChildren...) are
+        numbered over the global meshes. This is the same structure over the
+        subdomain meshes: for each coarse subdomain element, the fine subdomain
+        elements that are its children. A fine element whose parent is not on
+        this rank's coarse subdomain has parent -1 and is nobody's child.
+        Because a finer level inherits the coarser one's partition
+        (partitionLevels), every fine element touching an owned fine node has
+        its parent here, and so operators built from this structure are
+        complete on the rows a rank owns -- which is all that is kept.
+
+        Returns an object with the attributes MultilevelProjectionOperators
+        reads: meshList (the subdomain meshes), elementParentsArrayList,
+        elementChildrenArrayList and elementChildrenOffsetsList.
+        """
+        hierarchy = _SubdomainHierarchy()
+        hierarchy.meshList = [mesh.subdomainMesh for mesh in self.meshList]
+        hierarchy.elementParentsArrayList = [[]]
+        hierarchy.elementChildrenArrayList = []
+        hierarchy.elementChildrenOffsetsList = []
+        if not self.generated:
+            globalOf = [self.globalElementsOfSubdomain(l) for l in range(len(self.meshList))]
+        for l in range(len(self.meshList)-1):
+            nCoarseSd = hierarchy.meshList[l].nElements_global
+            nFineSd = hierarchy.meshList[l+1].nElements_global
+            if self.generated:
+                from . import cpartitioning, Comm
+                c = self.cartesian
+                parents = cpartitioning.cartesianSubdomainParents(c['kind'], c['triangleFlag'], c['counts'],
+                                                                  c['rankGrid'], l+1, Comm.get().rank())
+            else:
+                subdomainOfGlobal = -np.ones((self.meshList[l].nElements_global,),'i')
+                subdomainOfGlobal[globalOf[l]] = np.arange(nCoarseSd,dtype='i')
+                parents = subdomainOfGlobal[np.asarray(self.elementParentsArrayList[l+1])[globalOf[l+1]]]
+            hierarchy.elementParentsArrayList.append(parents.astype('i'))
+            kids = np.nonzero(parents >= 0)[0]
+            order = kids[np.argsort(parents[kids],kind='stable')].astype('i')
+            offsets = np.zeros((nCoarseSd+1,),'i')
+            offsets[1:] = np.cumsum(np.bincount(parents[kids],minlength=nCoarseSd))
+            hierarchy.elementChildrenArrayList.append(order)
+            hierarchy.elementChildrenOffsetsList.append(offsets)
+        return hierarchy
+
+    def partitionBalance(self):
+        """How evenly each level's partition spreads the work, one dict per level.
+
+        Collective. For every level it reports, as max over ranks / mean over ranks (1.0 is
+        perfect): ``nodes`` (owned nodes), ``elements`` (subdomain elements, owned and ghost --
+        an element loop assembles all of them, so this is the assembly work) and ``nodesSubdomain``
+        (owned plus ghost nodes, i.e. memory and the vector length); plus ``ghostFraction``
+        (the largest ghost-to-owned node ratio on any rank, the surface-to-volume cost of the cut).
+        For an element-partitioned hierarchy the same for elements: ``ownedElements`` (max/mean of
+        the elements a rank owns) and ``ghostElementFraction``.
+        Meant for asserting that a partitioner has not traded balance for locality and for
+        reading off where the cost of a hierarchy is going.
+        """
+        from . import Comm
+        from mpi4py import MPI
+        comm = Comm.get().comm.tompi4py()
+        out = []
+        for mesh in self.meshList:
+            sd = mesh.subdomainMesh
+            off = np.asarray(mesh.nodeOffsets_subdomain_owned)
+            owned = int(off[comm.rank+1]-off[comm.rank])
+            eoff = np.asarray(mesh.elementOffsets_subdomain_owned)
+            ownedElements = int(eoff[comm.rank+1]-eoff[comm.rank])
+            local = np.array([owned,sd.nElements_global,sd.nNodes_global,ownedElements],dtype='d')
+            allv = np.array(comm.allgather(local))
+            mean = np.maximum(allv.mean(axis=0),1.0e-300)
+            ghosts = (allv[:,2]-allv[:,0])/np.maximum(allv[:,0],1.0)
+            ghostElements = (allv[:,1]-allv[:,3])/np.maximum(allv[:,3],1.0)
+            out.append({'nodes':float(allv[:,0].max()/mean[0]),
+                        'elements':float(allv[:,1].max()/mean[1]),
+                        'nodesSubdomain':float(allv[:,2].max()/mean[2]),
+                        'ghostFraction':float(ghosts.max()),
+                        'ownedElements':float(allv[:,3].max()/mean[3]),
+                        'ghostElementFraction':float(ghostElements.max())})
+        return out
+
+    def inheritedNodeOwners(self,l):
+        """The rank that owns each node of level l+1, in level l+1's own numbering.
+
+        Reads the owner of every coarse node from the partitioned level l (its
+        node renumbering and offsets), and gives each fine node the owner of
+        one parent. Needs level l already partitioned.
+        """
+        coarse = self.meshList[l]
+        old2new = np.asarray(coarse.nodeNumbering_global_old2new)
+        offsets = np.asarray(coarse.nodeOffsets_subdomain_owned)
+        coarseOwner = np.searchsorted(offsets[1:],old2new,side='right')
+        rowptr,colind,nzval = self.vertexInterpolation()[l+1]
+        return coarseOwner[self._parentPick(rowptr,colind)].astype('i')
+
+    #Which parent a new node takes its owner from: 'lowest' (the parent with the smallest node
+    #number: deterministic, independent of the partition, and on a numbered grid always the
+    #neighbour on the same side, so the cut stays a flat plane) or 'alternate' (the k-th row
+    #takes parent k mod (number of parents): splits the nodes on a cut between its two sides
+    #evenly, but at every refinement the interface becomes a checkerboard, and the ghost layer
+    #of a rank several times as large).
+    parentRule = 'lowest'
+
+    def _parentPick(self,rowptr,colind):
+        """For every fine node, the coarse node whose owner it takes: the column index into colind."""
+        nFine = rowptr.shape[0]-1
+        counts = np.diff(rowptr)
+        if self.parentRule == 'alternate':
+            return colind[rowptr[:-1]+(np.arange(nFine) % np.maximum(counts,1))]
+        if self.parentRule != 'lowest':
+            raise ValueError("parentRule is 'lowest' or 'alternate', not %r" % (self.parentRule,))
+        lowest = np.minimum.reduceat(colind,rowptr[:-1])
+        return lowest
+
     def refine(self):
         pass
     def locallyRefine(self,elementTagArray):
@@ -1721,6 +2312,99 @@ class MultilevelMesh(Mesh):
                     self.elementChildrenArrayList[l-1][index] = ec.N
                     index += 1
             self.elementChildrenOffsetsList[l-1][-1] = index
+    def generateStructuredHierarchy(self,newMesh,generate,counts,origin,dim,
+                                    nLayersOfOverlap=1,
+                                    parallelPartitioningType=None):
+        """Build a hierarchy of regular quadrilateral or hexahedral grids directly.
+
+        Each level is generated at its own resolution from the grid generator --
+        level l+1 has twice as many cells as level l along every axis -- rather
+        than by refining the level below. A regular grid's nesting is known in
+        closed form, so there is nothing to refine, and the levels share one
+        coordinate frame by construction. It is also what lets a parallel run
+        start from just the coarse grid's dimensions: no mesh file and no
+        external generator or partitioner is involved.
+
+        Parameters
+        ----------
+        newMesh : callable
+            Returns an empty mesh of the right type.
+        generate : callable
+            ``generate(mesh, counts_l)`` fills the mesh with the regular grid
+            that has ``counts_l`` nodes along each axis.
+        counts : sequence of tuples
+            Nodes per axis on the coarsest level, as (nx, ny, nz).
+        origin : (x, y, z)
+            Added to every level before anything is derived from its geometry.
+        dim : int
+            Space dimension, 2 or 3.
+
+        Element parents and children are recorded in the same array lists the C
+        refinement fills, so everything that reads them is indifferent to how the
+        hierarchy was made.
+        """
+        from . import Comm
+        nLevels = self._structuredLevels
+        if parallelPartitioningType is None:
+            parallelPartitioningType = MeshParallelPartitioningTypes.node
+        levelCounts = []
+        n = list(counts)
+        for l in range(nLevels):
+            levelCounts.append(tuple(n))
+            n = [2*(k-1)+1 if k > 1 else 1 for k in n]
+        for l in range(nLevels):
+            mesh = newMesh()
+            generate(mesh,levelCounts[l])
+            #Translate before deriving anything from the geometry. Barycenters
+            #are computed in C when the grid is generated, so they move too.
+            for axis in range(3):
+                mesh.nodeArray[:,axis] += origin[axis]
+                if getattr(mesh,'elementBarycentersArray',None) is not None:
+                    mesh.elementBarycentersArray[:,axis] += origin[axis]
+            self.meshList.append(mesh)
+        self.cmultilevelMesh = None
+        self.nLevels = nLevels
+        self.elementParentsArrayList = [[]]
+        self.elementChildrenArrayList = []
+        self.elementChildrenOffsetsList = []
+        self.elementParents = {0: -np.ones((self.meshList[0].nElements_global,),'i')}
+        for l in range(nLevels-1):
+            parents = self._structuredElementParents(self.meshList[l],self.meshList[l+1],
+                                                     levelCounts[l],dim)
+            nCoarse = self.meshList[l].nElements_global
+            order = np.argsort(parents,kind='stable').astype('i')
+            offsets = np.zeros((nCoarse+1,),'i')
+            offsets[1:] = np.cumsum(np.bincount(parents,minlength=nCoarse))
+            self.elementParentsArrayList.append(parents)
+            self.elementChildrenArrayList.append(order)
+            self.elementChildrenOffsetsList.append(offsets)
+            self.elementParents[l+1] = parents
+        self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
+
+    @staticmethod
+    def _structuredElementParents(coarse,fine,coarseCounts,dim):
+        """The coarse element containing each fine element of a regular grid.
+
+        Found from the element barycenters and the grid spacing alone, so it does
+        not depend on how either level numbers its nodes or elements -- the
+        quadrilateral generator numbers nodes y-fastest and the hexahedral one
+        x-fastest, and neither is assumed here.
+        """
+        nodes = np.asarray(coarse.nodeArray)[:,:dim]
+        lo = nodes.min(axis=0)
+        ncell = np.array([k-1 for k in coarseCounts[:dim]],dtype=int)
+        h = (nodes.max(axis=0)-lo)/ncell
+        cc = np.asarray(coarse.nodeArray)[np.asarray(coarse.elementNodesArray)][:,:,:dim].mean(axis=1)
+        cf = np.asarray(fine.nodeArray)[np.asarray(fine.elementNodesArray)][:,:,:dim].mean(axis=1)
+        ic = np.rint((cc-lo)/h-0.5).astype(int)
+        key_c = np.ravel_multi_index(ic.T,tuple(ncell))
+        lookup = -np.ones((int(np.prod(ncell)),),dtype=int)
+        lookup[key_c] = np.arange(cc.shape[0])
+        if_ = np.minimum(np.floor((cf-lo)/h).astype(int),ncell-1)
+        parents = lookup[np.ravel_multi_index(if_.T,tuple(ncell))]
+        assert (parents >= 0).all(), "a fine element lies outside every coarse element"
+        return parents.astype('i')
+
     def calculateElementParents(self,recalculate=False):
         """
         get array elementParents[l,e] = e_c, where element e_c is the parent of element e
@@ -1742,6 +2426,374 @@ class MultilevelMesh(Mesh):
                     #ef
                 #ec
             #l
+    def calculateNodeParents(self,recalculate=False):
+        """Record which coarse nodes each fine node descends from.
+
+        Uniform refinement is nested in two ways that the rest of proteus does
+        not currently exploit. Coarse node ``i`` keeps its number on the fine
+        level, because the refinement routines start numbering new nodes at the
+        coarse node count -- so ``fineMesh.nodeArray[:nNodes_coarse]`` is
+        exactly ``coarseMesh.nodeArray``. And every node the refinement adds is
+        the midpoint of a coarse element edge.
+
+        So each fine node is described by a pair of coarse nodes: ``(i,i)`` for
+        a node inherited from the coarse mesh, and the two endpoints of a coarse
+        edge for one that was added. That is enough to write down the transfer
+        operators for a nodal space without any geometry -- a fine node that is
+        a coarse node takes its value, and a midpoint takes the average of its
+        two parents -- which is both cheaper than evaluating coarse basis
+        functions at fine interpolation points and local to whichever rank owns
+        the fine node.
+
+        Sets ``nodeParentsArrayList[l]``, of shape (nNodes_global(l), 2), in the
+        node numbering of level ``l-1``. Entry 0 is None: the coarsest level has
+        no parent.
+        """
+        if self.nodeParentsArrayList is not None and not recalculate:
+            return self.nodeParentsArrayList
+        nLevels = len(self.meshList)
+        #accumulate locally and publish only on success: a hierarchy that turns
+        #out not to be nested raises partway through, and a half-built list
+        #cached on self would be returned intact by the next call.
+        nodeParentsArrayList = [None]
+        for l in range(nLevels-1):
+            coarseMesh = self.meshList[l]
+            fineMesh = self.meshList[l+1]
+            nNodes_coarse = coarseMesh.nNodes_global
+            nNodes_fine = fineMesh.nNodes_global
+            coarseNodes = np.asarray(coarseMesh.nodeArray)
+            fineNodes = np.asarray(fineMesh.nodeArray)
+            elementNodes = np.asarray(coarseMesh.elementNodesArray)
+            nNodes_element = elementNodes.shape[1]
+
+            #the identity block below assumes the fine level kept the coarse
+            #numbering. That is what globallyRefine* does, but a hierarchy built
+            #any other way -- by coarsening a given fine mesh, say -- need not,
+            #and then every entry here would be quietly wrong rather than
+            #missing, so check it rather than assume it.
+            if not np.array_equal(fineNodes[:nNodes_coarse],coarseNodes):
+                raise ValueError(
+                    "level %i's nodes are not a prefix of level %i's, so the "
+                    "levels do not share a node numbering and a fine node "
+                    "cannot be named by a pair of coarse nodes. This hierarchy "
+                    "needs the geometric transfer operators."
+                    % (l,l+1))
+
+            parents = np.zeros((nNodes_fine,2),'i')
+            inherited = np.arange(nNodes_coarse,dtype='i')
+            parents[:nNodes_coarse,0] = inherited
+            parents[:nNodes_coarse,1] = inherited
+
+            #every added node is the midpoint of some coarse element edge, so
+            #index the edge midpoints and look the added nodes up by position.
+            #the midpoints are formed as 0.5*(a+b) on both sides, so this is an
+            #exact match rather than a tolerance test.
+            pairs = [(i,j)
+                     for i in range(nNodes_element)
+                     for j in range(i+1,nNodes_element)]
+            midpointOf = {}
+            for (i,j) in pairs:
+                a = elementNodes[:,i]
+                b = elementNodes[:,j]
+                mid = 0.5*(coarseNodes[a] + coarseNodes[b])
+                for eN in range(mid.shape[0]):
+                    midpointOf.setdefault(mid[eN].tobytes(),(a[eN],b[eN]))
+            missing = []
+            for nN in range(nNodes_coarse,nNodes_fine):
+                parentPair = midpointOf.get(fineNodes[nN].tobytes())
+                if parentPair is None:
+                    missing.append(nN)
+                else:
+                    parents[nN,0],parents[nN,1] = parentPair
+            if missing:
+                raise ValueError(
+                    "level %i: %i of %i added nodes are not the midpoint of any "
+                    "coarse element edge, so this hierarchy is not a uniform "
+                    "refinement and the nodal transfer operators do not apply "
+                    "(first few: %s)"
+                    % (l+1,len(missing),nNodes_fine-nNodes_coarse,missing[:5]))
+            nodeParentsArrayList.append(parents)
+        self.nodeParentsArrayList = nodeParentsArrayList
+        return self.nodeParentsArrayList
+
+    def isNodallyNested(self):
+        """Whether the combinatorial nodal transfer operators apply here.
+
+        They need two things, both of which uniform refinement of a single
+        coarse mesh gives and neither of which holds in general:
+
+        * each level's nodes are a prefix of the next level's, so the levels
+          share a node numbering;
+        * every node a level adds is the midpoint of an edge of the level
+          below, so it can be named by a pair of coarser nodes.
+
+        Hierarchies that fail this are not unusual and are worth supporting --
+        a weakly non-hierarchical refinement whose new vertices do not sit on
+        parent edges, or a hierarchy built by coarsening a given fine mesh,
+        where the levels need not share any node numbering at all. For those
+        the transfer operators have to be built the general way, by evaluating
+        coarse basis functions at the fine space's interpolation conditions,
+        which is what MultilevelProjectionOperators does. That path stays: this
+        predicate exists so the cheaper one is only ever taken when it is
+        actually valid, rather than assumed.
+
+        Note that this is a question about the *mesh*. Whether the nodal
+        operators apply also depends on the finite element space -- see
+        nodalTransfersApply.
+        """
+        try:
+            self.calculateNodeParents()
+        except ValueError:
+            return False
+        return True
+
+    def vertexInterpolation(self,recalculate=False):
+        """The vertex-to-vertex prolongations of a hierarchy, as CSR matrices.
+
+        Entry ``l+1`` is ``(rowptr, colind, nzval)`` with one row per node of
+        level ``l+1`` and columns that are nodes of level ``l``, in the numbering
+        the hierarchy was built with: row i holds the weights with which the
+        level-``l`` vertex basis functions interpolate to fine node i. For a
+        vertex-based Lagrange space (P1 on simplices, Q1 on quadrilaterals and
+        hexahedra) that is exactly the coarse-to-fine transfer operator, and it
+        needs no basis evaluation.
+
+        Two constructions, tried in this order:
+
+        * node parents (calculateNodeParents): an inherited node copies its
+          coarse value and a node added at an edge midpoint averages that edge's
+          two ends. Cheap, but it assumes uniform refinement of simplices.
+        * regular grids: every cell is an axis-aligned box, and a fine node's
+          weights on the corners of the coarse cell containing it are the
+          products of one-dimensional hat functions -- bilinear or trilinear
+          interpolation. A quadrilateral's cell-centre node has four parents and
+          a hexahedron's face and body centres have four and eight, which node
+          parents cannot express. No node numbering is assumed.
+
+        Raises ValueError if neither applies, so the caller can fall back to the
+        general geometric operators rather than take a result that is wrong.
+        """
+        if getattr(self,'_vertexInterpolation',None) is not None and not recalculate:
+            return self._vertexInterpolation
+        if self.generated:
+            raise ValueError("a hierarchy generated in pieces has no global vertex "
+                             "interpolation; see partitionedVertexInterpolation")
+        nLevels = len(self.meshList)
+        try:
+            self.calculateNodeParents(recalculate=recalculate)
+            result = [None]+[self.nodalProlongation(l) for l in range(nLevels-1)]
+        except ValueError as pairsFailure:
+            if self.elementParentsArrayList is None or len(self.elementParentsArrayList) < nLevels:
+                raise
+            try:
+                result = [None]+[self._boxInterpolation(l) for l in range(nLevels-1)]
+            except ValueError as boxFailure:
+                raise ValueError(
+                    "no vertex interpolation for this hierarchy. As uniform "
+                    "refinement of simplices: %s As a regular grid: %s"
+                    % (pairsFailure,boxFailure))
+        self._vertexInterpolation = result
+        return result
+
+    def hasVertexInterpolation(self):
+        """Whether vertexInterpolation can describe this hierarchy.
+
+        A question about the mesh only; whether the operators apply also depends
+        on the finite element space -- see FemTools.nodalTransfersApply.
+        A hierarchy generated in pieces has one by construction, held per rank.
+        """
+        if self.generated:
+            return True
+        try:
+            self.vertexInterpolation()
+        except ValueError:
+            return False
+        return True
+
+    def _boxInterpolation(self,l):
+        """Level ``l`` to ``l+1`` for a hierarchy of axis-aligned box cells."""
+        coarse,fine = self.meshList[l],self.meshList[l+1]
+        parents = np.asarray(self.elementParentsArrayList[l+1])
+        cn = np.asarray(coarse.nodeArray)
+        fn = np.asarray(fine.nodeArray)
+        ce = np.asarray(coarse.elementNodesArray)
+        fe = np.asarray(fine.elementNodesArray)
+        nv = ce.shape[1]
+        dim = {4:2,8:3}.get(nv)
+        if dim is None:
+            raise ValueError("cells with %i vertices are not boxes" % nv)
+        X = cn[ce][:,:,:dim]                           # (nE, nv, dim)
+        lo = X.min(axis=1)
+        hi = X.max(axis=1)
+        H = hi-lo
+        if (H <= 0.0).any():
+            raise ValueError("a coarse cell has zero extent")
+        #each cell must be the box spanned by its own extremes: its vertices are
+        #exactly the 2^dim corners, however the generator happens to order them
+        tol = 1.0e-12*max(1.0,float(np.abs(cn).max()))
+        atHi = np.abs(X-hi[:,None,:]) <= tol
+        atLo = np.abs(X-lo[:,None,:]) <= tol
+        if not (atHi | atLo).all():
+            raise ValueError("a coarse cell is not an axis-aligned box")
+        code = (atHi*(1 << np.arange(dim))[None,None,:]).sum(axis=2)
+        if not (np.sort(code,axis=1) == np.arange(nv)[None,:]).all():
+            raise ValueError("a coarse cell does not have one vertex at each corner")
+        #a fine node lies in every fine element that contains it, and each of
+        #those lies in some coarse cell; any such cell gives the same
+        #interpolation because the transfer is continuous across cell faces
+        nFine = fn.shape[0]
+        first = -np.ones((nFine,),dtype=int)
+        flat = fe.ravel()
+        owner = np.repeat(np.arange(fe.shape[0]),fe.shape[1])
+        first[flat[::-1]] = owner[::-1]
+        if (first < 0).any():
+            raise ValueError("a fine node belongs to no element")
+        P = parents[first]
+        if (P < 0).any():
+            raise ValueError("a fine element has no coarse parent")
+        Y = fn[:,:dim]
+        w = np.ones((nFine,nv))
+        for d in range(dim):
+            w *= np.clip(1.0-np.abs(Y[:,None,d]-X[P][:,:,d])/H[P][:,None,d],0.0,1.0)
+        if np.abs(w.sum(axis=1)-1.0).max() > 1.0e-10:
+            raise ValueError("a fine node lies outside its coarse cell")
+        keep = w > 1.0e-14
+        rowptr = np.zeros((nFine+1,),'i')
+        rowptr[1:] = np.cumsum(keep.sum(axis=1))
+        colind = ce[P][keep].astype('i')
+        nzval = w[keep].astype('d')
+        return rowptr,colind,nzval
+
+    def partitionedVertexInterpolation(self,l):
+        """vertexInterpolation()[l+1], in the partitioned global numbering.
+
+        For a hierarchy generated in pieces, only the rows this rank owns
+        (LinearAlgebraTools.vertexProlongationMat takes either).
+
+        The same translation partitionedNodeParents makes, for a matrix: rows
+        are fine nodes and columns coarse nodes, and partitioning renumbers each
+        level's nodes independently so that every rank's owned ones are
+        contiguous. An unpartitioned hierarchy has no permutation and the CSR is
+        returned unchanged.
+        """
+        if self.generated:
+            #only the rows of the fine nodes this rank owns, computed here
+            from . import cpartitioning, Comm
+            c = self.cartesian
+            return cpartitioning.cartesianVertexInterpolation(c['kind'], c['triangleFlag'], c['counts'],
+                                                              c['rankGrid'], l+1, Comm.get().rank())
+        rowptr,colind,nzval = self.vertexInterpolation()[l+1]
+        coarseOld2New = getattr(self.meshList[l],'nodeNumbering_global_old2new',None)
+        fineOld2New = getattr(self.meshList[l+1],'nodeNumbering_global_old2new',None)
+        if coarseOld2New is None or fineOld2New is None:
+            return rowptr,colind,nzval
+        coarseOld2New = np.asarray(coarseOld2New)
+        fineOld2New = np.asarray(fineOld2New)
+        nFine = rowptr.shape[0]-1
+        #row r of the result is the old row that maps to r
+        oldOfNew = np.empty((nFine,),dtype=int)
+        oldOfNew[fineOld2New] = np.arange(nFine)
+        lengths = np.diff(rowptr)[oldOfNew]
+        newptr = np.zeros((nFine+1,),'i')
+        newptr[1:] = np.cumsum(lengths)
+        gather = np.repeat(rowptr[oldOfNew]-newptr[:-1],lengths)+np.arange(int(newptr[-1]))
+        return newptr,coarseOld2New[colind[gather]].astype('i'),nzval[gather].copy()
+
+    def useHierarchicalGeometry(self):
+        """Keep node coordinates only on the finest level.
+
+        Because refinement numbers the nodes it adds after the ones it
+        inherited, every coarser level's node coordinates are literally a
+        prefix of the finest level's -- so each coarse level's nodeArray can be
+        a view into the finest array instead of its own copy.
+
+        The saving is the tail of a geometric series and so is bounded --
+        measured at 14% of the coordinate memory for a 3D hierarchy, and about
+        a third in 2D. The point is less the bytes than that the levels then
+        cannot disagree about where a shared node is, which is the property the
+        nodal transfer operators above are built on.
+
+        This is opt-in rather than the default because it makes the levels
+        alias: writing to a coarse nodeArray would move the fine mesh too, and
+        proteus does translate a mesh in place (MultilevelTetrahedralMesh
+        shifts level 0 by x/y/z while constructing). The views are handed back
+        read-only so that any such write raises instead of silently corrupting
+        the finer levels; move the finest level and re-call this instead.
+
+        Returns the number of bytes no longer duplicated.
+        """
+        if len(self.meshList) < 2:
+            return 0
+        finest = self.meshList[-1]
+        fineNodes = np.asarray(finest.nodeArray)
+        saved = 0
+        for l in range(len(self.meshList)-1):
+            mesh = self.meshList[l]
+            nNodes = mesh.nNodes_global
+            own = np.asarray(mesh.nodeArray)
+            if not np.array_equal(own,fineNodes[:nNodes]):
+                raise ValueError(
+                    "level %i's nodes are not a prefix of the finest level's, "
+                    "so this hierarchy cannot share geometry; it is not a "
+                    "uniform refinement of a single coarse mesh" % (l,))
+            view = fineNodes[:nNodes]
+            view.flags.writeable = False
+            mesh.nodeArray = view
+            saved += own.nbytes
+        return saved
+
+    def partitionedNodeParents(self,l):
+        """calculateNodeParents()[l+1], in the partitioned global numbering.
+
+        calculateNodeParents works in the numbering the hierarchy was built
+        with. Partitioning renumbers the global nodes so each rank's owned ones
+        are contiguous, and it is that numbering -- the one
+        nodeNumbering_subdomain2global refers to -- that the solvers' vectors
+        and matrices use. The two are not the same, so a parent pair taken
+        straight from calculateNodeParents indexes the wrong unknowns once the
+        mesh has been partitioned.
+
+        An unpartitioned hierarchy has no permutation to apply and the parents
+        are returned unchanged, which is why this is safe to call either way.
+        """
+        parents = self.calculateNodeParents()[l+1]
+        coarseOld2New = getattr(self.meshList[l],'nodeNumbering_global_old2new',None)
+        fineOld2New = getattr(self.meshList[l+1],'nodeNumbering_global_old2new',None)
+        if coarseOld2New is None or fineOld2New is None:
+            return parents
+        coarseOld2New = np.asarray(coarseOld2New)
+        fineOld2New = np.asarray(fineOld2New)
+        partitioned = np.empty_like(parents)
+        partitioned[fineOld2New] = coarseOld2New[parents]
+        return partitioned
+
+    def nodalProlongation(self,l):
+        """The prolongation from level ``l`` to ``l+1`` for a C0 nodal space.
+
+        Returned as (rowptr, colind, nzval) in CSR, with one row per fine node:
+        a fine node inherited from the coarse mesh copies its coarse value, and
+        a node the refinement added takes the average of the two coarse nodes
+        whose edge it bisects. For an affine-linear nodal space this is exactly
+        the interpolation of the coarse basis onto the fine nodes, which is what
+        makes it a drop-in for the geometrically-constructed operator.
+        """
+        parents = self.calculateNodeParents()[l+1]
+        nNodes_fine = parents.shape[0]
+        inherited = parents[:,0] == parents[:,1]
+        nnz = int(np.where(inherited,1,2).sum())
+        rowptr = np.zeros((nNodes_fine+1,),'i')
+        rowptr[1:] = np.cumsum(np.where(inherited,1,2))
+        colind = np.zeros((nnz,),'i')
+        nzval = np.zeros((nnz,),'d')
+        single = np.flatnonzero(inherited)
+        double = np.flatnonzero(~inherited)
+        colind[rowptr[single]] = parents[single,0]
+        nzval[rowptr[single]] = 1.0
+        colind[rowptr[double]] = parents[double,0]
+        colind[rowptr[double]+1] = parents[double,1]
+        nzval[rowptr[double]] = 0.5
+        nzval[rowptr[double]+1] = 0.5
+        return rowptr,colind,nzval
 
 class PointMesh(Mesh):
     #Elements=Nodes
@@ -3437,96 +4489,59 @@ class Mesh2DM(Mesh):
         if self.arGridCollection is not None:
             init = False
         elif not init:
-            self.arGridCollection = ar.domain.find("Grid")
+            self.arGridCollection = ar.domain[0]
         if init:
-            self.arGridCollection = SubElement(ar.domain,"Grid",{"Name":"Mesh "+name,
-                                                                "GridType":"Collection",
-                                                                "CollectionType":"Temporal"})
-        if self.arGrid is None or self.arTime.get('Value') != "{0:e}".format(t):
+            self.arGridCollection = ar.domain.collection("Mesh "+name)
+        if not self.arGridCollection.is_current(t):
+            rank = ar.comm.rank()
             #
             #topology and geometry
             #
             if ar.global_sync:
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":str(t),"Name":str(tCount)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.globalMesh.nElements_global,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
-                                       "Dimensions":"%i %i" % (self.globalMesh.nElements_global,
-                                                               self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
-                                       "Dimensions":"%i %i" % (self.globalMesh.nNodes_global,3)})
-                #material types
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
-                                                         "Dimensions":"%i" % (self.globalMesh.nElements_global,)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+name+str(tCount)
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_t"+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_sync('elements'+name+str(tCount),
-                                               offsets = self.globalMesh.elementOffsets_subdomain_owned,
-                                               data = self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
-                        ar.create_dataset_sync('nodes'+name+str(tCount),
-                                               offsets = self.globalMesh.nodeOffsets_subdomain_owned,
-                                               data = self.nodeArray[:self.nNodes_owned])
-                        ar.create_dataset_sync("elementMaterialTypes"+"_t"+str(tCount),
-                                               offsets = self.globalMesh.elementOffsets_subdomain_owned,
-                                               data = self.elementMaterialTypes[:self.nElements_owned])
-                else:
-                    assert False, "global_sync with text heavy data not supported"
+                assert ar.writesDatasets, "global_sync with text heavy data not supported"
+                n_elements       = self.globalMesh.nElements_global
+                nodes_dims       = [self.globalMesh.nNodes_global, 3]
+                elements_dataset = 'elements'+name+str(tCount)
+                nodes_dataset    = 'nodes'+name+str(tCount)
+                elements_dtype   = self.globalMesh.nodeNumbering_subdomain2global
             else:
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":str(t),"Name":str(tCount)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.nElements_owned,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
-                                       "Dimensions":"%i %i" % (self.nElements_owned,self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
-                                       "Dimensions":"%i %i" % (self.nNodes_global,3)})
-                #material types
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
-                                                         "Dimensions":"%i" % (self.nElements_owned,)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+str(ar.comm.rank())+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+str(ar.comm.rank())+name+str(tCount)
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_async('elements'+str(ar.comm.rank())+name+str(tCount), data = self.elementNodesArray[:self.nElements_owned])
-                        ar.create_dataset_async('nodes'+str(ar.comm.rank())+name+str(tCount), data = self.nodeArray)
-                        ar.create_dataset_async("elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount), data = self.elementMaterialTypes[:self.nElements_owned])
+                n_elements       = self.nElements_owned
+                nodes_dims       = [self.nNodes_global, 3]
+                elements_dataset = 'elements'+str(rank)+name+str(tCount)
+                nodes_dataset    = 'nodes'+str(rank)+name+str(tCount)
+                elements_dtype   = self.elementNodesArray
+            self.arGrid = ar.write_grid(self.arGridCollection, None, t, tCount)
+            ar.write_topology(self.arGrid, Xdmf_ElementTopology, n_elements,
+                              [n_elements, self.nNodes_element],
+                              elements_dataset, 'elements'+name, dtype=elements_dtype)
+            ar.write_geometry(self.arGrid, nodes_dims, nodes_dataset, 'nodes'+name,
+                              dtype=self.nodeArray)
+            #material types
+            if ar.global_sync:
+                ar.write_field(self.arGrid, "elementMaterialTypes", self.elementMaterialTypes, tCount,
+                               center="Cell", dimensions=[self.globalMesh.nElements_global],
+                               sync_offsets=self.globalMesh.elementOffsets_subdomain_owned,
+                               sync_data=self.elementMaterialTypes[:self.nElements_owned],
+                               write_data=init or meshChanged)
+            else:
+                ar.write_field(self.arGrid, "elementMaterialTypes",
+                               self.elementMaterialTypes[:self.nElements_owned], tCount,
+                               center="Cell", dimensions=[self.nElements_owned],
+                               write_data=init or meshChanged)
+            if init or meshChanged:
+                if ar.global_sync:
+                    ar.create_dataset_sync(elements_dataset,
+                                           offsets = self.globalMesh.elementOffsets_subdomain_owned,
+                                           data = self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
+                    ar.create_dataset_sync(nodes_dataset,
+                                           offsets = self.globalMesh.nodeOffsets_subdomain_owned,
+                                           data = self.nodeArray[:self.nNodes_owned])
+                elif ar.writesDatasets:
+                    ar.create_dataset_async(elements_dataset, data = self.elementNodesArray[:self.nElements_owned])
+                    ar.create_dataset_async(nodes_dataset, data = self.nodeArray)
                 else:
-                    SubElement(elements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elements"+name+".txt"})
-                    SubElement(nodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+name+".txt"})
-                    SubElement(elementMaterialTypesValues,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt"})
-                    if init or meshChanged:
-                        np.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
-                        np.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
-                        np.savetxt(ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt",self.elementMaterialTypes[:self.nElements_owned])
+                    np.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
+                    np.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
 
 
 class Mesh3DM(Mesh):
@@ -3792,99 +4807,60 @@ class Mesh3DM(Mesh):
         if self.arGridCollection is not None:
             init = False
         elif not init:
-            self.arGridCollection = ar.domain.find("Grid")
+            self.arGridCollection = ar.domain[0]
         if init:
-            self.arGridCollection = SubElement(ar.domain,"Grid",{"Name":"Mesh "+name,
-                                                               "GridType":"Collection",
-                                                               "CollectionType":"Temporal"})
-        if self.arGrid is None or self.arTime.get('Value') != "{0:e}".format(t):
+            self.arGridCollection = ar.domain.collection("Mesh "+name)
+        if not self.arGridCollection.is_current(t):
+            rank = ar.comm.rank()
+            #
+            #topology and geometry
+            #
             if ar.global_sync:
-                #
-                #topology and geometry
-                #
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":str(t),"Name":str(tCount)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.globalMesh.nElements_global,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
-                                       "Dimensions":"%i %i" % (self.globalMesh.nElements_owned,
-                                                               self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
-                                       "Dimensions":"%i %i" % (self.globalMesh.nNodes_global,3)})
-                #material types
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
-                                                         "Dimensions":"%i" % (self.globalMesh.nElements_owned,)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+name+str(tCount)
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_t"+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_sync('elements'+name+str(tCount),
-                                               offsets = self.globalMesh.elementOffsets_subdomain_owned,
-                                               data = self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
-                        ar.create_dataset_sync('nodes'+name+str(tCount),
-                                               offsets = self.globalMesh.nodeOffsets_subdomain_owned,
-                                               data = self.nodeArray[:self.nNodes_owned])
-                        ar.create_dataset_sync("elementMaterialTypes"+"_t"+str(tCount),
-                                               offsets = self.globalMesh.elementOffsets_subdomain_owned,
-                                               data = self.elementMaterialTypes[:self.nElements_owned])
-                else:
-                    assert False, "global_sync not supported  with text heavy data"
+                assert ar.writesDatasets, "global_sync with text heavy data not supported"
+                n_elements       = self.globalMesh.nElements_global
+                nodes_dims       = [self.globalMesh.nNodes_global, 3]
+                elements_dataset = 'elements'+name+str(tCount)
+                nodes_dataset    = 'nodes'+name+str(tCount)
+                elements_dtype   = self.globalMesh.nodeNumbering_subdomain2global
             else:
-                #
-                #topology and geometry
-                #
-                self.arGrid = SubElement(self.arGridCollection,"Grid",{"GridType":"Uniform"})
-                self.arTime = SubElement(self.arGrid,"Time",{"Value":str(t),"Name":str(tCount)})
-                topology = SubElement(self.arGrid,"Topology",
-                                      {"Type":Xdmf_ElementTopology,
-                                       "NumberOfElements":"%i" % (self.nElements_owned,)})
-                elements = SubElement(topology,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Int",
-                                       "Dimensions":"%i %i" % (self.nElements_owned,self.nNodes_element)})
-                geometry = SubElement(self.arGrid,"Geometry",{"Type":"XYZ"})
-                nodes    = SubElement(geometry,"DataItem",
-                                      {"Format":ar.dataItemFormat,
-                                       "DataType":"Float",
-                                       "Precision":"8",
-                                       "Dimensions":"%i %i" % (self.nNodes_global,3)})
-                #material types
-                elementMaterialTypes = SubElement(self.arGrid,"Attribute",{"Name":"elementMaterialTypes",
-                                                                           "AttributeType":"Scalar",
-                                                                           "Center":"Cell"})
-                elementMaterialTypesValues = SubElement(elementMaterialTypes,"DataItem",
-                                                        {"Format":ar.dataItemFormat,
-                                                         "DataType":"Int",
-                                                         "Dimensions":"%i" % (self.nElements_owned,)})
-                if ar.hdfFile is not None:
-                    elements.text = ar.hdfFilename+":/elements"+str(ar.comm.rank())+name+str(tCount)
-                    nodes.text = ar.hdfFilename+":/nodes"+str(ar.comm.rank())+name+str(tCount)
-                    elementMaterialTypesValues.text = ar.hdfFilename+":/"+"elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount)
-                    if init or meshChanged:
-                        ar.create_dataset_async('elements'+str(ar.comm.rank())+name+str(tCount), data = self.elementNodesArray[:self.nElements_owned])
-                        ar.create_dataset_async('nodes'+str(ar.comm.rank())+name+str(tCount), data = self.nodeArray)
-                        ar.create_dataset_async("elementMaterialTypes"+"_p"+str(ar.comm.rank())+"_t"+str(tCount), data = self.elementMaterialTypes[:self.nElements_owned])
+                n_elements       = self.nElements_owned
+                nodes_dims       = [self.nNodes_global, 3]
+                elements_dataset = 'elements'+str(rank)+name+str(tCount)
+                nodes_dataset    = 'nodes'+str(rank)+name+str(tCount)
+                elements_dtype   = self.elementNodesArray
+            self.arGrid = ar.write_grid(self.arGridCollection, None, t, tCount)
+            ar.write_topology(self.arGrid, Xdmf_ElementTopology, n_elements,
+                              [n_elements, self.nNodes_element],
+                              elements_dataset, 'elements'+name, dtype=elements_dtype)
+            ar.write_geometry(self.arGrid, nodes_dims, nodes_dataset, 'nodes'+name,
+                              dtype=self.nodeArray)
+            #material types
+            if ar.global_sync:
+                ar.write_field(self.arGrid, "elementMaterialTypes", self.elementMaterialTypes, tCount,
+                               center="Cell", dimensions=[self.globalMesh.nElements_global],
+                               sync_offsets=self.globalMesh.elementOffsets_subdomain_owned,
+                               sync_data=self.elementMaterialTypes[:self.nElements_owned],
+                               write_data=init or meshChanged)
+            else:
+                ar.write_field(self.arGrid, "elementMaterialTypes",
+                               self.elementMaterialTypes[:self.nElements_owned], tCount,
+                               center="Cell", dimensions=[self.nElements_owned],
+                               write_data=init or meshChanged)
+            if init or meshChanged:
+                if ar.global_sync:
+                    ar.create_dataset_sync(elements_dataset,
+                                           offsets = self.globalMesh.elementOffsets_subdomain_owned,
+                                           data = self.globalMesh.nodeNumbering_subdomain2global[self.elementNodesArray[:self.nElements_owned]])
+                    ar.create_dataset_sync(nodes_dataset,
+                                           offsets = self.globalMesh.nodeOffsets_subdomain_owned,
+                                           data = self.nodeArray[:self.nNodes_owned])
+                elif ar.writesDatasets:
+                    ar.create_dataset_async(elements_dataset, data = self.elementNodesArray[:self.nElements_owned])
+                    ar.create_dataset_async(nodes_dataset, data = self.nodeArray)
                 else:
-                    SubElement(elements,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/elements"+name+".txt"})
-                    SubElement(nodes,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/nodes"+name+".txt"})
-                    SubElement(elementMaterialTypesValues,"xi:include",{"parse":"text","href":"./"+ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt"})
-                    if init or meshChanged:
-                        np.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
-                        np.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
-                        np.savetxt(ar.textDataDir+"/"+"elementMaterialTypes"+str(tCount)+".txt",self.elementMaterialTypes[:self.nElements_owned])
+                    np.savetxt(ar.textDataDir+"/elements"+name+".txt",self.elementNodesArray[:self.nElements_owned],fmt='%d')
+                    np.savetxt(ar.textDataDir+"/nodes"+name+".txt",self.nodeArray)
+
 
 class MultilevelTetrahedralMesh(MultilevelMesh):
     """A hierarchical multilevel mesh with tetrahedral cells"""
@@ -3895,7 +4871,8 @@ class MultilevelTetrahedralMesh(MultilevelMesh):
                  refinementLevels=1,
                  skipInit=False,
                  nLayersOfOverlap=1,
-                 parallelPartitioningType=MeshParallelPartitioningTypes.node):
+                 parallelPartitioningType=MeshParallelPartitioningTypes.node,
+                 regularGrid=None):
         from . import cmeshTools
         from . import Comm
         MultilevelMesh.__init__(self)
@@ -3903,20 +4880,26 @@ class MultilevelTetrahedralMesh(MultilevelMesh):
         self.nLayersOfOverlap = nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         logEvent("Generating tetrahedral mesh")
         if not skipInit:
-            if self.useC:
+            if self.generatesInPieces('tet', 0, nLayersOfOverlap, parallelPartitioningType, regularGrid):
+                self.generateCartesianHierarchy('tet', (nx,ny,nz), (x,y,z), (Lx,Ly,Lz), refinementLevels)
+            elif self.useC:
                 self.meshList.append(TetrahedralMesh())
                 self.meshList[0].generateTetrahedralMeshFromRectangularGrid(nx,ny,nz,Lx,Ly,Lz)
-                self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
-                self.buildFromC(self.cmultilevelMesh)
+                #Translate the coarse mesh *before* refining it. The C refinement copies
+                #the coarse nodes into every finer level, so shifting level 0 afterwards
+                #left the finer levels at the origin -- a different coordinate frame from
+                #level 0, so geometric transfers between them were wrong and the finest
+                #mesh, the one that is solved on, was not where the domain is.
                 self.meshList[0].nodeArray[:,0] += x
                 self.meshList[0].nodeArray[:,1] += y
                 self.meshList[0].nodeArray[:,2] += z
-                self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+                self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
+                self.buildFromC(self.cmultilevelMesh)
                 for l in range(1,refinementLevels):
                     self.meshList.append(TetrahedralMesh())
                     self.meshList[l].cmesh = self.cmeshList[l]
                     self.meshList[l].buildFromC(self.cmeshList[l])
-                    self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+                self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
             else:
                 grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
                 self.meshList.append(TetrahedralMesh())
@@ -3946,12 +4929,11 @@ class MultilevelTetrahedralMesh(MultilevelMesh):
             logEvent("buildFromC")
             self.buildFromC(self.cmultilevelMesh)
             logEvent("partitionMesh")
-            self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
             for l in range(1,refinementLevels):
                 self.meshList.append(TetrahedralMesh())
                 self.meshList[l].cmesh = self.cmeshList[l]
                 self.meshList[l].buildFromC(self.meshList[l].cmesh)
-                self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+            self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
         else:
             grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
             self.meshList.append(TetrahedralMesh())
@@ -4014,7 +4996,8 @@ class MultilevelHexahedralMesh(MultilevelMesh):
                  refinementLevels=1,
                  skipInit=False,
                  nLayersOfOverlap=1,
-                 parallelPartitioningType=MeshParallelPartitioningTypes.node):
+                 parallelPartitioningType=MeshParallelPartitioningTypes.node,
+                 regularGrid=None):
         from . import cmeshTools
         from . import Comm
         MultilevelMesh.__init__(self)
@@ -4022,10 +5005,23 @@ class MultilevelHexahedralMesh(MultilevelMesh):
             self.useC = True
         else:
             self.useC = False
+        #Hexahedral refinement was never implemented (refine() raises), but a
+        #regular grid does not need it: see generateStructuredHierarchy.
+        structured = refinementLevels > 1
         self.nLayersOfOverlap = nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         logEvent("Generating hexahedral mesh")
         if not skipInit:
-            if self.useC:
+            if self.generatesInPieces('hex', 0, nLayersOfOverlap, parallelPartitioningType, regularGrid):
+                self.generateCartesianHierarchy('hex', (nx,ny,nz), (x,y,z), (Lx,Ly,Lz), refinementLevels)
+            elif structured:
+                self._structuredLevels = refinementLevels
+                self.generateStructuredHierarchy(
+                    HexahedralMesh,
+                    lambda mesh,c: mesh.generateHexahedralMeshFromRectangularGrid(c[0],c[1],c[2],Lx,Ly,Lz),
+                    (nx,ny,nz),(x,y,z),3,
+                    nLayersOfOverlap=nLayersOfOverlap,
+                    parallelPartitioningType=parallelPartitioningType)
+            elif self.useC:
                 self.meshList.append(HexahedralMesh())
                 self.meshList[0].generateHexahedralMeshFromRectangularGrid(nx,ny,nz,Lx,Ly,Lz)
                 self.meshList[0].nodeArray[:,0] += x
@@ -4033,12 +5029,11 @@ class MultilevelHexahedralMesh(MultilevelMesh):
                 self.meshList[0].nodeArray[:,2] += z
                 self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
                 self.buildFromC(self.cmultilevelMesh)
-                self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
                 for l in range(1,refinementLevels):
                     self.meshList.append(HexahedralMesh())
                     self.meshList[l].cmesh = self.cmeshList[l]
                     self.meshList[l].buildFromC(self.cmeshList[l])
-                    self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+                self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
             else:
                 grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
                 self.meshList.append(HexahedralMesh())
@@ -4062,12 +5057,11 @@ class MultilevelHexahedralMesh(MultilevelMesh):
         self.meshList.append(mesh0)
         self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
         self.buildFromC(self.cmultilevelMesh)
-        self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
         for l in range(1,refinementLevels):
             self.meshList.append(HexahedralMesh())
             self.meshList[l].cmesh = self.cmeshList[l]
             self.meshList[l].buildFromC(self.meshList[l].cmesh)
-            self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+        self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
 
 
     def refine(self):
@@ -5080,27 +6074,36 @@ class MultilevelTriangularMesh(MultilevelMesh):
                  refinementLevels=1,
                  skipInit=False,
                  nLayersOfOverlap=1,
-                 parallelPartitioningType=MeshParallelPartitioningTypes.node,triangleFlag=0):
+                 parallelPartitioningType=MeshParallelPartitioningTypes.node,
+                 triangleFlag=0,
+                 regularGrid=None):
         from . import cmeshTools
         MultilevelMesh.__init__(self)
         self.useC = True
         self.nLayersOfOverlap=nLayersOfOverlap; self.parallelPartitioningType = parallelPartitioningType
         #self.useC = False
         if not skipInit:
-            if self.useC:
+            if self.generatesInPieces('tri', triangleFlag, nLayersOfOverlap, parallelPartitioningType, regularGrid):
+                self.generateCartesianHierarchy('tri', (nx,ny), (x,y,z), (Lx,Ly,Lz), refinementLevels,
+                                                triangleFlag=triangleFlag)
+            elif self.useC:
                 self.meshList.append(TriangularMesh())
                 self.meshList[0].generateTriangularMeshFromRectangularGrid(nx,ny,Lx,Ly,triangleFlag=triangleFlag)
-                self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
-                self.buildFromC(self.cmultilevelMesh)
+                #Translate the coarse mesh *before* refining it. The C refinement copies
+                #the coarse nodes into every finer level, so shifting level 0 afterwards
+                #left the finer levels at the origin -- a different coordinate frame from
+                #level 0, so geometric transfers between them were wrong and the finest
+                #mesh, the one that is solved on, was not where the domain is.
                 self.meshList[0].nodeArray[:,0] += x
                 self.meshList[0].nodeArray[:,1] += y
                 self.meshList[0].nodeArray[:,2] += z
-                self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+                self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
+                self.buildFromC(self.cmultilevelMesh)
                 for l in range(1,refinementLevels):
                     self.meshList.append(TriangularMesh())
                     self.meshList[l].cmesh = self.cmeshList[l]
                     self.meshList[l].buildFromC(self.meshList[l].cmesh)
-                    self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+                self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
             else:
                 grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
                 self.meshList.append(TriangularMesh())
@@ -5131,12 +6134,11 @@ class MultilevelTriangularMesh(MultilevelMesh):
             self.meshList.append(mesh0)
             self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
             self.buildFromC(self.cmultilevelMesh)
-            self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
             for l in range(1,refinementLevels):
                 self.meshList.append(TriangularMesh())
                 self.meshList[l].cmesh = self.cmeshList[l]
                 self.meshList[l].buildFromC(self.meshList[l].cmesh)
-                self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+            self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
         else:
             grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
             self.meshList.append(TriangularMesh())
@@ -5221,29 +6223,44 @@ class MultilevelQuadrilateralMesh(MultilevelMesh):
                  refinementLevels=1,
                  skipInit=False,
                  nLayersOfOverlap=1,
-                 parallelPartitioningType=MeshParallelPartitioningTypes.node,triangleFlag=0,
-                 useC=True):
+                 parallelPartitioningType=MeshParallelPartitioningTypes.node,
+                 triangleFlag=0,
+                 useC=True,
+                 regularGrid=None):
         from .import cmeshTools
         MultilevelMesh.__init__(self)
         self.useC = useC  # Implementing with C will take a bit more work. Disabling for now.
-        if refinementLevels > 1:
+        #A regular grid needs no refinement at all: every level can be generated
+        #at its own resolution (see generateStructuredHierarchy). That is the
+        #default; asking for useC=False keeps the old Python refinement.
+        structured = (refinementLevels > 1 and useC)
+        if refinementLevels > 1 and not structured:
             logEvent("Quad refinement is not supported in C routines, switching off c-mesh");
             self.useC = False  # Currently quad refinement is not supported in C routines.
         self.nLayersOfOverlap=nLayersOfOverlap ; self.parallelPartitioningType = parallelPartitioningType
         if not skipInit:
-            if self.useC:
+            if self.generatesInPieces('quad', 0, nLayersOfOverlap, parallelPartitioningType, regularGrid):
+                self.generateCartesianHierarchy('quad', (nx,ny), (x,y,z), (Lx,Ly,Lz), refinementLevels)
+            elif structured:
+                self._structuredLevels = refinementLevels
+                self.generateStructuredHierarchy(
+                    QuadrilateralMesh,
+                    lambda mesh,c: mesh.generateQuadrilateralMeshFromRectangularGrid(c[0],c[1],Lx,Ly),
+                    (nx,ny,1),(x,y,z),2,
+                    nLayersOfOverlap=nLayersOfOverlap,
+                    parallelPartitioningType=parallelPartitioningType)
+            elif self.useC:
                 self.meshList.append(QuadrilateralMesh())
                 self.meshList[0].generateQuadrilateralMeshFromRectangularGrid(nx,ny,Lx,Ly)
                 self.meshList[0].nodeArray[:,0] += x
                 self.meshList[0].nodeArray[:,1] += y
                 self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
                 self.buildFromC(self.cmultilevelMesh)
-                self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
                 for l in range(1,refinementLevels):
                     self.meshList.append(QuadrilateralMesh())
                     self.meshList[l].cmesh = self.cmeshList[l]
                     self.meshList[l].buildFromC(self.cmeshList[l])
-                    self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+                self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
             else:
                 grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
                 self.meshList.append(QuadrilateralMesh())
@@ -5974,17 +6991,21 @@ class MultilevelEdgeMesh(MultilevelMesh):
         if self.useC:
             self.meshList.append(EdgeMesh())
             self.meshList[0].generateEdgeMeshFromRectangularGrid(nx,Lx)
-            self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
-            self.buildFromC(self.cmultilevelMesh)
+            #Translate the coarse mesh *before* refining it. The C refinement copies
+            #the coarse nodes into every finer level, so shifting level 0 afterwards
+            #left the finer levels at the origin -- a different coordinate frame from
+            #level 0, so geometric transfers between them were wrong and the finest
+            #mesh, the one that is solved on, was not where the domain is.
             self.meshList[0].nodeArray[:,0] += x
             self.meshList[0].nodeArray[:,1] += y
             self.meshList[0].nodeArray[:,2] += z
-            self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+            self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
+            self.buildFromC(self.cmultilevelMesh)
             for l in range(1,refinementLevels):
                 self.meshList.append(EdgeMesh())
                 self.meshList[l].cmesh = self.cmeshList[l]
                 self.meshList[l].buildFromC(self.meshList[l].cmesh)
-                self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+            self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
         else:
             grid=RectangularGrid(nx,ny,nz,Lx,Ly,Lz)
             self.meshList.append(EdgeMesh())
@@ -6044,60 +7065,75 @@ class MultilevelSimplicialMesh(MultilevelMesh):
 
 ## @}
 
-###utility functions for reading meshes from Xdmf
+###utility functions for reading meshes back from an archive
 
-def findXMLgridElement(xmf,MeshTag='Spatial_Domain',id_in_collection=-1,verbose=0):
-    """Try to find the element of the xml tree xmf that holds a uniform
-    grid with the name given in MeshTag by searching through Temporal
-    Grid Collections and Grid Collections.
+def _dataitem_dataset(node, label):
+    """The HDF5 dataset name a topology, geometry or attribute's data item refers to.
 
-    If MeshTag isn't found, uses the first entry in the Domain
+    A data item reference is ``<file>:/<dataset>``, so splitting on ``:/``
+    keeps a dataset path that itself contains a colon intact.
     """
-    Domain = xmf.getroot()[-1]
-    GridCollection = None
-    Grid = None
-    for collection in Domain:
-        if 'Name' in collection.attrib and MeshTag in collection.attrib['Name']:
-            GridCollection = collection
+    item = node.get("data_item") if node is not None else None
+    assert item is not None, "no data_item under %s" % (label,)
+    text = (item.get("data") or "").strip()
+    assert text, "the data_item under %s has no HDF5 reference" % (label,)
+    return text.split(':/')[-1]
+
+
+def findArchiveGrid(domain, MeshTag='Spatial_Domain', id_in_collection=-1, verbose=0):
+    """One grid of an archive's domain: a step of the collection named by ``MeshTag``.
+
+    ``domain`` is the ymf domain dict (:func:`proteus.Archiver.readArchiveDomain`
+    reads one from an archive's ``.h5``). The collection is the first whose
+    name contains ``MeshTag``, or the first of all when none does;
+    ``id_in_collection`` selects the step, -1 being the last written. A
+    per-subdomain step holds one grid per rank, of which the first is
+    returned, which is what a serial reader can use.
+    """
+    from proteus.Archiver import archive_collections
+    collections = archive_collections(domain)
+    assert collections, "the archive has no time collections"
+    collection = None
+    for c in collections:
+        if MeshTag in c.get("name", ""):
+            collection = c
             break
-    if GridCollection is None:
-        GridCollection = Domain[0]
-    logEvent("Trying GridCollection.tag= %s" % (GridCollection.tag),4)
-    if GridCollection.attrib['GridType'] == 'Collection':
-        Grid = GridCollection[-1]
-    elif GridCollection.attrib['GridType'] == 'Uniform':
-        Grid = GridCollection
-    assert Grid.tag == 'Grid'
-    assert Grid.attrib['GridType'] == 'Uniform'
+    if collection is None:
+        collection = collections[0]
+        logEvent("No grid collection named %r; using %r"
+                 % (MeshTag, collection.get("name", "<unnamed>")), 3)
+    steps = collection["data"]
+    assert steps, ("grid collection %r holds no grids"
+                   % (collection.get("name", "<unnamed>"),))
+    step = steps[id_in_collection]
+    if "spatial_collection" in step:
+        subdomains = step["spatial_collection"]
+        assert subdomains, "spatial collection holds no subdomain grids"
+        return subdomains[0]
+    return step
 
-    return Grid
 
-def extractPropertiesFromXdmfGridNode(Grid):
-    """unpack the Topology, Geometry, NodeMaterials, and ElementMaterials
-    nodes from xdmf node for a uniform grid
-    """
-    #Geometry first
-    Topology = None; Geometry  = None; NodeMaterials= None; ElementMaterials = None
-    for i,leaf in enumerate(Grid):
-        logEvent("Grid leaf %d tag= %s " % (i,leaf.tag),4)
-        if leaf.tag == 'Topology':
-            Topology = Grid[i]
-            logEvent("Topology found in leaf %d " % i,4)
-        elif leaf.tag == 'Geometry':
-            Geometry = Grid[i]
-            logEvent("Geometry found in leaf %d " % i,4)
-        elif leaf.tag == 'Attribute' and leaf.attrib['Name'] == 'nodeMaterialTypes':
-            NodeMaterials = Grid[i]
-            logEvent("NodeMaterials found in leaf %d " % i,4)
-        elif leaf.tag == 'Attribute' and leaf.attrib['Name'] == 'elementMaterialTypes':
-            ElementMaterials = Grid[i]
-            logEvent("ElementMaterials found in leaf %d " % i,4)
+def extractPropertiesFromGrid(grid):
+    """Unpack the topology, geometry, nodeMaterialTypes and elementMaterialTypes of a grid dict."""
+    Topology = grid.get("topology")
+    Geometry = grid.get("geometry")
+    NodeMaterials = ElementMaterials = None
+    for attribute in grid.get("attributes", []):
+        name = attribute.get("name")
+        if name == 'nodeMaterialTypes':
+            NodeMaterials = attribute
+        elif name == 'elementMaterialTypes':
+            ElementMaterials = attribute
+    for label, node in (("Topology", Topology), ("Geometry", Geometry),
+                        ("NodeMaterials", NodeMaterials),
+                        ("ElementMaterials", ElementMaterials)):
+        logEvent("%s %s" % (label, "found" if node is not None else "absent"), 4)
 
     return Topology,Geometry,NodeMaterials,ElementMaterials
 
 def readUniformElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topologyid2name,topology2nodes):
     """
-    Read xmdf element topology information when there are uniform elements in the mesh
+    Read the element topology when there are uniform elements in the mesh
     Type of element given by elementTopologyName
     Heavy data stored in hdf5
     topologyid2name -- lookup for number of nodes in a given element type
@@ -6107,13 +7143,13 @@ def readUniformElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topolog
     nElements_global  -- the number of elements in the mesh
     nNodes_element    -- number of nodes per element
     elementNodesArray -- element --> node connectivity stored as flattened array accessed using elementNodes_offset
-    elementNodes_offset -- offsets into the elementNodesArray storage for element connectivity, 
+    elementNodes_offset -- offsets into the elementNodesArray storage for element connectivity,
     element eN nodes are in elementNodesArray[elementNodes_offset[eN]:elementNodes_offset[eN+1]]
 
     """
 
     nNodes_element = topology2nodes[elementTopologyName]
-    entry = Topology[0].text.split(':')[-1]
+    entry = _dataitem_dataset(Topology, "Topology")
     logEvent("Reading  elementNodesArray from %s " % entry,3)
 
     elementNodesArray = hdf5["/"+entry][:]
@@ -6127,23 +7163,23 @@ def readUniformElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topolog
 
 def readMixedElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topologyid2name,topology2nodes):
     """
-    Read xmdf element topology information when there are mixed elements in the mesh
+    Read the element topology when there are mixed elements in the mesh
     Heavy data stored in hdf5
     topologyid2name -- lookup for number of nodes in a given element type
 
     returns
 
     nElements_global  -- the number of elements in the mesh
-    elementNodesArray -- element --> node connectivity stored as flattened 
+    elementNodesArray -- element --> node connectivity stored as flattened
     array accessed using elementNodes_offset
-    elementNodes_offset -- offsets into the elementNodesArray storage for element 
-    connectivity, element eN nodes are 
+    elementNodes_offset -- offsets into the elementNodesArray storage for element
+    connectivity, element eN nodes are
     inelementNodesArray[elementNodes_offset[eN]:elementNodes_offset[eN+1]]
- 
+
     """
     assert elementTopologyName == 'Mixed'
 
-    entry = Topology[0].text.split(':')[-1]
+    entry = _dataitem_dataset(Topology, "Topology")
     logEvent("Reading xdmf_topology from %s " % entry,3)
 
     xdmf_topology = hdf5["/"+entry][:]
@@ -6165,41 +7201,58 @@ def readMixedElementTopologyFromXdmf(elementTopologyName,Topology,hdf5,topologyi
         eN += 1; i += nNodes_local+1
     elementNodesArray = np.zeros((elementNodes_offset[nElements_global],),'i')
     i = 0; eN = 0
-    while i < len(self.xdmf_topology):
+    #this read self.xdmf_topology, which does not exist in a module function
+    while i < len(xdmf_topology):
         nNodes_local = topology2nodes[topologyid2name[xdmf_topology[i]]]
         elementNodesArray[elementNodes_offset[eN]:elementNodes_offset[eN+1]][:] = xdmf_topology[i+1:i+1+nNodes_local][:]
         eN += 1; i += nNodes_local+1
 
     return nElements_global, elementNodesArray, elementNodes_offset
 
-def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHDF5=True,verbose=0):
-    """Read in a mesh from XDMF, assuming heavy data is in hdf5
+def readMeshFromArchive(archive_base,MeshTag="Spatial_Domain",verbose=0):
+    """Read a mesh back from a proteus archive, from its hdf5 file alone
+
+    ``archive_base`` is the archive's path without the ``.h5`` extension.
+    Its metadata (version 1, the XDMF fragments proteus <= 1.9.x stored, or
+    version 2) describes every step; the last step of the collection named
+    by ``MeshTag`` is read, so no ``.xmf`` is needed. Serial only: a
+    per-subdomain archive yields its first subdomain.
 
     :return: a BasicMeshInfo object with the minimal information read
-    
+
     """
-    # start trying to read an xdmf archive with name xmf_archive_base.xmf
-    # assumes heavy_file_base.h5 has heavy data
-    # root Element is Xdmf
-    #   last child of Xdmf which should be a Domain Element
-    #      find child of Domain that is a Temporal Grid Collection with a name containing MeshTag, if None use first collection
-    #         last child of Temporal Grid Collection should be a Uniform Grid at final time
-    #            Attribute (usually 1) of child is  Topology
-    #               set elementTopologyName to Type
-    #               if Type != Mixed
-    #                 get text attribute and read this entry from  hdf5 file
-    #                 set nNodes_element based on Type, nElements_global from leading dimension of elementNodesArray
-    #                 create elementNodes_offset from Type and flatten elementNodesArray
-    #               else
-    #                 get text attribute and read this entry from  hdf5 file to place in into xdmf_topology
-    #                 generate elementNodesArray from xdmf_topology, calculating the number of elements using
-    #                   walk through xdmf_topology
-    #            Attribute (usually 2) of child is Geometry  --> load data into nodeArray
-    #                set nNodes_global from nodeArray
-    #            If has Attribute nodeMaterials read this from hdf file, else set to default of all zeros
-    #            If has Attribute elementMaterialTypes, read this from hdf file, else set to default of all zeros
+    dataDir, filename = os.path.split(archive_base)
+    dataDir = dataDir or '.'
+    h5_path = os.path.join(dataDir, filename+'.h5')
+    assert os.path.isfile(h5_path)
+    from proteus.Archiver import archive_collections
+    domain = readArchiveDomain(filename, dataDir)
+    assert domain is not None and archive_collections(domain), \
+        ("%s holds no proteus archive metadata; a mesh in an XDMF file written "
+         "by another tool is read with readMeshXdmf" % (h5_path,))
+    return _readMeshFromDomain(domain, h5_path, MeshTag=MeshTag, verbose=verbose)
+
+def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHDF5=True,verbose=0):
+    """Read a mesh from an XDMF file, assuming heavy data is in hdf5
+
+    For XDMF written by other tools -- an OpenFOAM mesh converted to XDMF,
+    say -- whose ``.h5`` holds the arrays and nothing else. The XDMF is
+    parsed by ``ymf.xdmf``, so proteus itself imports no XML parser. A
+    proteus archive needs no ``.xmf``: :func:`readMeshFromArchive` reads it
+    from its ``.h5``.
+
+    :return: a BasicMeshInfo object with the minimal information read
+
+    """
+    from ymf.xdmf import read_xdmf
+    assert hasHDF5, "a mesh is read with its heavy data in an hdf5 file"
     assert os.path.isfile(xmf_archive_base+'.xmf')
     assert os.path.isfile(heavy_file_base+'.h5')
+    domain, _ = read_xdmf(xmf_archive_base+'.xmf')
+    return _readMeshFromDomain(domain, heavy_file_base+'.h5', MeshTag=MeshTag, verbose=verbose)
+
+def _readMeshFromDomain(domain, h5_path, MeshTag="Spatial_Domain", verbose=0):
+    """The mesh described by one grid of ``domain``, its arrays read from ``h5_path``."""
 
     ###information about allowed Xdmf topologies
     #Xdmf cell type id to Name
@@ -6226,33 +7279,28 @@ def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHD
     #
     MeshInfo = BasicMeshInfo()
 
-    xmf = ET.parse(xmf_archive_base+'.xmf')
-    hdf5= h5py.File(heavy_file_base+'.h5',"r")
-    assert hasHDF5
+    hdf5= h5py.File(h5_path,"r")
 
-    Grid = findXMLgridElement(xmf,MeshTag,id_in_collection=-1,verbose=verbose)
+    Grid = findArchiveGrid(domain,MeshTag,id_in_collection=-1,verbose=verbose)
 
-    Topology,Geometry,NodeMaterials,ElementMaterials = extractPropertiesFromXdmfGridNode(Grid)
+    Topology,Geometry,NodeMaterials,ElementMaterials = extractPropertiesFromGrid(Grid)
 
     assert Geometry is not None
-    entry = Geometry[0].text.split(':')[-1]
+    entry = _dataitem_dataset(Geometry, "Geometry")
     logEvent("Reading nodeArray from %s " % entry,3)
 
     MeshInfo.nodeArray = hdf5["/"+entry][:]
     MeshInfo.nNodes_global = MeshInfo.nodeArray.shape[0]
 
     if NodeMaterials is not None:
-        entry = NodeMaterials[0].text.split(':')[-1]
+        entry = _dataitem_dataset(NodeMaterials, "nodeMaterialTypes")
         logEvent("Reading nodeMaterialTypes from %s " % entry,4)
         MeshInfo.nodeMaterialTypes = hdf5["/"+entry][:]
     else:
         MeshInfo.nodeMaterialTypes = np.zeros((MeshInfo.nNodes_global,),'i')
 
     assert Topology is not None
-    if 'Type' in Topology.attrib:
-        MeshInfo.elementTopologyName = Topology.attrib['Type']
-    elif 'TopologyType' in Topology.attrib:
-        MeshInfo.elementTopologyName = Topology.attrib['TopologyType']
+    MeshInfo.elementTopologyName = Topology.get("type")
     assert MeshInfo.elementTopologyName is not None
 
     logEvent("elementTopologyName= %s " % MeshInfo.elementTopologyName,3)
@@ -6269,7 +7317,7 @@ def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHD
 
     #
     if ElementMaterials is not None:
-        entry = ElementMaterials[0].text.split(':')[-1]
+        entry = _dataitem_dataset(ElementMaterials, "elementMaterialTypes")
         logEvent("Reading elementMaterialTypes from %s " % entry,3)
         MeshInfo.elementMaterialTypes = hdf5["/"+entry][:]
 
@@ -6283,6 +7331,7 @@ def readMeshXdmf(xmf_archive_base,heavy_file_base,MeshTag="Spatial_Domain",hasHD
 
     return MeshInfo
 #
+
 def writeHexMesh(mesh_info,hexfile_base,index_base=0):
     """
     Write a hex mesh in Ido's format with base numbering index_base
@@ -6334,12 +7383,11 @@ class MultilevelNURBSMesh(MultilevelMesh):
             self.meshList[0].nodeArray[:,0] += x
             self.meshList[0].nodeArray[:,1] += y
             self.meshList[0].nodeArray[:,2] += z
-            self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
             for l in range(1,refinementLevels):
                 self.meshList.append(NURBSMesh())
                 self.meshList[l].cmesh = self.cmeshList[l]
                 self.meshList[l].buildFromC(self.cmeshList[l])
-                self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+            self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
 
     def generateFromExistingCoarseMesh(self,mesh0,refinementLevels,nLayersOfOverlap=1,
                                        parallelPartitioningType=MeshParallelPartitioningTypes.node):
@@ -6353,12 +7401,11 @@ class MultilevelNURBSMesh(MultilevelMesh):
         self.meshList.append(mesh0)
         self.cmultilevelMesh = cmeshTools.CMultilevelMesh(self.meshList[0].cmesh,refinementLevels)
         self.buildFromC(self.cmultilevelMesh)
-        self.meshList[0].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
         for l in range(1,refinementLevels):
             self.meshList.append(NURBSMesh())
             self.meshList[l].cmesh = self.cmeshList[l]
             self.meshList[l].buildFromC(self.meshList[l].cmesh)
-            self.meshList[l].partitionMesh(nLayersOfOverlap=nLayersOfOverlap,parallelPartitioningType=parallelPartitioningType)
+        self.partitionLevels(nLayersOfOverlap,parallelPartitioningType)
 
 
     def refine(self):
@@ -6812,7 +7859,10 @@ class MeshOptions(object):
         self.nd = nd
         self.he = 1.
         self.use_gmsh = False
+        self.use_plex = False
         self.genMesh = True
+        # max area/volume per region, parallel to domain.regions
+        self.regionConstraints = []
         self.outputFiles_name = 'mesh'
         self.outputFiles = {'poly': True,     
                             'ply': False,        
@@ -6829,6 +7879,12 @@ class MeshOptions(object):
         self.nny = None
         self.nnz = None
         self.triangleFlag = 1
+        #'generated': a rectangular domain's regular grid is generated in
+        #pieces, every rank its own, with no global mesh or graph partitioner
+        #(MeshTools.cartesianSubdomain); 'global': the global mesh, partitioned.
+        #Cases the generated path does not cover take the global path either way
+        #(MultilevelMesh.generatesInPieces).
+        self.regularGrid = 'generated'
         self.nd = nd
         if nd is not None:
             if nd == 2:
@@ -6931,6 +7987,139 @@ class MeshOptions(object):
         self.outputFiles['ply'] = ply
         self.outputFiles['asymptote'] = asymptote
         self.outputFiles['geo'] = geo
+
+
+def rankInterfaceExteriorMask(mesh):
+    """Which of ``mesh.exteriorElementBoundariesArray`` are rank interfaces.
+
+    On a partitioned mesh the faces between ranks are exterior faces of each
+    rank's subdomain even though they are interior to the global mesh. A
+    boundary term applied there is applied to the inside of the domain.
+
+    The partitioner already marks them: it copies the domain's flags onto the
+    real boundary and leaves ``elementBoundaryMaterialTypes`` at 0 on the
+    interfaces. Measured on a 16x16 unit square over 2 ranks, element
+    partition, no overlap: the real boundary came back as material types
+    1/2/3/4, 64 faces in all, which is the whole boundary, and every one of
+    the 16 interface faces on each rank as 0.
+
+    That mark is why Dirichlet conditions are already safe -- ``getDBC(x,
+    flag)`` returns None for flag 0 -- and why the diffusive flux is safe,
+    since it is driven by ``isDOFBoundary``. The advective flux consults
+    neither, so it needs this.
+
+    The result is a boolean array **indexed the way the ``ebqe`` arrays are**,
+    by position in ``exteriorElementBoundariesArray``, not by element boundary
+    number. Mask with it after the flux kernel has run; do not hand a shortened
+    face list to the kernel instead. The kernels index ``n``, ``f``, ``df``,
+    ``flux`` and ``inflowFlag`` by the loop counter, so a shorter face list
+    silently pairs each face with another face's quadrature data and leaves
+    the skipped entries holding the previous evaluation's values.
+
+    ``None`` means there is nothing to mask. Serial runs always get ``None``,
+    deliberately: there are no interfaces to remove, and material type 0 is
+    not reserved -- a
+    :class:`proteus.Domain.PlanarStraightLineGraphDomain` built without
+    segment flags numbers them ``[0, 1, 2, ...]``, so flag 0 is a real side of
+    the domain there, and masking it in serial would silently drop its
+    outflow. The same ambiguity remains for a *parallel* run on a mesh whose
+    real boundary is unflagged; there is no way to tell the two apart from the
+    material type alone, and the fix for that is to flag the boundary.
+    """
+    comm = Comm.get()
+    if comm is None or comm.size() == 1:
+        return None
+    exterior = mesh.exteriorElementBoundariesArray
+    mask = mesh.__dict__.get('_rankInterfaceExteriorMask')
+    if mask is not None and len(mask) != len(exterior):
+        mask = None             # adapted since: the cached mask is the old mesh's
+    if mask is None:
+        flags = np.asarray(mesh.elementBoundaryMaterialTypes)[exterior]
+        if mesh.__dict__.get('rankInterfacesMarked'):
+            mask = flags == RANK_INTERFACE_FLAG
+        else:
+            mask = flags == 0   # a partitioner that does not mark: 0 stands for both
+        mesh.__dict__['_rankInterfaceExteriorMask'] = mask
+        masked = int(mask.sum())
+        if masked:
+            logEvent("Advective boundary flux: masking %d of %d exterior faces "
+                     "on rank %d; they are rank interfaces (material type 0), "
+                     "interior to the global mesh"
+                     % (masked, len(mask), comm.rank()), level=2)
+    return mask
+
+
+#: Whether :class:`proteus.Domain.D_base`'s forwarding properties --
+#: ``domain.MeshOptions``, ``use_gmsh``, ``use_plex``, ``regionConstraints`` --
+#: warn when they are used. **Off by default, deliberately.** They are
+#: deprecated in 2.0 and go away in 2.1, but proteus still reaches for them in
+#: 347 places of its own (62 in ``proteus/``, 285 in ``test/``), so warning
+#: unconditionally today would mean warning at ourselves a few hundred times a
+#: test run and would make ``-W error`` unusable for everyone else.
+#:
+#: Turn it on to find the call sites that still need moving::
+#:
+#:     MeshTools.warnOnDomainMeshForwarding = True
+#:
+#: and turn it on in CI once ``proteus/`` is clean, which is what makes the
+#: 2.1 removal safe to do rather than hopeful.
+warnOnDomainMeshForwarding = False
+
+
+def _warnDomainMeshForwarding(name):
+    """Warn that a Domain meshing property is forwarded, if asked to."""
+    if warnOnDomainMeshForwarding:
+        import warnings
+        use = ("MeshTools.getMeshOptions(domain)" if name == "MeshOptions"
+               else "MeshTools.getMeshOptions(domain).%s" % name)
+        warnings.warn(
+            "Domain.%s is deprecated since 2.0 and will be removed in 2.1; "
+            "meshing policy belongs to MeshTools, so use %s instead"
+            % (name, use),
+            DeprecationWarning, stacklevel=3)
+
+
+def getMeshOptions(domain):
+    """
+    The MeshOptions governing how a domain gets discretized.
+
+    Meshing policy is not part of what a domain *is*, so a domain does not
+    carry it as description; it is attached here, on first use, and owned by
+    this module.  Everything that decides how a region becomes a mesh --
+    element size, generator choice, partitioning, refinement levels, region
+    size constraints -- belongs on the object this returns.
+
+    Parameters
+    ----------
+    domain: proteus.Domain.D_base
+        the domain to be meshed
+
+    Returns
+    -------
+    MeshOptions
+        the options for this domain, created with the domain's dimension if
+        none have been attached yet
+    """
+    meshOptions = domain.__dict__.get('_meshOptions')
+    if meshOptions is None:
+        meshOptions = MeshOptions(domain.nd)
+        domain.__dict__['_meshOptions'] = meshOptions
+    return meshOptions
+
+
+def setMeshOptions(domain, meshOptions):
+    """
+    Attach mesh options to a domain, replacing any already attached.
+
+    Parameters
+    ----------
+    domain: proteus.Domain.D_base
+        the domain to be meshed
+    meshOptions: MeshOptions
+        the options to use for it
+    """
+    domain.__dict__['_meshOptions'] = meshOptions
+    return meshOptions
 
 
 def msh2simplex(fileprefix, nd):
@@ -7065,7 +8254,7 @@ def msh2simplex(fileprefix, nd):
 
 def generateMesh(physics,numerics,generatePartitionedMeshFromFiles=False):
     try:
-        meshOptions = physics.domain.MeshOptions
+        meshOptions = getMeshOptions(physics.domain)
         assert(not (meshOptions.genMesh == True and
                     meshOptions.nn == None and 
                     meshOptions.nnx  == None and
@@ -7080,10 +8269,249 @@ def generateMesh(physics,numerics,generatePartitionedMeshFromFiles=False):
         mlMesh = _generateMesh(physics.domain, meshOptions, generatePartitionedMeshFromFiles, numerics)
     return mlMesh
 
+def chooseMeshOptions(physics, numerics):
+    """The options :func:`generateMesh` meshes with.
+
+    The domain's :func:`getMeshOptions`, unless they say nothing about
+    element size or count; then the n module, with the p module's genMesh
+    (old-style input). This is generateMesh's choice, without generating.
+    """
+    try:
+        meshOptions = getMeshOptions(physics.domain)
+        assert(not (meshOptions.genMesh == True and
+                    meshOptions.nn == None and
+                    meshOptions.nnx  == None and
+                    meshOptions.nny == None and
+                    meshOptions.nnz == None and
+                    meshOptions.triangleOptions == None and
+                    meshOptions.use_plex == False))
+        return meshOptions
+    except:
+        numerics.genMesh = physics.genMesh
+        return numerics
+
+def fullOverlapAssembly(partitioningType, nLayersOfOverlap):
+    """Whether the residual is assembled as if every rank held its whole neighbourhood.
+
+    The solvers decide this from n (NumericalSolution's ``parallelUsesFullOverlap``):
+    any overlap, or a node partition. Without it, contributions to shared dofs
+    are added across ranks.
+    """
+    return nLayersOfOverlap > 0 or partitioningType == MeshParallelPartitioningTypes.node
+
+
+def checkPartitionMatchesMesh(p, n):
+    """Raise, on more than one rank, if n and the domain's mesh options disagree
+    about how the residual is assembled.
+
+    A p module with a domain meshes from ``domain.MeshOptions``; n's
+    ``parallelPartitioningType`` and ``nLayersOfOverlapForParallel`` then only
+    choose the assembly. If one says no overlap and the other says overlap,
+    shared-node contributions are counted twice, or a mesh with no global copy
+    is asked for one (test/periodic/duct segfaulted there: n asked for an
+    element partition with no overlap for the parallel periodic numbering,
+    the mesh was a node partition generated in pieces, and the trial space
+    built from the global mesh got None for its arrays). Set both, e.g.
+    ``p.domain.MeshOptions.parallelPartitioningType = n.parallelPartitioningType``
+    and the same for ``nLayersOfOverlapForParallel``.
+    """
+    from . import Comm
+    comm = Comm.get()
+    if comm is None or comm.size() == 1:
+        return
+    options = getMeshOptions(p.domain)
+    n_type = getattr(n, 'parallelPartitioningType', options.parallelPartitioningType)
+    n_layers = getattr(n, 'nLayersOfOverlapForParallel', options.nLayersOfOverlapForParallel)
+    if (fullOverlapAssembly(n_type, n_layers) !=
+        fullOverlapAssembly(options.parallelPartitioningType, options.nLayersOfOverlapForParallel)):
+        raise ValueError(
+            "the numerics for %s ask for parallelPartitioningType=%s, nLayersOfOverlapForParallel=%s "
+            "but its domain's MeshOptions say %s, %s, and the two disagree about whether the "
+            "residual is assembled with overlap; set both. For example "
+            "p.domain.MeshOptions.parallelPartitioningType = n.parallelPartitioningType and "
+            "p.domain.MeshOptions.nLayersOfOverlapForParallel = n.nLayersOfOverlapForParallel."
+            % (getattr(p, 'name', p), n_type, n_layers,
+               options.parallelPartitioningType, options.nLayersOfOverlapForParallel))
+
+
+def setDomainFromPhysics(p, n):
+    """Give an old-style p module (no ``domain``) a domain built from its
+    ``nd``, ``L``, ``x0``, ``polyfile`` or ``meshfile``, with mesh options
+    from the n module. A p module that has a domain is left alone, so
+    calling this twice is the same as calling it once."""
+    if p.domain is not None:
+        checkPartitionMatchesMesh(p, n)
+        return
+    if p.nd == 1:
+        p.domain = Domain.RectangularDomain(L=p.L[:1],
+                                            x=p.x0[:1],
+                                            name=p.name)
+    elif p.nd == 2:
+        if p.polyfile is not None:
+            p.domain = Domain.PlanarStraightLineGraphDomain(fileprefix=p.polyfile,name=p.polyfile)
+        elif p.meshfile != None:
+            p.domain = Domain.Mesh2DMDomain(p.meshfile)
+        else:
+            p.domain = Domain.RectangularDomain(L=p.L[:2],
+                                                x=p.x0[:2],
+                                                name=p.name)
+    elif p.nd == 3:
+        if p.polyfile is not None:
+            p.domain = Domain.PiecewiseLinearComplexDomain(fileprefix=p.polyfile,name=p.polyfile)
+        elif p.meshfile is not None:
+            p.domain = Domain.Mesh3DMDomain(p.meshfile)
+        else:
+            p.domain = Domain.RectangularDomain(L=p.L[:3],
+                                                x=p.x0[:3],
+                                                name=p.name)
+    else:
+        raise RuntimeError("No support for domains in more than three dimensions")
+
+    #Ensuring backwards compatibility with isolated mesh generation routines
+    meshOptions = getMeshOptions(p.domain)
+    meshOptions.nnx, meshOptions.nny, meshOptions.nnz = n.nnx,n.nny,n.nnz
+    meshOptions.nn = n.nn
+    meshOptions.nLevels = n.nLevels
+    meshOptions.hex = n.hex
+    meshOptions.quad = n.quad
+    meshOptions.triangleFlag=n.triangleFlag
+    meshOptions.triangleOptions=n.triangleOptions
+    meshOptions.genMesh=p.genMesh
+    # The solvers read the partition from n (parallelUsesFullOverlap), so
+    # the mesh must be partitioned the same way. Without these two lines an
+    # element partition without overlap asked for in n was meshed as the
+    # default node partition with one layer, and assembled as if it had
+    # none: every overlapping element counted twice.
+    meshOptions.parallelPartitioningType = getattr(
+        n, 'parallelPartitioningType', meshOptions.parallelPartitioningType)
+    meshOptions.nLayersOfOverlapForParallel = getattr(
+        n, 'nLayersOfOverlapForParallel', meshOptions.nLayersOfOverlapForParallel)
+    meshOptions.regularGrid = getattr(n, 'regularGrid', 'generated')
+
+def meshFiles(domain, meshOptions):
+    """What :func:`writeMeshFiles` would do for this domain, or None.
+
+    A dict: ``generator`` ('triangle', 'tetgen' or 'gmsh'), ``prefix``,
+    ``command`` (what runs, including the generator's options),
+    ``inputs`` (files whose contents determine the mesh), ``outputs``
+    (files it must write) and ``optional`` (files it may write). None for
+    domains whose mesh is built in memory or read from files they name.
+    """
+    domainMeshOptions = getMeshOptions(domain)
+    if isinstance(domain, Domain.PlanarStraightLineGraphDomain):
+        if domainMeshOptions.use_gmsh is True:
+            prefix = domain.geofile
+            return {"generator": "gmsh", "prefix": prefix,
+                    "command": "gmsh {0}.geo -2 -format msh2; msh2simplex nd=2".format(prefix),
+                    "inputs": [prefix + ".geo"],
+                    "outputs": [prefix + e for e in (".msh", ".ele", ".node", ".edge")],
+                    "optional": []}
+        prefix = domain.polyfile
+        return {"generator": "triangle", "prefix": prefix,
+                "command": "triangle -{0} -e {1}.poly".format(meshOptions.triangleOptions, prefix),
+                "inputs": [prefix + ".poly"],
+                "outputs": [prefix + e for e in (".ele", ".node", ".edge")],
+                "optional": []}
+    if isinstance(domain, Domain.PiecewiseLinearComplexDomain):
+        if domainMeshOptions.use_gmsh is True:
+            prefix = domain.geofile
+            return {"generator": "gmsh", "prefix": prefix,
+                    "command": "gmsh {0}.geo -3 -format msh2; msh2simplex nd=3; tetgen -Vfeen {0}.ele".format(prefix),
+                    "inputs": [prefix + ".geo"],
+                    "outputs": [prefix + e for e in (".msh", ".ele", ".node", ".face")],
+                    "optional": [prefix + e for e in (".neigh", ".edge")]}
+        prefix = domain.polyfile
+        return {"generator": "tetgen", "prefix": prefix,
+                "command": "tetgen -{0} {1}.poly".format(meshOptions.triangleOptions, prefix),
+                "inputs": [prefix + ".poly"],
+                "outputs": [prefix + e for e in (".ele", ".node", ".face")],
+                "optional": [prefix + e for e in (".neigh", ".edge")]}
+    return None
+
+def writeMeshFiles(domain, meshOptions):
+    """Run the mesh generator for a PSLG or PLC domain.
+
+    The serial step of :func:`_generateMesh`, which runs it on rank 0 and
+    then reads the files collectively. Writes the files
+    :func:`meshFiles` lists.
+    """
+    name = domain.name
+    domainMeshOptions = getMeshOptions(domain)
+    if isinstance(domain, Domain.PlanarStraightLineGraphDomain):
+        if domainMeshOptions.use_gmsh is True:
+            fileprefix = domain.geofile
+            if not os.path.exists(fileprefix+".msh"):
+                logEvent("Running gmsh to generate 2D mesh for "+name, level=1)
+                gmsh_cmd = "time gmsh {0:s} -v 10 -2 -o {1:s} -format msh2".format(fileprefix+".geo", fileprefix+".msh")
+                logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
+                run(gmsh_cmd, shell=True)
+                logEvent("Done running gmsh; converting to triangle")
+            else:
+                logEvent("Using "+fileprefix+".msh to convert to triangle")
+            # convert gmsh to triangle format
+            msh2simplex(fileprefix=fileprefix, nd=2)
+        else:
+            fileprefix = domain.polyfile
+            logEvent("Calling Triangle to generate 2D mesh for "+name)
+            tricmd = "triangle -{0} -e {1}.poly".format(meshOptions.triangleOptions, fileprefix)
+            logEvent("Calling triangle on rank 0 with command %s" % (tricmd,))
+            logEvent(run(tricmd, shell=True,capture_output=True, encoding='utf-8').stdout)
+            logEvent("Done running triangle")
+            run("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
+            run("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
+            run("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
+    elif isinstance(domain, Domain.PiecewiseLinearComplexDomain):
+        if domainMeshOptions.use_gmsh is True:
+            fileprefix = domain.geofile
+        else:
+            fileprefix = domain.polyfile
+        if domainMeshOptions.use_gmsh is True:
+            if not os.path.exists(fileprefix+".msh"):
+                logEvent("Running gmsh to generate 3D mesh for "+name, level=1)
+                gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s} -format msh2".format(fileprefix+'.geo', domain.geofile+'.msh')
+                logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
+                run(gmsh_cmd, shell=True)
+                logEvent("Done running gmsh; converting to tetgen")
+            else:
+                logEvent("Using "+domain.geofile+".msh to convert to tetgen")
+            msh2simplex(fileprefix=fileprefix, nd=3)
+            logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
+        else:
+            logEvent("Running tetgen to generate 3D mesh for "+name, level=1)
+            run("rm -f {0:s}.ele".format(fileprefix), shell=True)
+            run("rm -f {0:s}.node".format(fileprefix), shell=True)
+            run("rm -f {0:s}.face".format(fileprefix), shell=True)
+            run("rm -f {0:s}.neigh".format(fileprefix), shell=True)
+            run("rm -f {0:s}.edge".format(fileprefix), shell=True)
+            tetcmd = "tetgen -{0} {1}.poly".format(meshOptions.triangleOptions, fileprefix)
+            logEvent("Calling tetgen on rank 0 with command %s" % (tetcmd,))
+            logEvent(run(tetcmd, shell=True,capture_output=True, encoding='utf-8').stdout)
+            logEvent("Done running tetgen")
+        run("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
+        run("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
+        run("mv {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
+        try:
+            run("mv {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
+        except:
+            logEvent("Warning: couldn't move {0:s}.1.neigh".format(fileprefix))
+            pass
+        try:
+            run("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
+        except:
+            logEvent("Warning: couldn't move {0:s}.1.edge".format(fileprefix))
+            pass
+    else:
+        raise TypeError("writeMeshFiles: no mesh generator for a " + type(domain).__name__)
+
 def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,numerics=None):
     # convenience function to generate a mesh using triangle/tetgen/gmsh
     comm = Comm.get()
     name = domain.name
+    # meshOptions may be an old-style numerics module rather than a
+    # MeshOptions (see the fallback in generateMesh).  The generator choice
+    # and the characteristic length have only ever come from the options
+    # attached to the domain, so read those two from there.
+    domainMeshOptions = getMeshOptions(domain)
     # this is the perfect place to create a factory function which takes in an instance and outputs a corresponding mesh
     # support for old-style domain input
 
@@ -7113,7 +8541,8 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                                                 domain.L[0], domain.L[1],1,
                                                                 refinementLevels=meshOptions.nLevels,
                                                                 nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
-                                                                parallelPartitioningType=meshOptions.parallelPartitioningType)
+                                                                parallelPartitioningType=meshOptions.parallelPartitioningType,
+                                                                regularGrid=getattr(meshOptions, 'regularGrid', None))
             else:
                 fileprefix = domain.polyfile
                 if fileprefix is None:
@@ -7160,7 +8589,8 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                                       refinementLevels=meshOptions.nLevels,
                                                       nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
                                                       parallelPartitioningType=meshOptions.parallelPartitioningType,
-                                                      triangleFlag=triangleFlag)
+                                                      triangleFlag=triangleFlag,
+                                                      regularGrid=getattr(meshOptions, 'regularGrid', None))
         elif domain.nd == 3:
             if (meshOptions.nnx == meshOptions.nny == meshOptions.nnz is None):
                 nnx = nny = nnz = meshOptions.nn
@@ -7194,7 +8624,8 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                                             domain.L[0], domain.L[1], domain.L[2],
                                                             refinementLevels=meshOptions.nLevels,
                                                             nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
-                                                            parallelPartitioningType=meshOptions.parallelPartitioningType)
+                                                            parallelPartitioningType=meshOptions.parallelPartitioningType,
+                                                            regularGrid=getattr(meshOptions, 'regularGrid', None))
             else:
                 fileprefix = domain.polyfile
                 if fileprefix is None:
@@ -7247,7 +8678,8 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                                                         domain.L[0], domain.L[1], domain.L[2],
                                                                         refinementLevels=meshOptions.nLevels,
                                                                         nLayersOfOverlap=meshOptions.nLayersOfOverlapForParallel,
-                                                                        parallelPartitioningType=meshOptions.parallelPartitioningType)
+                                                                        parallelPartitioningType=meshOptions.parallelPartitioningType,
+                                                                        regularGrid=getattr(meshOptions, 'regularGrid', None))
                 else:
                     mesh = TetrahedralMesh()
                     mlMesh = MultilevelTetrahedralMesh(0, 0,0,skipInit=True,
@@ -7360,7 +8792,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                                    os.path.exists(domain.polyfile+".node") and
                                                    os.path.exists(domain.polyfile+".face"))):
             logEvent("Running gmsh to generate 3D mesh for "+name, level=1)
-            gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s}  -format mesh  -clmax {2:f}".format(domain.geofile, domain.name+".mesh", 0.5*domain.he)
+            gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s}  -format mesh  -clmax {2:f}".format(domain.geofile, domain.name+".mesh", 0.5*domainMeshOptions.he)
 
             logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
 
@@ -7431,32 +8863,16 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
     elif isinstance(domain, Domain.PlanarStraightLineGraphDomain):
         fileprefix = None
         # run mesher
-        if domain.use_gmsh is True:
+        if domainMeshOptions.use_gmsh is True:
             fileprefix = domain.geofile
             if comm.isMaster() and (not (os.path.exists(fileprefix+".ele") and
                                          os.path.exists(fileprefix+".node") and
                                          os.path.exists(fileprefix+".edge"))):
-                if not os.path.exists(fileprefix+".msh"):
-                    logEvent("Running gmsh to generate 2D mesh for "+name, level=1)
-                    gmsh_cmd = "time gmsh {0:s} -v 10 -2 -o {1:s} -format msh2".format(fileprefix+".geo", fileprefix+".msh")
-                    logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
-                    run(gmsh_cmd, shell=True)
-                    logEvent("Done running gmsh; converting to triangle")
-                else:
-                    logEvent("Using "+fileprefix+".msh to convert to triangle")
-                # convert gmsh to triangle format
-                msh2simplex(fileprefix=fileprefix, nd=2)
+                writeMeshFiles(domain, meshOptions)
         else:
             fileprefix = domain.polyfile
             if comm.isMaster() and meshOptions.genMesh:
-                logEvent("Calling Triangle to generate 2D mesh for "+name)
-                tricmd = "triangle -{0} -e {1}.poly".format(meshOptions.triangleOptions, fileprefix)
-                logEvent("Calling triangle on rank 0 with command %s" % (tricmd,))
-                logEvent(run(tricmd, shell=True,capture_output=True, encoding='utf-8').stdout)
-                logEvent("Done running triangle")
-                run("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
-                run("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
-                run("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
+                writeMeshFiles(domain, meshOptions)
         comm.barrier()
         assert fileprefix is not None, 'did not find mesh file name'
         # convert mesh to proteus format
@@ -7479,7 +8895,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                                               parallelPartitioningType=meshOptions.parallelPartitioningType)
     elif isinstance(domain, Domain.PiecewiseLinearComplexDomain):
         import sys
-        if domain.use_gmsh is True:
+        if domainMeshOptions.use_gmsh is True:
             fileprefix = domain.geofile
         else:
             fileprefix = domain.polyfile
@@ -7487,41 +8903,7 @@ def _generateMesh(domain,meshOptions,generatePartitionedMeshFromFiles=False,nume
                 not (os.path.exists(fileprefix+".ele") and
                      os.path.exists(fileprefix+".node") and
                      os.path.exists(fileprefix+".face")))):
-            if domain.use_gmsh is True:
-                if not os.path.exists(fileprefix+".msh"):
-                    logEvent("Running gmsh to generate 3D mesh for "+name, level=1)
-                    gmsh_cmd = "time gmsh {0:s} -v 10 -3 -o {1:s} -format msh2".format(fileprefix+'.geo', domain.geofile+'.msh')
-                    logEvent("Calling gmsh on rank 0 with command %s" % (gmsh_cmd,))
-                    run(gmsh_cmd, shell=True)
-                    logEvent("Done running gmsh; converting to tetgen")
-                else:
-                    logEvent("Using "+domain.geofile+".msh to convert to tetgen")
-                msh2simplex(fileprefix=fileprefix, nd=3)
-                logEvent(run("tetgen -Vfeen {0:s}.ele".format(fileprefix), shell=True,capture_output=True,text=True).stdout)
-            else:
-                logEvent("Running tetgen to generate 3D mesh for "+name, level=1)
-                run("rm -f {0:s}.ele".format(fileprefix), shell=True)
-                run("rm -f {0:s}.node".format(fileprefix), shell=True)
-                run("rm -f {0:s}.face".format(fileprefix), shell=True)
-                run("rm -f {0:s}.neigh".format(fileprefix), shell=True)
-                run("rm -f {0:s}.edge".format(fileprefix), shell=True)
-                tetcmd = "tetgen -{0} {1}.poly".format(meshOptions.triangleOptions, fileprefix)
-                logEvent("Calling tetgen on rank 0 with command %s" % (tetcmd,))
-                logEvent(run(tetcmd, shell=True,capture_output=True, encoding='utf-8').stdout)
-                logEvent("Done running tetgen")
-            run("mv {0:s}.1.ele {0:s}.ele".format(fileprefix), shell=True)
-            run("mv {0:s}.1.node {0:s}.node".format(fileprefix), shell=True)
-            run("mv {0:s}.1.face {0:s}.face".format(fileprefix), shell=True)
-            try:
-                run("mv {0:s}.1.neigh {0:s}.neigh".format(fileprefix), shell=True)
-            except:
-                logEvent("Warning: couldn't move {0:s}.1.neigh".format(fileprefix))
-                pass
-            try:
-                run("mv {0:s}.1.edge {0:s}.edge".format(fileprefix), shell=True)
-            except:
-                logEvent("Warning: couldn't move {0:s}.1.edge".format(fileprefix))
-                pass
+            writeMeshFiles(domain, meshOptions)
         comm.barrier()
         logEvent("Initializing mesh and MultilevelMesh")
         nbase = 1

@@ -1,4 +1,5 @@
 import proteus
+import proteus.MeshTools
 from proteus.mprans.cCLSVOF import *
 import numpy as np
 from proteus.Transport import OneLevelTransport
@@ -6,6 +7,12 @@ from proteus.Transport import TC_base, NonlinearEquation, Quadrature
 from proteus.Transport import logEvent, memory, FluxBoundaryConditions, Comm
 from proteus.Transport import cfemIntegrals
 from . import cArgumentsDict
+import proteus.LinearAlgebraTools
+import proteus.NonlinearSolvers
+import proteus.NumericalFlux
+import proteus.TimeIntegration
+import proteus.Transport
+import proteus.TransportCoefficients
 
 class NumericalFlux(proteus.NumericalFlux.Advection_DiagonalUpwind_Diffusion_IIPG_exterior):
     def __init__(self,vt,getPointwiseBoundaryConditions,
@@ -222,6 +229,22 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
 
     def evaluate(self,t,c):
         pass
+
+    def archiveFields(self, lm):
+        """Archive the VOF field the CLSVOF level set implies.
+
+        Previously reached by ``if 'clsvof' in model.name:`` in
+        ``NumericalSolution.py`` -- the generic driver identifying a model by
+        substring of its name. Declaring it on the CLSVOF coefficients makes
+        that test unnecessary. See :mod:`proteus.ArchiveFields`.
+
+        The DOFs live on the level model, not here, because that is where
+        CLSVOF computes them.
+        """
+        from ..ArchiveFields import ArchiveField
+
+        yield from super().archiveFields(lm)
+        yield ArchiveField("vof", lm.vofDOFs)
 
 class LevelModel(proteus.Transport.OneLevelTransport):
     nCalls=0
@@ -525,6 +548,18 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.comm=comm
         if comm.size() > 1:
             assert numericalFluxType != None and numericalFluxType.useWeakDirichletConditions,"You must use a numerical flux to apply weak boundary conditions for parallel runs"
+            if not proteus.MeshTools.fullOverlapAssembly(self.mesh.parallelPartitioningType,
+                                                         self.mesh.nLayersOfOverlap):
+                # The lumped L2 projections of the normal (and the initial
+                # condition) divide a locally assembled right-hand side by a
+                # locally assembled lumped mass, then copy owned values to the
+                # ghosts: neither is summed across ranks, so on a partition
+                # without overlap every shared node holds a partial value.
+                raise NotImplementedError(
+                    "CLSVOF in parallel needs a node partition or at least one layer of "
+                    "overlap: its projections are not summed across ranks, so a partition "
+                    "without overlap gives different answers from one rank (2 ranks, "
+                    "element partition: a 3e-3 relative error in the first step)")
 
         logEvent(memory("stride+offset","OneLevelTransport"),level=4)
         if numericalFluxType != None:
@@ -656,7 +691,9 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         self.par_projected_disc_ICs = None
 
         from proteus.Comm import globalMax
-        self.he_for_disc_ICs = 0.5*(-globalMax(-self.mesh.elementDiametersArray.min()) +
+        # smallest element diameter of the whole mesh, not of this rank's piece
+        self.he_min = -globalMax(-self.mesh.elementDiametersArray.min())
+        self.he_for_disc_ICs = 0.5*(self.he_min +
                                     globalMax(self.mesh.elementDiametersArray.max()))
         ###################################
         # PROJECTED NORMAL RECONSTRUCTION #
@@ -742,6 +779,10 @@ class LevelModel(proteus.Transport.OneLevelTransport):
                                                                                  bs=1,
                                                                                  n=n,N=N,nghosts=nghosts,
                                                                                  subdomain2global=subdomain2global)
+        self.par_interface_locator = proteus.LinearAlgebraTools.ParVec_petsc4py(self.interface_locator,
+                                                                                bs=1,
+                                                                                n=n,N=N,nghosts=nghosts,
+                                                                                subdomain2global=subdomain2global)
 
         ################
         # SPIN UP STEP #
@@ -1220,8 +1261,14 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["H_dof"] = self.vofDOFs
         argsDict["preRedistancingStage"] = self.preRedistancingStage
         argsDict["interface_locator"] = self.interface_locator
-        argsDict["alpha"] = self.coefficients.alpha/self.mesh.elementDiametersArray.min()
+        argsDict["alpha"] = self.coefficients.alpha/self.he_min
         self.clsvof.calculateResidual(argsDict)
+        if self.preRedistancingStage == 0:
+            # The kernel flags the nodes of the cells that hold the interface that
+            # this rank can see. A ghost node at the edge of the overlap has cells
+            # on the next rank, so its flag can be 0 here and 1 on its owner; the
+            # redistancing stages freeze (and, inverted, free) nodes by this flag.
+            self.par_interface_locator.scatter_forward_insert()
 
         # RELATED TO EIKONAL EQUATION #
         if self.preRedistancingStage == 1:
@@ -1314,7 +1361,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["lambdaFact"] = self.coefficients.lambdaFact
         argsDict["preRedistancingStage"] = self.preRedistancingStage
         argsDict["norm_factor_lagged"] = self.norm_factor_lagged
-        argsDict["alpha"] = self.coefficients.alpha/self.mesh.elementDiametersArray.min()
+        argsDict["alpha"] = self.coefficients.alpha/self.he_min
         self.clsvof.calculateJacobian(argsDict)
 
         # RELATED TO EIKONAL EQUATION #

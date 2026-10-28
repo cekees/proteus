@@ -8,6 +8,8 @@ from proteus.Transport import NonlinearEquation, logEvent, memory
 from proteus.Transport import FluxBoundaryConditions, Comm, cfemIntegrals
 from proteus.Transport import DOFBoundaryConditions, Quadrature
 from proteus.mprans import cArgumentsDict
+import proteus.Transport
+import proteus.TransportCoefficients
 
 class Coefficients(proteus.TransportCoefficients.TC_base):
     def __init__(self,

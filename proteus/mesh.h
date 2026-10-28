@@ -11,6 +11,7 @@
 /** #include <mach/mach_time.h> */
 #include <cassert>
 #include <cmath>
+#include "index_type.h"
 
  
 /**
@@ -29,7 +30,7 @@ extern "C"
   struct Mesh
   {
     //if you change this make sure to update  initialize and delete below
-    int nElements_global,
+    proteus_index_t nElements_global,
       nNodes_global,
       nNodes_element,
       nNodes_elementBoundary,
@@ -41,19 +42,21 @@ extern "C"
       nEdges_global,
       max_nNodeNeighbors_node;
     
-    int *elementNodesArray, //the nodes numbers for each element
+    proteus_index_t *elementNodesArray, //the nodes numbers for each element
       *nodeElementsArray,        //the element numbers for each node
       *nodeElementOffsets,       //offsets for indexing into nodeElementsArray,
       *elementNeighborsArray,    //the elment numbers for each neighboring element
       *elementBoundariesArray,   //the global elementBoundary numbers for each element
       *elementBoundaryNodesArray,
       *elementBoundaryElementsArray, //the element numbers for each element boundary
-      *elementBoundaryLocalElementBoundariesArray, //the local element boundary number for the left and right neighbors of the element boundary
       *interiorElementBoundariesArray, //the element boundary numbers of the interior element boundaries
       *exteriorElementBoundariesArray, //the element boundary numbers of the exterior element boundaries
       *edgeNodesArray,
       *nodeStarArray,
-      *nodeStarOffsets,
+      *nodeStarOffsets;
+
+    //local numbers and tags, not mesh-sized: see index_type.h
+    int *elementBoundaryLocalElementBoundariesArray, //the local element boundary number for the left and right neighbors of the element boundary
       *elementMaterialTypes,           //ids for classifying elements,element boundaries,nodes
       *elementBoundaryMaterialTypes,
       *nodeMaterialTypes;
@@ -75,10 +78,15 @@ extern "C"
 
     //for parallel computations
     
-    int *elementOffsets_subdomain_owned,
+    proteus_index_t *elementOffsets_subdomain_owned,
       *elementNumbering_subdomain2global,
       *nodeOffsets_subdomain_owned,
       *nodeNumbering_subdomain2global,
+      //permutation taking this mesh's original global node numbers to the
+      //ones partitioning assigned, so arrays built before partitioning can be
+      //read in the numbering subdomain2global refers to
+      *nodeNumbering_global_old2new,
+      *elementNumbering_global_old2new,
       *elementBoundaryOffsets_subdomain_owned,
       *elementBoundaryNumbering_subdomain2global,
       *edgeOffsets_subdomain_owned,
@@ -132,6 +140,8 @@ extern "C"
     mesh.elementNumbering_subdomain2global=NULL;
     mesh.nodeOffsets_subdomain_owned=NULL;
     mesh.nodeNumbering_subdomain2global=NULL;
+    mesh.nodeNumbering_global_old2new=NULL;
+    mesh.elementNumbering_global_old2new=NULL;
     mesh.elementBoundaryOffsets_subdomain_owned=NULL;
     mesh.elementBoundaryNumbering_subdomain2global=NULL;
     mesh.edgeOffsets_subdomain_owned=NULL;
@@ -159,6 +169,8 @@ extern "C"
     mesh.elementNumbering_subdomain2global=NULL;
     mesh.nodeOffsets_subdomain_owned=NULL;
     mesh.nodeNumbering_subdomain2global=NULL;
+    mesh.nodeNumbering_global_old2new=NULL;
+    mesh.elementNumbering_global_old2new=NULL;
     mesh.elementBoundaryOffsets_subdomain_owned=NULL;
     mesh.elementBoundaryNumbering_subdomain2global=NULL;
     mesh.edgeOffsets_subdomain_owned=NULL;
@@ -222,6 +234,8 @@ extern "C"
     if(mesh.elementNumbering_subdomain2global!=NULL) delete [] mesh.elementNumbering_subdomain2global;
     if(mesh.nodeOffsets_subdomain_owned!=NULL) delete [] mesh.nodeOffsets_subdomain_owned;
     if(mesh.nodeNumbering_subdomain2global!=NULL) delete [] mesh.nodeNumbering_subdomain2global;
+    if(mesh.nodeNumbering_global_old2new!=NULL) delete [] mesh.nodeNumbering_global_old2new;
+    if(mesh.elementNumbering_global_old2new!=NULL) delete [] mesh.elementNumbering_global_old2new;
     if(mesh.elementBoundaryOffsets_subdomain_owned!=NULL) delete [] mesh.elementBoundaryOffsets_subdomain_owned;
     if(mesh.elementBoundaryNumbering_subdomain2global!=NULL) delete [] mesh.elementBoundaryNumbering_subdomain2global;
     if(mesh.edgeOffsets_subdomain_owned!=NULL) delete [] mesh.edgeOffsets_subdomain_owned;
@@ -252,6 +266,8 @@ extern "C"
     mesh.elementNumbering_subdomain2global=NULL;
     mesh.nodeOffsets_subdomain_owned=NULL;
     mesh.nodeNumbering_subdomain2global=NULL;
+    mesh.nodeNumbering_global_old2new=NULL;
+    mesh.elementNumbering_global_old2new=NULL;
     mesh.elementBoundaryOffsets_subdomain_owned=NULL;
     mesh.elementBoundaryNumbering_subdomain2global=NULL;
     mesh.edgeOffsets_subdomain_owned=NULL;

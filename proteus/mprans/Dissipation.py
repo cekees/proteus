@@ -5,6 +5,15 @@ import numpy as np
 from proteus import Profiling as prof
 from proteus import cfemIntegrals
 from . import cArgumentsDict
+import proteus.Comm
+import proteus.FemTools
+import proteus.NonlinearSolvers
+import proteus.NumericalFlux
+import proteus.Quadrature
+import proteus.ShockCapturing
+import proteus.SubgridError
+import proteus.Transport
+import proteus.TransportCoefficients
 """
 NOTES:
 

@@ -2,7 +2,9 @@
 """
 Test module for Berstein basis FE
 """
-from proteus.iproteus import *
+import proteus
+from importlib import reload
+from proteus import Profiling, default_s, default_so
 from proteus import Comm
 comm = Comm.get()
 Profiling.logLevel=1
@@ -37,7 +39,7 @@ class TestBernstein(object):
     def teardown_method(self,method):
         pass
 
-    def test_2D_hex(self):
+    def test_2D_hex(self, opts):
         # Set parameters for this test
         parameters_for_poisson.ct.nd = 2
         parameters_for_poisson.ct.useHex = True
@@ -71,7 +73,7 @@ class TestBernstein(object):
         np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['u0_t1']).flatten(),decimal=10)
         actual.close()
 
-    def test_2D_simplex(self):
+    def test_2D_simplex(self, opts):
         # Set parameters for test
         parameters_for_poisson.ct.nd = 2
         parameters_for_poisson.ct.useHex = False
@@ -103,7 +105,7 @@ class TestBernstein(object):
         np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['u0_t1']).flatten(),decimal=10)
         actual.close()
 
-    def test_3D_hex(self):
+    def test_3D_hex(self, opts):
         # Set parameters for test
         parameters_for_poisson.ct.nd = 3
         parameters_for_poisson.useHex = True
@@ -135,7 +137,7 @@ class TestBernstein(object):
         np.testing.assert_almost_equal(np.fromfile(os.path.join(self._scriptdir, expected_path),sep=","),np.array(actual['u0_t1']).flatten(),decimal=10)
         actual.close()
 
-    def test_3D_simplex(self):
+    def test_3D_simplex(self, opts):
         # Set parameters for test
         parameters_for_poisson.ct.nd = 3
         parameters_for_poisson.ct.useHex = False

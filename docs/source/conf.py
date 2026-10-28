@@ -24,7 +24,7 @@ except ImportError:
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
-#sys.path.insert(0, os.path.abspath('.'))
+sys.path.insert(0, os.path.abspath('.'))  # for gauge_figures
 
 # -- General configuration ------------------------------------------------
 
@@ -47,6 +47,7 @@ extensions = [
     'sphinx.ext.coverage',
     'sphinx.ext.mathjax',
     'sphinx.ext.ifconfig',
+    'gauge_figures',
 #    'sphinx.ext.viewcode',
     'sphinx.ext.linkcode',
     'sphinx.ext.napoleon',
@@ -84,7 +85,7 @@ def linkcode_resolve(domain, info):
         # change source only if it is not a "pure python" cython module
         if not os.path.isfile(module_name+'.py'):
             suffix = 'pyx'
-    return "https://github.com/erdc/proteus/tree/master/%s.%s" % (filename, suffix)
+    return "https://github.com/proteustoolkit/proteus/tree/master/%s.%s" % (filename, suffix)
 
 autoclass_content = 'both'
 
@@ -166,7 +167,6 @@ html_theme_options = {
     'canonical_url': '',
     'analytics_id': '',
     'logo_only': True,
-    'display_version': True,
     'prev_next_buttons_location': 'bottom',
     'style_external_links': False,
     # 'vcs_pageview_mode': '',
@@ -290,8 +290,27 @@ latex_documents = [
 # not chapters.
 #latex_use_parts = False
 
+# LaTeX macros usable in docstring math, for both the HTML (MathJax) and
+# LaTeX builds: name -> (definition, number of arguments)
+math_macros = {
+    'grad': (r'\nabla', 0),
+    'deld': (r'\nabla\cdot', 0),
+    'outer': (r'\otimes', 0),
+    'ds': (r'\,\mathrm{d}s', 0),
+    'ten': (r'\mathbf{#1}', 1),
+    'mat': (r'\mathbf{#1}', 1),
+    'pd': (r'\frac{\partial #1}{\partial #2}', 2),
+    'od': (r'\frac{\mathrm{d} #1}{\mathrm{d} #2}', 2),
+}
+mathjax3_config = {
+    'tex': {'macros': {name: [body, nargs] if nargs else body
+                       for name, (body, nargs) in math_macros.items()}},
+}
+
 # Additional stuff for the LaTeX preamble.
-latex_elements['preamble'] = '\input{macros}'
+latex_elements['preamble'] = '\n'.join(
+    r'\providecommand{\%s}[%d]{%s}' % (name, nargs, body)
+    for name, (body, nargs) in math_macros.items())
 
 # If true, show page references after internal links.
 #latex_show_pagerefs = False
@@ -415,8 +434,6 @@ epub_copyright = u'2020, The Proteus Team'
 todo_include_todos = False
 
 graphviz_output_format = 'svg'
-
-mathjax_pth = "https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-MML-AM_CHTM"
 
 breathe_projects = {
     "Proteus C++": "../build/capi/xml"

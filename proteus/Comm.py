@@ -12,15 +12,26 @@ import sys
 # at import time, mpi4py initializes the MPI execution environment calling MPI_Init_thread().
 # mpi4py must be imported before petsc4py otherwise petsc4py initializes MPI with MPI_Init().
 from mpi4py import MPI
-import petsc4py
+try:
+    import petsc4py
+except ImportError:
+    #proteus's own solvers need only MPI; see petsc_optional
+    petsc4py = None
 from .Profiling import logEvent
 
 
 # Special workaround for broken MPI on certain Cray systems
 from . import config
+from . import _threads
 mpi_preload_libs=[]
 for lib in config.PROTEUS_PRELOAD_LIBS:
     mpi_preload_libs.append(ctypes.CDLL(lib,mode=ctypes.RTLD_GLOBAL))
+
+# One thread per rank under MPI.  import proteus already did this when the launcher announces
+# its size; this covers a launcher that does not, and numpy imported before proteus.
+_thread_warning = _threads.after_mpi_init(MPI.COMM_WORLD.Get_size())
+if _thread_warning:
+    logEvent(_thread_warning, 0)
 
 comm = None
 argv = sys.argv
@@ -28,6 +39,11 @@ petscInitialized = False
 
 def init():
     global comm, petscInitialized
+    if petsc4py is None:
+        new_comm = Comm()
+        if not comm:
+            comm = new_comm
+        return new_comm
     if not petscInitialized:
         petsc4py.init(argv)
         petscInitialized = True
@@ -55,6 +71,24 @@ def get():
         return init()
     return comm
 
+class _MPIWorld(object):
+    """The part of a PETSc communicator's interface proteus uses, over mpi4py.
+
+    Callers write comm.comm.rank, comm.comm.size, comm.comm.Barrier() and
+    comm.comm.tompi4py(); with petsc4py comm.comm is PETSc.COMM_WORLD, which
+    provides those, and without it this does.
+    """
+    def __init__(self, mpi_comm):
+        self._mpi = mpi_comm
+        self.rank = mpi_comm.Get_rank()
+        self.size = mpi_comm.Get_size()
+
+    def Barrier(self):
+        return self._mpi.Barrier()
+
+    def tompi4py(self):
+        return self._mpi
+
 class Comm(object):
     """Proteus wrapper around PETSc/MPI communicators
 
@@ -62,9 +96,12 @@ class Comm(object):
     """
 
     def __init__(self):
-        from petsc4py import PETSc
-        self.comm = PETSc.COMM_WORLD
-        self.mpi4py_comm = PETSc.COMM_WORLD.tompi4py()
+        if petsc4py is None:
+            self.comm = _MPIWorld(MPI.COMM_WORLD)
+        else:
+            from petsc4py import PETSc
+            self.comm = PETSc.COMM_WORLD
+        self.mpi4py_comm = self.comm.tompi4py()
     def isInitialized(self):
         return True
 

@@ -2,7 +2,6 @@
 """
 Test module for some linear algebra tools functions.
 """
-from proteus.iproteus import *
 from proteus import superluWrappers
 from proteus import LinearAlgebraTools
 from petsc4py import PETSc as p4pyPETSc
