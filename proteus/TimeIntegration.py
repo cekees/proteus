@@ -513,9 +513,11 @@ class FLCBDF(TI_base):
         #changed the solution since; the history must hold what the next step
         #starts from, as backward Euler's m_last does. Without this the level
         #set drifts from backward Euler by O(t) at order 1 and fails Newton.
-        for ci in self.massComponents: self.flcbdf[ci].lastStepErrorOk(self.m[ci])
+        #mass correction refreshes q[('m_tmp',ci)], not q[('m',ci)], as for backward Euler's m_last
+        mfinal = dict((ci,self.transport.q.get(('m_tmp',ci),self.m[ci])) for ci in self.massComponents)
+        for ci in self.massComponents: self.flcbdf[ci].lastStepErrorOk(mfinal[ci])
         for ci in range(self.nc): self.flcbdf[('u',ci)].lastStepErrorOk(self.transport.u[ci].dof)
-        for ci in self.massComponents: self.flcbdf[ci].stepTaken(self.m[ci])
+        for ci in self.massComponents: self.flcbdf[ci].stepTaken(mfinal[ci])
         for ci in range(self.nc): self.flcbdf[('u',ci)].stepTaken(self.transport.u[ci].dof)
     def updateStage(self):
         """

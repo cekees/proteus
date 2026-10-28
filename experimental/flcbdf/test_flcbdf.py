@@ -84,13 +84,13 @@ def _vortex(tmp_path, ti_ls, ti_vof, tol):
 
 
 @pytest.mark.parametrize("ti_ls,ti_vof,tol", [("flcbdf", "be", 1e-2),
+                                              ("be", "flcbdf", 1e-2),
                                               ("flcbdf", "flcbdf", 1e-2)])
 def test_vortex2d_with_flcbdf_reaches_the_end(tmp_path, ti_ls, ti_vof, tol):
-    """vortex2D to t = 8 with FLCBDF on the level set, and on both models,
-    with no Newton failure. Known gaps: the level set at the default 1e-4
-    drives dt toward zero at the steep front; the volume of fluid on FLCBDF
-    with the level set on backward Euler fails Newton at any tolerance once
-    the history follows the mass correction."""
+    """vortex2D to t = 8 with FLCBDF on the level set, on the volume of fluid,
+    and on both, with no Newton failure. Known gaps: the level set at the
+    default 1e-4 drives dt toward zero at the steep front, and at 1e-3 the
+    redistancing model's Newton iteration stalls near its tolerance."""
     times, log = _vortex(tmp_path, ti_ls, ti_vof, tol)
     assert times and times[-1] >= 8.0 - 1e-8
     assert "FAILED" not in log
