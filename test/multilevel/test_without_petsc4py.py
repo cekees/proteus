@@ -50,7 +50,7 @@ def _launch(args, n_ranks, blocked, timeout=300):
     env.setdefault('PRTE_MCA_rmaps_default_mapping_policy', ':oversubscribe')
     result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable] + script +
                             [os.path.join(here, args[0])] + list(args[1:]),
-                            capture_output=True, text=True, env=env, timeout=timeout, cwd=here)
+                            capture_output=True, text=True, env=env, timeout=timeout)
     assert result.returncode == 0, result.stdout + result.stderr
     for line in result.stdout.splitlines():
         if line.startswith('RESULT'):

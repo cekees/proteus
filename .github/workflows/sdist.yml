@@ -332,9 +332,10 @@ jobs:
           )
           # One xdist worker per core, given tests one at a time. Each worker
           # runs in test_output/<worker id> (test/conftest.py), since tests
-          # write files under fixed names. A file whose tests depend on each
-          # other's output declares an xdist_group, which loadgroup keeps on
-          # one worker in order. No --forked: the tests no longer share
+          # write files under fixed names. No test reads what another wrote
+          # (a test that needs a mesh or an earlier run makes it itself), so
+          # nothing is pinned to a worker and the default --dist load is
+          # enough. No --forked: the tests no longer share
           # process state (each takes a fresh opts), and every test file
           # passes alone in a fresh process.
           #
@@ -394,7 +395,7 @@ jobs:
             python -m pytest -v -n 2 --dist load --import-mode=importlib \
               --durations=5 "${FSI_IBM_TESTS[@]/#/../}"
           else
-            python -m pytest -v -n auto --dist loadgroup --import-mode=importlib \
+            python -m pytest -v -n auto --dist load --import-mode=importlib \
               --durations=30 "${COV_ARGS[@]}" "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" \
               "${FSI_IBM_TESTS[@]/#/--deselect=}" ../test
           fi
