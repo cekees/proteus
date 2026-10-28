@@ -1,6 +1,7 @@
 #ifndef PARTITIONING_H
 #define PARTITIONING_H
 #include <iostream>
+#include <string>
 #include <valarray>
 #include <vector>
 #include <cstdlib>
@@ -163,6 +164,9 @@ namespace proteus
     PetscInitialized(&initialized);
     return initialized == PETSC_TRUE;
   }
+
+  //space-separated names of the graph partitioners PETSc was built with
+  std::string petscPartitioners();
 
   inline int ensurePetscInitialized()
   {

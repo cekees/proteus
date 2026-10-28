@@ -25,7 +25,8 @@ from mpi4py.libmpi cimport MPI_Comm
 cimport mesh
 from proteus cimport cmeshTools
 from proteus.cmeshTools import INDEX_DTYPE
-from proteus.partitioning cimport (c_ensurePetscInitialized,
+from proteus.partitioning cimport (c_petscPartitioners,
+                                   c_ensurePetscInitialized,
                                    c_petscIsInitialized,
                                    c_generateCartesianSubdomain,
                                    c_cartesianNumbering,
@@ -41,6 +42,12 @@ from proteus.partitioning cimport (c_ensurePetscInitialized,
                                    buildQuadraticSubdomain2GlobalMappings_3d,
                                    buildQuadraticCubeSubdomain2GlobalMappings_3d,
                                    buildDiscontinuousGalerkinSubdomain2GlobalMappings)
+
+def petscPartitioners():
+    """The graph partitioners PETSc was built with ('parmetis', 'chaco',
+    'party', 'ptscotch'), best first. Empty means PETSc falls back to
+    'current', which keeps the initial partition."""
+    return c_petscPartitioners().decode().split()
 
 cdef object _indexArray(mesh.proteus_index_t* p, mesh.proteus_index_t n):
     """A numpy view of n mesh indices at p; a rank that owns nothing has empty

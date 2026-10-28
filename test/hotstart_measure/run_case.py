@@ -75,7 +75,7 @@ import ls_vortex_2d_p, redist_vortex_2d_p, vof_vortex_2d_p, ls_consrv_vortex_2d_
 import ls_vortex_2d_n, redist_vortex_2d_n, vof_vortex_2d_n, ls_consrv_vortex_2d_n  # noqa
 if os.environ.get("HS_PARALLEL"):
     for _m in (ls_vortex_2d_n, redist_vortex_2d_n, vof_vortex_2d_n, ls_consrv_vortex_2d_n):
-        _m.l_atol_res = 1.0e-12   # the redistancing deck leaves this at the default of 1
+        _m.l_atol_res = float(os.environ.get("HS_PARALLEL_ATOL", "1e-12"))   # the redistancing deck leaves this at the default of 1
         _m.linTolFac = 0.0
         _m.l_rtol_res = 0.0
 import ls_vortex_2d_so as so  # noqa
@@ -88,9 +88,11 @@ tN = N * DT
 opts = RunOptions(gatherArchive=True)
 if mode == "stop":
     so.tnList = [i * DT for i in range(N + 1)]
-elif mode == "hot":
+elif mode in ("hot", "full"):
+    # HS_ENDN: stop after this output (a short run to compare, hot or not)
     if os.environ.get("HS_ENDN"):
         so.tnList = [i * DT for i in range(int(os.environ["HS_ENDN"]) + 1)]
+if mode == "hot":
     opts.hotStart = True
     opts.hotStartTime = tN
 sList = [default_s for _ in so.pnList]

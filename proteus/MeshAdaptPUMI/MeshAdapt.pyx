@@ -55,6 +55,33 @@ cdef extern from "MeshAdaptPUMI/MeshAdaptPUMI.h":
         void cleanMesh()
         void set_nAdapt(int)
 
+cdef extern from *:
+    """
+    #ifndef PROTEUS_PUMI_HAS_ZOLTAN
+    #define PROTEUS_PUMI_HAS_ZOLTAN -1
+    #endif
+    #ifndef PROTEUS_PUMI_HAS_METIS
+    #define PROTEUS_PUMI_HAS_METIS -1
+    #endif
+    #ifndef PROTEUS_PUMI_PROBED_DIR
+    #define PROTEUS_PUMI_PROBED_DIR ""
+    #endif
+    """
+    const char* PROTEUS_PUMI_PROBED_DIR
+    int PROTEUS_PUMI_HAS_ZOLTAN
+    int PROTEUS_PUMI_HAS_METIS
+
+def pumiProbedLibDir():
+    """The PUMI library directory setup.py read the partitioner report from."""
+    return PROTEUS_PUMI_PROBED_DIR.decode()
+
+def pumiPartitioners():
+    """Which graph partitioners the PUMI this was built against has: a dict
+    {'zoltan': bool|None, 'metis': bool|None}, None where setup.py could not
+    tell. ParMA, PUMI's own balancer, is always present and is what proteus uses."""
+    return {name: (None if v < 0 else bool(v))
+            for name, v in (('zoltan', PROTEUS_PUMI_HAS_ZOLTAN), ('metis', PROTEUS_PUMI_HAS_METIS))}
+
 cdef class MeshAdapt:
     cdef MeshAdaptPUMIDrvr *thisptr
     cdef double hmax, hmin, hPhi

@@ -11,6 +11,27 @@
 
 namespace proteus
 {
+std::string petscPartitioners()
+{
+  // What PETSc was configured with, in the order PETSc's own default picks one
+  std::string have;
+#ifdef PETSC_HAVE_PARMETIS
+  have += "parmetis ";
+#endif
+#ifdef PETSC_HAVE_CHACO
+  have += "chaco ";
+#endif
+#ifdef PETSC_HAVE_PARTY
+  have += "party ";
+#endif
+#ifdef PETSC_HAVE_PTSCOTCH
+  have += "ptscotch ";
+#endif
+  if (!have.empty())
+    have.pop_back();
+  return have;
+}
+
 namespace {
 // PETSc falls back to MATPARTITIONINGCURRENT, which keeps the input
 // partition, when it was built with none of ParMETIS, Chaco, Party or

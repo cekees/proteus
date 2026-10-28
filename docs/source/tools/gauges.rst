@@ -73,9 +73,10 @@ phase in the column, which is how an equivalent water height is measured.
 
 .. note::
 
-   Line gauges clip the line against every element, one element at a time in
-   Python, when the model is attached.  This is quick for ordinary meshes and
-   slow for very fine ones; it happens once, not every time step.
+   Line gauges clip the line against the elements it can touch when the model is
+   attached.  A bounding-box test discards the rest in one vectorized step, so a
+   line through a mesh of 180,000 elements takes tens of milliseconds, and the
+   clipping happens once, not every time step.
 
 Lines and points outside the mesh
 ---------------------------------
@@ -88,9 +89,11 @@ every rank.
 Gauges are often placed "on the bottom" by coordinates that differ from the
 mesh's by roundoff.  Points and line endpoints that lie outside the mesh's
 bounding box by no more than :math:`10^{-9}` of its largest extent are moved onto
-the box.  Only boundaries aligned with the box are snapped: a gauge on a curved or
-tilted boundary that misses it by roundoff is restricted (lines) or read at the
-nearest node (points).
+the box.  On a curved or tilted boundary a point that misses every element by
+no more than :math:`10^{-6}` of the element's size is read from the element it
+misses least, as if it were on the boundary; a line is simply restricted to the
+mesh, which moves its end onto the boundary.  A point farther out, such as one in a
+hole, reads the value of its nearest node.
 
 .. figure:: /_generated/line_gauge_cases.svg
 
@@ -120,8 +123,10 @@ Parallel runs
 -------------
 
 Every rank searches its own elements for each gauge.  The rank that owns a point
-is the highest-numbered rank that finds a containing element, or, when none does,
-the rank with the nearest node.  The owners send their values to one rank, which
+is the rank holding the containing element with the lowest global number, or, when
+none does, the rank with the nearest node.  A point on a face between elements lies
+in both; for a discontinuous field the value is the one from that lowest-numbered
+element, however the search reached it.  The owners send their values to one rank, which
 writes the file.  The gauge file is the same for any number of ranks, up to
 roundoff.
 
