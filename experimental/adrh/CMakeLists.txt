@@ -13,6 +13,7 @@ cmake_minimum_required(VERSION 3.20)
 project(adrh LANGUAGES CXX)
 
 option(ADRH_KOKKOS "build the Kokkos module and benchmark when Kokkos is found" ON)
+set(ADRH_EXPECT_SPACE "" CACHE STRING "if set (Cuda, HIP, OpenMP), a test fails unless adrh_kokkos's default execution space is this one")
 option(ADRH_BITWISE "no FMA contraction, so CPU and GPU kernels without libm calls give the same bits" ON)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -93,4 +94,12 @@ endforeach()
 if(tests_kokkos)
   # the Kokkos kernels reproduce the host kernels' bits (golden.py's inputs are fixed)
   adrh_test(kokkos_matches_host adrh_proto golden.py against adrh_kokkos)
+endif()
+if(tests_kokkos AND ADRH_EXPECT_SPACE)
+  # a device job that quietly ran on the host would pass every other test
+  add_test(NAME kokkos_default_space
+           COMMAND "${Python_EXECUTABLE}" -c
+           "import sys, adrh_kokkos as a; s = a.kokkos_info()['space']; print('default execution space', s); sys.exit(0 if s == '${ADRH_EXPECT_SPACE}' else 1)"
+           WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(kokkos_default_space PROPERTIES ENVIRONMENT "KOKKOS_NUM_THREADS=2;OMP_WAIT_POLICY=passive")
 endif()
