@@ -92,4 +92,4 @@ dependencies:
   # scripts/ymf_run is never exercised. pint (ymf[units]) stays out: nothing
   # proteus ships imports ymf.units.
   - pip:
-    - git+https://github.com/cekees/ymf.git@main
+    - git+https://github.com/proteustoolkit/ymf.git@main

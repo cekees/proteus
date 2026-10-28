@@ -2,55 +2,38 @@
 
 ## Where the code lives
 
-**`cekees/proteus`** is the live primary repository. Development happens on
-its `main`, and all contributions are pull requests into it — that is how
-work from `nathawani`, `abarua-ce` and `linojr` has been arriving.
+**`proteustoolkit/proteus`** is the one repository. Development happens on its
+`main`, review and CI run there, the issue tracker and wiki are there, and the
+GitHub release is drawn from it. (Before 2.0.0 the code was developed on
+`cekees/proteus` and published to `erdc/proteus`; the latter was transferred to
+`proteustoolkit` and both old paths redirect. Do not create a repository named
+`erdc/proteus`: that would end the redirect.)
 
-**`erdc/proteus`** is the publishing target. The `erdc` organization is not
-actively maintained, so nothing is reviewed or merged there; its `main` is
-moved forward only when a release is cut, and the GitHub release is drawn
-from it.
-
-Every contributor fork — including `cekees/proteus` itself — is a fork of
-`erdc/proteus`, so they all share one fork network and cross-repository pull
-requests into `cekees/proteus` work without any special setup. Do not detach
-`cekees/proteus` from that network: it would break the pull-request path for
-every other fork.
-
-Review and CI therefore happen on `cekees/proteus`, on that account's
-resources, and the release step is a push rather than a review.
+Contributor forks, including `cekees/proteus`, remain forks of the same network.
 
 ## Contributing (for everyone else)
 
-* Fork `erdc/proteus`, or keep using an existing fork of it
-* Open the pull request against **`cekees/proteus`'s `main`**, not `erdc`'s
+* Fork `proteustoolkit/proteus`, or keep using an existing fork of it
+* Open the pull request against `proteustoolkit/proteus`'s `main`
 
 ### Referring to issues from a commit
 
-The issue tracker is on `erdc/proteus`, but the pull requests are on
-`cekees/proteus`, and the two have separate numbering. A bare `#1274` is
-therefore ambiguous: GitHub resolves it against whichever repository you are
-viewing it in, which silently produces the wrong link about half the time.
+Issues and pull requests now share one numbering in one repository, but the
+history contains references from the two-repository era, when a bare `#1274`
+could mean an issue on one repository or a pull request on the other. In
+commits made before the transfer, resolve a bare `#NNN` with care. From here
+on, qualify anything that could be read elsewhere:
 
-Always qualify the repository:
-
-    Fixes erdc/proteus#1274
-
-This matters more than it sounds. Across the 377 commits in the 1.9.0
-release, every bare `#NNN` in a commit message turned out to be a false
-positive when resolved against the tracker — a merge subject's `(#14)`
-referred to a pull request on the fork but resolves against `erdc` to an
-unrelated 2013 issue. The result is that the release's fixed issues had to
-be found by reading code rather than by following references.
+    Fixes proteustoolkit/proteus#1274
 
 ## Cut the release candidate
 
-* Create the release candidate branch on `cekees/proteus`, from `main` (e.g. `rc1.9.0`)
+* Create the release candidate branch on `proteustoolkit/proteus`, from `main` (e.g. `rc1.9.0`)
 * Set the version in the three places that carry it, dropping the `.dev` suffix:
   * `proteus/__init__.py` — `__version__`
   * `setup.py` — `version=`
   * `docs/Doxyfile` — `PROJECT_NUMBER`
-* Open the PR against **`cekees/proteus`'s `main`** and request two reviewers
+* Open the PR against **`main`** and request two reviewers
 * This is the last review before release; merge it when it passes
 
 The version strings carry a bare `.dev` suffix (`1.8.3.dev`), not `.dev0`.
@@ -59,37 +42,22 @@ the *released* value with `.dev` appended rather than incrementing it, so
 `main` may still read `1.8.3.dev` when you come to release 1.9.0. Set the new
 version outright; do not assume it is one increment away.
 
-## Publish on erdc
+## Publish
 
-* Move `erdc/proteus`'s `main` to the release commit:
-
-      git push upstream main
-
-  **Check first that this is a fast-forward** — it has been so far, since
-  `erdc/main` has only ever been moved by releases:
-
-      git merge-base --is-ancestor upstream/main main && echo fast-forward
-
-  If that fails, `erdc/main` has commits that `cekees/main` does not, and
-  something was pushed or edited there directly. Find out what it is before
-  going further; do not reach for `--force` to make the message go away.
-  `erdc/main` is a protected branch with force pushes disallowed, so a
-  genuinely diverged state needs a deliberate settings change, not a flag.
-
-* `erdc/main`'s protection also requires one approving review and restricts
-  pushes to the `proteus-maintainers` team. "Do not allow bypassing the above
-  settings" is off, so an org admin can push directly — worth confirming at
-  the time rather than discovering mid-release.
-
-* Draft the release on `erdc/proteus` from the GitHub web UI
+* Merge the release candidate PR into `main`; `main` is then the release commit.
+* Draft the release on `proteustoolkit/proteus` from the GitHub web UI
   * Tag the release commit. Tags are bare version numbers — `1.8.3`, not `v1.8.3`
   * List significant changes and contributors since the last release
+* Publishing the release fires the Zenodo webhook. Confirm afterwards that a new
+  version appeared under the concept DOI 10.5281/zenodo.1004620. The hook never
+  backfills and re-publishing a release fails with 409, so a missed deposit
+  needs a new release id.
 
 ## Documentation
 
 No longer generated by CI, so check it by hand.
 
-* Clone `erdc/proteus-docs`
+* Clone `proteustoolkit/proteus-docs`
 * Check out `main`
 * Run `make docs` in proteus
 * Open `proteus-docs/index.html` in a browser and check the site — version numbers, math and diagram rendering
@@ -108,7 +76,7 @@ which converted those 218 files back to ordinary git objects. Two
 consequences are worth knowing when a release is being cut:
 
 * GitHub bills LFS **bandwidth** against the fork-network root —
-  `erdc/proteus` — no matter which fork is cloned or who owns it. Pushing a
+  `proteustoolkit/proteus` — no matter which fork is cloned or who owns it. Pushing a
   fork's own copy of the objects does not change this, and neither does
   paying for the fork's own account. So an exhausted quota affects every
   consumer of every fork at once.
