@@ -154,3 +154,25 @@ def test_vortex2d_with_flcbdf_on_two_ranks_reaches_the_end(tmp_path):
         assert times and times[-1] >= 8.0 - 1e-8 and "System Step Failed" not in log
         n[ranks] = len(times)
     assert abs(n[2] - n[1]) < 0.1 * n[1]
+
+
+def test_hotstart_with_flcbdf_on_two_ranks_reproduces_the_uninterrupted_run(tmp_path):
+    """FLCBDF on both models, two ranks: each rank archives its own copy of every integrator's
+    state (solver_state/..._p<rank>) and the hot start from it, on the same partition, ends where
+    the run that was never stopped does."""
+    root = os.path.abspath(os.path.join(here, "..", ".."))
+    hm = os.path.join(root, "test", "hotstart_measure")
+    env = dict(os.environ, HS_FLCBDF_TOL="1e-2", HS_PARALLEL="1", HS_PARALLEL_ATOL="1e-14",
+               PYTHONPATH=os.pathsep.join([root, here, os.environ.get("PYTHONPATH", "")]))
+    def run(out, *mode):
+        subprocess.run(["mpiexec", "-n", "2", sys.executable, os.path.join(hm, "run_case.py"),
+                        str(tmp_path / out), "flcbdf", "1", *mode], env=env, check=True, capture_output=True)
+    run("full", "full")
+    run("hot", "stop", "10")
+    run("hot", "hot", "10")
+    out = subprocess.run([sys.executable, os.path.join(hm, "compare.py"),
+                          str(tmp_path / "full" / "hs_flcbdf1.h5"), str(tmp_path / "hot" / "hs_flcbdf1.h5"),
+                          "flcbdf1", "10"], env=env, check=True, capture_output=True, text=True).stdout
+    final = [l for l in out.splitlines() if l.startswith("FINAL")][0]
+    errs = [float(x) for x in re.findall(r"(?:L2|Linf)=([0-9.e+-]+)", final)]
+    assert len(errs) == 8 and max(errs) < 1e-10, final
