@@ -712,6 +712,8 @@ int MeshAdaptPUMIDrvr::adaptPUMIMesh(const char* inputString)
   }
   if(hasSPR)
     getSPRSizeField();
+  if(useProteus)
+    getProteusSizeField();
   if(hasAnalyticSphere)
   {
     setSphereSizeField();
@@ -725,8 +727,6 @@ int MeshAdaptPUMIDrvr::adaptPUMIMesh(const char* inputString)
     else if(nAdapt > 2 && std::string(inputString)=="")
         predictiveInterfacePropagation();
   }
-  if (useProteus)
-    size_iso = m->findField("proteus_size");
   if (useProteusAniso){
     size_frame = m->findField("proteus_sizeFrame");
     size_scale = m->findField("proteus_sizeScale");
@@ -1044,6 +1044,8 @@ int MeshAdaptPUMIDrvr::setAdaptProperties(std::vector<std::string> sizeInputs,bo
             hasERM=1;
         if(*it == "error_spr")
             hasSPR=1;
+        if(*it == "isotropicProteus")
+            useProteus=1;
     }
     hmin=in_hmin; 
     hmax=in_hmax; 

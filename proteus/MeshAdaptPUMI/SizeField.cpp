@@ -2152,3 +2152,28 @@ int MeshAdaptPUMIDrvr::getSPRSizeField()
   sizeFieldList.push(sprSize);
   return 0;
 }
+
+int MeshAdaptPUMIDrvr::getProteusSizeField()
+/**
+ * @brief The isotropic size field Proteus supplies
+ *
+ * Proteus transfers the desired edge length at each vertex with
+ * transferFieldToPUMI("proteus_size_user", ...). It is clamped to [hmin, hmax]
+ * and joins the size field list, so it combines (minimum) with any other
+ * requested indicator in isotropicIntersect() and is graded with it.
+ */
+{
+  apf::Field* f = m->findField("proteus_size_user");
+  if (!f) {
+    std::cerr << "MeshAdaptPUMI: sizeInputs has isotropicProteus but no field "
+                 "'proteus_size_user' was transferred before adapting\n";
+    std::abort();
+  }
+  if (m->findField("proteus_size_clamped"))
+    apf::destroyField(m->findField("proteus_size_clamped"));
+  apf::Field* size = apf::createLagrangeField(m, "proteus_size_clamped", apf::SCALAR, 1);
+  apf::copyData(size, f);
+  clampField(size, hmin, hmax);
+  sizeFieldList.push(size);
+  return 0;
+}

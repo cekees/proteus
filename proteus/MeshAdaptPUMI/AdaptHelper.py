@@ -660,7 +660,7 @@ class PUMI_helper:
             self.so.useOneMesh): #and
             #self.nSolveSteps%domain.AdaptManager.PUMIAdapter.numAdaptSteps()==0):
             if (b"isotropicProteus" in self.domain.AdaptManager.sizeInputs):
-                domain.AdaptManager.PUMIAdapter.transferFieldToPUMI("proteus_size",
+                domain.AdaptManager.PUMIAdapter.transferFieldToPUMI("proteus_size_user",
                                                        self.modelList[0].levelModelList[0].mesh.size_field)
             if (b'anisotropicProteus' in self.domain.AdaptManager.sizeInputs):
                 #Insert a function to define the size_scale/size_frame fields here.

@@ -86,6 +86,8 @@ class MeshAdaptPUMIDrvr{
   int testIsotropicSizeField();
   int getERMSizeField(double err_total);
   int getSPRSizeField();
+  // The size field Proteus transferred as "proteus_size_user" (sizeInputs isotropicProteus)
+  int getProteusSizeField();
   int gradeMesh(double gradationFactor);
 
   //analytic geometry

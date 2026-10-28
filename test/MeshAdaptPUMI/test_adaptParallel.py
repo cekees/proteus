@@ -184,3 +184,55 @@ def test_spr(dim, mode):
     assert conforming >= 0.8
     assert np.median(near) <= 0.8 * np.median(far)
     assert imbalance(local) <= 1.10
+
+
+# Serial element counts after one isotropicProteus adaptation
+PROTEUS_SIZE_ELEMENTS = {2: 895, 3: 8659}
+
+
+def band_size(nodes, hnear, hfar):
+    """Edge length wanted: hnear on the plane x = 0.5, growing linearly to hfar a quarter away."""
+    return hnear + (hfar - hnear) * np.minimum(1.0, np.abs(nodes[:, 0] - 0.5) / 0.25)
+
+
+@pytest.mark.parametrize('dim', [2, 3])
+def test_isotropic_proteus(dim):
+    """A size field supplied from Python, analytic in x, refines a band around a plane."""
+    hnear, hfar = (0.02, 0.2) if dim == 2 else (0.06, 0.25)
+    domain = setup_adapter(dim, [b'isotropicProteus'], hmax=hfar, hmin=hnear / 2,
+                           numIterations=5)
+    adapter = domain.AdaptManager.PUMIAdapter
+    before, local = convert(domain)
+    h = band_size(local.nodeArray, hnear, hfar)
+    adapter.transferFieldToPUMI(b'proteus_size_user', np.ascontiguousarray(h.reshape(-1, 1)))
+
+    adapter.adaptPUMIMesh(b'')
+    after, local = convert(domain)
+
+    # the first adaptation grades the field (gradation 1.1), so edges are compared
+    # with the graded field MeshAdapt used, and with the request only near the band
+    lengths = edge_lengths(local)
+    graded = np.zeros((local.nNodes_global, 1))
+    adapter.transferFieldToProteus(b'proteus_size', graded)
+    ratio = lengths / graded[local.edgeNodesArray, 0].mean(axis=1)
+    mid = local.nodeArray[local.edgeNodesArray][:, :, 0].mean(axis=1)
+    ratio = np.concatenate(mpi.allgather(ratio))
+    near = np.concatenate(mpi.allgather(lengths[np.abs(mid - 0.5) < 0.05]))
+    far = np.concatenate(mpi.allgather(lengths[np.abs(mid - 0.5) > 0.35]))
+    conforming = np.mean((ratio > 1 / np.sqrt(2)) & (ratio < np.sqrt(2)))
+    print('isotropicProteus dim=%i ranks=%i' % (dim, comm.size()),
+          dict(before=before.nElements_global, n=after.nElements_global,
+               imb=round(float(imbalance(local)), 3), conforming=round(float(conforming), 3),
+               ratio_median=round(float(np.median(ratio)), 3),
+               near_median=round(float(np.median(near)), 4),
+               far_median=round(float(np.median(far)), 4)))
+
+    # Measured 2026-10-29 (PUMI 4.2.1, ParMA) at 1, 2 and 4 ranks: 2D 894-895
+    # elements, 3D 8638-8674, imbalance <= 1.05, 88-89% of edges within sqrt(2) of the
+    # graded field; edges at the band are about 0.3 (2D) and 0.5 (3D) of the length
+    # of edges far from it.
+    assert after.nElements_global == pytest.approx(PROTEUS_SIZE_ELEMENTS[dim], rel=0.1)
+    assert after.nElements_global > 2 * before.nElements_global
+    assert conforming >= 0.8
+    assert np.median(near) <= 0.7 * np.median(far)
+    assert imbalance(local) <= 1.10
