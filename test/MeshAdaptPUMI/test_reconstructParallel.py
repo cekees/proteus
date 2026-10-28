@@ -56,3 +56,5 @@ def test_parallel_reconstruction_matches_proteus_partition(tmp_path, shape, mode
         assert row["pumi_owned"] == row["proteus_owned"]
         assert row["pumi_global"] == row["global"] == row["returned"]
         assert row["model"] == model
+        assert row["tagwrong"] == "0"
+        assert row["tagmissing"] == "0"
