@@ -515,3 +515,23 @@ mode 1 and 2, `richards_kr_nodes`, the new `richards_m_nodes` (the nodal storage
   checks the bounds, and host and Kokkos agree (570 Newton iterations, the same mass, on the lens with FCT). Not done: a comparison with a proteus run of the same deck, and 3D.
 
 Compressibility (`beta != 0`) is not in the K-upwinded scheme: the total-head form of the flux needs `rho / rho0 = 1`.
+
+### Cost of the K-upwinded passes (`upwind_timing.py`, `upwind_passes_timed`)
+
+3D tetrahedra (Kuhn cube, six per cell), device-resident, best of 5, against the colored assembly of the advection-diffusion element kernel on the same mesh as a yardstick (the Richards element kernel costs about
+three times that per element, above; that factor was not re-measured here). K_r varies by orders of magnitude in the state (a wet layer on a dry column). Times in ms:
+
+| pass | RTX 6000 Ada, 29,791 rows (424 k nnz) | Ada, 132,651 rows (1.9 M nnz) | Mac, 12 OpenMP threads, 29,791 rows | Mac, 1 thread, 29,791 rows |
+|---|---|---|---|---|
+| `kr_nodes` | 0.02 | 0.06 | 0.12 | 0.47 |
+| `upwind_flux` (residual and Jacobian) | 0.02 | 0.07 | 0.14 | 0.71 |
+| `antidiffusive_flux` | 0.02 | 0.08 | 0.10 | 0.50 |
+| FCT limiter, moisture bounds (3 passes) | 0.21 | 0.58 | 0.62 | 1.68 |
+| `head_extrema` | 0.01 | 0.02 | 0.08 | 0.38 |
+| FCT limiter, bounds given (3 passes) | 0.20 | 0.65 | 0.55 | 1.29 |
+| **head-bounded FCT step** (antidiffusive flux + head extrema + limiter) | **0.23** | **0.76** | **0.73** | **2.17** |
+| yardstick: colored AD assembly | 7.3 | 13.5 | 17.0 | 121 |
+
+The whole FCT step is 3-6% of the yardstick on the Ada and 4% on the Mac with 12 threads: the limiter's three row-parallel passes dominate (0.2-0.65 ms on the device, launch-bound and gather-heavy), the flux passes
+are a few percent of that. Upload of the CSR arrays and the state is 2-6 ms and is paid once, not per pass. Not measured: a T4 (the CI job runs the tests, not this script), and a whole Newton iteration with the
+Richards element kernel in the denominator.

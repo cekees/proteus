@@ -610,6 +610,44 @@ PYBIND11_MODULE(adrh_kokkos, m)
     py::dict dd; dd["t_h2d"] = tH; dd["t_pass"] = tP; dd["t_d2h"] = tD;
     return py::make_tuple(out, dd);
   });
+  // The K-upwinded passes on the execution space, device-resident (best of `repeats`): the nodal relative permeability, the flux and its Jacobian, the
+  // antidiffusive flux, the FCT limiter with the moisture bounds, the head extrema, and the limiter with the bounds given; plus the upload and the download.
+  m.def("upwind_passes_timed", [](IArr indptr, IArr indices, IArr tpos, Arr S, Arr C, Arr Mc, Arr ML, Arr phi, Arr kr, Arr dkr, Arr mL, Arr mold, Arr uL,
+                                   Arr uold, Arr mmax, Arr mmin, Arr alpha, Arr n_vg, Arr thetaR, Arr thetaSR, int psk, IArr nodeMat, double dt, int repeats) {
+    const int n = (int)indptr.size() - 1;
+    py::array_t<double> out(n);
+    double tH = 0, tD = 0;
+    std::vector<std::pair<const char *, double>> times;        // filled without the GIL, copied into the dict after it
+    {
+      py::gil_scoped_release release;
+      double t0 = now();
+      adrh::DView<int> dp = upInt(indptr), di = upInt(indices), dt_ = upInt(tpos), dmat = upInt(nodeMat);
+      adrh::DView<double> dS = up(S), dC = up(C), dMc = up(Mc), dML = up(ML), dphi = up(phi), dK = up(kr), ddK = up(dkr), dmL = up(mL), dmo = up(mold),
+                          duL = up(uL), duo = up(uold), dmax = up(mmax), dmin = up(mmin), da = up(alpha), dn = up(n_vg), dtr = up(thetaR), dts = up(thetaSR),
+                          dr("r", n), dJ("J", S.size()), dA("A", S.size()), dpmax("pmax", n), dpmin("pmin", n), dkrv("kr", n), ddkrv("dkr", n), dout("out", n);
+      Kokkos::fence();
+      tH = now() - t0;
+      auto best = [&](const char *name, auto &&f) {
+        double b = 1e30;
+        for (int k = 0; k < repeats; ++k) { const double t1 = now(); f(); Kokkos::fence(); b = std::min(b, now() - t1); }
+        times.emplace_back(name, b);
+      };
+      best("kr_nodes", [&] { adrh::forEachElement("adrh kr nodes", 0, n, adrh::KrNodesPass{da, dn, dtr, dts, duL, dmat, psk, dkrv, ddkrv}); });
+      best("upwind_flux", [&] { adrh::upwindFluxKokkos(n, dp, di, dS, dphi, dK, ddK, dr, dJ); });
+      best("antidiffusive_flux", [&] { adrh::antidiffusiveFluxKokkos(n, dp, di, dC, dS, dphi, dK, dA); });
+      best("fct_moisture_bounds", [&] { adrh::fctLimitFluxKokkos(n, dp, di, dt_, dMc, dA, dML, dmL, dmo, dmo, dt, dout); });
+      best("head_extrema", [&] { adrh::headExtremaKokkos(n, dp, di, duL, duo, dpmax, dpmin); });
+      best("fct_given_bounds", [&] { adrh::fctLimitFluxBoundedKokkos(n, dp, di, dt_, dMc, dA, dML, dmL, dmo, dmax, dmin, dt, dout); });
+      t0 = now();
+      Kokkos::deep_copy(HostView(out.mutable_data(), n), dout);
+      Kokkos::fence();
+      tD = now() - t0;
+    }
+    py::dict d;
+    for (const auto &kv : times) d[kv.first] = kv.second;
+    d["t_h2d"] = tH; d["t_d2h"] = tD;
+    return d;
+  });
   m.def("kokkos_info", [] {
     py::dict d;
     d["space"] = std::string(Kokkos::DefaultExecutionSpace::name());
