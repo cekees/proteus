@@ -1166,7 +1166,7 @@ class LevelModel(OneLevelTransport):
             else:
                 outside_eN = ebe[ebN * 2 + 1]
             self.isExteriorBoundaryPhysical[ebNE] = 1 if outside_eN < 0 else 0
-        self.elementBoundaryMaterialTypes = self.mesh.elementBoundaryMaterialTypes
+        self.elementBoundaryMaterialTypes = self.mesh.elementBoundaryUserFlags
         #TODO how to handle redistancing calls for calculateCoefficients,calculateElementResidual etc
         self.globalResidualDummy = None
         compKernelFlag = 0

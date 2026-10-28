@@ -6829,7 +6829,7 @@ class DOFBoundaryConditions(object):
                             if femSpace.referenceFiniteElement.interpolationConditions.definedOnLocalElementBoundary(k,ebN_element) == True:
                                 interiorInterpolationPoint = False
                                 ebN = femSpace.elementMaps.mesh.elementBoundariesArray[eN,ebN_element]
-                                materialFlag = femSpace.elementMaps.mesh.elementBoundaryMaterialTypes[ebN]
+                                materialFlag = femSpace.elementMaps.mesh.elementBoundaryUserFlags[ebN]
                                 #mwf now allow for flag to specify type of dirichlet condition to allow
                                 #say nonlinear function of solution to be specified
                                 #initially, only weak bc's will allow this functionality though
@@ -6953,7 +6953,7 @@ class DOFBoundaryConditions(object):
                             continue
                         ebN = mesh.elementBoundariesArray[eN,ebN_element]
                         x = femSpace.interpolationPoints[eN,k]
-                        p = getPeriodicBoundaryConditions(x,mesh.elementBoundaryMaterialTypes[ebN])
+                        p = getPeriodicBoundaryConditions(x,mesh.elementBoundaryUserFlags[ebN])
                         if p is not None:
                             dofN = femSpace.dofMap.l2g[eN,interpolation.quadrature2DOF_element(k)]
                             self.periodicDOFDict.setdefault(ptuple(p),set()).add(dofN)
@@ -7054,7 +7054,7 @@ class DOFBoundaryConditions_alt(object):
                         if femSpace.referenceFiniteElement.interpolationConditions.definedOnLocalElementBoundary(k,ebN_element) == True:
                             interiorInterpolationPoint = False
                             ebN = femSpace.elementMaps.mesh.elementBoundariesArray[eN,ebN_element]
-                            materialFlag = femSpace.elementMaps.mesh.elementBoundaryMaterialTypes[ebN]
+                            materialFlag = femSpace.elementMaps.mesh.elementBoundaryUserFlags[ebN]
                             #mwf now allow for flag to specify type of dirichlet condition to allow
                             #say nonlinear function of solution to be specified
                             #initially, only weak bc's will allow this functionality though
@@ -7180,7 +7180,7 @@ class FluxBoundaryConditions(object):
         self.diffusiveFluxBoundaryConditionsDictDict=dict([(ck,{}) for ck in list(getDiffusiveFluxBoundaryConditions.keys())])
         for ebNE in range(mesh.nExteriorElementBoundaries_global):
             ebN = mesh.exteriorElementBoundariesArray[ebNE]
-            materialFlag = mesh.elementBoundaryMaterialTypes[ebN]
+            materialFlag = mesh.elementBoundaryUserFlags[ebN]
             for k in range(nElementBoundaryQuadraturePoints_elementBoundary):
                 try:
                     if getAdvectiveFluxBoundaryConditions is not None:
@@ -7276,7 +7276,7 @@ class FluxBoundaryConditionsGlobalElementBoundaries(object):
             ebN = mesh.exteriorElementBoundariesArray[ebNE]
             eN_global   = mesh.elementBoundaryElementsArray[ebN,0]
             ebN_element = mesh.elementBoundaryLocalElementBoundariesArray[ebN,0]
-            materialFlag = mesh.elementBoundaryMaterialTypes[ebN]
+            materialFlag = mesh.elementBoundaryUserFlags[ebN]
             for k in range(nElementBoundaryQuadraturePoints_elementBoundary):
                 try:
                     g = None
@@ -7308,7 +7308,7 @@ class StressBoundaryConditions(object):
         self.stressTraceBoundaryConditionsDict={}
         for ebNE in range(mesh.nExteriorElementBoundaries_global):
             ebN = mesh.exteriorElementBoundariesArray[ebNE]
-            materialFlag = mesh.elementBoundaryMaterialTypes[ebN]
+            materialFlag = mesh.elementBoundaryUserFlags[ebN]
             for k in range(nElementBoundaryQuadraturePoints_elementBoundary):
                 try:
                     g = getStressTraceBoundaryConditions(x[ebNE,k],materialFlag)

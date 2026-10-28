@@ -1199,6 +1199,15 @@ int generateCartesianSubdomain(const MPI_Comm& PROTEUS_COMM_WORLD, int kind, int
         sd.elementBoundaryMaterialTypes[sd.elementBoundariesArray[eN*nElementBoundaries_element+ebN]] =
           elementBoundaryMaterial(g, faceFamily.type(e.type), e.origin);
       }
+  //Every face on the boundary of the box has a nonzero flag, so an exterior
+  //face of the subdomain that still carries 0 is a face the partition cut:
+  //interior to the global mesh. The partitioner reserves -1 for those.
+  for (int ebNE = 0; ebNE < sd.nExteriorElementBoundaries_global; ebNE++)
+    {
+      const int ebN = sd.exteriorElementBoundariesArray[ebNE];
+      if (sd.elementBoundaryMaterialTypes[ebN] == 0)
+        sd.elementBoundaryMaterialTypes[ebN] = -1;
+    }
   timer.mark("subdomain_mesh");
 
   //the global mesh stands in for itself only through its counts

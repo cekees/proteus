@@ -48,7 +48,7 @@ for i, name in enumerate(("p", "u", "v")):
     dof = model.u[i].dof[:owned]
     result[name + "2"] = c.allreduce(float((dof ** 2).sum()), op=MPI.SUM)
     result[name + "s"] = c.allreduce(float(dof.sum()), op=MPI.SUM)
-interfaces = int((mesh.elementBoundaryMaterialTypes[mesh.exteriorElementBoundariesArray] == 0).sum())
+interfaces = int((mesh.elementBoundaryMaterialTypes[mesh.exteriorElementBoundariesArray] == -1).sum())
 print("RANK rank=%d interfaces=%d" % (comm.rank(), interfaces), flush=True)
 if comm.rank() == 0:
     print("RESULT ranks=%d " % comm.size() + " ".join("%s=%.17e" % kv for kv in result.items()), flush=True)

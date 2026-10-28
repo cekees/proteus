@@ -5296,7 +5296,7 @@ class ConservativeHeadRichardsMualemVanGenuchtenBlockHetV2(TC_base):
             for ebNE in range(mesh.nExteriorElementBoundaries_global):
                 ebN = mesh.exteriorElementBoundariesArray[ebNE]
                 eN  = mesh.elementBoundaryElementsArray[ebN,0]
-                self.isSeepageFace[ebNE] = self.getSeepageFace(mesh.elementBoundaryMaterialTypes[ebN])
+                self.isSeepageFace[ebNE] = self.getSeepageFace(mesh.elementBoundaryUserFlags[ebN])
     def initializeElementQuadrature(self,t,cq):
         self.materialTypes_q = self.elementMaterialTypes
         self.q_shape = cq[('u',0)].shape
@@ -5420,7 +5420,7 @@ class SeepageBrezis(TC_base):
             for ebNE in range(mesh.nExteriorElementBoundaries_global):
                 ebN = mesh.exteriorElementBoundariesArray[ebNE]
                 eN  = mesh.elementBoundaryElementsArray[ebN,0]
-                self.isSeepageFace[ebNE] = self.getSeepageFace(mesh.elementBoundaryMaterialTypes[ebN])
+                self.isSeepageFace[ebNE] = self.getSeepageFace(mesh.elementBoundaryUserFlags[ebN])
     def initializeElementQuadrature(self,t,cq):
         self.materialTypes_q = self.elementMaterialTypes
         self.q_shape = cq[('u',0)].shape

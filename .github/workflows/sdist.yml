@@ -13,6 +13,18 @@ on:
   push:
     branches: [main, 1.9.x]
   pull_request:
+  # The macOS Intel legs do not run on pull requests (see matrix.exclude below); a manual run has them.
+  workflow_dispatch:
+
+# Why: the standard macOS runners are the bottleneck. Measured over the last ~80 runs, Linux jobs start at once
+# (median wait 0 min) and macOS jobs wait a median of 7-9 h (p90 17-21 h) for a runner, then run for 20-90 min; a
+# Team plan allows about 5 concurrent macOS jobs. A new push to a pull request leaves its previous run queued, and
+# each run is four macOS jobs and about 200 macOS minutes, so superseded runs were what kept the queue full.
+# A pull request's older run is cancelled when it is pushed to again. Runs for pushes to main and 1.9.x each get
+# their own group: every commit there keeps its own result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
@@ -20,6 +32,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macOS Intel is the slowest leg (89 min, 54 with the FSI tests) and the scarcest runner. It failed alone, with
+        # Apple Silicon passing, in 3 of 118 comparable job pairs (Apple Silicon failed alone in 3 as well), so a break
+        # that only Intel sees now shows up after the merge instead of before it: the legs run on every push to main
+        # (and on a manual run), not on pull requests. They are excluded here, not with a job-level `if`, because the
+        # matrix context is not available in one.
+        # TODO: drop the macOS Intel legs altogether after the 1.9.1 release (cekees, 2026-10-28); the platform is kept
+        # until then because 1.9.1 is meant to build on it (the 1.9.x line still runs it on pull requests).
+        exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"leg":{"os":"macos-15-intel"}}]' || '[]') }}
         # Each leg runs twice: the suite without the two FSI IBM tests
         # (suite: main), and those two tests alone (suite: fsi). Each of the
         # two is a full 1 s simulation, 200 steps in serial; serially on these
@@ -312,9 +332,10 @@ jobs:
           )
           # One xdist worker per core, given tests one at a time. Each worker
           # runs in test_output/<worker id> (test/conftest.py), since tests
-          # write files under fixed names. A file whose tests depend on each
-          # other's output declares an xdist_group, which loadgroup keeps on
-          # one worker in order. No --forked: the tests no longer share
+          # write files under fixed names. No test reads what another wrote
+          # (a test that needs a mesh or an earlier run makes it itself), so
+          # nothing is pinned to a worker and the default --dist load is
+          # enough. No --forked: the tests no longer share
           # process state (each takes a fresh opts), and every test file
           # passes alone in a fresh process.
           #
@@ -374,7 +395,7 @@ jobs:
             python -m pytest -v -n 2 --dist load --import-mode=importlib \
               --durations=5 "${FSI_IBM_TESTS[@]/#/../}"
           else
-            python -m pytest -v -n auto --dist loadgroup --import-mode=importlib \
+            python -m pytest -v -n auto --dist load --import-mode=importlib \
               --durations=30 "${COV_ARGS[@]}" "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" \
               "${FSI_IBM_TESTS[@]/#/--deselect=}" ../test
           fi
