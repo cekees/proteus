@@ -22,6 +22,11 @@ on:
     - cron: '23 7 * * *'
   workflow_dispatch:
 
+# a pull request's older run is cancelled when it is pushed to again (the macOS runners queue for hours)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   kernels:
     # adding the "gpu" label to a pull request runs the gpu job; the CPU legs do not need to run again for it
@@ -35,7 +40,6 @@ jobs:
           - {name: linux-64, os: ubuntu-latest}
           - {name: linux-aarch64, os: ubuntu-24.04-arm}
           - {name: macos-15 (Apple Silicon), os: macos-15}
-          - {name: macos-15 (Intel), os: macos-15-intel}
     defaults:
       run:
         shell: bash -el {0}
