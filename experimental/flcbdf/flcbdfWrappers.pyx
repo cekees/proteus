@@ -95,6 +95,15 @@ cdef class FLCBDF_integrator:
         return (np.array(<double[:n]> self.flcbdf.yn.p_),
                 np.array(<double[:n]> self.flcbdf.ynprime.p_))
 
+    def state(self):
+        """Everything the next step depends on, as one float array (for archiving)."""
+        return np.array(self.flcbdf.packState(), dtype='d')
+
+    def set_state(self, np.ndarray s):
+        cdef vector[double] v
+        v.assign(<double*>s.data, <double*>s.data + s.size)
+        self.flcbdf.unpackState(v)
+
     def getCurrentAlpha(self):
         cdef double alpha
         alpha = self.flcbdf.getCurrentAlpha()

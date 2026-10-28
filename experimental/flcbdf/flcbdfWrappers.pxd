@@ -1,4 +1,5 @@
 # A type of -*- python -*- file
+from libcpp.vector cimport vector
 cimport numpy as np
 from libcpp cimport bool
 
@@ -61,6 +62,8 @@ cdef extern from "FLCBDF_lite.h" namespace "Daetk":
         double retryStep_solverFailure() except +
         double retryStep_errorFailure() except +
         double getCurrentAlpha() const
+        vector[double] packState() except +
+        void unpackState(const vector[double]&) except +
         Vec yn,ynprime,yCminusyP,tempvec
 
 cdef class FLCBDF_integrator:

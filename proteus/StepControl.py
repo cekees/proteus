@@ -787,6 +787,15 @@ class FLCBDF_controller(SC_base):
         if self.ignoreErrorControl==True:
             ERROR_OK=True
         return not ERROR_OK
+    def syncAfterRestore(self):
+        """Hot start: the step the archived run chose next is the integrator's
+        restored dt, not the one initialize_dt_model estimated from the restart
+        state; make the controller agree (the system controller then chooses
+        from it, as it does at the end of every step)."""
+        for m in self.model.levelModelList:
+            self.dt_model = m.timeIntegration.dt
+        self.dt_model_last = self.dt_model
+        self.t_model = self.t_model_last + self.dt_model
     def initialize_dt_model(self,t0,tOut):
         self.saveSolution()
         for m in self.model.levelModelList:

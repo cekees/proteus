@@ -94,3 +94,27 @@ def test_vortex2d_with_flcbdf_reaches_the_end(tmp_path, ti_ls, ti_vof, tol):
     times, log = _vortex(tmp_path, ti_ls, ti_vof, tol)
     assert times and times[-1] >= 8.0 - 1e-8
     assert "FAILED" not in log
+
+
+def test_hotstart_with_flcbdf_reproduces_the_uninterrupted_run(tmp_path):
+    """FLCBDF on both models: stop at output 10, hot start from the archive,
+    and the fields at the end agree with the run that was never stopped. The
+    archive carries each integrator's history, order and step size
+    (FLCBDF.state / set_state); the step controllers follow it
+    (FLCBDF_controller.syncAfterRestore)."""
+    root = os.path.abspath(os.path.join(here, "..", ".."))
+    hm = os.path.join(root, "test", "hotstart_measure")
+    env = dict(os.environ, HS_FLCBDF_TOL="1e-2",
+               PYTHONPATH=os.pathsep.join([root, here, os.environ.get("PYTHONPATH", "")]))
+    def run(out, *mode):
+        subprocess.run([sys.executable, os.path.join(hm, "run_case.py"), str(tmp_path / out), "flcbdf", "1", *mode],
+                       env=env, check=True, capture_output=True)
+    run("full", "full")
+    run("hot", "stop", "10")
+    run("hot", "hot", "10")
+    out = subprocess.run([sys.executable, os.path.join(hm, "compare.py"),
+                          str(tmp_path / "full" / "hs_flcbdf1.h5"), str(tmp_path / "hot" / "hs_flcbdf1.h5"),
+                          "flcbdf1", "10"], env=env, check=True, capture_output=True, text=True).stdout
+    final = [l for l in out.splitlines() if l.startswith("FINAL")][0]
+    errs = [float(x) for x in re.findall(r"(?:L2|Linf)=([0-9.e+-]+)", final)]
+    assert len(errs) == 8 and max(errs) < 1e-10, final

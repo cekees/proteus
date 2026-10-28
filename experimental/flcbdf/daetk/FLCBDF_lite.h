@@ -2,6 +2,7 @@
 #define FLCBDF_lite_H
 
 #include <fstream>
+#include <vector>
 #include <iostream>
 #include "Definitions.h"
 #include "Integrator.h"
@@ -57,6 +58,10 @@ public:
   bool initializeTimeHistory(const Vec& yIn, const Vec& yPrimeIn);
   double retryStep_solverFailure();
   double retryStep_errorFailure();
+  //hotstart: every number that makes the next step depend on the past, flat.
+  //Layout is private to the class; unpackState needs a vector from packState of an integrator of the same size.
+  std::vector<double> packState() const;
+  void unpackState(const std::vector<double>& s);
   double getCurrentAlpha() const;//mwf for building off-diagonal jacobians, not necessarily best idea
   Vec yn,ynprime,yCminusyP,tempvec;
   //the initial state given to initializeTimeHistory, kept so that a change of

@@ -519,6 +519,21 @@ class FLCBDF(TI_base):
         for ci in range(self.nc): self.flcbdf[('u',ci)].lastStepErrorOk(self.transport.u[ci].dof)
         for ci in self.massComponents: self.flcbdf[ci].stepTaken(mfinal[ci])
         for ci in range(self.nc): self.flcbdf[('u',ci)].stepTaken(self.transport.u[ci].dof)
+    def _flcbdf_key(self,key):
+        return "m%d" % key if isinstance(key,int) else "u%d" % key[1]
+    def state(self):
+        """What a hot start needs to continue with the same history, order and
+        step size: each integrator's full state, and the current time and dt."""
+        st = {"tLast":float(self.tLast),"dt":float(self.dt)}
+        for key,f in self.flcbdf.items():
+            st["flcbdf_"+self._flcbdf_key(key)] = f.state()
+        return st
+    def set_state(self,st):
+        self.tLast = st["tLast"]
+        self.dt = st["dt"]
+        self.t = self.tLast + self.dt
+        for key,f in self.flcbdf.items():
+            f.set_state(numpy.ascontiguousarray(st["flcbdf_"+self._flcbdf_key(key)],dtype='d'))
     def updateStage(self):
         """
         increment stage counters and push necessary information

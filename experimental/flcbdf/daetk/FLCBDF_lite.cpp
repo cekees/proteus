@@ -1012,3 +1012,60 @@ void FLCBDF_lite::reset()
 }
 
 }//Daetk
+
+namespace Daetk
+{
+//one list of the state, used both ways, so the two cannot drift apart
+#define FLCBDF_STATE_BOOLS(X) X(firstStep) X(prepareJacobian) X(predictorAlreadyUpdated) X(firstCallToSolver) \
+  X(jacobianIsOld) X(correctorStepFailed) X(kRaisedOnLastStep) X(USE_FIXED_STEP) X(USE_FIXED_ORDER) \
+  X(UPDATE_JACOBIANS) X(STEP_EXACT) X(inInitializationPhase) X(recomputeNonlinearConvergenceRate) \
+  X(stepFailed) X(useOldChooseStepSize) X(historyInitialized)
+#define FLCBDF_STATE_INTS(X) X(neq) X(k) X(kLast) X(constStepsTaken) X(constStepsTakenSave) X(kLastUpdate) \
+  X(constStepsTakenLastUpdate) X(constStepsTakenLastUpdateSave) X(stepsFailed) X(errorFailures) \
+  X(MAX_FAILURES) X(shortCutFactor) X(kFixed) X(iStep)
+#define FLCBDF_STATE_REALS(X) X(h) X(hLast) X(hLastUpdate) X(tn) X(tnPlusH) X(error) X(errorEstimate) \
+  X(norm_yCminusyP) X(convergenceFactor) X(hFixed) X(alpha) X(stepIncreaseCeiling) X(stepIncreaseFloor) \
+  X(stepDecreaseCeiling) X(stepDecreaseFloor) X(alphaS) X(alphaoNp1) X(alphaOld) X(alphaLast)
+
+std::vector<double> FLCBDF_lite::packState() const
+{
+  std::vector<double> s;
+#define PUSH(m) s.push_back(static_cast<double>(m));
+  FLCBDF_STATE_BOOLS(PUSH) FLCBDF_STATE_INTS(PUSH) FLCBDF_STATE_REALS(PUSH)
+#undef PUSH
+  for (int i=0;i<7;i++) s.push_back(psiNp1[i]);
+  for (int i=0;i<7;i++) s.push_back(sigmaNp1[i]);
+  for (int i=0;i<6;i++) s.push_back(alphaNp1[i]);
+  for (int i=0;i<6;i++) s.push_back(betaNp1[i]);
+  for (int i=0;i<6;i++) s.push_back(gammaNp1[i]);
+  const int n = yn.ldim();
+  const Vec* vs[] = {&phiN[0],&phiN[1],&phiN[2],&phiN[3],&phiN[4],&phiN[5],&phiN[6],&yn,&ynprime,&y0Saved,&yp0Saved};
+  for (const Vec* v : vs)
+    for (int i=0;i<n;i++) s.push_back((*v)[i]);
+  return s;
+}
+
+void FLCBDF_lite::unpackState(const std::vector<double>& s)
+{
+  size_t j = 0;
+  const int n = yn.ldim();
+  const size_t nScalars = 16 + 14 + 19 + 7+7+6+6+6;
+  if (s.size() != nScalars + 11*static_cast<size_t>(n))
+    throw std::runtime_error("FLCBDF_lite::unpackState: state does not match this integrator (size or version)");
+#define POP_B(m) m = (s[j++] != 0.0);
+#define POP_I(m) m = static_cast<int>(s[j++]);
+#define POP_R(m) m = s[j++];
+  FLCBDF_STATE_BOOLS(POP_B) FLCBDF_STATE_INTS(POP_I) FLCBDF_STATE_REALS(POP_R)
+#undef POP_B
+#undef POP_I
+#undef POP_R
+  for (int i=0;i<7;i++) psiNp1[i]=s[j++];
+  for (int i=0;i<7;i++) sigmaNp1[i]=s[j++];
+  for (int i=0;i<6;i++) alphaNp1[i]=s[j++];
+  for (int i=0;i<6;i++) betaNp1[i]=s[j++];
+  for (int i=0;i<6;i++) gammaNp1[i]=s[j++];
+  Vec* vs[] = {&phiN[0],&phiN[1],&phiN[2],&phiN[3],&phiN[4],&phiN[5],&phiN[6],&yn,&ynprime,&y0Saved,&yp0Saved};
+  for (Vec* v : vs)
+    for (int i=0;i<n;i++) (*v)[i] = s[j++];
+}
+}//Daetk

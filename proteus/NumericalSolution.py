@@ -673,6 +673,11 @@ class NS_base(object):  # (HasTraits):
             #state; put back the state the archived step ended with
             for index,m in enumerate(self.modelList):
                 self.restoreSolverState(m,index,self.tCount)
+            synced = [m for m in self.modelList if hasattr(m.stepController,"syncAfterRestore")]
+            if synced:
+                for m in synced:
+                    m.stepController.syncAfterRestore()
+                self.systemStepController.choose_dt_system()
         logEvent("Starting time stepping",level=0)
         systemStepFailed=False
         stepFailed=False
@@ -1212,7 +1217,7 @@ class NS_base(object):  # (HasTraits):
     SOLVER_STATE_GROUP = "solver_state"
 
     #: the lagged objects of a level model whose state a hot start restores
-    SOLVER_STATE_OWNERS = ("shockCapturing", "stabilization")
+    SOLVER_STATE_OWNERS = ("shockCapturing", "stabilization", "timeIntegration")
 
     def _solver_state_group_path(self, tCount, model, owner):
         return "%s/%d/%s/%s" % (self.SOLVER_STATE_GROUP, tCount, model.name, owner)
