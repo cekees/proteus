@@ -232,7 +232,7 @@ class NF_base(object):
                 ebN = self.mesh.exteriorElementBoundariesArray[ebNE]
                 eN_global = self.mesh.elementBoundaryElementsArray[ebN,0]
                 ebN_element = self.mesh.elementBoundaryLocalElementBoundariesArray[ebN,0]
-                materialFlag = self.mesh.elementBoundaryMaterialTypes[ebN]
+                materialFlag = self.mesh.elementBoundaryUserFlags[ebN]
                 for k in range(vt.nElementBoundaryQuadraturePoints_elementBoundary):
                     x = vt.ebqe['x'][ebNE,k]
                     try:
@@ -1071,7 +1071,7 @@ def RobinFactory(getRobinConditions, base=None):
                 here = []
                 for ebNE in range(mesh.nExteriorElementBoundaries_global):
                     ebN = mesh.exteriorElementBoundariesArray[ebNE]
-                    flag = mesh.elementBoundaryMaterialTypes[ebN]
+                    flag = mesh.elementBoundaryUserFlags[ebN]
                     for k in range(nq):
                         x = self.vt.ebqe['x'][ebNE, k]
                         value = get(x, flag)

@@ -4,35 +4,21 @@ import subprocess
 import os
 import pytest
 
-# One xdist worker runs this file, in order: the baseline and adapted runs read the mesh
-# test_MeshAdaptRestart_generateMesh writes, and the last test compares their
-# pressure.csv.
-pytestmark = pytest.mark.xdist_group("gauge_compare_dambreak_2D_rdmc")
+RUN = "cd %s; parun -C \"gen_mesh={gen} usePUMI=True adapt={adapt} fixedTimeStep=False\" -D \"{name}\" dambreak_Colagrossi_so.py;"
+
 
 @pytest.mark.slowTest
-
-def test_MeshAdaptRestart_generateMesh(verbose=0):
-    """Generate Mesh for PUMI"""
-    currentPath = os.path.dirname(os.path.abspath(__file__))
-    runCommand = "cd "+currentPath+"; parun -C \"gen_mesh=True usePUMI=True adapt=0 fixedTimeStep=False\" -D \"baseline\" dambreak_Colagrossi_so.py;"
-    subprocess.check_call(runCommand,shell=True)
-
-def test_MeshAdaptRestart_adaptiveTime_BackwardEuler_baseline_withRDMC(verbose=0):
-    """Get baseline data"""
-    currentPath = os.path.dirname(os.path.abspath(__file__))
-    runCommand = "cd "+currentPath+"; parun -C \"gen_mesh=False usePUMI=True adapt=0 fixedTimeStep=False\" -D \"baseline\" dambreak_Colagrossi_so.py;"
-    subprocess.check_call(runCommand,shell=True)
-
-
-def test_MeshAdaptRestart_adaptiveTime_BackwardEuler_withRDMC(verbose=0):
-    """Test restart workflow"""
-    currentPath = os.path.dirname(os.path.abspath(__file__))
-    runCommand = "cd "+currentPath+"; parun -C \"gen_mesh=False usePUMI=True adapt=1 fixedTimeStep=False\" -D \"adapt_0\" dambreak_Colagrossi_so.py;"
-    subprocess.check_call(runCommand,shell=True)
-
 def test_MeshAdaptRestart_withRDMC(verbose=0):
-    #subprocess.call("diff normal adapt_0/pressure.csv baseline/pressure.csv")
+    """Generate the mesh, run the baseline and the adapted restart, and compare their pressure
+    gauges. The runs read the mesh the first one writes and the comparison reads their output,
+    so they are one test: it does not depend on another test having run, or on where one ran."""
     currentPath = os.path.dirname(os.path.abspath(__file__))
+    for gen_mesh, adapt, name in (("True", 0, "baseline"),  # generate the PUMI mesh
+                                  ("False", 0, "baseline"),  # baseline data
+                                  ("False", 1, "adapt_0")):  # restart workflow
+        runCommand = RUN.format(gen=gen_mesh, adapt=adapt, name=name) % currentPath
+        subprocess.check_call(runCommand, shell=True)
+    #subprocess.call("diff normal adapt_0/pressure.csv baseline/pressure.csv")
     with open(currentPath+'/baseline/pressure.csv') as file1, open(currentPath+'/adapt_0/pressure.csv') as file2:
         for line1, line2 in zip(file1, file2):
             if(line1 != line2):

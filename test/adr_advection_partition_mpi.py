@@ -74,7 +74,7 @@ errors = ADRProblem.l2_errors(model, problem, so.tnList[-1])
 
 mesh = model.mesh
 interfaces = int((mesh.elementBoundaryMaterialTypes[
-    mesh.exteriorElementBoundariesArray] == 0).sum())
+    mesh.exteriorElementBoundariesArray] == -1).sum())
 print("RANK rank=%d exterior=%d interfaces=%d"
       % (comm.rank(), len(mesh.exteriorElementBoundariesArray), interfaces), flush=True)
 if comm.rank() == 0:

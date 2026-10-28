@@ -57,7 +57,7 @@ def _launch(args, n_ranks, generate=True, blocked=False, timeout=600):
         args = list(args) + ['global']
     result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable] + script +
                             [os.path.join(HERE, args[0])] + [str(a) for a in args[1:]],
-                            capture_output=True, text=True, env=env, timeout=timeout, cwd=HERE)
+                            capture_output=True, text=True, env=env, timeout=timeout)
     assert result.returncode == 0, result.stdout + result.stderr
     for line in result.stdout.splitlines():
         if line.startswith('RESULT'):
