@@ -13,9 +13,34 @@ on:
   push:
     branches: [main, 1.9.x]
   pull_request:
+  # The macOS Intel legs do not run on pull requests (see the job's `if`), so they run here, once a day
+  # on the default branch, as well as on every push to main.
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+# Why: the standard macOS runners are the bottleneck. Measured over the last ~80 runs, Linux jobs start at once
+# (median wait 0 min) and macOS jobs wait a median of 7-9 h (p90 17-21 h) for a runner, then run for 20-90 min; a
+# Team plan allows about 5 concurrent macOS jobs. A new push to a pull request leaves its previous run queued, and
+# each run is four macOS jobs and about 200 macOS minutes, so superseded runs were what kept the queue full.
+# A pull request's older run is cancelled when it is pushed to again. Runs for pushes to main and 1.9.x each get
+# their own group: every commit there keeps its own result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
+    # macOS Intel is the slowest leg (89 min, 54 with the FSI tests) and the scarcest runner. It failed alone, with
+    # Apple Silicon passing, in 3 of 118 comparable job pairs (Apple Silicon failed alone in 3 as well), so a break
+    # that only Intel sees now shows up after the merge instead of before it: the legs run on every push to main
+    # and nightly, not on pull requests. The nightly run is only the Intel legs; the rest ran on the push.
+    # TODO: drop the macOS Intel legs altogether after the 1.9.1 release (cekees, 2026-10-28); the platform is kept
+    # until then because 1.9.1 is meant to build on it (the 1.9.x line still runs it on pull requests).
+    if: >-
+      github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request' && matrix.leg.os != 'macos-15-intel')
+      || (github.event_name == 'schedule' && matrix.leg.os == 'macos-15-intel')
     runs-on: ${{ matrix.leg.os }}
     strategy:
       fail-fast: false
