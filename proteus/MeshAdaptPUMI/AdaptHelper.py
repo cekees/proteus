@@ -7,6 +7,57 @@ from proteus import SimTools
 import proteus.Domain
 import proteus.mprans
 
+def gatherGlobalMesh(sub, mpicomm, nd, vertices=None):
+    """Assemble the whole (partitioned-numbering) mesh on rank 0 from the owned
+    entities of every subdomain.
+
+    Returns (nodes, elements, owner, isModelVert, bFaces) as C-contiguous
+    float64/int32 arrays on rank 0 and empty ones of the same rank elsewhere.
+    owner[i] is the rank that owns global element i. bFaces rows are
+    (tag, element, node, ...) over the true domain boundary: faces a rank shares
+    with a neighbour (flagged -1 by the partitioner, or interior to the owned
+    elements) are left out, since they are not model faces.
+    """
+    nE, nN = sub.nElements_owned, sub.nNodes_owned
+    #the subdomain-to-global numbering lives on the global mesh the subdomain came from
+    nodeGid = numpy.asarray(sub.globalMesh.nodeNumbering_subdomain2global)
+    elemGid = numpy.asarray(sub.globalMesh.elementNumbering_subdomain2global)
+    elements = nodeGid[numpy.asarray(sub.elementNodesArray)[:nE]]
+    ext = numpy.asarray(sub.exteriorElementBoundariesArray)
+    ebe = numpy.asarray(sub.elementBoundaryElementsArray)[ext, 0]
+    keep = (ebe < nE) & (numpy.asarray(sub.elementBoundaryMaterialTypes)[ext] != -1)
+    ext, ebe = ext[keep], ebe[keep]
+    bFaces = numpy.zeros((len(ext), 2 + nd), dtype=numpy.int32)
+    bFaces[:, 0] = numpy.asarray(sub.elementBoundaryMaterialTypes)[ext]
+    bFaces[:, 1] = elemGid[ebe]
+    bFaces[:, 2:] = nodeGid[numpy.asarray(sub.elementBoundaryNodesArray)[ext][:, :nd]]
+    piece = (nodeGid[:nN], numpy.asarray(sub.nodeArray)[:nN],
+             elemGid[:nE], elements, mpicomm.rank, bFaces)
+    pieces = mpicomm.gather(piece, root=0)
+    if mpicomm.rank != 0:
+        return (numpy.zeros((0, 3)), numpy.zeros((0, nd + 1), dtype=numpy.int32),
+                numpy.zeros(0, dtype=numpy.int32), numpy.zeros(0, dtype=numpy.int32),
+                numpy.zeros((0, 2 + nd), dtype=numpy.int32))
+    nNodes = sum(len(pc[0]) for pc in pieces)
+    nElements = sum(len(pc[2]) for pc in pieces)
+    nodes = numpy.zeros((nNodes, 3))
+    elems = numpy.zeros((nElements, nd + 1), dtype=numpy.int32)
+    owner = numpy.zeros(nElements, dtype=numpy.int32)
+    for ngid, xyz, egid, enodes, rank, _ in pieces:
+        nodes[ngid] = xyz
+        elems[egid] = enodes
+        owner[egid] = rank
+    bAll = numpy.ascontiguousarray(numpy.concatenate([pc[5] for pc in pieces]), dtype=numpy.int32)
+    isModelVert = numpy.zeros(nNodes, dtype=numpy.int32)
+    if vertices is not None:
+        from scipy import spatial
+        tree = spatial.cKDTree(nodes)
+        for vertex in vertices:
+            v = list(vertex) + [0.0] * (3 - len(vertex))
+            isModelVert[tree.query(v)[1]] = 1
+    return nodes, numpy.ascontiguousarray(elems), owner, isModelVert, bAll
+
+
 #try making a class that's build on top of NS_base for these functions 
 class PUMI_helper:
      def __init__(self,NS_Base):
@@ -57,6 +108,13 @@ class PUMI_helper:
           logEvent("Reconstruct based on Proteus, convert PUMI mesh to Proteus")
 
           nd = domain.nd
+          mpicomm = self.comm.comm.tompi4py() if self.comm.size() > 1 else None
+          if mpicomm is not None:
+            assert domain.vertices, "model vertices (domain.vertices) were not specified"
+            args = gatherGlobalMesh(mesh, mpicomm, nd, domain.vertices)
+            domain.AdaptManager.PUMIAdapter.reconstructFromProteusGlobal(nd, *args)
+            logEvent("Finished Reconstruction in parallel, terminating program. Rerun with PUMI workflow")
+            sys.exit(0)
           from scipy import spatial
           meshVertexTree = spatial.cKDTree(mesh.nodeArray)
           meshVertex2Model= [0]*mesh.nNodes_owned
@@ -602,7 +660,7 @@ class PUMI_helper:
             self.so.useOneMesh): #and
             #self.nSolveSteps%domain.AdaptManager.PUMIAdapter.numAdaptSteps()==0):
             if (b"isotropicProteus" in self.domain.AdaptManager.sizeInputs):
-                domain.AdaptManager.PUMIAdapter.transferFieldToPUMI("proteus_size",
+                domain.AdaptManager.PUMIAdapter.transferFieldToPUMI("proteus_size_user",
                                                        self.modelList[0].levelModelList[0].mesh.size_field)
             if (b'anisotropicProteus' in self.domain.AdaptManager.sizeInputs):
                 #Insert a function to define the size_scale/size_frame fields here.
@@ -656,6 +714,10 @@ class PUMI_helper:
               else:
                 sys.exit("Haven't been implemented code yet to cover this behavior.")
             
+            if(b'error_spr' in self.domain.AdaptManager.sizeInputs and
+               self.nSolveSteps % domain.AdaptManager.numAdaptSteps == 0):
+                adaptMeshNow=True
+                logEvent("Need to Adapt")
             if(b'pseudo' in self.domain.AdaptManager.sizeInputs):
                 adaptMeshNow=True
 

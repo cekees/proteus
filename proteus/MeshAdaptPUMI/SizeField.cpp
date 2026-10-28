@@ -10,6 +10,7 @@
 #include <sstream>
 #include <PCU.h>
 #include <samElementCount.h>
+#include <spr.h>
 #include <queue>
 #include <algorithm> 
 
@@ -2114,4 +2115,65 @@ void gradeAspectRatio(apf::Mesh* m,int idx,double gradingFactor,PCU_t PCUObj)
   m->end(it); 
   m->destroyTag(isMarked);
   apf::synchronize(size_scale);
+}
+
+int MeshAdaptPUMIDrvr::getSPRSizeField()
+/**
+ * @brief Size field from SCOREC's superconvergent patch recovery (SPR)
+ * Zienkiewicz-Zhu error estimator.
+ *
+ * Recovers the gradient of the nodal field named by sprFieldName and sizes
+ * the mesh either so the estimated error is sprAdaptRatio of its current
+ * value or, if sprTargetElements > 0, so the adapted mesh has about that
+ * many elements. The result is clamped to [hmin, hmax] and queued for
+ * isotropicIntersect() like the other size fields.
+ */
+{
+  apf::Field* f = m->findField(sprFieldName.c_str());
+  if (!f) {
+    std::cerr << "MeshAdaptPUMI: SPR field '" << sprFieldName
+              << "' not found on the PUMI mesh; transfer it before adapting\n";
+    std::abort();
+  }
+  apf::Field* grad = spr::getGradIPField(f, "spr_grad", 1);
+  apf::Field* size;
+  if (sprTargetElements > 0)
+    size = spr::getTargetSPRSizeField(grad, sprTargetElements, m->getPCU());
+  else
+    size = spr::getSPRSizeField(grad, sprAdaptRatio, m->getPCU());
+  apf::destroyField(grad);
+
+  if (m->findField("spr_size"))
+    apf::destroyField(m->findField("spr_size"));
+  apf::Field* sprSize = apf::createLagrangeField(m, "spr_size", apf::SCALAR, 1);
+  apf::copyData(sprSize, size);
+  apf::destroyField(size);
+  clampField(sprSize, hmin, hmax);
+  sizeFieldList.push(sprSize);
+  return 0;
+}
+
+int MeshAdaptPUMIDrvr::getProteusSizeField()
+/**
+ * @brief The isotropic size field Proteus supplies
+ *
+ * Proteus transfers the desired edge length at each vertex with
+ * transferFieldToPUMI("proteus_size_user", ...). It is clamped to [hmin, hmax]
+ * and joins the size field list, so it combines (minimum) with any other
+ * requested indicator in isotropicIntersect() and is graded with it.
+ */
+{
+  apf::Field* f = m->findField("proteus_size_user");
+  if (!f) {
+    std::cerr << "MeshAdaptPUMI: sizeInputs has isotropicProteus but no field "
+                 "'proteus_size_user' was transferred before adapting\n";
+    std::abort();
+  }
+  if (m->findField("proteus_size_clamped"))
+    apf::destroyField(m->findField("proteus_size_clamped"));
+  apf::Field* size = apf::createLagrangeField(m, "proteus_size_clamped", apf::SCALAR, 1);
+  apf::copyData(size, f);
+  clampField(size, hmin, hmax);
+  sizeFieldList.push(size);
+  return 0;
 }
