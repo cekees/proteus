@@ -20,6 +20,7 @@ class Mesh(object):
         self.nExteriorElementBoundaries_global = nExterior
         self.exteriorElementBoundariesArray = np.arange(nExterior, dtype='i')
         self.elementBoundaryMaterialTypes = np.arange(nExterior, dtype='i') % 3
+        self.elementBoundaryUserFlags = self.elementBoundaryMaterialTypes
 
 
 NK = 4

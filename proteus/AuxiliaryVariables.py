@@ -93,8 +93,8 @@ class BoundaryForce(AV_base):
         self.writer = Archiver.XdmfWriter()
         self.nd = model.levelModelList[-1].nSpace_global
         m = self.model.levelModelList[-1]
-        flagMax = max(m.mesh.elementBoundaryMaterialTypes)
-        flagMin = min(m.mesh.elementBoundaryMaterialTypes)
+        flagMax = max(m.mesh.elementBoundaryUserFlags)
+        flagMin = min(m.mesh.elementBoundaryUserFlags)
         assert(flagMin == 0)
         assert(flagMax >= 0)
         self.nForces=flagMax+1
@@ -120,7 +120,7 @@ class BoundaryForce(AV_base):
         for m,F in zip(self.model.levelModelList,self.levelFlist):
             F.flat[:]=0.0
             if self.nd ==3:
-                cfemIntegrals.calculateExteriorElementBoundaryStress3D(m.mesh.elementBoundaryMaterialTypes,
+                cfemIntegrals.calculateExteriorElementBoundaryStress3D(m.mesh.elementBoundaryUserFlags,
                                                                        m.mesh.exteriorElementBoundariesArray,
                                                                        m.mesh.elementBoundaryElementsArray,
                                                                        m.mesh.elementBoundaryLocalElementBoundariesArray,
@@ -132,7 +132,7 @@ class BoundaryForce(AV_base):
                                                                        m.ebqe[('n')],
                                                                        F)
             if self.nd == 2:
-                cfemIntegrals.calculateExteriorElementBoundaryStress2D(m.mesh.elementBoundaryMaterialTypes,
+                cfemIntegrals.calculateExteriorElementBoundaryStress2D(m.mesh.elementBoundaryUserFlags,
                                                                        m.mesh.exteriorElementBoundariesArray,
                                                                        m.mesh.elementBoundaryElementsArray,
                                                                        m.mesh.elementBoundaryLocalElementBoundariesArray,
@@ -487,8 +487,8 @@ class BoundaryPressure(AV_base):
         m = self.model.levelModelList[-1]
         #figure out the number of pressures might compute based on different boundary types
         #listed in mesh
-        flagMax = max(m.mesh.elementBoundaryMaterialTypes)
-        flagMin = min(m.mesh.elementBoundaryMaterialTypes)
+        flagMax = max(m.mesh.elementBoundaryUserFlags)
+        flagMin = min(m.mesh.elementBoundaryUserFlags)
         assert(flagMin == 0)
         assert(flagMax >= 0)
         self.nPressures=flagMax+1
@@ -511,7 +511,7 @@ class BoundaryPressure(AV_base):
         for m,P,A in zip(self.model.levelModelList,self.levelPlist,self.levelAlist):
             P.flat[:]=0.0
             A.flat[:]=0.0
-            cfemIntegrals.accumulateExteriorElementPressureIntegrals(m.mesh.elementBoundaryMaterialTypes,
+            cfemIntegrals.accumulateExteriorElementPressureIntegrals(m.mesh.elementBoundaryUserFlags,
                                                                      m.mesh.exteriorElementBoundariesArray,
                                                                      m.ebqe[('u',0)],#pressure
                                                                      m.ebqe[('dS_u',0)],#dS

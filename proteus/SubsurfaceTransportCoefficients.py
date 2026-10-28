@@ -463,7 +463,7 @@ class ConservativeHeadRichardsMualemVanGenuchten(TC_base):
                 ebN = mesh.exteriorElementBoundariesArray[ebNE]
                 #print "eb flag",mesh.elementBoundaryMaterialTypes[ebN]
                 #print self.getSeepageFace(mesh.elementBoundaryMaterialTypes[ebN])
-                self.isSeepageFace[ebNE] = self.getSeepageFace(mesh.elementBoundaryMaterialTypes[ebN])
+                self.isSeepageFace[ebNE] = self.getSeepageFace(mesh.elementBoundaryUserFlags[ebN])
         #print self.isSeepageFace
     def initializeElementQuadrature(self,t,cq):
         self.materialTypes_q = self.elementMaterialTypes

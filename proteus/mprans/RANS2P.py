@@ -747,7 +747,7 @@ class Coefficients(proteus.TransportCoefficients.TC_base):
         self.eps_viscosity = self.epsFact * mesh.h
         self.mesh = mesh
         self.elementMaterialTypes = mesh.elementMaterialTypes
-        nBoundariesMax = int(globalMax(max(self.mesh.elementBoundaryMaterialTypes))) + 1
+        nBoundariesMax = int(globalMax(max(self.mesh.elementBoundaryUserFlags))) + 1
         self.wettedAreas = numpy.zeros((nBoundariesMax,), 'd')
         self.netForces_p = numpy.zeros((nBoundariesMax, 3), 'd')
         self.netForces_v = numpy.zeros((nBoundariesMax, 3), 'd')
@@ -1988,7 +1988,7 @@ class LevelModel(proteus.Transport.OneLevelTransport):
         argsDict["flux"] = self.ebq_global[('totalFlux', 0)]
         argsDict["elementResidual_p_save"] = self.elementResidual[0]
         argsDict["elementFlags"] = self.mesh.elementMaterialTypes
-        argsDict["boundaryFlags"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["boundaryFlags"] = self.mesh.elementBoundaryUserFlags
         argsDict["barycenters"] = self.coefficients.barycenters
         argsDict["wettedAreas"] = self.coefficients.wettedAreas
         argsDict["netForces_p"] = self.coefficients.netForces_p
@@ -2371,7 +2371,7 @@ velocity_I.append({:21.16e})
         argsDict["csrColumnOffsets_eb_w_v"] = self.csrColumnOffsets_eb[(3, 2)]
         argsDict["csrColumnOffsets_eb_w_w"] = self.csrColumnOffsets_eb[(3, 3)]
         argsDict["elementFlags"] = self.mesh.elementMaterialTypes
-        argsDict["boundaryFlags"] = self.mesh.elementBoundaryMaterialTypes
+        argsDict["boundaryFlags"] = self.mesh.elementBoundaryUserFlags
         argsDict["use_ball_as_particle"] = int(self.coefficients.use_ball_as_particle)
         argsDict["ball_center"] = self.coefficients.ball_center
         argsDict["ball_radius"] = self.coefficients.ball_radius
