@@ -18,6 +18,7 @@ parent element is not in the coarse subdomain, and ``offproc`` is not measured.
 The element lookup the subdomain hierarchy uses is also checked against matching
 elements by their nodes, which is independent of how the partitioner numbers them.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import sys
 
 import numpy as np

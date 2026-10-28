@@ -14,6 +14,7 @@ unweighted   the graph partitioner cuts the coarsest level counting nodes (befor
 rcb          recursive coordinate bisection of the coarsest level, weighted by descendants
 independent  every level partitioned on its own, the baseline for balance
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import sys
 
 from proteus import Comm

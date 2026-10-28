@@ -6,6 +6,7 @@ the duplicate really is ghosted -- that a forward scatter brings the owner's
 value into the ghost slot. NI relies on this to give its coarse-level work
 vectors the right parallel layout.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import sys
 
 import numpy as np

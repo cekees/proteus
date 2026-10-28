@@ -13,6 +13,7 @@ every side shared one numbering, so it agreed with itself while being unusable
 with a partitioned vector. Sampling the field on the subdomain meshes is what
 catches that.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import sys
 
 import numpy as np

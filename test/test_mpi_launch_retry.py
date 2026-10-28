@@ -6,9 +6,11 @@ root conftest wraps every ``subprocess.run`` from a test, so calling it here goe
 through the retry.
 """
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -197,3 +199,38 @@ def test_the_launched_interpreter_runs_with_faulthandler(monkeypatch):
     result = subprocess.run(probe, capture_output=True, text=True,
                             env={'PATH': os.environ.get('PATH', ''), 'MARKER': 'kept'})
     assert result.stdout.split() == ['1', 'kept']
+
+
+def test_a_rank_that_raises_aborts_the_whole_job(tmp_path):
+    """An uncaught exception on rank 1 must end a 3-rank job at once, with its traceback,
+    not leave ranks 0 and 2 in a barrier until the launch times out."""
+    helper = tmp_path / 'helper.py'
+    helper.write_text(textwrap.dedent('''\
+        import sys
+        sys.path.insert(0, %r)
+        import mpi_failfast
+        from mpi4py import MPI
+        if MPI.COMM_WORLD.rank == 1:
+            raise ValueError('rank one failed')
+        MPI.COMM_WORLD.Barrier()
+        ''' % os.path.join(os.path.dirname(os.path.abspath(__file__)), 'multilevel')))
+    mpiexec = shutil.which('mpiexec')
+    if mpiexec is None:
+        pytest.skip('no mpiexec')
+    start = time.time()
+    result = subprocess.run([mpiexec, '-n', '3', sys.executable, str(helper)],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode != 0
+    assert 'ValueError: rank one failed' in result.stderr
+    assert time.time() - start < 45
+
+
+def test_the_launch_asks_its_helpers_to_dump_stacks_before_the_timeout(launch_policy):
+    seen = {}
+
+    def run(cmd, *args, **kwargs):
+        seen.update(kwargs['env'])
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+
+    launch_policy.retrying_run(run)(['x'], timeout=100)
+    assert seen['PROTEUS_TEST_DUMP_AFTER'] == '80'

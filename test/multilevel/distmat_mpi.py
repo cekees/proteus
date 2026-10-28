@@ -8,6 +8,7 @@ largest differences.
 
 Usage: distmat_mpi.py NROWS NCOLS
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import sys
 
 import numpy as np

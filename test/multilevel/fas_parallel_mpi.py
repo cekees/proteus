@@ -12,6 +12,7 @@ Usage: fas_parallel_mpi.py MODE SMOOTHER LEVELS [R] [CYCLES] [SMOOTHS] [NN] [TOL
   MODE      newton | fas | newton_pcmg (Newton with PETSc PCMG-preconditioned GMRES, for comparison)
   SMOOTHER  NLJacobi | NLGaussSeidel | NLStarILU (ignored for newton)
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import sys
 import zlib

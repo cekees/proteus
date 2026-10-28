@@ -9,6 +9,7 @@ not depend on the discretization being assembled correctly in parallel.
 
 Usage: cube_transfer_mpi.py KIND LEVELS ORDER   (KIND quad or hex; ORDER 1 or 2)
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import sys
 

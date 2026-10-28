@@ -9,6 +9,7 @@ x*y and x*y*z, P1 only linears -- so each field is checked where its
 interpolation is exact. A weight that is off anywhere shows up as an error
 in one of them.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import sys
 
 import numpy as np
