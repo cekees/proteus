@@ -667,6 +667,12 @@ class NS_base(object):  # (HasTraits):
             logEvent("Initializing time history for model step controller")
             m.stepController.initializeTimeHistory()
         self.systemStepController.initialize_dt_system(self.tnList[0],self.tnList[1]) #may reset other dt's
+        if self.opts.hotStart:
+            #the spin-up above, and the step controllers' initializeTimeHistory
+            #in initialize_dt_system, rebuilt the lag state from the restart
+            #state; put back the state the archived step ended with
+            for index,m in enumerate(self.modelList):
+                self.restoreSolverState(m,index,self.tCount)
         logEvent("Starting time stepping",level=0)
         systemStepFailed=False
         stepFailed=False
@@ -1151,6 +1157,7 @@ class NS_base(object):  # (HasTraits):
             model.levelModelList[-1].archiveAnalyticalSolutions(self.ar[index],self.pList[index].analyticalSolution,
                                                                 self.tnList[0],
                                                                 self.tCount)
+            self.archiveSolverState(model,index,self.tCount)
             #could just pull the code and flags out from SimTools rathter than asking it to parse them
             #uses values in simFlags['storeQuantities']
             #q dictionary
@@ -1200,6 +1207,76 @@ class NS_base(object):  # (HasTraits):
                     if index == len(self.ar) - 1:
                         self.ar[index].sync()
 
+    #: HDF5 group, in the solution archive, holding the solver's lagged
+    #: state (shock capturing) for each archived step: ``<group>/<tCount>/<model>``.
+    SOLVER_STATE_GROUP = "solver_state"
+
+    #: the lagged objects of a level model whose state a hot start restores
+    SOLVER_STATE_OWNERS = ("shockCapturing", "stabilization")
+
+    def _solver_state_group_path(self, tCount, model, owner):
+        return "%s/%d/%s/%s" % (self.SOLVER_STATE_GROUP, tCount, model.name, owner)
+
+    def _solver_state_owners(self, model):
+        lm = model.levelModelList[-1]
+        for owner in self.SOLVER_STATE_OWNERS:
+            obj = getattr(lm, owner, None)
+            if obj is not None and hasattr(obj, "state"):
+                yield owner, obj
+
+    def archiveSolverState(self, model, index, tCount):
+        """Write the lag state a hot start needs to continue this step exactly.
+
+        Only the part of the numerical state that a restart cannot rebuild
+        from the solution: what the model's shock capturing and subgrid error
+        carry from one step to the next (their ``state()``: scalars and
+        arrays). Serial archives only (an hdf5 file open on one rank); a
+        parallel archive writes nothing and a hot start from it keeps the old
+        behaviour.
+        """
+        hdf = self.ar[index].hdfFile
+        if hdf is None or self.ar[index].size > 1:
+            return
+        for owner, obj in self._solver_state_owners(model):
+            st = obj.state()
+            if st is None:
+                continue
+            path = self._solver_state_group_path(tCount, model, owner)
+            if path in hdf:
+                del hdf[path]
+            g = hdf.create_group(path)
+            for key, value in st.items():
+                if isinstance(value, numpy.ndarray):
+                    g.create_dataset(key, data=value)
+                else:
+                    g.attrs[key] = value
+
+    def restoreSolverState(self, model, index, tCount):
+        """Hot start: put back what archiveSolverState wrote at ``tCount``,
+        after the spin-up has rebuilt (and so overwritten) the lag state.
+        Also drops the state of later steps, which the new run replaces."""
+        hdf = self.ar[index].hdfFile
+        if hdf is None or self.ar[index].size > 1:
+            return
+        group = self.SOLVER_STATE_GROUP
+        if group in hdf:
+            for key in list(hdf[group].keys()):
+                if int(key) > tCount:
+                    del hdf[group][key]
+        for owner, obj in self._solver_state_owners(model):
+            if obj.state() is None or not hasattr(obj, "set_state"):
+                continue
+            path = self._solver_state_group_path(tCount, model, owner)
+            if path not in hdf:
+                logEvent("Hot start: no lag state archived at step %d for %s of model %s; "
+                         "restarting its history from the restart state"
+                         % (tCount, owner, model.name), level=0)
+                continue
+            g = hdf[path]
+            st = {key: g.attrs[key].item() for key in g.attrs}
+            st.update({key: g[key][...] for key in g})
+            obj.set_state(st)
+
     ##save model's solution values to archive
     def archiveSolution(self,model,index,t=None):
         if True if self.fastArchive == False else 'clsvof' in model.name:
@@ -1224,6 +1301,7 @@ class NS_base(object):  # (HasTraits):
             model.levelModelList[-1].archiveAnalyticalSolutions(self.ar[index],self.pList[index].analyticalSolution,
                                                                 t,
                                                                 self.tCount)
+            self.archiveSolverState(model,index,self.tCount)
             #uses values in simFlags['storeQuantities']
             #q dictionary
             if self.archive_q[index] == True and self.fastArchive==False:
