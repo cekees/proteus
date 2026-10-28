@@ -56,5 +56,5 @@ for mi, ci in ((0, 0), (0, 1)):
 if comm.rank() == 0:
     print("RESULT", " ".join("%.12e" % v for v in out), "own=%d" % ns.modelList[0].levelModelList[-1].mesh.nElements_owned, flush=True)
 m = ns.modelList[0].levelModelList[-1].mesh
-print("RANK", comm.rank(), "ifaces", int((m.elementBoundaryMaterialTypes[m.exteriorElementBoundariesArray] == 0).sum()), flush=True)
+print("RANK", comm.rank(), "ifaces", int((m.elementBoundaryMaterialTypes[m.exteriorElementBoundariesArray] == -1).sum()), flush=True)
 

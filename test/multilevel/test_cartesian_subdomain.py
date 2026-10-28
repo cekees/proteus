@@ -48,7 +48,7 @@ def _launch(args, n_ranks, blocked=False, timeout=300):
     script = [os.path.join(HERE, 'without_petsc4py.py')] if blocked else []
     result = subprocess.run([mpiexec, '-n', str(n_ranks), sys.executable] + script +
                             [os.path.join(HERE, 'cartesian_subdomain_mpi.py')] + [str(a) for a in args],
-                            capture_output=True, text=True, env=env, timeout=timeout, cwd=HERE)
+                            capture_output=True, text=True, env=env, timeout=timeout)
     assert result.returncode == 0, result.stdout + result.stderr
     for line in result.stdout.splitlines():
         if line.startswith('RESULT'):

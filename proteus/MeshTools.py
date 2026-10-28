@@ -479,6 +479,11 @@ class Hexahedron(Polyhedron):
         self.elementBoundaries = self.quadrilaterals
 
 #todo add enum34 and replace with real Python enum
+#: Material type of a face (or node) that the partitioner cut: interior to the
+#: global mesh, exterior to a subdomain. Reserved: domains use 0 for "no tag" and
+#: positive values for conditions.
+RANK_INTERFACE_FLAG = -1
+
 class MeshParallelPartitioningTypes(object):
     """
     fake an enum for parallel partitioning options
@@ -633,6 +638,7 @@ def cartesianSubdomain(kind, nn, L, rankGrid=None, nLayersOfOverlap=1, triangleF
     mesh.nodeOld2New = lambda old: cpartitioning.cartesianNumbering(kind, triangleFlag, nn, rankGrid, False, old, level)
     mesh.elementOld2New = lambda old: cpartitioning.cartesianNumbering(kind, triangleFlag, nn, rankGrid, True, old, level)
     mesh._finishPartitioning(comm)
+    mesh.subdomainMesh.rankInterfacesMarked = True     #generateCartesianSubdomain flags the cut faces -1
     #the global scalars a mesh reports, from the pieces
     mpi = comm.comm.tompi4py()
     from mpi4py import MPI
@@ -791,6 +797,25 @@ class Mesh(object):
         self.arGrid=None
         self.nLayersOfOverlap = None
         self.parallelPartitioningType = MeshParallelPartitioningTypes.element
+    @property
+    def elementBoundaryUserFlags(self):
+        """The element boundary flags as user code and the kernels see them.
+
+        ``elementBoundaryMaterialTypes`` carries the partitioner's reserved
+        ``-1`` on the faces it cut. A user's boundary-condition function, or a
+        kernel that indexes an array by the flag, must see 0 there ("no tag"),
+        as it always has; this is that array. It is the flags themselves when
+        nothing was marked.
+        """
+        flags = self.elementBoundaryMaterialTypes
+        if self.__dict__.get('rankInterfacesMarked') and flags is not None:
+            cached = self.__dict__.get('_elementBoundaryUserFlags')
+            if cached is None or cached.shape != flags.shape:
+                cached = np.ascontiguousarray(np.maximum(flags, 0), dtype=flags.dtype)
+                self.__dict__['_elementBoundaryUserFlags'] = cached
+            return cached
+        return flags
+
     def partitionMesh(self,nLayersOfOverlap=1,parallelPartitioningType=MeshParallelPartitioningTypes.node,nodeOwners=None,elementOwners=None,nodeWeights=None):
         from . import cmeshTools
         from . import Comm
@@ -811,6 +836,10 @@ class Mesh(object):
             elif parallelPartitioningType != MeshParallelPartitioningTypes.node and elementOwners is None:
                 elementOwners = np.zeros(self.nElements_global,dtype=np.intc)
         logEvent(memory("partitionMesh 2","MeshTools"),level=4)
+        #the global exterior faces, by node set, before partitioning rearranges the global arrays
+        realBoundary = set(map(tuple, np.sort(self.elementBoundaryNodesArray[self.exteriorElementBoundariesArray],
+                                              axis=1).tolist())) if comm.size() > 1 else None
+        nodesBefore = np.array(self.nodeArray, copy=True) if comm.size() > 1 else None
         if parallelPartitioningType == MeshParallelPartitioningTypes.node:
             #mwf for now always gives 1 layer of overlap
             (self.elementOffsets_subdomain_owned,
@@ -849,6 +878,67 @@ class Mesh(object):
         self.nodeNumbering_global_old2new = cpartitioning.getNodeNumbering_global_old2new(self.cmesh)
         self.elementNumbering_global_old2new = cpartitioning.getElementNumbering_global_old2new(self.cmesh)
         self._finishPartitioning(comm)
+        if realBoundary is not None:
+            self._markRankInterfaces(realBoundary, nodesBefore)
+
+    def _nodePermutationFromCoordinates(self, nodesBefore):
+        """old2new for the nodes, by matching rows of the node array before and after.
+
+        None if two nodes share coordinates (then the match is ambiguous)."""
+        after = np.asarray(self.nodeArray)
+        if after.shape != nodesBefore.shape:
+            return None
+        before_order = np.lexsort(nodesBefore.T[::-1])
+        after_order = np.lexsort(after.T[::-1])
+        a, b = nodesBefore[before_order], after[after_order]
+        if not np.array_equal(a, b):
+            return None
+        if len(a) > 1 and np.any(np.all(a[1:] == a[:-1], axis=1)):
+            return None
+        old2new = np.empty(len(a), dtype=np.int64)
+        old2new[before_order] = after_order
+        return old2new
+
+    def _markRankInterfaces(self, realBoundary, nodesBefore):
+        """Give the faces a rank shares with its neighbours the reserved flag -1.
+
+        A rank's exterior faces are the real boundary of the domain plus the
+        faces cut by the partition. The domain's flags are copied to the
+        subdomain unchanged, and a face that is interior to the global mesh
+        carries 0 there, so a cut face and an untagged real boundary face look
+        the same. The global mesh tells them apart: a subdomain exterior face
+        is a real boundary face exactly when its nodes, in the global
+        numbering, are the nodes of an exterior face of the global mesh.
+        ``realBoundary`` is that set, taken before partitioning (which
+        rearranges the global arrays): sorted original node numbers per face.
+
+        Only faces whose flag is 0 are marked; a positive flag on a cut face is
+        a condition the domain put there and is kept. ``-1`` is reserved for the
+        partitioner. Nothing else sets it.
+        """
+        sub = self.subdomainMesh
+        exterior = sub.exteriorElementBoundariesArray
+        old2new = self.nodeNumbering_global_old2new
+        if old2new is None:
+            #An element partition renumbers the global nodes in place without
+            #saying how; recover the permutation from the coordinates.
+            old2new = self._nodePermutationFromCoordinates(nodesBefore)
+            if old2new is None:
+                logEvent("Rank interfaces not marked: the nodes of this mesh do not "
+                         "have distinct coordinates, so the partitioner's renumbering "
+                         "cannot be recovered", level=2)
+                return
+        old2new = np.asarray(old2new)
+        new2old = np.empty_like(old2new)
+        new2old[old2new] = np.arange(len(old2new), dtype=old2new.dtype)
+        nodes = new2old[np.asarray(self.nodeNumbering_subdomain2global)[sub.elementBoundaryNodesArray[exterior]]]
+        keys = np.sort(nodes, axis=1).tolist()
+        cut = np.fromiter((tuple(k) not in realBoundary for k in keys), dtype=bool, count=len(keys))
+        flags = sub.elementBoundaryMaterialTypes
+        faces = exterior[cut]
+        flags[faces[flags[faces] == 0]] = RANK_INTERFACE_FLAG
+        sub.__dict__.pop('_elementBoundaryUserFlags', None)
+        sub.rankInterfacesMarked = True
 
     def _finishPartitioning(self,comm):
         """What every partitioner does once the C++ has built the subdomain mesh
@@ -7944,7 +8034,11 @@ def rankInterfaceExteriorMask(mesh):
     if mask is not None and len(mask) != len(exterior):
         mask = None             # adapted since: the cached mask is the old mesh's
     if mask is None:
-        mask = np.asarray(mesh.elementBoundaryMaterialTypes)[exterior] == 0
+        flags = np.asarray(mesh.elementBoundaryMaterialTypes)[exterior]
+        if mesh.__dict__.get('rankInterfacesMarked'):
+            mask = flags == RANK_INTERFACE_FLAG
+        else:
+            mask = flags == 0   # a partitioner that does not mark: 0 stands for both
         mesh.__dict__['_rankInterfaceExteriorMask'] = mask
         masked = int(mask.sum())
         if masked:
