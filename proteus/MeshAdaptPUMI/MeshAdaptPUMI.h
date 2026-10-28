@@ -38,6 +38,12 @@ class MeshAdaptPUMIDrvr{
   //Functions to construct proteus mesh data structures
   int reconstructFromProteus(Mesh& mesh, Mesh& globalMesh,int hasModel);
   int reconstructFromProteus2(Mesh& mesh, int* isModelVert, int* bFaces);
+  // Collective. Rank 0 passes the whole (pre-partition) mesh as flat arrays and
+  // every other rank passes zero entities; elementOwner[i] is the rank that owns
+  // element i. Writes Reconstructed.dmg and an nRanks-part Reconstructed.smb
+  // partitioned the way elementOwner says. Returns the global element count.
+  int reconstructFromProteusGlobal(int dim, int nNodes, double* nodes, int nElements, int* elements,
+                                   int* elementOwner, int* isModelVert, int nBFaces, int* bFaces);
   int constructFromSerialPUMIMesh(Mesh& mesh);
   int constructFromParallelPUMIMesh(Mesh& mesh, Mesh& subdomain_mesh);
   int updateMaterialArrays(Mesh& mesh,int dim, int bdryID, int GeomTag);
@@ -62,6 +68,7 @@ class MeshAdaptPUMIDrvr{
   int transferPropertiesToPUMI(double* rho_p, double* nu_p,double* g_p, double deltaT, double deltaT_next,double T_simulation,double interfaceBandSize);
   //int setAdaptProperties(std::vector<std::string> sizeInputs,double hmax);
   int setAdaptProperties(std::vector<std::string> sizeInputs,bool in_adapt, double in_hmax,double in_hmin,double in_hphi, int in_numAdaptSteps, double in_targetError, double in_gradingFactor, bool in_logging, int in_numIterations);
+  int setSPRProperties(const char* fieldName, double adaptRatio, long targetElements);
   //int transferBCtagsToProteus(int* tagArray, int idx, int* ebN, int* eN_global, double* fluxBC);
   //int transferBCsToProteus();
 
@@ -78,6 +85,9 @@ class MeshAdaptPUMIDrvr{
   int calculateAnisoSizeField();
   int testIsotropicSizeField();
   int getERMSizeField(double err_total);
+  int getSPRSizeField();
+  // The size field Proteus transferred as "proteus_size_user" (sizeInputs isotropicProteus)
+  int getProteusSizeField();
   int gradeMesh(double gradationFactor);
 
   //analytic geometry
@@ -111,6 +121,10 @@ class MeshAdaptPUMIDrvr{
   bool hasInterface;
   bool hasVMS;
   bool hasERM;
+  bool hasSPR;
+  std::string sprFieldName; // nodal field whose recovered gradient drives SPR
+  double sprAdaptRatio;     // allowed fraction of the estimated error
+  long sprTargetElements;   // if > 0, size for this element count instead
   bool hasAniso;
   bool hasAnalyticSphere;
   bool useProteus; 
