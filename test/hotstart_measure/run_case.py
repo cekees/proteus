@@ -27,8 +27,9 @@ sys.path.insert(0, vortex)
 
 sys.path.insert(0, here)
 import vortex2D  # noqa: E402
-vortex2D.timeIntegration_vof = ti
-vortex2D.timeIntegration_ls = ti
+# HS_TI_LS / HS_TI_VOF override the integrator of one model (ls or vof)
+vortex2D.timeIntegration_vof = os.environ.get("HS_TI_VOF", ti)
+vortex2D.timeIntegration_ls = os.environ.get("HS_TI_LS", ti)
 vortex2D.timeOrder = torder
 vortex2D.soname = "hs_%s%d" % (ti, torder)
 # decomposition switches: HS_LAG=0 turns the lagged shock capturing off,

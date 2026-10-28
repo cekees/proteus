@@ -44,12 +44,18 @@ cdef class FLCBDF_integrator:
                           np.ndarray Dy,
                           np.ndarray yprime,
                           np.ndarray Dyprime):
-        if self.yVec is NULL:
-            self.yVec = new Vec(REF, <double*>(y.data), self.flcbdf.yn.ldim_)
-            self.DyVec = new Vec(REF, <double*>(Dy.data), self.flcbdf.yn.ldim_)
-            self.yprimeVec = new Vec(REF, <double*>(yprime.data), self.flcbdf.yn.ldim_)
-            self.DyprimeVec = new Vec(REF, <double*>(Dyprime.data), self.flcbdf.yn.ldim_)
-        self.flcbdf.calculate_yprime(self.yVec[0], self.DyVec[0], self.yprimeVec[0], self.DyprimeVec[0])
+        # per-call vectors: FLCBDF calls this with different arrays (element
+        # quadrature, the beta_bdf dummies, the dofs) on the same integrator
+        cdef int n = self.flcbdf.yn.ldim_
+        cdef Vec *yV = new Vec(REF, <double*>(y.data), n)
+        cdef Vec *DyV = new Vec(REF, <double*>(Dy.data), n)
+        cdef Vec *ypV = new Vec(REF, <double*>(yprime.data), n)
+        cdef Vec *DypV = new Vec(REF, <double*>(Dyprime.data), n)
+        self.flcbdf.calculate_yprime(yV[0], DyV[0], ypV[0], DypV[0])
+        del yV
+        del DyV
+        del ypV
+        del DypV
 
     def stepTaken(self, np.ndarray y):
         cdef Vec *yVec = new Vec(REF,<double*>(y.data),self.flcbdf.yn.ldim_)

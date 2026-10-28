@@ -38,6 +38,7 @@ ext = Extension(
     define_macros=[("F77_POST_UNDERSCORE", 1), ("USE_BLAS", 1) if not os.environ.get("FLCBDF_NOBLAS") else ("NO_BLAS_DEFINE", 1),
                    ("CMRVEC_BOUNDS_CHECK", 1), ("MV_VECTOR_BOUNDS_CHECK", 1),
                    ("PETSCVEC_BOUNDS_CHECK", 1),
+                   ("FLCBDF_VERBOSE", 1) if os.environ.get("FLCBDF_VERBOSE") else ("FLCBDF_QUIET", 1),
                    ("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
     include_dirs=["daetk", numpy.get_include()] + includes,
     library_dirs=libdirs,
