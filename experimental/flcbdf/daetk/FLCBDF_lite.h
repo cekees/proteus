@@ -59,6 +59,10 @@ public:
   double retryStep_errorFailure();
   double getCurrentAlpha() const;//mwf for building off-diagonal jacobians, not necessarily best idea
   Vec yn,ynprime,yCminusyP,tempvec;
+  //the initial state given to initializeTimeHistory, kept so that a change of
+  //the first step size (setDT) can rebuild the history and coefficients for it
+  Vec y0Saved,yp0Saved;
+  bool historyInitialized;
 private:
   
   bool firstStep,

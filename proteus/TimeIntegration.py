@@ -508,6 +508,13 @@ class FLCBDF(TI_base):
     def updateTimeHistory(self,resetFromDOF=False):
         logEvent("updating time history for FLCBDF")
         self.tLast = self.t
+        #the integrator took y - predictor at lastStepErrorOk, but models that
+        #follow this one in the step (redistancing, mass correction) may have
+        #changed the solution since; the history must hold what the next step
+        #starts from, as backward Euler's m_last does. Without this the level
+        #set drifts from backward Euler by O(t) at order 1 and fails Newton.
+        for ci in self.massComponents: self.flcbdf[ci].lastStepErrorOk(self.m[ci])
+        for ci in range(self.nc): self.flcbdf[('u',ci)].lastStepErrorOk(self.transport.u[ci].dof)
         for ci in self.massComponents: self.flcbdf[ci].stepTaken(self.m[ci])
         for ci in range(self.nc): self.flcbdf[('u',ci)].stepTaken(self.transport.u[ci].dof)
     def updateStage(self):

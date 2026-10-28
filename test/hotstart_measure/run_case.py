@@ -30,6 +30,19 @@ import vortex2D  # noqa: E402
 # HS_TI_LS / HS_TI_VOF override the integrator of one model (ls or vof)
 vortex2D.timeIntegration_vof = os.environ.get("HS_TI_VOF", ti)
 vortex2D.timeIntegration_ls = os.environ.get("HS_TI_LS", ti)
+# HS_FLCBDF_TOL sets atol_u and rtol_u (the FLCBDF error control) for the models
+# that use it; the n files do not set them, so they are overridden where the
+# controller reads them
+if os.environ.get("HS_FLCBDF_TOL"):
+    from proteus import StepControl as _SC
+    _init = _SC.FLCBDF_controller.__init__
+
+    def _flcbdf_init(self, model, nOptions, _init=_init):
+        for _d in (nOptions.atol_u, nOptions.rtol_u):
+            for _ci in _d:
+                _d[_ci] = float(os.environ["HS_FLCBDF_TOL"])
+        _init(self, model, nOptions)
+    _SC.FLCBDF_controller.__init__ = _flcbdf_init
 vortex2D.timeOrder = torder
 vortex2D.soname = "hs_%s%d" % (ti, torder)
 # decomposition switches: HS_LAG=0 turns the lagged shock capturing off,

@@ -41,8 +41,8 @@ cdef extern from "FLCBDF_lite.h" namespace "Daetk":
         FLCBDF_lite(int dim, WeightedL2Norm&, FullDataFile&)
         void useFixedStep(const double step)
         void useFixedOrder(const int order)
-        double chooseDT(const double& , const double& )
-        double setDT(const double& hin)
+        double chooseDT(const double& , const double& ) except +
+        double setDT(const double& hin) except +
         double chooseInitialStepSize(const double& t,
                                    const double& tout,
                                    const Vec& y,
@@ -58,8 +58,8 @@ cdef extern from "FLCBDF_lite.h" namespace "Daetk":
                               Vec& yprime,
                               Vec& Dyprime)
         bool initializeTimeHistory(const Vec& yIn, const Vec& yPrimeIn)
-        double retryStep_solverFailure()
-        double retryStep_errorFailure()
+        double retryStep_solverFailure() except +
+        double retryStep_errorFailure() except +
         double getCurrentAlpha() const
         Vec yn,ynprime,yCminusyP,tempvec
 

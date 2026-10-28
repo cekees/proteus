@@ -1,4 +1,5 @@
 #include "FLCBDF_lite.h"
+#include <stdexcept>
 #include <iostream>
 namespace Daetk 
 {
@@ -136,6 +137,9 @@ FLCBDF_lite::FLCBDF_lite(int dim,
   ynprime(dim,0.0),
   yCminusyP(dim,0.0),
   tempvec(dim,0.0),
+  y0Saved(dim,0.0),
+  yp0Saved(dim,0.0),
+  historyInitialized(false),
   alphaS(0.0),
   alphaoNp1(0.0),
   alphaOld(0.0),
@@ -211,6 +215,9 @@ real FLCBDF_lite::setDT(const real& hin)
   if (firstStep==true)
     {
       h=hin;
+      //the history (h*y') and the leading coefficient were built for the old h
+      if (historyInitialized)
+        initializeTimeHistory(y0Saved,yp0Saved);
     }
   else if (inInitializationPhase == true)
     {
@@ -248,6 +255,9 @@ real FLCBDF_lite::estimateError(const Vec& y)
 */
 bool FLCBDF_lite::initializeTimeHistory(const Vec& yIn, const Vec& yPrimeIn)
 {
+  copy(yIn,y0Saved);
+  copy(yPrimeIn,yp0Saved);
+  historyInitialized = true;
   firstStep = true;
   constStepsTaken = 0;
   /* Alter the history directly in order to take the first
@@ -507,6 +517,12 @@ void FLCBDF_lite::updateCoefficients()
     {
       constStepsTaken = 0;
     }
+  //a repeated call after resetCoefficients (setDT, retries) with a step size
+  //or order other than the one the coefficients were last computed for: the
+  //coefficients are stale even when h equals the previous step's, so they
+  //must be recomputed
+  if (predictorAlreadyUpdated && (h != hLastUpdate || k != kLastUpdate))
+    constStepsTaken = 0;
   if (!predictorAlreadyUpdated)
     {
       if(kLast<5)
@@ -897,8 +913,7 @@ void FLCBDF_lite::checkStepSize()
 {
   if (tn+h == tn)
     {
-      cerr<<"FLCBDF_lite:step size has been reduced to machine precision--exiting"<<endl;
-      exit(1);
+      throw std::runtime_error("FLCBDF_lite: step size has been reduced to machine precision");
     }
 }
 
