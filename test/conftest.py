@@ -15,15 +15,12 @@ def pytest_configure(config):
     Tests write proteus.log, <so.name>.h5, matrix dumps and other files under
     fixed names relative to the working directory. Workers sharing one
     directory read back each other's files, or ones another worker has just
-    deleted. Run as CI does (python -m pytest -n auto --dist loadgroup from
-    an output directory), each worker gets <that directory>/<worker id>.
+    deleted. Run as CI does (python -m pytest -n auto from an output
+    directory), each worker gets <that directory>/<worker id>.
 
-    A file whose tests read what an earlier test in it wrote marks itself
-    pytestmark = pytest.mark.xdist_group(...), so --dist loadgroup keeps it
-    on one worker, in order.
+    A test must not read what another test wrote: tests land on any worker, in
+    any order. One that needs a mesh or an earlier run makes it itself.
     """
-    config.addinivalue_line(
-        "markers", "xdist_group(name): run on one pytest-xdist worker, in order")
     worker = getattr(config, "workerinput", {}).get("workerid")
     if worker:
         path = os.path.join(os.getcwd(), worker)

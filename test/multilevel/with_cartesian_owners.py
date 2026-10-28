@@ -57,7 +57,8 @@ def ownersFromCoordinates(mesh, parallelPartitioningType):
 
 
 MeshTools.MultilevelMesh.coarsestLevelOwners = staticmethod(ownersFromCoordinates)
-helper = sys.argv[1]
+# a helper named without a directory is one of this directory's, wherever the run starts
+helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), sys.argv[1])
 sys.argv = sys.argv[1:]
 sys.path.insert(0, os.path.dirname(os.path.abspath(helper)))
 runpy.run_path(helper, run_name='__main__')
