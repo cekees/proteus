@@ -31,6 +31,17 @@ import vortex2D  # noqa: E402
 # (vortex2D.parallel is False, which means LU, which parallel runs reject)
 if os.environ.get("HS_PARALLEL"):
     vortex2D.parallel = True
+    # the decks' parallel branch leaves the PETSc solvers at their defaults (a KSP atol of 1 for
+    # the redistancing model): direct solves on the subdomain blocks, tight tolerance
+    from petsc4py import PETSc
+    _opts = PETSc.Options()
+    for _pre in ("ncls_", "rdls_", "vof_", "mcorr_"):
+        _opts[_pre + "ksp_type"] = "gmres"
+        _opts[_pre + "ksp_rtol"] = "1e-12"
+        _opts[_pre + "ksp_atol"] = "1e-14"
+        _opts[_pre + "pc_type"] = "asm"
+        _opts[_pre + "pc_asm_overlap"] = "1"
+        _opts[_pre + "sub_pc_type"] = "lu"
 # HS_TI_LS / HS_TI_VOF override the integrator of one model (ls or vof)
 vortex2D.timeIntegration_vof = os.environ.get("HS_TI_VOF", ti)
 vortex2D.timeIntegration_ls = os.environ.get("HS_TI_LS", ti)
@@ -62,6 +73,11 @@ vortex2D.soname += tag
 
 import ls_vortex_2d_p, redist_vortex_2d_p, vof_vortex_2d_p, ls_consrv_vortex_2d_p  # noqa
 import ls_vortex_2d_n, redist_vortex_2d_n, vof_vortex_2d_n, ls_consrv_vortex_2d_n  # noqa
+if os.environ.get("HS_PARALLEL"):
+    for _m in (ls_vortex_2d_n, redist_vortex_2d_n, vof_vortex_2d_n, ls_consrv_vortex_2d_n):
+        _m.l_atol_res = 1.0e-12   # the redistancing deck leaves this at the default of 1
+        _m.linTolFac = 0.0
+        _m.l_rtol_res = 0.0
 import ls_vortex_2d_so as so  # noqa
 from proteus import NumericalSolution, default_s  # noqa
 from proteus.runtime import RunOptions  # noqa

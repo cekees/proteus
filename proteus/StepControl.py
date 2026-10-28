@@ -724,7 +724,11 @@ class FLCBDF_controller(SC_base):
             self.flcbdfList.append(m.timeIntegration.flcbdf)
             for ci in m.timeIntegration.massComponents:
                 try:
-                    m.timeIntegration.flcbdf[ci].setTolerances(nOptions.atol_u[ci],nOptions.rtol_u[ci],m.q[('dV_u',ci)])
+                    #the error norm sums over the ranks: the ghost elements (after the owned ones) are another
+                    #rank's and must not count twice, or the step sequence depends on the number of ranks
+                    dV = m.q[('dV_u',ci)].copy()
+                    dV[m.mesh.nElements_owned:] = 0.0
+                    m.timeIntegration.flcbdf[ci].setTolerances(nOptions.atol_u[ci],nOptions.rtol_u[ci],dV)
                 except:
                     logEvent("WARNING: couldn't find integration weights for FLCBDF norm")
                     m.timeIntegration.flcbdf[ci].setTolerances(nOptions.atol_u[ci],nOptions.rtol_u[ci],numpy.ones_like(m.q[('m',0)]))

@@ -135,3 +135,22 @@ def test_step_sequence_does_not_depend_on_the_number_of_ranks():
     assert len(one["dts"]) == len(two["dts"]) and len(one["dts"]) > 10
     assert np.allclose(one["dts"], two["dts"], rtol=1e-10, atol=0.0)
     assert abs(one["err"] - two["err"]) < 1e-10
+
+
+def test_vortex2d_with_flcbdf_on_two_ranks_reaches_the_end(tmp_path):
+    """Both models on FLCBDF, two ranks: the run completes and takes about as many steps
+    as one rank (the error norm counts each element once, ghosts excluded)."""
+    root = os.path.abspath(os.path.join(here, "..", ".."))
+    env = dict(os.environ, HS_PARALLEL="1", HS_TI_LS="flcbdf", HS_TI_VOF="flcbdf", HS_FLCBDF_TOL="1e-3",
+               PYTHONPATH=os.pathsep.join([root, here, os.environ.get("PYTHONPATH", "")]))
+    run = os.path.join(root, "test", "hotstart_measure", "run_case.py")
+    n = {}
+    for ranks in (1, 2):
+        out = tmp_path / ("ranks%d" % ranks)
+        subprocess.run(["mpiexec", "-n", str(ranks), sys.executable, run, str(out), "flcbdf", "1", "full"],
+                       env=env, check=True, capture_output=True)
+        log = (out / "proteus_default.log").read_text()
+        times = [float(t) for t in re.findall(r"Step Taken, System time step t= *([0-9.e+-]+)", log)]
+        assert times and times[-1] >= 8.0 - 1e-8 and "System Step Failed" not in log
+        n[ranks] = len(times)
+    assert abs(n[2] - n[1]) < 0.1 * n[1]
