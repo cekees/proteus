@@ -656,3 +656,18 @@ def test_first_gauge_row_is_the_initial_condition(tmp_path, monkeypatch):
     data = np.atleast_2d(data)
     npt.assert_allclose(data[0], [0.0, 0.5], atol=1e-12)
     npt.assert_allclose(data[-1, 1], 0.5*(1 + data[-1, 0]), rtol=1e-2)
+
+
+def test_slivers_at_the_end_of_a_line_are_not_selected_again():
+    # a mesh node a roundoff off the line cuts the last segments into slivers
+    # shorter than the pruning tolerance.  The sliver left the position within
+    # the tolerance of its own start, so it was chosen again and again: thousands
+    # of repeats of one point, each adding a little to a line integral
+    from proteus.Gauges import Gauges
+    endpoints = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    segment = lambda a, b: (a, b, np.array([[a, 0.0, 0.0], [b, 0.0, 0.0]]))
+    segments = [segment(0.0, 0.5), segment(0.5, 0.7),
+                segment(0.7, 0.7 + 1e-12), segment(0.7 + 1e-12, 0.7 + 3e-12)]
+    selected = Gauges.pruneDuplicateSegments(None, endpoints, segments)
+    assert len(selected) == 2
+    npt.assert_allclose([s[1, 0] for s in selected], [0.5, 0.7])
