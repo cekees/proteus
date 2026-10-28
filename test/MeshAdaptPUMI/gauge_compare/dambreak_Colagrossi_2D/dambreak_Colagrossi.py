@@ -41,6 +41,7 @@ opts=Context.Options([
     ("gen_mesh", False ,"Generate new mesh"),
     ("usePUMI", False ,"Generate new mesh"),
     ("adapt",0,"adapt"),
+    ("sizeInputs","pseudo","PUMI size input: pseudo (no adaptation) or interface"),
     ("fixedTimeStep",True,"choice of time stepping")
     ])
 
@@ -184,7 +185,7 @@ elif usePUMI and not genMesh:
     domain.AdaptManager.PUMIAdapter.loadModelAndMesh(b"Reconstructed.dmg", b"Reconstructed.smb")
     modelDict = {'flow':0,'phase':2,'corrections':[3,4]}
     domain.AdaptManager.modelDict = modelDict
-    domain.AdaptManager.sizeInputs = [b'pseudo']
+    domain.AdaptManager.sizeInputs = [opts.sizeInputs.encode()]
     domain.AdaptManager.adapt = opts.adapt
     domain.AdaptManager.hmax = he
     domain.AdaptManager.hmin= he/4.0
@@ -216,6 +217,8 @@ tank.BC['x-'].setFreeSlip()
 
 he = 0.06#tank_dim[0] / float(4 * refinement - 1)
 domain.MeshOptions.he = he
+if usePUMI:
+    domain.MeshOptions.setParallelPartitioningType('element')  # required for adaptation in parallel
 st.assembleDomain(domain)
 
 # ----- STRONG DIRICHLET ----- #
