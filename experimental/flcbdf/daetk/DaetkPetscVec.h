@@ -3,6 +3,17 @@
 
 #include <csignal>
 #include <cstdio>
+//mpi.h is included inside a namespace below (to keep the MPI C names out of the global one). Whatever
+//system headers it includes for the first time there would be declared in that namespace, which is an
+//error on gcc (<stdint.h>, <stddef.h>, ...). Include them here, at global scope, first.
+#include <stdint.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <limits.h>
+#include <unistd.h>
+#include <sys/types.h>
 #include "Definitions.h"
 #include "PETE/PETE.h"
 namespace Pete
