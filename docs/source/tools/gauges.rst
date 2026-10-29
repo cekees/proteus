@@ -62,6 +62,12 @@ boundary, so the output shows the finite element function exactly (it is
 piecewise linear along the line for first-order elements).  Each crossing is a
 column of the output.
 
+Line gauges work on triangles and tetrahedra, and on quadrilaterals and hexahedra
+whose edges are straight and, for hexahedra, whose faces are planar: boxes,
+parallelepipeds and any quadrilateral.  A hexahedron with a warped face is not the
+polyhedron its vertices enclose, so the clip would leave gaps and overlaps; Proteus
+raises a ``ValueError`` on every rank rather than clip it wrongly.
+
 Line integral gauges
 --------------------
 

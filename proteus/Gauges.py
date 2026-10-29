@@ -17,7 +17,8 @@ from numpy.linalg import norm
 from . import Comm
 from .AuxiliaryVariables import AV_base
 from .Profiling import logEvent
-from proteus.MeshTools import triangleVerticesToNormals, tetrahedronVerticesToNormals, getMeshIntersections
+from proteus.MeshTools import (triangleVerticesToNormals, tetrahedronVerticesToNormals, cubeVerticesToNormals,
+                               getMeshIntersections)
 from proteus import Profiling
 from proteus.FemTools import ReferenceCube
 
@@ -821,9 +822,21 @@ class Gauges(AV_base):
             toPolyhedron = triangleVerticesToNormals
         elif referenceElement.dim == 3 and referenceElement.nNodes == 4:
             toPolyhedron = tetrahedronVerticesToNormals
+        elif ((referenceElement.dim == 2 and referenceElement.nNodes == 4)
+              or (referenceElement.dim == 3 and referenceElement.nNodes == 8)):
+            toPolyhedron = cubeVerticesToNormals
         else:
             raise NotImplementedError("Unable to compute mesh intersections for this element type")
-        intersections = np.asarray(list(getMeshIntersections(mesh, toPolyhedron, endpoints)), dtype=np.double)
+        # an element that cannot be clipped must stop every rank, or the others wait for it below
+        comm = Comm.get().comm.tompi4py()
+        try:
+            intersections = np.asarray(list(getMeshIntersections(mesh, toPolyhedron, endpoints)), dtype=np.double)
+            error = None
+        except ValueError as e:
+            error = str(e)
+        errors = [e for e in comm.allgather(error) if e is not None]
+        if errors:
+            raise ValueError(errors[0])
         endpoints = np.asarray(endpoints, np.double)
         length = norm(endpoints[1] - endpoints[0])
 
