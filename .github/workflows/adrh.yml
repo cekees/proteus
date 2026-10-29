@@ -74,7 +74,7 @@ jobs:
   # unset the job is skipped. It runs nightly, on manual dispatch, and on pull requests labelled "gpu".
   gpu:
     if: >-
-      vars.ADRH_GPU_RUNNER != '' && (github.event_name != 'schedule' || github.repository == 'proteustoolkit/proteus') && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      vars.ADRH_GPU_RUNNER != '' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'gpu')))
     name: CUDA ${{ vars.ADRH_GPU_ARCH || 'TURING75' }}
     runs-on: ${{ vars.ADRH_GPU_RUNNER }}
