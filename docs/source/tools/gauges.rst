@@ -62,6 +62,12 @@ boundary, so the output shows the finite element function exactly (it is
 piecewise linear along the line for first-order elements).  Each crossing is a
 column of the output.
 
+Line gauges work on triangles and tetrahedra, and on quadrilaterals and hexahedra
+whose edges are straight and, for hexahedra, whose faces are planar: boxes,
+parallelepipeds and any quadrilateral.  A hexahedron with a warped face is not the
+polyhedron its vertices enclose, so the clip would leave gaps and overlaps; Proteus
+raises a ``ValueError`` on every rank rather than clip it wrongly.
+
 Line integral gauges
 --------------------
 
@@ -73,9 +79,28 @@ phase in the column, which is how an equivalent water height is measured.
 
 .. note::
 
-   Line gauges clip the line against every element, one element at a time in
-   Python, when the model is attached.  This is quick for ordinary meshes and
-   slow for very fine ones; it happens once, not every time step.
+   Line gauges clip the line against the elements it can touch when the model is
+   attached.  A bounding-box test discards the rest in one vectorized step, so a
+   line through a mesh of 180,000 elements takes tens of milliseconds, and the
+   clipping happens once, not every time step.
+
+Discontinuous fields
+--------------------
+
+A discontinuous Galerkin field has a value from each side of an element face, so
+the line gauge of one is discontinuous too, and it is left that way for the user
+to interpret.  Every segment of the line is measured at both of its ends from
+inside its own element.  A face the line crosses therefore has two columns at one
+location: ``(before)``, the value in the element the line is leaving, then
+``(after)``, the value in the one it is entering.  The line enters the mesh with an
+``(after)`` column and leaves it with a ``(before)`` column.  A segment's element is
+found from its midpoint, which is never on a face.  ``LineIntegralGauges`` of such
+a field integrate the piecewise function: each segment uses its own element's values
+at both ends.
+
+A field is taken to be discontinuous when no degree of freedom is shared between
+elements.  Point gauges read one value, from the lowest-numbered element
+containing the point (see below).
 
 Lines and points outside the mesh
 ---------------------------------
@@ -88,9 +113,11 @@ every rank.
 Gauges are often placed "on the bottom" by coordinates that differ from the
 mesh's by roundoff.  Points and line endpoints that lie outside the mesh's
 bounding box by no more than :math:`10^{-9}` of its largest extent are moved onto
-the box.  Only boundaries aligned with the box are snapped: a gauge on a curved or
-tilted boundary that misses it by roundoff is restricted (lines) or read at the
-nearest node (points).
+the box.  On a curved or tilted boundary a point that misses every element by
+no more than :math:`10^{-6}` of the element's size is read from the element it
+misses least, as if it were on the boundary; a line is simply restricted to the
+mesh, which moves its end onto the boundary.  A point farther out, such as one in a
+hole, reads the value of its nearest node.
 
 .. figure:: /_generated/line_gauge_cases.svg
 
@@ -120,8 +147,10 @@ Parallel runs
 -------------
 
 Every rank searches its own elements for each gauge.  The rank that owns a point
-is the highest-numbered rank that finds a containing element, or, when none does,
-the rank with the nearest node.  The owners send their values to one rank, which
+is the rank holding the containing element with the lowest global number, or, when
+none does, the rank with the nearest node.  A point on a face between elements lies
+in both; for a discontinuous field the value is the one from that lowest-numbered
+element, however the search reached it.  The owners send their values to one rank, which
 writes the file.  The gauge file is the same for any number of ranks, up to
 roundoff.
 

@@ -293,6 +293,34 @@ def _host_supports_avx():
 
 PROTEUS_AVX_FLAGS = ['-mavx'] if _host_supports_avx() else []
 
+
+def _probe_pumi_partitioners(scorec_lib_dir):
+    """Which graph partitioners the PUMI (SCOREC core) install was built with.
+
+    SCOREC's installed CMake target files carry PUMI_HAS_ZOLTAN on apf_zoltan
+    and PUMI_HAS_METIS on apf_metis when core was built with them (the
+    libraries themselves always exist, as an empty stub when not enabled).
+    Returns {'zoltan': 1|0|-1, 'metis': 1|0|-1}; -1 means the install has no
+    CMake target files to read, so the answer is unknown.
+    """
+    found = {}
+    for name, tgt in (('zoltan', 'apf_zoltan'), ('metis', 'apf_metis')):
+        found[name] = -1
+        cmake_dir = os.path.join(scorec_lib_dir or '', 'cmake', 'SCOREC')
+        files = [os.path.join(cmake_dir, f) for f in (
+            os.listdir(cmake_dir) if os.path.isdir(cmake_dir) else [])
+            if f.startswith(tgt + '-target')]
+        if files:
+            text = ''.join(open(f).read() for f in files)
+            found[name] = int(('PUMI_HAS_' + name.upper()) in text)
+    return found
+
+PROTEUS_PUMI_PARTITIONERS = _probe_pumi_partitioners(PROTEUS_SCOREC_LIB_DIR)
+print("proteus build: PUMI partitioners (%s): %s" % (
+    PROTEUS_SCOREC_LIB_DIR,
+    ", ".join("%s=%s" % (k, {1: 'yes', 0: 'no', -1: 'unknown'}[v])
+              for k, v in sorted(PROTEUS_PUMI_PARTITIONERS.items()))))
+
 EXTENSIONS_TO_BUILD = [
     Extension("MeshAdaptPUMI.MeshAdapt",
               sources = ['proteus/MeshAdaptPUMI/MeshAdapt.pyx', 'proteus/MeshAdaptPUMI/cMeshAdaptPUMI.cpp',
@@ -308,7 +336,10 @@ EXTENSIONS_TO_BUILD = [
                        "proteus/index_type.h",
                        'proteus/mesh.cpp',
                        'proteus/meshio.cpp'],
-              define_macros=[('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H)],
+              define_macros=[('PROTEUS_SUPERLU_H',PROTEUS_SUPERLU_H),
+                             ('PROTEUS_PUMI_HAS_ZOLTAN',PROTEUS_PUMI_PARTITIONERS['zoltan']),
+                             ('PROTEUS_PUMI_HAS_METIS',PROTEUS_PUMI_PARTITIONERS['metis']),
+                             ('PROTEUS_PUMI_PROBED_DIR','"%s"' % PROTEUS_SCOREC_LIB_DIR)],
               language='c++',
               include_dirs=[numpy.get_include(),'include',
                             'proteus','proteus/MeshAdaptPUMI']+

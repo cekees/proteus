@@ -23,6 +23,7 @@ Set PROTEUS_PARTITION_TIMING=1 to also get the partitioner's own stage timings
 Prints ``RESULT kind=.. ranks=.. nodes=<finest level> elements=.. gen=..
 hier=.. part=.. total=.. rss_max_mb=.. rss_min_mb=..``.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import resource
 import sys
 import time

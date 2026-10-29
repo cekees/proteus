@@ -7,6 +7,7 @@ with the ghost entries kept current its iterates are the serial ones; the
 others become their block variants in parallel and need only converge to the
 same solution.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import sys
 

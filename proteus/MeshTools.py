@@ -7496,6 +7496,49 @@ def tetrahedronVerticesToNormals(elementVertices):
     return faces
 
 
+def cubeVerticesToNormals(elementVertices):
+    """
+    Given the vertices of a quadrilateral (in the plane z = 0) or a hexahedron, return a normal
+    and a point for each face, as triangleVerticesToNormals does, from the convex hull of the vertices
+    whatever the order they are listed in.
+
+    The element must be convex with straight edges and, for a hexahedron, planar faces: a
+    quadrilateral always is, and so is a hexahedron that is a box or a parallelepiped. A
+    hexahedron with a warped (non-planar) face is not the polyhedron the hull encloses, and
+    ValueError is raised for it.
+    """
+    from scipy.spatial import ConvexHull
+    elementVertices = np.asarray(elementVertices, dtype=np.double)
+    nVertices = len(elementVertices)
+    if nVertices == 4:
+        nd, nFaces = 2, 4
+        if np.linalg.norm(elementVertices[:, 2]) > 0:
+            raise ValueError("Expected quadrilaterals in 2D plane, got something else")
+    elif nVertices == 8:
+        nd, nFaces = 3, 6
+    else:
+        raise ValueError("Expected 4 or 8 vertices, got %d" % nVertices)
+    hull = ConvexHull(elementVertices[:, :nd])
+    # a facet is a triangle in 3D, so a planar quadrilateral face is two with the same plane
+    planes = {}
+    for equation in hull.equations:
+        key = tuple(np.round(equation, 8))
+        planes.setdefault(key, equation)
+    if len(planes) != nFaces:
+        raise ValueError("A %s with %d distinct face planes (expected %d) is not planar-faced: "
+                         "line gauges cannot clip a warped element"
+                         % ("quadrilateral" if nd == 2 else "hexahedron", len(planes), nFaces))
+    faces = []
+    for equation in planes.values():
+        normal = np.zeros(3)
+        normal[:nd] = equation[:nd]
+        point = np.zeros(3)
+        # n . x + offset = 0 for x on the face, n a unit vector pointing out
+        point[:nd] = -equation[nd] * equation[:nd]
+        faces.append((normal, point))
+    return faces
+
+
 def intersectPoints(line, points):
     """
     Given a line segment (defined as two points), identify all points that the line segment intersects.
@@ -7653,6 +7696,35 @@ def intersectPolyhedron(line, polyhedron):
     return [a + t_e*v_l, a + t_l*v_l]
 
 
+def segmentMayCrossElement(mesh, endpoints):
+    """
+    Return a boolean mask of the elements whose bounding box the segment touches.
+
+    A slab test of the segment against every element's bounding box, vectorized,
+    so that only the few elements near a line are clipped one at a time in Python.
+    The boxes are padded by a roundoff tolerance, so an element the segment
+    touches is never dropped.
+    """
+    a, b = np.asarray(endpoints[0], np.double), np.asarray(endpoints[1], np.double)
+    nodes = mesh.nodeArray[mesh.elementNodesArray]  # (nElements, nVertices, 3)
+    low, high = nodes.min(axis=1), nodes.max(axis=1)
+    pad = 1.0e-9*max(float(np.max(high - low)), float(np.max(np.abs(b - a))), 1.0e-300)
+    low, high = low - pad, high + pad
+    direction = b - a
+    t_in = np.zeros(len(low))
+    t_out = np.ones(len(low))
+    hit = np.ones(len(low), dtype=bool)
+    for axis in range(3):
+        if direction[axis] == 0.0:
+            hit &= (a[axis] >= low[:, axis]) & (a[axis] <= high[:, axis])
+        else:
+            t0 = (low[:, axis] - a[axis])/direction[axis]
+            t1 = (high[:, axis] - a[axis])/direction[axis]
+            t_in = np.maximum(t_in, np.minimum(t0, t1))
+            t_out = np.minimum(t_out, np.maximum(t0, t1))
+    return hit & (t_in <= t_out)
+
+
 def getMeshIntersections(mesh, toPolyhedron, endpoints):
     """
     Return all intersections between a line segment and a Proteus mesh
@@ -7666,7 +7738,7 @@ def getMeshIntersections(mesh, toPolyhedron, endpoints):
     """
 
     intersections = set()
-    for element in mesh.elementNodesArray:
+    for element in mesh.elementNodesArray[segmentMayCrossElement(mesh, endpoints)]:
         # map nodes to physical vertices
         elementVertices = mesh.nodeArray[element]
         # get plane normals

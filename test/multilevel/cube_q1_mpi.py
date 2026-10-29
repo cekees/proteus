@@ -3,6 +3,7 @@
 Solves a Poisson problem with Q1 on a quadrilateral or hexahedral mesh and
 prints a checksum of the globally assembled solution, so ranks can be compared.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import sys
 

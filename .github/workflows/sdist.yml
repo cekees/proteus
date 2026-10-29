@@ -271,6 +271,13 @@ jobs:
           case "${{ matrix.leg.env_file }}" in
             *mpich*) export FI_PROVIDER=tcp ;;
           esac
+          # Open MPI picks UCX for point-to-point, and on a runner whose network card is an
+          # Azure MANA one (some ubuntu-24.04-arm VMs; others have none) UCX tries
+          # ud_verbs/mana_0, fails with "Address not valid", and MPI_Init aborts: every
+          # multi-process test then fails (19 on linux-aarch64, PR #1301) while the single-process
+          # ones pass. The runner needs no RDMA transport, so use the plain ob1 path. MPICH
+          # ignores the variable.
+          export OMPI_MCA_pml=ob1
           mkdir test_output && cd test_output
           # These are known-failing (real numerics/environment issues, not
           # collection errors) and deliberately left unskipped in source so

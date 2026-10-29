@@ -18,6 +18,7 @@ with a 25x9 global matrix. Hence the explicit shape assertions first.
 Prints a checksum of the globally assembled fine solution, like
 parallel_smoother_mpi.py, so rank counts can be compared.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import sys
 

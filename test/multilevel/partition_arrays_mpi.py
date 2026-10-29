@@ -32,6 +32,7 @@ fulldigest=<same, floating-point arrays included> petsc=<0|1> mismatches=<n>``,
 where petsc says whether the PETSc C library had been initialized by the end
 (-1: this build cannot tell).
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import hashlib
 import os
 import sys

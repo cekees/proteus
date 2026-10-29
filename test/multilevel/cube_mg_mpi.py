@@ -8,6 +8,7 @@ converged modes to.
 Usage: cube_mg_mpi.py KIND NN LEVELS MODE [ORDER [COARSE]]   (KIND is quad or hex; ORDER 1 or 2, default 1;
 MODE ksplu is a direct solve that also runs in parallel; COARSE is redundant, direct or amg)
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import sys
 
