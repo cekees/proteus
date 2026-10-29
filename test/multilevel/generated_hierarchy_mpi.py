@@ -16,6 +16,7 @@ Usage: generated_hierarchy_mpi.py KIND NN LEVELS     (KIND tri, quad, tet, hex)
 
 Prints ``RESULT kind=.. ranks=.. failures=<count over ranks and levels>``.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import sys
 
 import numpy as np

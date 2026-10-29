@@ -26,6 +26,7 @@ levels.
 Prints ``RESULT kind=.. nn=.. grid=.. ranks=.. mismatches=<arrays that differ,
 summed over ranks> digest=<sha256 of the generated arrays> petsc=<0|1>``.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import hashlib
 import sys
 

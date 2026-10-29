@@ -14,6 +14,7 @@ sample to every function on the stack (inclusive) and to the innermost one (self
 Usage: setup_timeline_mpi.py KIND NN LEVELS OUTDIR [interval=0.005] [solve]
 writes OUTDIR/rank_<r>.json (r is the MPI rank, or $TIMELINE_TAG for independent serial jobs).
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import json
 import os
 import sys

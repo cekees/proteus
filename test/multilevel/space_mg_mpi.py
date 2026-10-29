@@ -9,6 +9,7 @@ cycle is the serial one, so the checksum must not depend on the rank count.
 
 Usage: space_mg_mpi.py SPACE LEVELS MODE   (SPACE is p2, ncp1 or dgp1)
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import sys
 

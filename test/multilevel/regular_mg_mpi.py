@@ -19,6 +19,7 @@ at least half as many entries as the finest level has nodes -- a global-sized
 array -- and report how many there are and the largest, as
 ``global_arrays=<count over ranks> largest=<entries>``.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import resource
 import sys
