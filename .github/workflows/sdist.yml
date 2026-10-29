@@ -15,6 +15,16 @@ on:
   pull_request:
   # The macOS Intel legs do not run on pull requests (see matrix.exclude below); a manual run has them.
   workflow_dispatch:
+    inputs:
+      canary:
+        description: 'Canary: relax every exact pin to a floor on every leg (what the nightly schedule does)'
+        type: boolean
+        default: false
+  # Fork only (dev is the fork's default branch, and scheduled workflows run from the default branch): the nightly
+  # canary. It resolves every leg's environment from floors instead of the committed lock, so an upstream release
+  # that breaks us (pytest 9.2.0 vs pytest-forked, hypre 3.2.0 + complex PETSc) shows up here, not on a PR.
+  schedule:
+    - cron: '17 5 * * *'
 
 # Why: the standard macOS runners are the bottleneck. Measured over the last ~80 runs, Linux jobs start at once
 # (median wait 0 min) and macOS jobs wait a median of 7-9 h (p90 17-21 h) for a runner, then run for 20-90 min; a
@@ -142,7 +152,7 @@ jobs:
           # activate-environment below matches whichever one this leg copied
           sed -i.bak "s/^name: .*/name: proteus-dev/" environment-ci.yml
           FILE_PY=$(sed -n 's/^  - python =\(.*\)$/\1/p' environment-ci.yml)
-          if [ "${{ matrix.leg.python }}" = "$FILE_PY" ]; then
+          if [ "${{ matrix.leg.python }}" = "$FILE_PY" ] && [ "${{ github.event_name == 'schedule' || inputs.canary }}" != "true" ]; then
             # This leg's python IS the one the file pins, so use the file verbatim:
             # that is the only leg that actually tests the committed lock.
             echo "-- python ${{ matrix.leg.python }} matches the file's pin; using the lock as-is"
