@@ -31,6 +31,7 @@ the Jacobian and residual, on all levels.
 Prints ``RESULT kind=.. ranks=.. nodes=<finest> per_rank=.. t_mesh=.. t_transfers=..
 t_setup=.. t_solve=.. its=.. rss_max_mb=.. rss_mean_mb=.. residual=..``.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import resource
 import sys

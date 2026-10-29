@@ -138,7 +138,10 @@ def retrying_run(run):
       seconds (default 3), doubled before the last attempt;
     * launched once more, with a RuntimeWarning, if it died by a signal (died_by_signal);
     * its ``timeout`` scaled by PROTEUS_TEST_TIMEOUT_SCALE (scaled_timeout);
-    * run with PYTHONFAULTHANDLER=1 (launched_environment).
+    * run with PYTHONFAULTHANDLER=1 (launched_environment);
+    * given PROTEUS_TEST_DUMP_AFTER, 80% of its timeout, which the multilevel helpers use to
+      dump every rank's stack before the launch is killed (mpi_failfast), and the stderr of a
+      launch that did time out is written out, so the report says where it was stuck.
 
     A function of ``run``, rather than closed over ``subprocess.run`` inside the fixture, so
     that a test can hand it a stand-in and look at what it was called with.
@@ -149,10 +152,20 @@ def retrying_run(run):
         if 'timeout' in kwargs:
             kwargs['timeout'] = scaled_timeout(kwargs['timeout'])
         kwargs['env'] = launched_environment(kwargs.get('env'))
+        if kwargs.get('timeout'):
+            kwargs['env'].setdefault('PROTEUS_TEST_DUMP_AFTER', str(int(0.8 * kwargs['timeout'])))
         crashed_once = False
         attempt = 0
         while True:
-            result = run(cmd, *args, **kwargs)
+            try:
+                result = run(cmd, *args, **kwargs)
+            except subprocess.TimeoutExpired as expired:
+                stderr = expired.stderr
+                if isinstance(stderr, bytes):
+                    stderr = stderr.decode(errors='replace')
+                sys.stderr.write('launch timed out after %s s; stderr so far:\n%s\n'
+                                 % (expired.timeout, (stderr or '')[-6000:]))
+                raise
             if mpi_launch_never_started(result) and attempt < 2:
                 time.sleep(float(os.environ.get('PROTEUS_TEST_MPI_RETRY_DELAY', 3.0)) * (attempt + 1))
                 attempt += 1

@@ -9,6 +9,7 @@ coarse solve is exact too the parallel cycle is the serial cycle and the
 checksum must agree at any rank count to roundoff. A coarse solve that is only
 block-Jacobi across the ranks breaks that, which is how this is detected.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import sys
 
