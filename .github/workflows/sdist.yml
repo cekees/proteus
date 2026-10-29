@@ -436,7 +436,19 @@ jobs:
             python -m pytest -v -n 2 --dist load --import-mode=importlib \
               --durations=5 "${FSI_IBM_TESTS[@]/#/../}"
           else
-            python -m pytest -v -n auto --dist load --import-mode=importlib \
+            # Fork overlay: on a self-hosted runner "-n auto" is every core of the machine, and several
+            # runners share one machine (and the tests start 2-3 MPI ranks each). Give each runner its share of
+            # the cores, halved for the ranks, capped at 24. Hosted runners keep "auto".
+            XDIST=auto
+            if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+              SIBS=$(ls -d "$(dirname "$(cd "$RUNNER_TEMP/../.." && pwd)")"/actions-runner-cekees* 2>/dev/null | wc -l)
+              NCPU=$(python -c 'import os; print(os.cpu_count())')
+              XDIST=$(( NCPU / (SIBS > 0 ? SIBS : 1) / 2 ))
+              [ "$XDIST" -lt 2 ] && XDIST=2
+              [ "$XDIST" -gt 24 ] && XDIST=24
+            fi
+            echo "pytest workers: $XDIST"
+            python -m pytest -v -n "$XDIST" --dist load --import-mode=importlib \
               --durations=30 "${COV_ARGS[@]}" "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" \
               "${FSI_IBM_TESTS[@]/#/--deselect=}" ../test
           fi
