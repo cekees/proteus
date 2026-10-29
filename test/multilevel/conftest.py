@@ -39,7 +39,9 @@ os.environ.setdefault('OMPI_MCA_pml', 'ob1')
 #   none:  no limit.
 _MODE = os.environ.get('PROTEUS_TEST_MPI', 'slots')
 _SLOTS = max(1, int(os.environ.get('PROTEUS_TEST_MPI_SLOTS', 2 * (os.cpu_count() or 2))))
-_SLOT_DIR = os.path.join(tempfile.gettempdir(), 'proteus_mpi_slots_%d' % os.getuid())
+# One directory per user, so every pytest run on the machine shares the slots; PROTEUS_TEST_MPI_SLOT_DIR gives a run
+# (the test of the limiter itself) slots of its own, which the other runs on a shared runner cannot hold.
+_SLOT_DIR = os.environ.get('PROTEUS_TEST_MPI_SLOT_DIR') or os.path.join(tempfile.gettempdir(), 'proteus_mpi_slots_%d' % os.getuid())
 
 
 def _ranks(cmd):

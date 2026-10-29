@@ -38,7 +38,10 @@ def test_never_more_than_the_slots_are_held(tmp_path):
     log = tmp_path / 'log'
     driver = tmp_path / 'driver.py'  # a file, not -c: multiprocessing's spawn start method re-imports it
     driver.write_text(DRIVER)
+    # its own slot directory: with the per-user one, the other pytest runs of a shared CI runner hold the very slots
+    # this test counts (the 4 slots of the driver are slot0..slot3 there), and it starved past its 120 s
+    env = dict(os.environ, PROTEUS_TEST_MPI_SLOT_DIR=str(tmp_path / 'slots'))
     result = subprocess.run([sys.executable, str(driver), CONFTEST, str(log)],
-                            capture_output=True, text=True, timeout=120)
+                            capture_output=True, text=True, timeout=120, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'PEAK 4 END 0' in result.stdout, result.stdout
