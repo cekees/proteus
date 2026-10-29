@@ -1633,6 +1633,28 @@ class VBDF(TI_base):
             #mwf debug
             self.needToCalculateBDFCoefs = False
     #
+    def state(self):
+        """What a hot start needs to continue with the same history: the masses and their
+        derivatives at the last steps, the last step sizes, and how many steps have been
+        taken (which sets the order). The spin-up rebuilds all of it from the restart
+        state, as a first-order start."""
+        st = {"nUpdatesTimeHistoryCalled":int(self.nUpdatesTimeHistoryCalled),
+              "dt_history":self.dt_history.copy()}
+        for n in range(self.max_order):
+            for ci in self.massComponents:
+                st["m_history_%d_%d" % (n,ci)] = self.m_history[n][ci].copy()
+                st["mt_history_%d_%d" % (n,ci)] = self.mt_history[n][ci].copy()
+        return st
+    def set_state(self,st):
+        self.nUpdatesTimeHistoryCalled = int(st["nUpdatesTimeHistoryCalled"])
+        self.dt_history[:] = st["dt_history"]
+        for n in range(self.max_order):
+            for ci in self.massComponents:
+                #in place: m_last is m_history[0]
+                self.m_history[n][ci][:] = st["m_history_%d_%d" % (n,ci)]
+                self.mt_history[n][ci][:] = st["mt_history_%d_%d" % (n,ci)]
+        self.chooseOrder()
+        self.needToCalculateBDFCoefs = True
     def chooseOrder(self):
         if self.nUpdatesTimeHistoryCalled  < 1:
             self.timeOrder = 1
