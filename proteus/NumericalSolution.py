@@ -1212,10 +1212,11 @@ class NS_base(object):  # (HasTraits):
     SOLVER_STATE_GROUP = "solver_state"
 
     #: the lagged objects of a level model whose state a hot start restores
-    SOLVER_STATE_OWNERS = ("shockCapturing", "stabilization")
+    SOLVER_STATE_OWNERS = ("shockCapturing", "stabilization", "timeIntegration")
 
-    def _solver_state_group_path(self, tCount, model, owner):
-        return "%s/%d/%s/%s" % (self.SOLVER_STATE_GROUP, tCount, model.name, owner)
+    def _solver_state_group_path(self, model, owner=None):
+        path = "%s/%s" % (self.SOLVER_STATE_GROUP, model.name)
+        return path if owner is None else "%s/%s" % (path, owner)
 
     def _solver_state_owners(self, model):
         lm = model.levelModelList[-1]
@@ -1241,32 +1242,39 @@ class NS_base(object):  # (HasTraits):
         """Write the lag state a hot start needs to continue this step exactly.
 
         Only the part of the numerical state that a restart cannot rebuild
-        from the solution: what the model's shock capturing and subgrid error
-        (and, for FLCBDF, the time integrator) carry from one step to the next
-        (their ``state()``: scalars and arrays).
+        from the solution: what the model's shock capturing, subgrid error and
+        time integrator carry from one step to the next (their ``state()``:
+        scalars and arrays).
+
+        It is one section, ``solver_state/<model>``, rewritten at every archived
+        step (the datasets are replaced in place, so the file does not grow with
+        the number of steps) and stamped with the step it belongs to, written
+        last: a hot start from any other step, or from a file whose last write
+        was interrupted, finds a stamp that does not match and restarts instead.
 
         Every rank writes its own copy under its own name,
-        ``solver_state/<step>/<model>/<owner>/<s|a>.<key>_p<rank>``: the scalars
-        are the same on every rank, the arrays are the rank's own (at its
-        elements' quadrature points) and are only read back by the same
-        partition, which a fingerprint next to them checks. Collective, like the
-        rest of the archive: all ranks call it in the same order.
+        ``<owner>/<s|a>.<key>_p<rank>``: the scalars are the same on every rank,
+        the arrays are the rank's own (at its elements' quadrature points) and are
+        only read back by the same partition, which a fingerprint next to them
+        checks. Collective, like the rest of the archive: all ranks call it in the
+        same order.
         """
         ar = self.ar[index]
         if ar.inline or ar.dataItemFormat != "HDF":
             return
-        items = [("%s/%d/%s/fingerprint" % (self.SOLVER_STATE_GROUP, tCount, model.name),
-                  self._solver_state_fingerprint(model, index))]
+        base = self._solver_state_group_path(model)
+        items = [("%s/fingerprint" % base, self._solver_state_fingerprint(model, index))]
         for owner, obj in self._solver_state_owners(model):
             st = obj.state()
             if st is None:
                 continue
-            path = self._solver_state_group_path(tCount, model, owner)
+            path = self._solver_state_group_path(model, owner)
             for key, value in st.items():
                 if isinstance(value, numpy.ndarray):
                     items.append(("%s/a.%s" % (path, key), value))
                 else:
                     items.append(("%s/s.%s" % (path, key), numpy.atleast_1d(numpy.asarray(value))))
+        items.append(("%s/step" % base, numpy.array([tCount], dtype='int64')))
         #the creates are collective under mpio: a rank that wrote a different list would hang the others
         names = [name for name, _ in items]
         everyone = ar.comm.comm.tompi4py().allgather(names)
@@ -1280,41 +1288,40 @@ class NS_base(object):  # (HasTraits):
     def restoreSolverState(self, model, index, tCount):
         """Hot start: put back what archiveSolverState wrote at ``tCount``,
         after the spin-up has rebuilt (and so overwritten) the lag state.
-        Also drops the state of later steps, which the new run replaces.
 
-        Only for the partition that wrote it (same number of ranks and the
-        same pieces of the mesh): if any rank's fingerprint differs, none
-        restores and the run goes on as a restart, history rebuilt from the
-        restart state, with a message saying so.
+        Only the last archived step has its state, and only for the partition
+        that wrote it (same number of ranks and the same pieces of the mesh): if
+        any rank finds another step or another fingerprint, none restores and
+        the run goes on as a restart, history rebuilt from the restart state,
+        with a message saying so.
         """
         ar = self.ar[index]
         hdf = ar.hdfFile
         if ar.inline or ar.dataItemFormat != "HDF" or hdf is None:
             return
-        group = self.SOLVER_STATE_GROUP
-        if group in hdf:
-            for key in list(hdf[group].keys()):
-                if int(key) > tCount:
-                    del hdf[group][key]
-        fp_name = "%s/%d/%s/fingerprint_p%d" % (group, tCount, model.name, ar.rank)
-        mine = 0
-        if fp_name in hdf:
-            mine = int(numpy.array_equal(hdf[fp_name][...], self._solver_state_fingerprint(model, index)))
+        base = self._solver_state_group_path(model)
+        suffix = "_p%d" % ar.rank
+        found, mine = None, 0
+        if "%s/step%s" % (base, suffix) in hdf:
+            found = int(hdf["%s/step%s" % (base, suffix)][...][0])
+            mine = int(found == tCount and numpy.array_equal(
+                hdf["%s/fingerprint%s" % (base, suffix)][...], self._solver_state_fingerprint(model, index)))
         from mpi4py import MPI
         if not ar.comm.comm.tompi4py().allreduce(mine, op=MPI.MIN):
-            logEvent("Hot start: no solver state archived at step %d for model %s, or it was written by a "
-                     "different number of ranks or partition; restarting its history from the restart state"
-                     % (tCount, model.name), level=0)
+            if found is not None and found != tCount:
+                why = "the archive holds the state of step %d only" % found
+            else:
+                why = "none was archived, or it was written by a different number of ranks or partition"
+            logEvent("Hot start: no solver state to restore at step %d for model %s (%s); "
+                     "restarting its history from the restart state" % (tCount, model.name, why), level=0)
             return
-        suffix = "_p%d" % ar.rank
         for owner, obj in self._solver_state_owners(model):
             if obj.state() is None or not hasattr(obj, "set_state"):
                 continue
-            path = self._solver_state_group_path(tCount, model, owner)
+            path = self._solver_state_group_path(model, owner)
             if path not in hdf:
-                logEvent("Hot start: no lag state archived at step %d for %s of model %s; "
-                         "restarting its history from the restart state"
-                         % (tCount, owner, model.name), level=0)
+                logEvent("Hot start: no lag state archived for %s of model %s; "
+                         "restarting its history from the restart state" % (owner, model.name), level=0)
                 continue
             st = {}
             for name in hdf[path]:
