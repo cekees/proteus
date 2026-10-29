@@ -587,3 +587,45 @@ scheme converges to the same solution:
 The flux Jacobian agrees with central differences (6e-10, beta = 0.4); the x-uniform strip equals the column (2e-12, beta = 0.05); FCT keeps `sum M_L rho theta` exactly; the implicit step stays in the data's bounds. Not done: `rho0 != 1`
 (the bindings fix it), a negative `beta`, the time-dependent compressible case against an independent solution, and a comparison with proteus's own low-order scheme at `beta != 0`, whose edge loop uses a density ratio from its salinity
 density only (no `exp(beta psi)`) and was not reproduced here; at the deck value `beta = 1e-4` and heads within 10 m the factor `exp(beta psi)` differs from 1 by 1e-3.
+
+## Against proteus's own code (`proteus_reference_2d.py`)
+
+The JNMA branch of proteus (cekees/proteus#123 and #124) has the implicit FCT; its 2D sand deck and 1D Celia deck were run beside `richards_nd.py` on the same mesh, step for step (`proteus_reference_2d.py` copies and patches
+the decks in a scratch directory; it needs that proteus built, `PROTEUS_REF_BIN` and `PROTEUS_REF_DECKS`). Setup that matters, each found by a comparison that did not match: **the deck's element quadrature is order 4**, not 3 (the Galerkin
+step depends on it, the low-order scheme does not); **Dirichlet conditions must be strong** (`forceStrongConditions=True`; the default is a weak boundary flux that leaves the boundary nodes 5e-2 m off the data); **the pond edges
+must fall on mesh nodes**: on the deck's Triangle mesh the edge at x = 10/3 lies inside a boundary face, and proteus's weak boundary flux then acts on a face that is part pond and part not (my residual at proteus's step-1
+solution was 1e-13 at every free node but the two beside the pond); with the pond limits given a 1e-9 tolerance and a structured 31 x 31 grid the two agree. All numbers below: 31 x 31 nodes, 35 steps of 0.01 d, Newton to 1e-12.
+
+| case | max abs dpsi | max abs dtheta | proteus psi min |
+|---|---|---|---|
+| Galerkin | 5.6e-10 | 8e-17 | -10.0325 |
+| Galerkin, beta 1e-4 / 0.05 | 1e-11 / 3e-14 | 1e-16 | |
+| Galerkin, with the lens (144 elements of a second soil) | 4.2e-10 | 2e-16 | -10.0325 |
+| K-upwind low-order | 5.2e-11 | 2e-16 | -10.0000 |
+| K-upwind low-order, with the lens, nodal rule (`interface='node'`) | 7.1e-11 | 3e-16 | |
+| K-upwind low-order, with the lens, `interface='element'` | 0.24 | 1.4e-2 | (a different scheme) |
+| K-upwind low-order, beta 1e-4 / 0.01 / 0.05 | 1.4e-3 / 0.145 / 0.51 | 2.9e-6 / 3.0e-4 / 1.9e-3 | |
+| implicit FCT | 1.8e-2 | 8e-4 | -1760.47 (mine) / -1760.45 |
+| implicit FCT, with the lens | 3.5e2 | 3.3e-3 | -1586.3 / -1585.9 |
+
+Reading: **the engine's Galerkin, low-order and nodal-material passes are proteus's to round-off in 2D, with and without the lens, and the Galerkin path with compressibility is proteus's to 1e-11 up to beta = 0.05.** The nodal-material rule
+(`first_incident_material`) is the same as proteus's, and the `interface='element'` rule is a different scheme (0.24 m, 1.4e-2 in moisture content on this lens). **The implicit FCT agrees with proteus's**: on the 1D Celia deck at proteus's step to
+1.4e-3 m in the head and 4.4e-6 in moisture content (an ad hoc run, not in the script); on this 2D deck at 350 steps of 0.001 d step by step (also ad hoc): 3e-17 in moisture content after one step, at most 1e-10 through step 20 (including
+intermediate dry-node heads of -137 m and -90 m that both codes produce), growing afterwards to 1.6e-5 at step 50 and 5e-4 at step 350 (the limiter clips at the bounds, so tiny differences amplify; the Newton tolerance is not the
+cause: 1e-8 and 1e-12 give the same). **Proteus's implicit FCT has the same undershoot as mine**: -1760 m on the plain 2D sand deck at 0.01 d, -35 m on the lens at 0.0025 d, -10.3 m to -13 m at 0.005 to 0.001 d. It comes from the global
+bounds in the JNMA algorithm (and the Galerkin predictor failing at the coarse step), not from this implementation; `bounds='local'` is an addition here.
+
+**Compressibility: proteus's low-order scheme is not consistent for beta != 0.** The low-order schemes differ by an amount proportional to beta (table). Against the exact steady compressible column of `richards_nd_test.py`
+(`proteus_reference_2d.py --steady`, the 1D Celia deck run to a steady state, psi = -1 below and -3 above, T = 200 d; nodes 21, 41, 81; max |psi - exact|, convergence rate in brackets):
+
+| beta | proteus Galerkin | proteus low-order | richards_nd K-upwind |
+|---|---|---|---|
+| 0.05 | 2.5e-4, 6.5e-5 (1.96), 1.6e-5 (2.01) | 5.6e-2, 4.6e-2 (0.28), 4.1e-2 (0.18) | 2.9e-2, 1.6e-2 (0.85), 8.4e-3 (0.93) |
+| 0.5 | 9.1e-4, 2.5e-4 (1.87), 6.2e-5 (2.01) | 0.33, 0.32 (0.06), 0.31 (0.04) | 0.13, 7.8e-2 (0.69), 4.6e-2 (0.78) |
+
+Proteus's Galerkin scheme converges to the exact solution at rate 2 (and to my Galerkin's errors); its low-order scheme stops converging at an error that grows with beta, 4e-2 m at 0.05 and 0.31 m at 0.5, because the density enters the
+gravity term of its edge flux only through the salinity density (`rho_edge / rho`) and not through `exp(beta psi)` (read in `Richards.h`'s edge loop; not changed here). The edge form of `richards_nd.py` converges to the exact solution. At the deck's
+beta = 1e-4 the effect is 1.4e-3 m after 35 steps, so the decks' results are not affected.
+
+Not done: the post-step FCT (proteus's semi-implicit FCT) in 2D: with `FCT=True` and `STABILIZATION_TYPE=2` the deck copy returned the low-order solution (to 5e-11) for a reason not found (`num_fct_iter` 0 and 1 gave the same), so there is no 2D comparison
+of `fct_correct`; and the Triangle mesh of the original deck, whose partly-pond boundary faces proteus's weak flux treats and this driver does not.

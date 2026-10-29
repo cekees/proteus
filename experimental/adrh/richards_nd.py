@@ -58,7 +58,7 @@ class KUpwindRichards:
     """alpha, n_vg, theta_r, theta_s: (nMaterials,); ks: (nMaterials, nd) the diagonal conductivities (dimensionless, as proteus's KsTypes); g: (nd,) the
     gravity direction (proteus's dimensionless_gravity); material: (nE,) the material of each element; dirichlet: (node numbers, values)."""
 
-    def __init__(self, x, conn, material, alpha, n_vg, theta_r, theta_s, ks, g, dirichlet, psk=0, interface='node', rho=1.0, beta=0.0):
+    def __init__(self, x, conn, material, alpha, n_vg, theta_r, theta_s, ks, g, dirichlet, psk=0, interface='node', rho=1.0, beta=0.0, quadrature_order=3):
         self.x = np.asarray(x, dtype=float); self.conn = np.asarray(conn, dtype='i')
         self.nn, self.nd = self.x.shape
         self.nE, self.nV = self.conn.shape
@@ -76,7 +76,7 @@ class KUpwindRichards:
         self.fixed = np.asarray(dirichlet[0], dtype='i'); self.gD = np.asarray(dirichlet[1], dtype=float)
         self.nodeMat = first_incident_material(self.conn, self.material, self.nn)
         self.xn = np.zeros((self.nE, self.nV, 3)); self.xn[:, :, :self.nd] = self.x[self.conn]
-        quad = Quadrature.SimplexGaussQuadrature(self.nd, 3)
+        quad = Quadrature.SimplexGaussQuadrature(self.nd, quadrature_order)
         self.qp = np.array([list(p)[:self.nd] for p in quad.points]); self.qw = np.array(quad.weights)
         rows = np.repeat(self.conn, self.nV, axis=1).ravel(); cols = np.tile(self.conn, (1, self.nV)).ravel()
         self._rows, self._cols = rows, cols
@@ -340,7 +340,7 @@ class KUpwindRichards:
         u, k2 = self.newton(pH, uold, dt, tol, norm, datum=datum)
         return u, dict(predictor=k1, final=k2, fallback=fell)
 
-    def run(self, u0, t_end, steps, fct=False, tol=1e-12, norm='inf', bounds='head', implicit=False, prelimiter_power=3.0, implicit_bounds='global'):
+    def run(self, u0, t_end, steps, fct=False, tol=1e-12, norm='inf', bounds='head', implicit=False, prelimiter_power=3.0, implicit_bounds='global', bounds_old=True):
         """steps backward Euler steps of dt = t_end / steps from u0; returns the final head and the Newton iteration count (implicit: the implicit FCT
         step, with both solves' iterations counted)."""
         u = np.array(u0, dtype=float); dt = t_end / steps; its = 0
@@ -351,5 +351,5 @@ class KUpwindRichards:
                 continue
             u, k = self.newton(u, uold, dt, tol, norm); its += k
             if fct:
-                u, _ = self.fct_correct(u, uold, dt, bounds=bounds)
+                u, _ = self.fct_correct(u, uold, dt, bounds=bounds, bounds_old=bounds_old)
         return u, its
