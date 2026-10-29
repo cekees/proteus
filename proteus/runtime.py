@@ -51,6 +51,11 @@ class RunOptions:
     global_sync: bool = True
     #: restart from the archive (-H)
     hotStart: bool = False
+    #: what a hot start continues (--hot-start-mode): "continue" resumes the
+    #: numerical state (lagged shock capturing, BDF history) and needs the step
+    #: policy of the archived run; "restart" continues the solution only and
+    #: rebuilds that state from it, so the policy may change
+    hotStartMode: str = "continue"
     #: time to restart from (-t)
     hotStartTime: float = math.inf
     #: write the velocity post-processor (-B)

@@ -87,6 +87,12 @@ def add_parser(subparsers):
     g = p.add_argument_group("restart and mesh")
     g.add_argument("-H", "--hot-start", action="store_true",
                    help="restart from the archive")
+    g.add_argument("--hot-start-mode", choices=("continue", "restart"), default="continue",
+                   help="continue: resume the archived numerical state exactly (same time "
+                        "integrator, step controller, shock capturing and step-size settings "
+                        "as the archived run; otherwise it stops and names what differs); "
+                        "restart: continue the solution only and rebuild the history from "
+                        "it, so those settings may change")
     g.add_argument("-t", "--hot-start-time", type=float, default=float("inf"),
                    metavar="T", help="time to restart from")
     g.add_argument("-F", "--partitioned-mesh", action="store_true",
@@ -142,6 +148,7 @@ def _options(args):
         subdomainArchives=args.subdomain_archives,
         global_sync=not args.no_global_sync,
         hotStart=args.hot_start,
+        hotStartMode=args.hot_start_mode,
         hotStartTime=args.hot_start_time,
         writeVPP=args.write_vpp,
         generatePartitionedMeshFromFiles=args.partitioned_mesh,

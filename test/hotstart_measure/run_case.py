@@ -72,6 +72,9 @@ if os.environ.get("HS_RD") == "0":
     vortex2D.applyCorrection = False
 tag = os.environ.get("HS_TAG", "")
 vortex2D.soname += tag
+# HS_SONAME names the archive explicitly (a hot start with another integrator order
+# reads the archive the stop run wrote)
+vortex2D.soname = os.environ.get("HS_SONAME", vortex2D.soname)
 
 import ls_vortex_2d_p, redist_vortex_2d_p, vof_vortex_2d_p, ls_consrv_vortex_2d_p  # noqa
 import ls_vortex_2d_n, redist_vortex_2d_n, vof_vortex_2d_n, ls_consrv_vortex_2d_n  # noqa
@@ -96,6 +99,7 @@ elif mode in ("hot", "full"):
         so.tnList = [i * DT for i in range(int(os.environ["HS_ENDN"]) + 1)]
 if mode == "hot":
     opts.hotStart = True
+    opts.hotStartMode = os.environ.get("HS_HOTMODE", "continue")
     opts.hotStartTime = tN
 sList = [default_s for _ in so.pnList]
 pm = {"ls": (ls_vortex_2d_p, ls_vortex_2d_n),

@@ -84,3 +84,35 @@ def test_solver_state_is_one_section_and_a_hot_start_from_another_step_restarts(
     log = (tmp_path / "hot" / "proteus_default.log").read_text()
     assert re.search(r"Hot start: no solver state to restore at step 4 for model \S+ "
                      r"\(the archive holds the state of step 6 only\)", log)
+
+
+def _hot_with_other_order(tmp_path, mode):
+    """Stop with VBDF order 2, hot start the same archive with order 1: a changed step policy."""
+    _vortex(tmp_path / "hot", "vbdf", 2, "stop", 6)
+    env = _env(HS_SONAME="hs_vbdf2", HS_HOTMODE=mode, HS_ENDN=8)
+    return subprocess.run([sys.executable, os.path.join(harness, "run_case.py"), str(tmp_path / "hot"),
+                           "vbdf", "1", "hot", "6"], env=env, capture_output=True, text=True)
+
+
+def test_continue_stops_and_names_a_changed_step_policy(tmp_path):
+    r = _hot_with_other_order(tmp_path, "continue")
+    log = (tmp_path / "hot" / "proteus_default.log").read_text() if (tmp_path / "hot" / "proteus_default.log").exists() else ""
+    out = r.stdout + r.stderr + log
+    assert r.returncode != 0
+    assert "Hot start (continue)" in out and "timeIntegration: archived" in out and "hotStartMode='restart'" in out
+
+
+def test_restart_allows_a_changed_step_policy_and_rebuilds_the_history(tmp_path):
+    r = _hot_with_other_order(tmp_path, "restart")
+    log = (tmp_path / "hot" / "proteus_default.log").read_text()
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert "Hot start (restart): the history of model" in log
+    assert "System Step Failed" not in log
+
+
+def test_hot_start_mode_must_be_continue_or_restart():
+    from proteus import runtime
+    from proteus.NumericalSolution import NS_base
+    opts = runtime.RunOptions(hotStartMode="sometimes")
+    with pytest.raises(ValueError, match="hotStartMode"):
+        NS_base(None, [], [], [], opts)
