@@ -316,11 +316,11 @@ class KUpwindRichards:
         return u, mnew
 
     # -- implicit FCT (Dielmann, Kuzmin and Kees; proteus's FCT_TYPE='implicit') -------------------------------------------------------------------------
-    def implicit_datum(self, pH, uold, dt, prelimiter_power=3.0, prelimiter='pressure', mask=True, bounds='global'):
+    def implicit_datum(self, pH, uold, dt, prelimiter_power=3.0, prelimiter='pressure', mask=True, bounds='local'):
         """The limited datum s^{n,FCT}: the antidiffusive fluxes at the predictor pH, the nodal-variation prelimiter on the pressure head (or the total head),
-        Zalesak with bounds taken from s^n. bounds: 'global' (proteus's and the paper's) the retention curve's own, theta_r to theta_s of each node; 'local' the
+        Zalesak with bounds taken from s^n. bounds: 'local' (the default) the
         head's extrema over a node and its neighbours at pH and at the old state, mapped to moisture content with the node's own curve (as fct_correct's
-        bounds='head'). mask: keep s^n at the Dirichlet nodes, as proteus's bc_mask does (without it the datum conserves sum M_L s exactly)."""
+        bounds='head'); 'global' (proteus's and the paper's, which the default departs from) the retention curve's own, theta_r to theta_s of each node. mask: keep s^n at the Dirichlet nodes, as proteus's bc_mask does (without it the datum conserves sum M_L s exactly)."""
         A = self.antidiffusive(pH)
         sH, _ = self.m(pH); sn, _ = self.m(uold)
         head = pH if prelimiter == 'pressure' else self.total_head(pH)
@@ -335,7 +335,7 @@ class KUpwindRichards:
             datum[self.fixed] = sn[self.fixed]
         return datum, alpha
 
-    def implicit_fct_step(self, uold, dt, prelimiter_power=3.0, prelimiter='pressure', tol=1e-12, norm='inf', fallback=True, bounds='global', predictor_maxit=20):
+    def implicit_fct_step(self, uold, dt, prelimiter_power=3.0, prelimiter='pressure', tol=1e-12, norm='inf', fallback=True, bounds='local', predictor_maxit=20):
         """One step of the implicit FCT: (1) the Galerkin predictor p^H (the low-order solution instead, if the Galerkin Newton fails and fallback is set,
         as proteus's FCT_PREDICTOR_FALLBACK), (2) the limited datum, (3) the low-order solve M_L (s(p) - s^{n,FCT}) / dt + A~(p) u(p) = 0 started from p^H.
         predictor_maxit caps the Galerkin Newton so that a predictor that will fail does not cost sixty iterations first. Returns the head and a dict of the Newton
@@ -351,7 +351,7 @@ class KUpwindRichards:
         u, k2 = self.newton(pH, uold, dt, tol, norm, datum=datum)
         return u, dict(predictor=k1, final=k2, fallback=fell)
 
-    def run(self, u0, t_end, steps, fct=False, tol=1e-12, norm='inf', bounds='head', implicit=False, prelimiter_power=3.0, implicit_bounds='global', bounds_old=True):
+    def run(self, u0, t_end, steps, fct=False, tol=1e-12, norm='inf', bounds='head', implicit=False, prelimiter_power=3.0, implicit_bounds='local', bounds_old=True):
         """steps backward Euler steps of dt = t_end / steps from u0; returns the final head and the Newton iteration count (implicit: the implicit FCT
         step, with both solves' iterations counted)."""
         u = np.array(u0, dtype=float); dt = t_end / steps; its = 0

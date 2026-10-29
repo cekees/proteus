@@ -24,7 +24,7 @@ def build(case, nn):
                               theta_r=[case.theta_r], theta_s=[case.theta_s], ks=[[case.ks]], g=[-1.0], psk=case.psk)
 
 
-def march(model, case, steps, upto, kind, tol=1e-8, bounds='global'):
+def march(model, case, steps, upto, kind, tol=1e-8, bounds='local'):
     """The head after `upto` of `steps` steps of one scheme ('low', 'post', 'implicit'); (head, iterations, predictor fallbacks)."""
     u = case.initial(model.x[:, 0]).astype(float); dt = case.t_end / steps; its = fb = 0
     for _ in range(upto):
@@ -55,8 +55,8 @@ def main():
         print("\n=== %s: %d nodes, %d steps of %.4g d, frame %d (t = %.4g d); reference %d nodes x %d steps, front at %.4f m" % (
             name, case.nn, case.steps, case.t_end / case.steps, frame, frame * case.t_end / case.steps, nn_f, case.steps * k, front(fine.x[:, 0], thf, level)))
         print("  %-28s %10s %10s %10s %10s %10s" % ('', 'L1 dtheta', 'front (m)', 'psi min', 'its/step', 'fallbacks'))
-        for label, kind, bounds in (('K-upwind, lumped', 'low', 'global'), ('K-upwind + post-step FCT', 'post', 'global'), ('implicit FCT', 'implicit', 'global'),
-                                    ('implicit FCT, local bounds', 'implicit', 'local')):
+        for label, kind, bounds in (('K-upwind, lumped', 'low', 'global'), ('K-upwind + post-step FCT', 'post', 'global'), ('implicit FCT', 'implicit', 'local'),
+                                    ("implicit FCT, proteus's bounds", 'implicit', 'global')):
             try:
                 u, its, fb = march(coarse, case, case.steps, frame, kind, bounds=bounds)
             except RuntimeError as e:

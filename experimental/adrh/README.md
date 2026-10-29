@@ -559,13 +559,13 @@ Measured (`richards_implicit_fct.py`, 1D decks at proteus's mesh and step, first
 data's bounds (HYDRUS lowest psi -15.40 against the post-step FCT's -16.12). The differences from proteus's saved profiles are scheme differences: the saved `stab_2` and `FCT` columns are matched exactly by the
 low-order and post-step schemes (0.000), and the implicit one is a third scheme.
 
-**Where it fails: the lens deck** (`richards_2d.py --lens`, 21 x 21 nodes, 35 steps): with proteus's global bounds the head falls to **-174 m** (initial minimum -10; 7 nodes below it; -75 m at 41 x 41 nodes and 70 steps), because
-the global lower bound lets a dry node's datum fall to `theta_r`, where a tiny moisture change is an enormous head change; the prelimiter does not prevent it. `bounds='local'` (the head's extrema over a node and its
+**Where it fails: the lens deck** (`richards_2d.py --lens`, 21 x 21 nodes, 35 steps): with proteus's global bounds (`bounds='global'`) the head falls to **-174 m** (initial minimum -10; 7 nodes below it; -75 m at 41 x 41 nodes and 70 steps), because
+the global lower bound lets a dry node's datum fall to `theta_r`, where a tiny moisture change is an enormous head change; the prelimiter does not prevent it. `bounds='local'`, now the default (the head's extrema over a node and its
 neighbours at the predictor and the old state, mapped to moisture content with the node's own curve) holds it at -10.3 m, still a small undershoot (3 nodes), not zero. The Galerkin predictor fails often at the deck's
 coarse step (6 of 35 steps without the lens, 11 of 35 with it, at 21 x 21 nodes; 1 of 280 at 41 x 41) and each failure costs `predictor_maxit` iterations before the fallback. Whether proteus's implicit FCT
 does the same on a lens was not run. The post-step FCT with head bounds stays inside [-10, 0.1] on the same deck.
 
-**Which default.** `bounds='global'` stays the default: it is proteus's algorithm, and the 1e-10 agreement with proteus's implicit FCT (below) is for it. `bounds='local'` costs nothing on the benchmark decks: on Celia, HYDRUS and Szymkiewicz
+**Which default.** `bounds='local'` is the default of `implicit_fct_step`, `implicit_datum` and `run(implicit=True)`; `bounds='global'` is proteus's algorithm and stays available (`proteus_reference_2d.py` and the proteus comparisons below pass it, and the 1e-10 agreement with proteus's implicit FCT is for it). The two cost nothing on the benchmark decks: on Celia, HYDRUS and Szymkiewicz (`richards_implicit_fct.py`, a row for each) the L1 errors, fronts and lowest heads equal each other to the digits printed (1.10e-3, 5.56e-2, 1.61e-1; HYDRUS 10.42 against 10.26 iterations per step), and only local bounds hold the lens (-10.3 m against -174 m). This is a departure from proteus's FCT, made for this branch (main, 2.0); the 1.9.x line and the papers that use it are unaffected.
 (`richards_implicit_fct.py`, a row for each) its L1 errors, fronts and lowest heads equal the global-bounds ones to the digits printed (1.10e-3, 5.56e-2, 1.61e-1; HYDRUS 10.42 against 10.26 iterations per step), and it is the only one of the two that
 holds the lens (-10.3 m against -174 m). Use it wherever the data have a dry region next to a wet one; making it the default would be a deviation from proteus that the PR should propose, not assume.
 
@@ -636,7 +636,7 @@ Reading: **the engine's Galerkin, low-order and nodal-material passes are proteu
 1.4e-3 m in the head and 4.4e-6 in moisture content (an ad hoc run, not in the script); on this 2D deck at 350 steps of 0.001 d step by step (also ad hoc): 3e-17 in moisture content after one step, at most 1e-10 through step 20 (including
 intermediate dry-node heads of -137 m and -90 m that both codes produce), growing afterwards to 1.6e-5 at step 50 and 5e-4 at step 350 (the limiter clips at the bounds, so tiny differences amplify; the Newton tolerance is not the
 cause: 1e-8 and 1e-12 give the same). **Proteus's implicit FCT has the same undershoot as mine**: -1760 m on the plain 2D sand deck at 0.01 d, -35 m on the lens at 0.0025 d, -10.3 m to -13 m at 0.005 to 0.001 d. It comes from the global
-bounds in the JNMA algorithm (and the Galerkin predictor failing at the coarse step), not from this implementation; `bounds='local'` is an addition here.
+bounds in the JNMA algorithm (and the Galerkin predictor failing at the coarse step), not from this implementation; `bounds='local'` is an addition here, and the default.
 
 **Compressibility: proteus's low-order scheme is not consistent for beta != 0.** The low-order schemes differ by an amount proportional to beta (table). Against the exact steady compressible column of `richards_nd_test.py`
 (`proteus_reference_2d.py --steady`, the 1D Celia deck run to a steady state, psi = -1 below and -3 above, T = 200 d; nodes 21, 41, 81; max |psi - exact|, convergence rate in brackets):

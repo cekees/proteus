@@ -117,7 +117,7 @@ def build(X, conn, lens, beta, interface='node'):
     return model, u0
 
 
-def mine(model, u0, steps, kind, bounds='global'):
+def mine(model, u0, steps, kind, bounds='global'):    # 'global': proteus's bounds, whatever the engine's default
     dt = 0.35 / steps; u = u0.copy(); fb = 0
     for _ in range(steps):
         uo = u
