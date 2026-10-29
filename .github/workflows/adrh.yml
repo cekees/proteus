@@ -97,7 +97,7 @@ jobs:
       - name: Install the build and test dependencies
         run: >
           conda install -y -c conda-forge --override-channels
-          cmake ninja "gxx_linux-64=14" pybind11 numpy scipy
+          cmake ninja "gxx_${{ runner.arch == 'ARM64' && 'linux-aarch64' || 'linux-64' }}=14" pybind11 numpy scipy
           "cuda-nvcc=12.9" cuda-cudart-dev cuda-driver-dev "cuda-version=12.9"
       - name: Build Kokkos (OpenMP + CUDA) and the ADRH modules
         working-directory: experimental/adrh
