@@ -59,7 +59,7 @@ def _run(ranks, cwd):
     env.setdefault("FI_PROVIDER", "tcp")
     env.setdefault("OMPI_MCA_rmaps_base_oversubscribe", "1")
     env.setdefault("PRTE_MCA_rmaps_default_mapping_policy", ":oversubscribe")
-    argv = [sys.executable, PARUN, "--TwoPhaseFlow", "damBreak.py", "-l1", "-C",
+    argv = [PARUN, "--TwoPhaseFlow", "damBreak.py", "-l1", "-C",
             "final_time=0.001 dt_output=0.001 he=0.1"]
     if ranks > 1:
         argv = [MPIEXEC, "-n", str(ranks)] + argv
