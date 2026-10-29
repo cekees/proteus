@@ -20,6 +20,7 @@ Modes:
             converges to the discrete solution rather than reproducing a cycle
   direct    a direct solve, the reference the converged mode is held to
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import sys
 

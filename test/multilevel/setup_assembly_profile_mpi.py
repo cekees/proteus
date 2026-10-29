@@ -14,6 +14,7 @@ proportional to it, so it is the first thing to look at.
 
 Prints PHASE lines (seconds, max over ranks), the memory by array group, and one RESULT line.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import resource
 import sys

@@ -9,6 +9,7 @@ not depend on the discretization being assembled correctly in parallel.
 
 Usage: space_transfer_mpi.py SPACE LEVELS DEGREE   (DEGREE 1 or 2; 2 needs p2)
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import os
 import sys
 

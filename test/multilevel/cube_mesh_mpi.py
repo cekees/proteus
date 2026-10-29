@@ -8,6 +8,7 @@ that points at the wrong node still has some nodes, so counts and indices look
 plausible; but in a regular grid every element has the same extent along each
 axis, so one that does not has been handed a node from somewhere else.
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import sys
 
 import numpy as np

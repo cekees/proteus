@@ -7,6 +7,7 @@ the left half far fewer nodes.
 
 Usage: weighted_partition_mpi.py HEAVY
 """
+import mpi_failfast  # noqa: F401  (an uncaught exception aborts every rank)
 import sys
 
 import numpy as np
