@@ -119,6 +119,8 @@ class NS_base(object):  # (HasTraits):
 
     @_with_numerics_petsc_options
     def __init__(self,so,pList,nList,sList,opts,simFlagsList=None,TwoPhaseFlow=False):
+        if getattr(opts, 'hotStartMode', 'continue') not in ('continue', 'restart'):
+            raise ValueError("hotStartMode must be 'continue' or 'restart', not %r" % (opts.hotStartMode,))
         from . import Comm
         comm=Comm.get()
         self.comm=comm
@@ -1238,6 +1240,32 @@ class NS_base(object):  # (HasTraits):
                             digest(mesh.elementNumbering_subdomain2global),
                             digest(mesh.nodeNumbering_subdomain2global)], dtype='int64')
 
+    def _hot_start_policy(self, model, index):
+        """The step policy a ``continue`` hot start must find unchanged: the
+        time integrator and its order, the step controllers, the shock
+        capturing and subgrid error classes with their lag flags, and the
+        settings that choose the step size (dt is part of the policy: a
+        multistep history is only valid for the steps that built it)."""
+        lm = model.levelModelList[-1]
+        n = self.nList[index]
+        def cls(obj):
+            return None if obj is None else "%s.%s lag=%s" % (type(obj).__module__, type(obj).__name__,
+                                                               getattr(obj, "lagRequested", getattr(obj, "lag", None)))
+        def tol(d):
+            return None if d is None else {str(k): float(v) for k, v in sorted(d.items())}
+        return {"timeIntegration": "%s.%s order=%s" % (type(lm.timeIntegration).__module__,
+                                                       type(lm.timeIntegration).__name__,
+                                                       getattr(lm.timeIntegration, "targetTimeOrder", getattr(lm.timeIntegration, "timeOrder", None))),
+                "stepController": type(model.stepController).__name__,
+                "systemStepController": type(self.systemStepController).__name__,
+                "shockCapturing": cls(getattr(lm, "shockCapturing", None)),
+                "stabilization": cls(getattr(lm, "stabilization", None)),
+                "DT": getattr(n, "DT", None),
+                "runCFL": getattr(n, "runCFL", None),
+                "atol_u": tol(getattr(n, "atol_u", None)),
+                "rtol_u": tol(getattr(n, "rtol_u", None)),
+                "dt_min": getattr(n, "dt_min", None)}
+
     def archiveSolverState(self, model, index, tCount):
         """Write the lag state a hot start needs to continue this step exactly.
 
@@ -1274,6 +1302,9 @@ class NS_base(object):  # (HasTraits):
                     items.append(("%s/a.%s" % (path, key), value))
                 else:
                     items.append(("%s/s.%s" % (path, key), numpy.atleast_1d(numpy.asarray(value))))
+        import json
+        items.append(("%s/policy" % base, numpy.frombuffer(
+            json.dumps(self._hot_start_policy(model, index), sort_keys=True, default=str).encode(), dtype='uint8')))
         items.append(("%s/step" % base, numpy.array([tCount], dtype='int64')))
         #the creates are collective under mpio: a rank that wrote a different list would hang the others
         names = [name for name, _ in items]
@@ -1299,15 +1330,34 @@ class NS_base(object):  # (HasTraits):
         hdf = ar.hdfFile
         if ar.inline or ar.dataItemFormat != "HDF" or hdf is None:
             return
+        if self.opts.hotStartMode == "restart":
+            logEvent("Hot start (restart): the history of model %s is rebuilt from the restart state" % model.name,
+                     level=0)
+            return
         base = self._solver_state_group_path(model)
         suffix = "_p%d" % ar.rank
+        from mpi4py import MPI
+        comm = ar.comm.comm.tompi4py()
+        #a changed step policy cannot continue the archived numerical state: stop, naming what differs
+        differs = []
+        if "%s/policy%s" % (base, suffix) in hdf:
+            import json
+            then = json.loads(bytes(hdf["%s/policy%s" % (base, suffix)][...]).decode())
+            now = json.loads(json.dumps(self._hot_start_policy(model, index), default=str))
+            differs = ["%s: archived %s, now %s" % (k, then.get(k), now.get(k))
+                       for k in sorted(set(then) | set(now)) if then.get(k) != now.get(k)]
+        everyone = [d for d in comm.allgather(differs) if d]
+        if everyone:
+            raise RuntimeError("Hot start (continue) of model %s: the step policy differs from the archived "
+                               "run's (%s); use hotStartMode='restart' (--hot-start-mode restart) to continue "
+                               "the solution with a new policy and rebuild the history from it"
+                               % (model.name, "; ".join(everyone[0])))
         found, mine = None, 0
         if "%s/step%s" % (base, suffix) in hdf:
             found = int(hdf["%s/step%s" % (base, suffix)][...][0])
             mine = int(found == tCount and numpy.array_equal(
                 hdf["%s/fingerprint%s" % (base, suffix)][...], self._solver_state_fingerprint(model, index)))
-        from mpi4py import MPI
-        if not ar.comm.comm.tompi4py().allreduce(mine, op=MPI.MIN):
+        if not comm.allreduce(mine, op=MPI.MIN):
             if found is not None and found != tCount:
                 why = "the archive holds the state of step %d only" % found
             else:

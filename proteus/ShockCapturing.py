@@ -42,6 +42,8 @@ class ShockCapturing_base(object):
         self.components=list(range(self.nc))
         self.shockCapturingFactor=shockCapturingFactor
         self.lag=lag
+        #what was asked for: some shock capturing switches lag at run time (it delays it)
+        self.lagRequested=lag
         #mwf had to put in da_sge, df_sge
         self.coefficients = coefficients
     def initializeElementQuadrature(self,mesh,t,cq):
