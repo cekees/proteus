@@ -25,9 +25,12 @@ if [ -z "$KOKKOS_SRC" ]; then
 fi
 # nvcc needs a host compiler its CUDA release supports and that matches the libstdc++ the Python extensions use:
 # the one conda installs, not the system's
-HOSTCXX=$(command -v x86_64-conda-linux-gnu-g++ || command -v g++)
+MACH=$(uname -m)
+HOSTCXX=$(command -v "$MACH-conda-linux-gnu-g++" || command -v g++)
 export NVCC_WRAPPER_DEFAULT_COMPILER=$HOSTCXX
-CUDA_ROOT=${CUDAToolkit_ROOT:-$CONDA_PREFIX/targets/x86_64-linux}
+# conda-forge names the CUDA target dir x86_64-linux, or sbsa-linux on aarch64
+CUDA_ROOT=${CUDAToolkit_ROOT:-$CONDA_PREFIX/targets/$MACH-linux}
+[ -d "$CUDA_ROOT" ] || CUDA_ROOT=$CONDA_PREFIX/targets/sbsa-linux
 cmake -S "$KOKKOS_SRC" -B "$WORK/kokkos-build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
   -DCMAKE_INSTALL_PREFIX="$WORK/kokkos-install" -DCMAKE_CXX_COMPILER="$KOKKOS_SRC/bin/nvcc_wrapper" -DCMAKE_CXX_STANDARD=20 \
   -DKokkos_ENABLE_OPENMP=ON -DKokkos_ENABLE_CUDA=ON -DKokkos_ENABLE_CUDA_LAMBDA=ON -DKokkos_ARCH_$ARCH=ON \
