@@ -70,9 +70,9 @@ def test_step_size_at_machine_precision_raises():
             f.retryStep_errorFailure()
 
 
-def _vortex(tmp_path, ti_ls, ti_vof, tol):
+def _vortex(tmp_path, ti_ls, ti_vof, tol, **extra):
     root = os.path.abspath(os.path.join(here, "..", ".."))
-    env = dict(os.environ, HS_TI_LS=ti_ls, HS_TI_VOF=ti_vof, HS_FLCBDF_TOL=str(tol),
+    env = dict(os.environ, HS_TI_LS=ti_ls, HS_TI_VOF=ti_vof, HS_FLCBDF_TOL=str(tol), **extra,
                PYTHONPATH=os.pathsep.join([root, here, os.environ.get("PYTHONPATH", "")]))
     run = os.path.join(root, "test", "hotstart_measure", "run_case.py")
     out = tmp_path / ("run_%s_%s" % (ti_ls, ti_vof))
@@ -90,11 +90,19 @@ def _vortex(tmp_path, ti_ls, ti_vof, tol):
 def test_vortex2d_with_flcbdf_reaches_the_end(tmp_path, ti_ls, ti_vof, tol):
     """vortex2D to t = 8 with FLCBDF on the level set (also at the default
     tolerance 1e-4), on the volume of fluid, and on both, with no Newton
-    failure. Known gap: both models at 1e-4 stops at t = 0.93, where the
-    redistancing model's Newton iteration stalls just above its tolerance and
-    cutting the step does not help."""
+    failure. Both at 1e-4 needs a dt floor, see the next test."""
     times, log = _vortex(tmp_path, ti_ls, ti_vof, tol)
     assert times and times[-1] >= 8.0 - 1e-8
+    assert "System Step Failed" not in log
+
+
+def test_dt_floor_gets_both_models_at_1e_4_past_the_lagged_shock_capturing_collapse(tmp_path):
+    """Both models on FLCBDF at tol 1e-4 stop at t = 0.93 without a floor: the
+    level set's lagged shock capturing (strong residual mt + H) feeds back at
+    tiny BDF steps and the error test cannot be met at any dt. With dt_min the
+    step stays at the floor and the error test is accepted there."""
+    times, log = _vortex(tmp_path, "flcbdf", "flcbdf", 1e-4, HS_DTMIN="3e-4", HS_ENDN="11")
+    assert times and times[-1] >= 1.1 - 1e-8
     assert "System Step Failed" not in log
 
 

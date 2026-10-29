@@ -234,6 +234,12 @@ useEisenstatWalker=False
 
 maxErrorFailures=10
 
+#FLCBDF step control: smallest step the error control may choose (0 = no floor). A step
+#taken at the floor is accepted even if its error test fails, so that a mechanism that
+#does not shrink with the step (lagged shock capturing at a tiny BDF step) cannot drive
+#dt to zero. Solver failures may still go below it.
+dt_min=0.0
+
 maxSolverFailures=10
 
 needEBQ_GLOBAL = False

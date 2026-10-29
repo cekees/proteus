@@ -56,6 +56,8 @@ if os.environ.get("HS_FLCBDF_TOL"):
         for _d in (nOptions.atol_u, nOptions.rtol_u):
             for _ci in _d:
                 _d[_ci] = float(os.environ["HS_FLCBDF_TOL"])
+        if os.environ.get("HS_DTMIN"):
+            nOptions.dt_min = float(os.environ["HS_DTMIN"])
         _init(self, model, nOptions)
     _SC.FLCBDF_controller.__init__ = _flcbdf_init
 vortex2D.timeOrder = torder

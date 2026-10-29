@@ -710,6 +710,7 @@ class FLCBDF_controller(SC_base):
         self.ignoreErrorControl=True#if mincfl kicks in this gets set to True until time step is larger than min time step
         self.dtRatioMax=2.0
         SC_base.__init__(self,model,nOptions)
+        self.dt_min=getattr(nOptions,'dt_min',0.0)
         self.stepExact=False
         self.massComponents = list(self.model.levelModelList[-1].coefficients.mass.keys())
         for mi in self.model.levelModelList:
@@ -779,7 +780,7 @@ class FLCBDF_controller(SC_base):
         retry = False
         if self.errorFailures < self.maxErrorFailures:
             self.resetSolution()
-            self.dt_model = min([flcbdf.retryStep_errorFailure() for flcbdf in self.flcbdfListFlat])
+            self.dt_model = max(self.dt_min,min([flcbdf.retryStep_errorFailure() for flcbdf in self.flcbdfListFlat]))
             self.set_dt_allLevels()
             self.setSubsteps([self.t_model])
             retry = True
@@ -790,6 +791,8 @@ class FLCBDF_controller(SC_base):
             ERROR_OK = model.timeIntegration.lastStepErrorOk()
         if self.ignoreErrorControl==True:
             ERROR_OK=True
+        if self.dt_min > 0.0 and self.dt_model <= self.dt_min*(1.0+1.0e-12):
+            ERROR_OK=True#at the floor: accept
         return not ERROR_OK
     def syncAfterRestore(self):
         """Hot start: the step the archived run chose next is the integrator's
@@ -817,7 +820,7 @@ class FLCBDF_controller(SC_base):
         self.saveSolution()
         for m in self.model.levelModelList:
             m.timeIntegration.choose_dt()
-        self.dt_model = m.timeIntegration.dt
+        self.dt_model = max(self.dt_min,m.timeIntegration.dt)
 #         print "Error control dt======================================",m.name,self.dt_model
 #         #add check of cfl to make sure time step doesn't get too small
 #         maxCFL = 1.0e-6
@@ -859,7 +862,7 @@ class FLCBDF_controller_sys(FLCBDF_controller):
         retry = False
         if self.errorFailures < self.maxErrorFailures:
             self.resetSolution()
-            self.dt_model = min([flcbdf.retryStep_errorFailure() for flcbdf in self.flcbdfListFlat])
+            self.dt_model = max(self.dt_min,min([flcbdf.retryStep_errorFailure() for flcbdf in self.flcbdfListFlat]))
             self.set_dt_allLevels()
             #self.substeps = [self.t_model]
             self.setSubsteps([self.t_model])
