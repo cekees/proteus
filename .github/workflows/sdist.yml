@@ -189,6 +189,12 @@ jobs:
           fi
           rm -f environment-ci.yml.bak
           cat environment-ci.yml
+      - name: Remove the conda environment a previous job left on this self-hosted runner
+        # Fork overlay: setup-miniconda updates an existing proteus-dev in place, and mamba then fails with
+        # "Cannot find a valid extracted directory cache" while unlinking and re-linking a package. Start clean.
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: rm -rf "$HOME/miniconda3/envs/proteus-dev" "$HOME/conda_pkgs_dir"
       - name: Set up conda environment with PETSc/MPI/HDF5
         uses: conda-incubator/setup-miniconda@v3
         env:
