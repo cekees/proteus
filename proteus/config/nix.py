@@ -54,7 +54,10 @@ for _pkg, _markers in (
         os.environ[_pkg + '_DIR'] = _root
 
 # Nix has no PROTEUS_PREFIX; without one default.py falls back to sys.exec_prefix, the Python
-# environment, which holds none of this. Point it at somewhere harmless that exists.
-os.environ.setdefault('PROTEUS_PREFIX', os.environ.get('out', os.environ.get('PETSC_DIR', '')) or os.getcwd())
+# environment, which holds none of this. setup.py asks for Eigen as PROTEUS_INCLUDE_DIR/eigen3,
+# which nixpkgs' eigen has (include/eigen3), though its include/ is not what the wrapper adds,
+# so make Eigen's store path the prefix. With no Eigen among the inputs, any directory will do.
+_eigen = _find('include/eigen3/Eigen/Dense')
+os.environ.setdefault('PROTEUS_PREFIX', _eigen or os.environ.get('out') or os.getcwd())
 
 from .default import *  # noqa: E402,F401,F403
