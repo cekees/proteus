@@ -72,12 +72,13 @@ jobs:
   # Tesla T4, Turing, sm75) and set the Actions variable ADRH_GPU_RUNNER to the runner's label, and optionally
   # ADRH_GPU_ARCH (Kokkos architecture name, default TURING75; AMPERE80, ADA89, HOPPER90 ...). With the variable
   # unset the job is skipped. It runs nightly (in proteustoolkit/proteus only, so a fork's copy of the schedule does not
-  # spend its owner's runner), on manual dispatch, and on pull requests labelled "gpu".
+  # spend its owner's runner), on manual dispatch, and on pull requests labelled "gpu" (or on every pull request push, where the
+  # Actions variable ADRH_GPU_ON_PR is set, as on a fork whose runner is free).
   gpu:
     if: >-
       vars.ADRH_GPU_RUNNER != '' && ((github.event_name == 'schedule' && github.repository == 'proteustoolkit/proteus')
       || github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'gpu')))
+      || (github.event_name == 'pull_request' && (vars.ADRH_GPU_ON_PR != '' || contains(github.event.pull_request.labels.*.name, 'gpu'))))
     name: CUDA ${{ vars.ADRH_GPU_ARCH || 'TURING75' }}
     runs-on: ${{ vars.ADRH_GPU_RUNNER }}
     timeout-minutes: 60
