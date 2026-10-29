@@ -62,6 +62,12 @@ boundary, so the output shows the finite element function exactly (it is
 piecewise linear along the line for first-order elements).  Each crossing is a
 column of the output.
 
+Line gauges work on triangles and tetrahedra, and on quadrilaterals and hexahedra
+whose edges are straight and, for hexahedra, whose faces are planar: boxes,
+parallelepipeds and any quadrilateral.  A hexahedron with a warped face is not the
+polyhedron its vertices enclose, so the clip would leave gaps and overlaps; Proteus
+raises a ``ValueError`` on every rank rather than clip it wrongly.
+
 Line integral gauges
 --------------------
 
@@ -77,6 +83,24 @@ phase in the column, which is how an equivalent water height is measured.
    attached.  A bounding-box test discards the rest in one vectorized step, so a
    line through a mesh of 180,000 elements takes tens of milliseconds, and the
    clipping happens once, not every time step.
+
+Discontinuous fields
+--------------------
+
+A discontinuous Galerkin field has a value from each side of an element face, so
+the line gauge of one is discontinuous too, and it is left that way for the user
+to interpret.  Every segment of the line is measured at both of its ends from
+inside its own element.  A face the line crosses therefore has two columns at one
+location: ``(before)``, the value in the element the line is leaving, then
+``(after)``, the value in the one it is entering.  The line enters the mesh with an
+``(after)`` column and leaves it with a ``(before)`` column.  A segment's element is
+found from its midpoint, which is never on a face.  ``LineIntegralGauges`` of such
+a field integrate the piecewise function: each segment uses its own element's values
+at both ends.
+
+A field is taken to be discontinuous when no degree of freedom is shared between
+elements.  Point gauges read one value, from the lowest-numbered element
+containing the point (see below).
 
 Lines and points outside the mesh
 ---------------------------------
