@@ -14,6 +14,7 @@ class SGE_base(object):
         self.nd = nd
         self.components=list(range(self.nc))
         self.lag=lag
+        self.lagRequested=lag
         self.coefficients=coefficients
         self.trackSubScales = trackSubScales
         self.usesGradientStabilization = False

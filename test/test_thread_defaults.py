@@ -71,8 +71,13 @@ def test_a_value_the_user_set_is_kept(fresh_state):
     assert env["MKL_NUM_THREADS"] == "1"
 
 
-def test_nothing_to_warn_about_when_the_user_set_everything(fresh_state):
+def test_nothing_to_warn_about_when_the_user_set_everything(fresh_state, monkeypatch):
     env = {name: "2" for name in VARIABLES}
+    #after_mpi_init reads os.environ, not env: without this the test passes only
+    #when the invoking shell happens to set every variable, and fails in an
+    #xdist worker whose earlier tests had already imported numpy
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     assert _threads.after_mpi_init(4) is None
     assert _threads.apply_defaults(4, env) == []
 

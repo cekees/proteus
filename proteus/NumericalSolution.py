@@ -119,6 +119,8 @@ class NS_base(object):  # (HasTraits):
 
     @_with_numerics_petsc_options
     def __init__(self,so,pList,nList,sList,opts,simFlagsList=None,TwoPhaseFlow=False):
+        if getattr(opts, 'hotStartMode', 'continue') not in ('continue', 'restart'):
+            raise ValueError("hotStartMode must be 'continue' or 'restart', not %r" % (opts.hotStartMode,))
         from . import Comm
         comm=Comm.get()
         self.comm=comm
@@ -1212,10 +1214,11 @@ class NS_base(object):  # (HasTraits):
     SOLVER_STATE_GROUP = "solver_state"
 
     #: the lagged objects of a level model whose state a hot start restores
-    SOLVER_STATE_OWNERS = ("shockCapturing", "stabilization")
+    SOLVER_STATE_OWNERS = ("shockCapturing", "stabilization", "timeIntegration")
 
-    def _solver_state_group_path(self, tCount, model, owner):
-        return "%s/%d/%s/%s" % (self.SOLVER_STATE_GROUP, tCount, model.name, owner)
+    def _solver_state_group_path(self, model, owner=None):
+        path = "%s/%s" % (self.SOLVER_STATE_GROUP, model.name)
+        return path if owner is None else "%s/%s" % (path, owner)
 
     def _solver_state_owners(self, model):
         lm = model.levelModelList[-1]
@@ -1224,57 +1227,159 @@ class NS_base(object):  # (HasTraits):
             if obj is not None and hasattr(obj, "state"):
                 yield owner, obj
 
+    def _solver_state_fingerprint(self, model, index):
+        """What the rank-local lag arrays are tied to: the number of ranks and this rank's
+        piece of the mesh. The arrays live at the quadrature points of the rank's elements
+        (ghosts included), which have no global numbering, so they can only be read back by
+        the same partition."""
+        import hashlib
+        mesh = model.levelModelList[-1].mesh
+        def digest(a):
+            return int.from_bytes(hashlib.sha256(numpy.ascontiguousarray(a).tobytes()).digest()[:7], "big")
+        return numpy.array([self.ar[index].size, mesh.nElements_global, mesh.nNodes_global,
+                            digest(mesh.elementNumbering_subdomain2global),
+                            digest(mesh.nodeNumbering_subdomain2global)], dtype='int64')
+
+    def _hot_start_policy(self, model, index):
+        """The step policy a ``continue`` hot start must find unchanged: the
+        time integrator and its order, the step controllers, the shock
+        capturing and subgrid error classes with their lag flags, and the
+        settings that choose the step size (dt is part of the policy: a
+        multistep history is only valid for the steps that built it)."""
+        lm = model.levelModelList[-1]
+        n = self.nList[index]
+        def cls(obj):
+            return None if obj is None else "%s.%s lag=%s" % (type(obj).__module__, type(obj).__name__,
+                                                               getattr(obj, "lagRequested", getattr(obj, "lag", None)))
+        def tol(d):
+            return None if d is None else {str(k): float(v) for k, v in sorted(d.items())}
+        return {"timeIntegration": "%s.%s order=%s" % (type(lm.timeIntegration).__module__,
+                                                       type(lm.timeIntegration).__name__,
+                                                       getattr(lm.timeIntegration, "targetTimeOrder", getattr(lm.timeIntegration, "timeOrder", None))),
+                "stepController": type(model.stepController).__name__,
+                "systemStepController": type(self.systemStepController).__name__,
+                "shockCapturing": cls(getattr(lm, "shockCapturing", None)),
+                "stabilization": cls(getattr(lm, "stabilization", None)),
+                "DT": getattr(n, "DT", None),
+                "runCFL": getattr(n, "runCFL", None),
+                "atol_u": tol(getattr(n, "atol_u", None)),
+                "rtol_u": tol(getattr(n, "rtol_u", None)),
+                "dt_min": getattr(n, "dt_min", None)}
+
     def archiveSolverState(self, model, index, tCount):
         """Write the lag state a hot start needs to continue this step exactly.
 
         Only the part of the numerical state that a restart cannot rebuild
-        from the solution: what the model's shock capturing and subgrid error
-        carry from one step to the next (their ``state()``: scalars and
-        arrays). Serial archives only (an hdf5 file open on one rank); a
-        parallel archive writes nothing and a hot start from it keeps the old
-        behaviour.
+        from the solution: what the model's shock capturing, subgrid error and
+        time integrator carry from one step to the next (their ``state()``:
+        scalars and arrays).
+
+        It is one section, ``solver_state/<model>``, rewritten at every archived
+        step (the datasets are replaced in place, so the file does not grow with
+        the number of steps) and stamped with the step it belongs to, written
+        last: a hot start from any other step, or from a file whose last write
+        was interrupted, finds a stamp that does not match and restarts instead.
+
+        Every rank writes its own copy under its own name,
+        ``<owner>/<s|a>.<key>_p<rank>``: the scalars are the same on every rank,
+        the arrays are the rank's own (at its elements' quadrature points) and are
+        only read back by the same partition, which a fingerprint next to them
+        checks. Collective, like the rest of the archive: all ranks call it in the
+        same order.
         """
-        hdf = self.ar[index].hdfFile
-        if hdf is None or self.ar[index].size > 1:
+        ar = self.ar[index]
+        if ar.inline or ar.dataItemFormat != "HDF":
             return
+        base = self._solver_state_group_path(model)
+        items = [("%s/fingerprint" % base, self._solver_state_fingerprint(model, index))]
         for owner, obj in self._solver_state_owners(model):
             st = obj.state()
             if st is None:
                 continue
-            path = self._solver_state_group_path(tCount, model, owner)
-            if path in hdf:
-                del hdf[path]
-            g = hdf.create_group(path)
+            path = self._solver_state_group_path(model, owner)
             for key, value in st.items():
                 if isinstance(value, numpy.ndarray):
-                    g.create_dataset(key, data=value)
+                    items.append(("%s/a.%s" % (path, key), value))
                 else:
-                    g.attrs[key] = value
+                    items.append(("%s/s.%s" % (path, key), numpy.atleast_1d(numpy.asarray(value))))
+        import json
+        items.append(("%s/policy" % base, numpy.frombuffer(
+            json.dumps(self._hot_start_policy(model, index), sort_keys=True, default=str).encode(), dtype='uint8')))
+        items.append(("%s/step" % base, numpy.array([tCount], dtype='int64')))
+        #the creates are collective under mpio: a rank that wrote a different list would hang the others
+        names = [name for name, _ in items]
+        everyone = ar.comm.comm.tompi4py().allgather(names)
+        if any(n != everyone[0] for n in everyone):
+            logEvent("Archive: the ranks have different solver state to write at step %d of model %s; "
+                     "none is written and a hot start from this step rebuilds it" % (tCount, model.name), level=0)
+            return
+        for name, value in items:
+            ar.create_dataset_async("%s_p%d" % (name, ar.rank), value)
 
     def restoreSolverState(self, model, index, tCount):
         """Hot start: put back what archiveSolverState wrote at ``tCount``,
         after the spin-up has rebuilt (and so overwritten) the lag state.
-        Also drops the state of later steps, which the new run replaces."""
-        hdf = self.ar[index].hdfFile
-        if hdf is None or self.ar[index].size > 1:
+
+        Only the last archived step has its state, and only for the partition
+        that wrote it (same number of ranks and the same pieces of the mesh): if
+        any rank finds another step or another fingerprint, none restores and
+        the run goes on as a restart, history rebuilt from the restart state,
+        with a message saying so.
+        """
+        ar = self.ar[index]
+        hdf = ar.hdfFile
+        if ar.inline or ar.dataItemFormat != "HDF" or hdf is None:
             return
-        group = self.SOLVER_STATE_GROUP
-        if group in hdf:
-            for key in list(hdf[group].keys()):
-                if int(key) > tCount:
-                    del hdf[group][key]
+        if self.opts.hotStartMode == "restart":
+            logEvent("Hot start (restart): the history of model %s is rebuilt from the restart state" % model.name,
+                     level=0)
+            return
+        base = self._solver_state_group_path(model)
+        suffix = "_p%d" % ar.rank
+        from mpi4py import MPI
+        comm = ar.comm.comm.tompi4py()
+        #a changed step policy cannot continue the archived numerical state: stop, naming what differs
+        differs = []
+        if "%s/policy%s" % (base, suffix) in hdf:
+            import json
+            then = json.loads(bytes(hdf["%s/policy%s" % (base, suffix)][...]).decode())
+            now = json.loads(json.dumps(self._hot_start_policy(model, index), default=str))
+            differs = ["%s: archived %s, now %s" % (k, then.get(k), now.get(k))
+                       for k in sorted(set(then) | set(now)) if then.get(k) != now.get(k)]
+        everyone = [d for d in comm.allgather(differs) if d]
+        if everyone:
+            raise RuntimeError("Hot start (continue) of model %s: the step policy differs from the archived "
+                               "run's (%s); use hotStartMode='restart' (--hot-start-mode restart) to continue "
+                               "the solution with a new policy and rebuild the history from it"
+                               % (model.name, "; ".join(everyone[0])))
+        found, mine = None, 0
+        if "%s/step%s" % (base, suffix) in hdf:
+            found = int(hdf["%s/step%s" % (base, suffix)][...][0])
+            mine = int(found == tCount and numpy.array_equal(
+                hdf["%s/fingerprint%s" % (base, suffix)][...], self._solver_state_fingerprint(model, index)))
+        if not comm.allreduce(mine, op=MPI.MIN):
+            if found is not None and found != tCount:
+                why = "the archive holds the state of step %d only" % found
+            else:
+                why = "none was archived, or it was written by a different number of ranks or partition"
+            logEvent("Hot start: no solver state to restore at step %d for model %s (%s); "
+                     "restarting its history from the restart state" % (tCount, model.name, why), level=0)
+            return
         for owner, obj in self._solver_state_owners(model):
             if obj.state() is None or not hasattr(obj, "set_state"):
                 continue
-            path = self._solver_state_group_path(tCount, model, owner)
+            path = self._solver_state_group_path(model, owner)
             if path not in hdf:
-                logEvent("Hot start: no lag state archived at step %d for %s of model %s; "
-                         "restarting its history from the restart state"
-                         % (tCount, owner, model.name), level=0)
+                logEvent("Hot start: no lag state archived for %s of model %s; "
+                         "restarting its history from the restart state" % (owner, model.name), level=0)
                 continue
-            g = hdf[path]
-            st = {key: g.attrs[key].item() for key in g.attrs}
-            st.update({key: g[key][...] for key in g})
+            st = {}
+            for name in hdf[path]:
+                if not name.endswith(suffix):
+                    continue
+                kind, key = name[:-len(suffix)].split(".", 1)
+                value = hdf[path][name][...]
+                st[key] = value if kind == "a" else value.reshape(-1)[0].item()
             obj.set_state(st)
 
     ##save model's solution values to archive

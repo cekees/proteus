@@ -176,6 +176,12 @@ parser.add_option("-H","--hotStart",
                   dest="hotStart",
                   action="store_true",
                   help="""Use the last step in the archive as the initial condition and continue appending to the archive""")
+parser.add_option("--hotStartMode",
+                  dest="hotStartMode",
+                  type="choice",
+                  choices=["continue", "restart"],
+                  default="continue",
+                  help="""continue (the default): a hot start resumes the archived numerical state exactly, and stops, naming what differs, if the step policy (time integrator, step controllers, shock capturing, step-size settings) is not the archived run's; restart: continue the solution only and rebuild the history from it, so those settings may change""")
 parser.add_option("-t","--hotStartTime",
                   dest="hotStartTime",
                   action="store",
