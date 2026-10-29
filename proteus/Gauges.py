@@ -246,6 +246,7 @@ class Gauges(AV_base):
         self.dofsVecs = []
         self.pointGaugeVecs = []
         self.segments = []
+        self.discontinuousFields = {}
         self.adapted = False
 
         self.isPointGauge = bool(points)
@@ -396,9 +397,13 @@ class Gauges(AV_base):
 
         location, node = quantity
 
-        # search elements that contain the nearest node
-        # use nearest node if the location is not found on any elements
-        localElement = self.getLocalElement(femFun.femSpace, location, node)
+        # a gauge of a discontinuous field on a line is measured in a given element
+        localElement = self.points[location].get('element')
+        location = location[:3]
+        if localElement is None:
+            # search elements that contain the nearest node
+            # use nearest node if the location is not found on any elements
+            localElement = self.getLocalElement(femFun.femSpace, location, node)
         if localElement is not None:
             for i, psi in enumerate(femFun.femSpace.referenceFiniteElement.localFunctionSpace.basis):
                 # assign quantity weights here
@@ -512,13 +517,50 @@ class Gauges(AV_base):
         logEvent("Gauge ranks: \n%s" % str(self.globalGaugeRanks), 5)
 
 
+    @staticmethod
+    def pointOrder(item):
+        """Sort key for (location, data) items of self.points: by location,
+        except the measurements of discontinuous fields, which follow in the
+        order along their lines."""
+        location, data = item
+        if 'order' in data:
+            return (1, data['order'], location)
+        return (0, location, ())
+
+    def isDiscontinuous(self, field):
+        """Whether no degree of freedom of the field's space is shared between
+        elements, so that its value at a point on an element face depends on
+        which element it is taken from.
+
+        Collective over the global communicator, and cached.
+        """
+        if field not in self.discontinuousFields:
+            femSpace = self.u[self.fieldNames.index(field)].femSpace
+            local = int(femSpace.dim == femSpace.dofMap.l2g.size)
+            comm = Comm.get().comm.tompi4py()
+            self.discontinuousFields[field] = bool(comm.allreduce(local, op=MPI.MIN))
+        return self.discontinuousFields[field]
+
     def addLineGaugePoints(self, line, line_segments):
         """Add all gauge points from each line into self.points
+
+        Returns the keys of self.points that the two ends of each segment
+        are measured at.  Where the field is continuous the key is the
+        point itself.  Where it is discontinuous (see
+        :meth:`isDiscontinuous`) the field has a value from each side of
+        an element face, so every segment is measured in its own element
+        at both ends, and the key is the point, the side of the point the
+        segment is on along the line (-1 before it, +1 after it) and the
+        global number of the element.  A face crossed by the line gives
+        two gauges at one location, one for each side, and the line of
+        gauges jumps there.
         """
         points = self.points
         new_points = {}
         field, endpoints = line
         comm = Comm.get().comm.tompi4py()
+        discontinuous = self.isDiscontinuous(field)
+        segment_keys = []
 
         def addPoint(points, field, point):
             point = tuple(point)
@@ -538,6 +580,40 @@ class Gauges(AV_base):
                                      'nearest_node': nearestNode,
                                      'owning_proc': comm.rank}
             new_points[point] = points[point]
+
+        lineIndex = self.lines.index(line)
+
+        def addSidedPoint(points, field, point, side, segment):
+            """Measure point in the element of segment, which is on the given
+            side of it along the line"""
+            midpoint = 0.5 * (np.asarray(segment[0], np.double) + np.asarray(segment[1], np.double))
+            femSpace = self.u[self.fieldNames.index(field)].femSpace
+            ignore1, midpointNode, ignore2 = self.getLocalNearestNode(midpoint)
+            # the midpoint of a segment is inside its element, not on a face of it
+            element = self.getLocalElement(femSpace, midpoint, midpointNode)
+            if element is None:
+                # a long thin element can be many rings of nodes from the node nearest its midpoint
+                element = self.getLocalElement(femSpace, midpoint, midpointNode, maxRings=100)
+            if element is None:
+                raise ValueError("gauge line segment %s on a discontinuous field is in no element "
+                                 "of this process" % (list(map(list, segment)),))
+            key = tuple(point) + (side, self.globalElementNumber(femSpace.mesh, element))
+            if key in points:
+                points[key]['fields'].update((field,))
+            else:
+                ignore1, nearestNode, ignore2 = self.getLocalNearestNode(point)
+                points[key] = {'fields': set((field,)),
+                               'nearest_node': nearestNode,
+                               'element': element,
+                               # the place along the line: each segment's start then its end,
+                               # so an end and the next start stay in this order whatever
+                               # roundoff does to their coordinates
+                               'order': (lineIndex, parameter(segment[0]), int(side < 0)),
+                               'owning_proc': comm.rank}
+                if self.isLineIntegralGauge:
+                    points[key]['no_output'] = set((field,))
+            new_points[key] = points[key]
+            return key
 
         # a segment's start point is the end of the previous segment unless
         # the line has just come back into the mesh (at its start, or after a hole)
@@ -559,11 +635,16 @@ class Gauges(AV_base):
                 segment[0][0], segment[0][1], segment[0][2],
                 segment[1][0], segment[1][1], segment[1][2]), 5)
             startPoint, endPoint = segment
+            if discontinuous:
+                segment_keys.append((addSidedPoint(points, field, startPoint, 1, segment),
+                                     addSidedPoint(points, field, endPoint, -1, segment)))
+                continue
             # line integral gauges need both sides of every segment, line gauges
             # only the points where the line enters the mesh
             if self.isLineIntegralGauge or not continuesPreviousSegment(startPoint):
                 addPoint(points, field, startPoint)
             addPoint(points, field, endPoint)
+            segment_keys.append((tuple(startPoint), tuple(endPoint)))
 
         if self.isLineGauge:
             new_points = comm.gather(new_points)
@@ -571,8 +652,9 @@ class Gauges(AV_base):
                 for new_points_i in new_points:
                     points.update(new_points_i)
                 # resort points
-                points = OrderedDict(sorted(points.items()))
+                points = OrderedDict(sorted(points.items(), key=self.pointOrder))
             self.points = comm.bcast(points)
+        return segment_keys
 
     def identifyMeasuredQuantities(self):
         """ build measured quantities, a list of fields
@@ -751,7 +833,7 @@ class Gauges(AV_base):
         return segments
 
 
-    def buildLineIntegralGaugeOperators(self, lines, linesSegments):
+    def buildLineIntegralGaugeOperators(self, lines, linesSegments, linesSegmentKeys=None):
         """ Build the linear algebra operators needed to compute the line integral gauges.
 
         The operators are local to each process, contributions are currently summed in the output functions.
@@ -779,15 +861,19 @@ class Gauges(AV_base):
 
         # Assemble contributions from each point in each line segment
 
-        for lineIndex, (line, segments) in enumerate(zip(self.lines, linesSegments)):
+        if linesSegmentKeys is None:
+            linesSegmentKeys = [[(tuple(p1), tuple(p2)) for p1, p2 in segments] for segments in linesSegments]
+        for lineIndex, (line, segments, segmentKeys) in enumerate(zip(self.lines, linesSegments, linesSegmentKeys)):
             field, endpoints = line
             fieldIndex = self.fields.index(field)
 
-            # Trapezoid Rule to calculate coefficients here
-            for p1, p2 in segments:
+            # Trapezoid Rule to calculate coefficients here, from the values
+            # at the ends of each segment, which are taken from inside the
+            # segment's own element where the field is discontinuous
+            for (p1, p2), keys in zip(segments, segmentKeys):
                 segmentLength = np.linalg.norm(np.asarray(p2)-np.asarray(p1))
-                for point in p1, p2:
-                    point_data = self.points[tuple(point)]
+                for key in keys:
+                    point_data = self.points[key]
                     # only assign coefficients for locally owned points
                     if field in point_data:
                         pointID = point_data[field]
@@ -867,9 +953,10 @@ class Gauges(AV_base):
         self.nodes_kdtree = spatial.cKDTree(model.levelModelList[-1].mesh.nodeArray)
         self.snapGaugesToBoundingBox()
         linesSegments = []
+        linesSegmentKeys = []
         for line in self.lines:
             lineSegments = self.getMeshIntersections(line)
-            self.addLineGaugePoints(line, lineSegments)
+            linesSegmentKeys.append(self.addLineGaugePoints(line, lineSegments))
             linesSegments.append(lineSegments)
 
         self.identifyMeasuredQuantities()
@@ -879,7 +966,7 @@ class Gauges(AV_base):
         if self.isGaugeOwner:
             self.initOutputWriter()
             self.buildPointGaugeOperators()
-            self.buildLineIntegralGaugeOperators(self.lines, linesSegments)
+            self.buildLineIntegralGaugeOperators(self.lines, linesSegments, linesSegmentKeys)
             if self.adapted:
               pass
             else:
@@ -902,6 +989,9 @@ class Gauges(AV_base):
                     for quantity in self.globalMeasuredQuantities[field]:
                         location, gaugeProc, quantityID = quantity
                         self.file.write(",%12s [%9.5g %9.5g %9.5g]" % (field, location[0], location[1], location[2]))
+                        if len(location) > 3:
+                            # a discontinuous field: the value in the element before or after the location
+                            self.file.write(" (%s)" % ("before" if location[3] < 0 else "after",))
             elif self.isLineIntegralGauge:
                 for line in self.lines:
                     self.file.write(",%12s [%9.5g %9.5g %9.5g] - [%9.5g %9.5g %9.5g]" % (

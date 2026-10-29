@@ -77,8 +77,26 @@ def check(result):
     npt.assert_allclose(result["turek_integral"]["values"], [6.82 - 0.44], rtol=1e-10)
 
 
+def check_discontinuous(result, reference):
+    """The gauges of a discontinuous field: one on each side of every face the line
+    crosses, with the values of the elements either side, as in one rank."""
+    names = result["dg_line"]["names"]
+    sides = [n.rsplit("(", 1)[1] for n in names]
+    # the line enters the mesh, then each segment's entry is followed by its exit
+    assert sides == ["after)", "before)"] * (len(names) // 2)
+    assert names == reference["dg_line"]["names"]
+    npt.assert_allclose(result["dg_line"]["values"], reference["dg_line"]["values"], rtol=1e-12)
+    # the field jumps at faces, so a gauge on each side is not an accident of the mesh
+    values = np.array(result["dg_line"]["values"])
+    assert np.any(values[1:-1:2] != values[2:-1:2])
+    npt.assert_allclose(result["dg_integral"]["values"], reference["dg_integral"]["values"], rtol=1e-12)
+
+
 @pytest.mark.skipif(MPIEXEC is None, reason="mpiexec not available")
 @pytest.mark.parametrize("ranks, repeats", [(1, 1), (2, 4), (3, 3)])
 def test_gauges_do_not_depend_on_the_partition(ranks, repeats, tmp_path):
+    reference = run_ranks(1, tmp_path) if ranks > 1 else None
     for _ in range(repeats):
-        check(run_ranks(ranks, tmp_path))
+        result = run_ranks(ranks, tmp_path)
+        check(result)
+        check_discontinuous(result, reference or result)
