@@ -4,11 +4,12 @@ Needs a proteus that has FCT_TYPE='implicit' (the JNMA branch, cekees/proteus#12
 PROTEUS_REF_BIN (a directory with parun); PROTEUS_REF_DECKS is that checkout's test/richards. The deck is copied to a scratch directory and patched there
 (nothing in the checkout is changed): Context options for the scheme, FCT_TYPE, beta, a lens of a finer soil, the number of fixed steps; strong Dirichlet
 conditions (forceStrongConditions) and the 1D decks' Richards_IIPG_exterior flux and line search; a structured grid of nodes with the pond's edges on nodes
-(pond limits with a 1e-9 tolerance, both here and in the deck), because on the deck's Triangle mesh the pond edge falls inside a boundary face and proteus's weak
-boundary flux acts on a face that is part pond and part not, which this driver does not model. Both sides use the deck's element quadrature (order 4).
+(pond limits with a 1e-9 tolerance, both here and in the deck), because on the deck's Triangle mesh (--mesh triangle) the pond edge falls inside a boundary face and proteus's weak
+boundary flux acts on a face that is part pond and part not, which this driver does not model (the README has the size of the difference). Both sides use the deck's element quadrature (order 4).
 
 What is compared, each over `steps` fixed steps of 0.35 d / steps, on the mesh proteus wrote to its archive (richards_nd.py reads the nodes and elements back):
-Galerkin, the K-upwinded low-order scheme (proteus's STABILIZATION_TYPE=2), and the implicit FCT, with and without the lens, and at several beta.
+Galerkin, the K-upwinded low-order scheme (proteus's STABILIZATION_TYPE=2), the semi-implicit (post-step) FCT and the implicit FCT, with and without the lens, and at several beta. Proteus's
+semi-implicit FCT vetoes any step whose head correction exceeds 1 m (RICHARDS_FCT_DU_MAX); run_proteus lifts it.
 
 --steady compares the 1D Celia deck run to a steady state (the interior starts on the line between the boundary heads, psi = -1 below and -3 above, T = 200 d) with the
 exact steady compressible column of richards_nd_test.compressible_exact, for proteus's Galerkin and K-upwinded low-order schemes and for richards_nd.py's K-upwinded scheme.
@@ -46,9 +47,10 @@ ct = Context.Options([
     ("LENS", False, "a lens of a finer soil"),
     ("NDT", 100, "fixed steps"),
     ("NN", 31, "nodes per side"),
+    ("REGULAR", True, "structured grid, else the deck's Triangle mesh"),
 ])
 """, 1)
-    s = s.replace("regularGrid=False", "regularGrid = 'global'", 1)
+    s = s.replace("regularGrid=False", "regularGrid = 'global' if ct.REGULAR else False", 1)
     s = s.replace("LevelModelType = Richards.LevelModel", """if ct.LENS:
     alphaVGtypes[1] = 1.0; nVGtypes[1] = 1.6; thetaRtypes[1] = 0.08; thetaStypes[1] = 0.43; thetaSRtypes[1] = 0.35
     KsTypes[1, :] = [0.1 * dimensionless_conductivity, 0.1 * dimensionless_conductivity]
@@ -78,6 +80,7 @@ maxNonlinearIts = 100
 maxLineSearches = 100
 nl_atol_res = 1.0e-12
 nnx = nny = ct.NN
+triangleOptions = "pAq30Dena%f" % (0.5 * (L[0] / (nnx - 1)) ** 2,)
 triangleFlag = 0
 """
     open(p, 'w').write(s)
@@ -88,6 +91,10 @@ def run_proteus(work, bin_dir, context):
         if f.endswith('.h5'):
             os.remove(os.path.join(work, f))
     env = dict(os.environ); env.pop('PYTHONPATH', None); env['PATH'] = bin_dir + os.pathsep + env['PATH']
+    # Richards.FCTStep (semi-implicit FCT, Newton invert, i.e. every 2D deck) throws the limited step away and keeps the low-order head whenever
+    # the correction moves any node's head by more than 1 m, which a dry node's moisture content does by metres. Lift the cap or the FCT cases below
+    # are the low-order scheme.
+    env['RICHARDS_FCT_DU_MAX'] = '1e30'
     r = subprocess.run(['parun', 're_vgm_sand_10x10m_2d_p.py', 're_vgm_sand_10x10m_2d_c0p1_n.py', '-C', context, '-l', '1'], cwd=work, env=env,
                        capture_output=True, text=True)
     if r.returncode != 0:
@@ -116,6 +123,9 @@ def mine(model, u0, steps, kind, bounds='global'):
         uo = u
         if kind == 'galerkin':
             u, _ = model.newton(uo, uo, dt, 1e-12, 2, maxit=100, system=lambda v: model.galerkin_system(v, uo, dt))
+        elif kind == 'semi':
+            uL, _ = model.newton(uo, uo, dt, 1e-12, 2)
+            u, _ = model.fct_correct(uL, uo, dt, bounds_old=False, bounds='moisture', sat_low=True)
         elif kind == 'implicit':
             u, c = model.implicit_fct_step(uo, dt, tol=1e-12, norm=2, bounds=bounds); fb += c['fallback']
         else:
@@ -134,6 +144,7 @@ CASES = (  # label, proteus context (without NDT/NN), my kind, lens, beta, inter
     ("low-order, beta 0.05", "STABILIZATION_TYPE=2 FCT=False BETA=0.05", 'low', False, 0.05, 'node'),
     ("low-order, lens, nodal rule", "STABILIZATION_TYPE=2 FCT=False BETA=0.0 LENS=True", 'low', True, 0.0, 'node'),
     ("low-order, lens, element rule", "STABILIZATION_TYPE=2 FCT=False BETA=0.0 LENS=True", 'low', True, 0.0, 'element'),
+    ("semi-implicit FCT", "STABILIZATION_TYPE=2 FCT=True FCT_TYPE='semi-implicit' BETA=0.0", 'semi', False, 0.0, 'node'),
     ("implicit FCT", "STABILIZATION_TYPE=2 FCT=True FCT_TYPE='implicit' BETA=0.0", 'implicit', False, 0.0, 'node'),
     ("implicit FCT, lens", "STABILIZATION_TYPE=2 FCT=True FCT_TYPE='implicit' BETA=0.0 LENS=True", 'implicit', True, 0.0, 'node'),
 )
@@ -201,7 +212,8 @@ def main():
     ap.add_argument('--steady', action='store_true', help='the 1D steady compressible column against the exact solution')
     ap.add_argument('--steps', type=int, default=35)
     ap.add_argument('--nn', type=int, default=31)
-    ap.add_argument('--only', default='', help='substring of a case label')
+    ap.add_argument('--only', default='', help='a case label (exact), or a substring of several')
+    ap.add_argument('--mesh', choices=('structured', 'triangle'), default='structured', help="the deck's own Triangle mesh puts the pond's edges inside boundary faces")
     a = ap.parse_args()
     src, bin_dir = os.environ.get('PROTEUS_REF_DECKS'), os.environ.get('PROTEUS_REF_BIN')
     if not (src and bin_dir):
@@ -213,9 +225,9 @@ def main():
     print("%d x %d grid, %d steps of %.4g d; deck copy in %s" % (a.nn, a.nn, a.steps, 0.35 / a.steps, work))
     print("%-32s %12s %12s %12s   %s" % ('case', 'max |dpsi|', 'max |dtheta|', 'mean |dpsi|', 'psi min (mine / proteus)'))
     for label, ctx, kind, lens, beta, interface in CASES:
-        if a.only not in label:
+        if a.only != label and (a.only in [l for l, *_ in CASES] or a.only not in label):
             continue
-        X, conn, p = run_proteus(work, bin_dir, "%s NDT=%d NN=%d" % (ctx, a.steps, a.nn))
+        X, conn, p = run_proteus(work, bin_dir, "%s NDT=%d NN=%d REGULAR=%s" % (ctx, a.steps, a.nn, a.mesh == 'structured'))
         model, u0 = build(X, conn, lens, beta, interface)
         u, fb = mine(model, u0, a.steps, kind)
         d = np.abs(u - p); th = np.abs(model.m(u)[0] - model.m(p)[0])

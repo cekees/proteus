@@ -284,7 +284,7 @@ class KUpwindRichards:
             A += one(self.stiffness(u, 2, only=k).data.copy(), self.S_by[int(k)], int(k))
         return A
 
-    def fct_correct(self, uL, uold, dt, bounds_old=True, bounds='head'):
+    def fct_correct(self, uL, uold, dt, bounds_old=True, bounds='head', sat_low=False):
         """FCT on the moisture content, the antidiffusive flux being the Galerkin flux (K at the quadrature points) minus the upwinded one. Returns the
         corrected head and moisture content.
 
@@ -294,12 +294,19 @@ class KUpwindRichards:
         a node dry below every head around it (psi = -11 in a lens that started at -6 to -10, richards_2d.py --lens --fct)."""
         A = self.antidiffusive(uL)
         mL, _ = self.m(uL); mo, _ = self.m(uold)
+        mb = mo if bounds_old else mL
         if bounds == 'moisture':
-            mnew = engine.fct_limit_flux(self.indptr, self.indices, self.tpos, self.Mc.data.copy(), A, self.ML, mL, mo, dt, bounds_old)
+            seg = self.indptr[:-1]
+            mmax = np.maximum(np.maximum.reduceat(np.maximum(mL, mb)[self.indices], seg), mL)
+            mmin = np.minimum(np.minimum.reduceat(np.minimum(mL, mb)[self.indices], seg), mL)
         else:
             pmax, pmin = engine.head_extrema(self.indptr, self.indices, uL, uold if bounds_old else uL)
             mmax, _ = self.m(pmax); mmin, _ = self.m(pmin)
-            mnew = engine.fct_limit_flux_bounded(self.indptr, self.indices, self.tpos, self.Mc.data.copy(), A, self.ML, mL, mo, mmax, mmin, dt)
+        if sat_low:
+            # proteus's FCT_SATURATED_LOW_ORDER: no admissible change of moisture content where the low-order head is saturated, so every flux touching
+            # such a node is limited to zero
+            mmax = np.where(uL >= 0.0, mL, mmax); mmin = np.where(uL >= 0.0, mL, mmin)
+        mnew = engine.fct_limit_flux_bounded(self.indptr, self.indices, self.tpos, self.Mc.data.copy(), A, self.ML, mL, mo, mmax, mmin, dt)
         u = self.invert(mnew, uL)
         u[self.fixed] = uL[self.fixed]
         return u, mnew

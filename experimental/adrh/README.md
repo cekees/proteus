@@ -627,5 +627,19 @@ Proteus's Galerkin scheme converges to the exact solution at rate 2 (and to my G
 gravity term of its edge flux only through the salinity density (`rho_edge / rho`) and not through `exp(beta psi)` (read in `Richards.h`'s edge loop; not changed here). The edge form of `richards_nd.py` converges to the exact solution. At the deck's
 beta = 1e-4 the effect is 1.4e-3 m after 35 steps, so the decks' results are not affected.
 
-Not done: the post-step FCT (proteus's semi-implicit FCT) in 2D: with `FCT=True` and `STABILIZATION_TYPE=2` the deck copy returned the low-order solution (to 5e-11) for a reason not found (`num_fct_iter` 0 and 1 gave the same), so there is no 2D comparison
-of `fct_correct`; and the Triangle mesh of the original deck, whose partly-pond boundary faces proteus's weak flux treats and this driver does not.
+**The post-step FCT (proteus's semi-implicit FCT, `FCT=True`, `FCT_TYPE='semi-implicit'`) in 2D.** On the deck it returned the low-order solution to the last digit, and the reason is a veto in `Richards.FCTStep`: on the
+Newton-invert path (`nd > 1`, so every 2D case) the limited step is thrown away and the low-order head kept whenever the correction moves any node's head by more than 1 m (`RICHARDS_FCT_DU_MAX`, default 1), and a dry node's moisture
+content moves its head by metres. `RICHARDS_FCT_DBG=1` logs each decision; `proteus_reference_2d.py` sets `RICHARDS_FCT_DU_MAX=1e30`. With the veto lifted, the limiter differs from `fct_correct(bounds='moisture')` in two ways, both found by
+dumping proteus's step-1 arrays and replaying its limiter in numpy (the replica reproduces proteus's limited moisture content to 6e-17):
+* **`FCT_SATURATED_LOW_ORDER`**: where the low-order head is >= 0 the room to the bounds is set to zero, so every flux touching the node is limited to zero. `fct_correct(..., sat_low=True)` does the same (`richards_nd_test.py`).
+* **The Dirichlet rows of the high-order flux matrix.** Proteus's `TransportMatrixConsistent` also holds the weak exterior-boundary terms (`Richards_IIPG_exterior`), which are not symmetric: in the row of a Dirichlet node they add an antidiffusive flux
+  that the transposed entry does not have (1.45e-2 against 0 at the pond nodes after one step). Every interior edge agrees with `antidiffusive()` to 1e-17 (4918 edges), and with proteus's fluxes in the Dirichlet rows and mine everywhere else the
+  replayed limiter reproduces proteus to 2e-16; with mine in the Dirichlet rows it is off by 6e-3. The rows are masked (`bc_mask`), so no Dirichlet value changes, but the Zalesak ratios there limit the fluxes of their free neighbours: five nodes
+  beside the Dirichlet corners and pond edges differ by up to 3e-3 in moisture content after one step (35 steps: max |dtheta| 2.5e-2, mean |dpsi| 4e-3). It is a property of the weak boundary treatment, not an error in the limiter, and `fct_correct`
+  does not model it.
+
+**The deck's Triangle mesh** (`--mesh triangle`, 1496 nodes, 2861 elements): the Galerkin scheme does not run in proteus at the deck-copy's fixed 0.01 d step (the nonlinear solver fails at step 12; the original deck uses its adaptive controller), so there is no
+Galerkin comparison, and the K-upwinded low-order scheme differs by 5.8e-2 in moisture content (max |dpsi| 6.4 m at a dry node, mean 0.13 m). The difference is the pond: no mesh node lies at x = 10/3 or 20/3 (the top nodes are 3.125, 3.4375, ...),
+so the Dirichlet nodes cover 3.44 to 6.56 here, and in proteus the weak flux also acts on the two faces that are part pond. Its wetting front lies between mine with the pond on nodes only and mine with the pond widened by one node at each end
+(mean |dtheta| 4.4e-3 and 7.8e-3 for those two; proteus's is the one in between), the largest differences being the nodes just outside the pond (x = 3.125 and 6.875, y = 10: -0.169 against -0.102). Matching it needs the weak boundary flux of
+`Richards_IIPG_exterior`, which this driver does not model.

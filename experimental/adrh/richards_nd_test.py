@@ -353,6 +353,22 @@ def sp_matrix(model, Jv):
     return sp.csr_matrix((Jv, model.indices, model.indptr), shape=(model.nn, model.nn))
 
 
+def saturated_low_order():
+    print("FCT with sat_low (proteus's FCT_SATURATED_LOW_ORDER): nothing changes where the low-order head is saturated")
+    import richards_2d as R2
+    model, u0 = R2.build(21, False, 'node'); dt = R2.T_END / 35
+    uL, _ = model.newton(u0, u0, dt, 1e-12, 2)
+    mL, _ = model.m(uL); mo, _ = model.m(u0)
+    sat = uL >= 0.0
+    _, m_off = model.fct_correct(uL, u0, dt, bounds_old=False, bounds='moisture')
+    _, m_on = model.fct_correct(uL, u0, dt, bounds_old=False, bounds='moisture', sat_low=True)
+    ref = engine.fct_limit_flux(model.indptr, model.indices, model.tpos, model.Mc.data.copy(), model.antidiffusive(uL), model.ML, mL, mo, dt, False)
+    check(np.abs(m_off - ref).max() < 1e-14, "without it, the moisture bounds are the engine's own pass, max |difference| %.1e" % np.abs(m_off - ref).max())
+    free = np.ones(len(uL), bool); free[model.fixed] = False
+    check(sat.any() and np.abs(m_on - mL)[sat].max() == 0.0, "%d saturated nodes keep the low-order moisture content exactly" % int(sat.sum()))
+    check(np.abs(m_on - m_off)[free].max() > 1e-4, "and it changes the result where it applies, max |difference| %.1e" % np.abs(m_on - m_off)[free].max())
+
+
 def materials():
     print("the node material is the first incident element's")
     conn = np.array([[0, 1], [1, 2], [2, 3]]); material = np.array([0, 1, 2])
@@ -369,6 +385,7 @@ if __name__ == '__main__':
     head_bounds()
     implicit_fct()
     compressible()
+    saturated_low_order()
     materials()
     if failures:
         print("%d check(s) failed" % len(failures))
