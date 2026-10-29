@@ -191,6 +191,10 @@ jobs:
           cat environment-ci.yml
       - name: Set up conda environment with PETSc/MPI/HDF5
         uses: conda-incubator/setup-miniconda@v3
+        env:
+          # Fork overlay: a fresh package cache per job. A cache that persists between jobs on a self-hosted
+          # runner goes stale ("Cannot find a valid extracted directory cache") after a cancelled run.
+          CONDA_PKGS_DIRS: ${{ runner.temp }}/conda_pkgs
         with:
           miniforge-version: latest
           environment-file: environment-ci.yml
