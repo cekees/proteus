@@ -408,11 +408,19 @@ class Sequential_MinFLCBDFModelStep(SO_base):
              self.stepSequence),
             level=1)
     def retryModelStep_solverFailure(self,model):
-        self.retry = model.stepController.retryStep_solverFailure()
+        self.retry = self._retryStep(model,"retryStep_solverFailure")
         return False#kick out to sequence level
     def retryModelStep_errorFailure(self,model):
-        self.retry = model.stepController.retryStep_errorFailure()
+        self.retry = self._retryStep(model,"retryStep_errorFailure")
         return False
+    def _retryStep(self,model,method):
+        """Retry the sequence with a smaller step. A model whose controller is
+        not FLCBDF (redistancing, mass correction) cannot shorten the step
+        itself: the FLCBDF models do, and the sequence runs again from the
+        solutions they restore (the others restart from those)."""
+        if model in self.flcbdfList:
+            return getattr(model.stepController,method)()
+        return all([getattr(m.stepController,method)() for m in self.flcbdfList])
     def ignoreSequenceStepFailure(self,model):
         return False#kick out to sequence level
     def retrySequence_modelStepFailure(self):

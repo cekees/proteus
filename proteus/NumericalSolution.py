@@ -675,6 +675,11 @@ class NS_base(object):  # (HasTraits):
             #state; put back the state the archived step ended with
             for index,m in enumerate(self.modelList):
                 self.restoreSolverState(m,index,self.tCount)
+            synced = [m for m in self.modelList if hasattr(m.stepController,"syncAfterRestore")]
+            if synced:
+                for m in synced:
+                    m.stepController.syncAfterRestore()
+                self.systemStepController.choose_dt_system()
         logEvent("Starting time stepping",level=0)
         systemStepFailed=False
         stepFailed=False

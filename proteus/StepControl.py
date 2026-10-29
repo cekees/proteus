@@ -710,6 +710,7 @@ class FLCBDF_controller(SC_base):
         self.ignoreErrorControl=True#if mincfl kicks in this gets set to True until time step is larger than min time step
         self.dtRatioMax=2.0
         SC_base.__init__(self,model,nOptions)
+        self.dt_min=getattr(nOptions,'dt_min',0.0)
         self.stepExact=False
         self.massComponents = list(self.model.levelModelList[-1].coefficients.mass.keys())
         for mi in self.model.levelModelList:
@@ -724,7 +725,11 @@ class FLCBDF_controller(SC_base):
             self.flcbdfList.append(m.timeIntegration.flcbdf)
             for ci in m.timeIntegration.massComponents:
                 try:
-                    m.timeIntegration.flcbdf[ci].setTolerances(nOptions.atol_u[ci],nOptions.rtol_u[ci],m.q[('dV_u',ci)])
+                    #the error norm sums over the ranks: the ghost elements (after the owned ones) are another
+                    #rank's and must not count twice, or the step sequence depends on the number of ranks
+                    dV = m.q[('dV_u',ci)].copy()
+                    dV[m.mesh.nElements_owned:] = 0.0
+                    m.timeIntegration.flcbdf[ci].setTolerances(nOptions.atol_u[ci],nOptions.rtol_u[ci],dV)
                 except:
                     logEvent("WARNING: couldn't find integration weights for FLCBDF norm")
                     m.timeIntegration.flcbdf[ci].setTolerances(nOptions.atol_u[ci],nOptions.rtol_u[ci],numpy.ones_like(m.q[('m',0)]))
@@ -775,7 +780,7 @@ class FLCBDF_controller(SC_base):
         retry = False
         if self.errorFailures < self.maxErrorFailures:
             self.resetSolution()
-            self.dt_model = min([flcbdf.retryStep_errorFailure() for flcbdf in self.flcbdfListFlat])
+            self.dt_model = max(self.dt_min,min([flcbdf.retryStep_errorFailure() for flcbdf in self.flcbdfListFlat]))
             self.set_dt_allLevels()
             self.setSubsteps([self.t_model])
             retry = True
@@ -786,7 +791,18 @@ class FLCBDF_controller(SC_base):
             ERROR_OK = model.timeIntegration.lastStepErrorOk()
         if self.ignoreErrorControl==True:
             ERROR_OK=True
+        if self.dt_min > 0.0 and self.dt_model <= self.dt_min*(1.0+1.0e-12):
+            ERROR_OK=True#at the floor: accept
         return not ERROR_OK
+    def syncAfterRestore(self):
+        """Hot start: the step the archived run chose next is the integrator's
+        restored dt, not the one initialize_dt_model estimated from the restart
+        state; make the controller agree (the system controller then chooses
+        from it, as it does at the end of every step)."""
+        for m in self.model.levelModelList:
+            self.dt_model = m.timeIntegration.dt
+        self.dt_model_last = self.dt_model
+        self.t_model = self.t_model_last + self.dt_model
     def initialize_dt_model(self,t0,tOut):
         self.saveSolution()
         for m in self.model.levelModelList:
@@ -804,7 +820,7 @@ class FLCBDF_controller(SC_base):
         self.saveSolution()
         for m in self.model.levelModelList:
             m.timeIntegration.choose_dt()
-        self.dt_model = m.timeIntegration.dt
+        self.dt_model = max(self.dt_min,m.timeIntegration.dt)
 #         print "Error control dt======================================",m.name,self.dt_model
 #         #add check of cfl to make sure time step doesn't get too small
 #         maxCFL = 1.0e-6
@@ -846,7 +862,7 @@ class FLCBDF_controller_sys(FLCBDF_controller):
         retry = False
         if self.errorFailures < self.maxErrorFailures:
             self.resetSolution()
-            self.dt_model = min([flcbdf.retryStep_errorFailure() for flcbdf in self.flcbdfListFlat])
+            self.dt_model = max(self.dt_min,min([flcbdf.retryStep_errorFailure() for flcbdf in self.flcbdfListFlat]))
             self.set_dt_allLevels()
             #self.substeps = [self.t_model]
             self.setSubsteps([self.t_model])
