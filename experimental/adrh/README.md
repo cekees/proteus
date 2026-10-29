@@ -514,7 +514,7 @@ mode 1 and 2, `richards_kr_nodes`, the new `richards_m_nodes` (the nodal storage
 * **The 2D deck** (`richards_2d.py`): proteus's `re_vgm_sand_10x10m_2d` (10 m x 10 m sand, ponded on the middle third of the top, 0.35 d) with an optional lens of a finer soil. There is no saved reference for the deck; it
   checks the bounds, and host and Kokkos agree (570 Newton iterations, the same mass, on the lens with FCT). Not done: a comparison with a proteus run of the same deck, and 3D.
 
-Compressibility (`beta != 0`) is not in the K-upwinded scheme: the total-head form of the flux needs `rho / rho0 = 1`.
+Compressibility (`beta != 0`) is in the K-upwinded scheme through the edge form of the flux (section below).
 
 ### Cost of the K-upwinded passes (`upwind_timing.py`, `upwind_passes_timed`)
 
@@ -565,9 +565,14 @@ neighbours at the predictor and the old state, mapped to moisture content with t
 coarse step (6 of 35 steps without the lens, 11 of 35 with it, at 21 x 21 nodes; 1 of 280 at 41 x 41) and each failure costs `predictor_maxit` iterations before the fallback. Whether proteus's implicit FCT
 does the same on a lens was not run. The post-step FCT with head bounds stays inside [-10, 0.1] on the same deck.
 
-## Compressibility, `beta != 0` (`KUpwindRichards(..., rho=, beta=)`)
+**Which default.** `bounds='global'` stays the default: it is proteus's algorithm, and the 1e-10 agreement with proteus's implicit FCT (below) is for it. `bounds='local'` costs nothing on the benchmark decks: on Celia, HYDRUS and Szymkiewicz
+(`richards_implicit_fct.py`, a row for each) its L1 errors, fronts and lowest heads equal the global-bounds ones to the digits printed (1.10e-3, 5.56e-2, 1.61e-1; HYDRUS 10.42 against 10.26 iterations per step), and it is the only one of the two that
+holds the lens (-10.3 m against -174 m). Use it wherever the data have a dry region next to a wet one; making it the default would be a deviation from proteus that the PR should propose, not assume.
 
-`rho = rho_t exp(beta psi)` (`rho0 = 1`, the bindings' fixed value; `beta >= 0`). The total-head form of the K-upwinded flux needs the gravity term to be the gradient of a nodal head, which it is not when `rho / rho0 != 1`: the Galerkin flux is
+## Compressibility, `beta != 0` (`KUpwindRichards(..., rho=, beta=, rho0=)`)
+
+`rho = rho_t exp(beta psi)`, with `rho0` as in proteus (`rho0 != 1` enters only through `f = (rho^2 / rho0) K_r K_s g = rho^2 K_r K_s (g / rho0)`, so the engine's bindings, which fix `rho0 = 1`, are used with `g / rho0`;
+`beta >= 0` for FCT, see below). The total-head form of the K-upwinded flux needs the gravity term to be the gradient of a nodal head, which it is not when `rho / rho0 != 1`: the Galerkin flux is
 `rho K_r K_s (grad psi - (rho / rho0) g)`. The edge flux is therefore `F_ij = (rho K_r)_up c_ij dphi_ij` with `c_ij` from the unit-density stiffness `S`, the upwinded coefficient `rho K_r` taken at the upwind node, and
 `dphi_ij = u_j - u_i - rhoEdge g.(x_j - x_i)`, `rhoEdge` the mean of `rho` over the edge (what proteus's edge loop does with its salinity density). New passes `upwindFluxRowE` and
 `antidiffusiveFluxRowE` (`upwind_flux_edges`, `antidiffusive_flux_edges`; both modules, bitwise equal in `golden.py`) take `dphi` and its partials in `u_i`, `u_j` on the pattern, so the Jacobian includes the density's
@@ -584,9 +589,27 @@ scheme converges to the same solution:
 | 0.05 | 2.9e-2, 1.6e-2, 8.4e-3, 4.3e-3 | 0.96 |
 | 0.5 | 1.3e-1, 7.8e-2, 4.6e-2, 2.5e-2 | 0.87 |
 
-The flux Jacobian agrees with central differences (6e-10, beta = 0.4); the x-uniform strip equals the column (2e-12, beta = 0.05); FCT keeps `sum M_L rho theta` exactly; the implicit step stays in the data's bounds. Not done: `rho0 != 1`
-(the bindings fix it), a negative `beta`, the time-dependent compressible case against an independent solution, and a comparison with proteus's own low-order scheme at `beta != 0`, whose edge loop uses a density ratio from its salinity
-density only (no `exp(beta psi)`) and was not reproduced here; at the deck value `beta = 1e-4` and heads within 10 m the factor `exp(beta psi)` differs from 1 by 1e-3.
+The flux Jacobian agrees with central differences (6e-10, beta = 0.4); the x-uniform strip equals the column (2e-12, beta = 0.05); FCT keeps `sum M_L rho theta` exactly; the implicit step stays in the data's bounds.
+
+**`rho_t != 1` and `rho0 != 1`.** The ODE with them is `psi' = -Q / (rho_t exp(beta psi) K) - rho_t exp(beta psi) / rho0`; at `beta = 0.3, rho_t = 1.2, rho0 = 1.5` the Galerkin solution converges to it at rate 2.00 and the K-upwinded one at 0.91
+(test in `richards_nd_test.py`).
+
+**Negative `beta`.** The steady column converges the same way (`beta = -0.05` and `-0.3`: Galerkin rate 2.00, K-upwind 0.97 and 0.99), and so does the low-order transient (`-0.05`, below). FCT does not work: it inverts
+`m = rho_t exp(beta u) theta(u)` for the head, and with `beta < 0` that `m` is not monotone (it rises again as `u -> -infinity`, because `exp(beta u)` grows faster than `theta` falls, and falls beyond saturation), so the head is not
+determined. The inversion returned heads of order 1e18 without complaint; it now raises `ValueError`. At `beta = -0.3` and `psi = -3` `d(rho theta)/dpsi` is negative, so the transient problem there is ill-posed (the reference
+solver cannot integrate it), which is the physical reason: a fluid that gets lighter under pressure.
+
+**The transient** (`compressible_transient` in `richards_nd_test.py`): a wetting front, `psi = -3` initially and at the top, `-1` at the bottom, `t = 1`, against a method-of-lines solution written without the engine (node-centred
+conservative differences, 1601 nodes, BDF to 1e-10; its own error 9e-4 at `beta = 0.3` and 6e-5 at `-0.05`). Backward Euler, 50, 100 and 200 steps on nodes 41, 81 and 161:
+
+| case | K-upwind errors | rate | Galerkin errors | rate |
+|---|---|---|---|---|
+| beta 0.3, rho_t 1.2, rho0 1.5 | 5.9e-1, 3.9e-1, 2.3e-1 | 0.76 | 4.1e-2, 1.5e-2, 5.9e-3 | 1.32 |
+| beta -0.05 | 1.3e-1, 7.1e-2, 3.8e-2 | 0.92 | 7.8e-3, 3.9e-3, 1.9e-3 | 1.00 |
+
+The Galerkin transient converging to the independent solution is what shows the reference is the right equation; the K-upwinded scheme converges to it more slowly, as at `beta = 0` (first order at a sharp front). Not done: a comparison
+with proteus's own low-order scheme at `beta != 0`, whose edge loop uses a density ratio from its salinity density only (no `exp(beta psi)`) and was not reproduced here; at the deck value `beta = 1e-4` and heads within 10 m the factor
+`exp(beta psi)` differs from 1 by 1e-3.
 
 ## Against proteus's own code (`proteus_reference_2d.py`)
 

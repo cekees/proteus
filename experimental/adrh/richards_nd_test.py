@@ -14,7 +14,8 @@
 5. Implicit FCT (proteus's FCT_TYPE='implicit'): the limiter against an independent numpy version, exact conservation of the datum, the prelimiter's two
    extremes, the Celia deck against a fine reference, and the lens (global against local bounds).
 6. Compressibility, rho = exp(beta psi): the edge passes equal the nodal-head passes at beta = 0, the flux Jacobian against finite differences, the steady column against
-   an ODE (the Galerkin solution converges to it at rate 2, the K-upwinded one at rate approaching 1), the strip against the column, FCT's mass.
+   an ODE (the Galerkin solution converges to it at rate 2, the K-upwinded one at rate approaching 1) for beta >= 0, beta < 0, rho_t != 1 and rho0 != 1, a transient
+   wetting front against a method-of-lines solution written without the engine, the strip against the column, FCT's mass.
 7. Nodal materials: the node's material is the first incident element's.
 
 usage: [ADRH_MODULE=adrh_kokkos] python richards_nd_test.py
@@ -259,14 +260,14 @@ def implicit_fct():
     check(lows['local'] > lows['global'] and lows['local'] > -11.0, "the lens: local bounds hold the head at %.2f where global bounds let it reach %.1f" % (lows['local'], lows['global']))
 
 
-def compressible_exact(beta, ALPHA=3.35, N=2.0, KS=7.967, PB=-1.0, PT=-3.0):
-    """The steady compressible column by shooting: with rho = exp(beta psi) and gravity down, the flux Q = -rho K (psi' + rho) is constant, so
-    psi' = -Q exp(-beta psi) / K(psi) - exp(beta psi); Q is found by matching psi(1) = PT. Returns the dense solution."""
+def compressible_exact(beta, rt=1.0, rho0=1.0, ALPHA=3.35, N=2.0, KS=7.967, PB=-1.0, PT=-3.0):
+    """The steady compressible column by shooting: with rho = rt exp(beta psi) and gravity down, the flux Q = -rho K (psi' + rho / rho0) is constant, so
+    psi' = -Q / (rt exp(beta psi) K(psi)) - rt exp(beta psi) / rho0; Q is found by matching psi(1) = PT. Returns the dense solution."""
     import scipy.integrate as si
     import scipy.optimize as so
 
     def prof(Q):
-        rhs = lambda xx, p: [-Q * np.exp(-beta * p[0]) / (RL.kr(p[0], ALPHA, N) * KS) - np.exp(beta * p[0])]
+        rhs = lambda xx, p: [-Q * np.exp(-beta * p[0]) / (rt * RL.kr(p[0], ALPHA, N) * KS) - rt * np.exp(beta * p[0]) / rho0]
         dry = lambda xx, p: p[0] + 400.0
         dry.terminal = True
         return si.solve_ivp(rhs, (0, 1), [PB], rtol=1e-12, atol=1e-13, method='LSODA', dense_output=True, events=dry)
@@ -280,6 +281,57 @@ def compressible_exact(beta, ALPHA=3.35, N=2.0, KS=7.967, PB=-1.0, PT=-3.0):
     grid = np.linspace(-1.5, 1.5, 61); vals = [f(q) for q in grid]
     k = next(i for i in range(len(grid) - 1) if vals[i] * vals[i + 1] < 0)
     return prof(so.brentq(f, grid[k], grid[k + 1], xtol=1e-14)).sol
+
+
+def compressible_transient_reference(beta, rt, rho0, T, Nn=1601, PB=-1.0, PT=-3.0, ALPHA=3.35, N=2.0, KS=7.967, THR=0.102, THS=0.368):
+    """The transient compressible column by the method of lines, written without the engine: node-centred conservative differences with the
+    arithmetic mean of rho K_r at the midpoints, d(rho theta)/dt = d/dx (rho K (psi_x + rho / rho0)), BDF in time to 1e-10. Starts at PT with the bottom at PB."""
+    import scipy.integrate as si
+    import scipy.sparse as sp
+    mv = 1.0 - 1.0 / N; h = 1.0 / (Nn - 1)
+
+    def rhs(t, y):
+        p = np.concatenate(([PB], y, [PT]))
+        base = 1.0 + (ALPHA * np.abs(p)) ** N
+        se = base ** -mv
+        th = THR + (THS - THR) * se
+        dth = (THS - THR) * mv * base ** (-mv - 1.0) * N * (ALPHA * np.abs(p)) ** (N - 1.0) * ALPHA        # d theta / d psi, psi < 0
+        kr = np.sqrt(se) * (1.0 - (1.0 - se ** (1.0 / mv)) ** mv) ** 2
+        rho = rt * np.exp(beta * p)
+        rk = rho * kr * KS
+        F = 0.5 * (rk[1:] + rk[:-1]) * ((p[1:] - p[:-1]) / h + 0.5 * (rho[1:] + rho[:-1]) / rho0)
+        return ((F[1:] - F[:-1]) / h) / (rho * (beta * th + dth))[1:-1]
+    n = Nn - 2
+    s = si.solve_ivp(rhs, (0.0, T), np.full(n, PT), method='BDF', rtol=1e-10, atol=1e-12, t_eval=[T],
+                     jac_sparsity=sp.diags([1.0, 1.0, 1.0], [-1, 0, 1], shape=(n, n)))
+    assert s.status == 0, s.message
+    return np.linspace(0.0, 1.0, Nn), np.concatenate(([PB], np.asarray(s.y)[:, -1], [PT]))
+
+
+def compressible_transient():
+    print("compressibility, transient: a wetting front against a method-of-lines solution written without the engine")
+    T = 1.0
+    for beta, rt, rho0 in ((0.3, 1.2, 1.5), (-0.05, 1.0, 1.0)):
+        tag = "beta = %.2f, rho_t = %.1f, rho0 = %.1f" % (beta, rt, rho0)
+        xr, ur = compressible_transient_reference(beta, rt, rho0, T)
+        x4, u4 = compressible_transient_reference(beta, rt, rho0, T, Nn=801)
+        floor = np.abs(np.interp(xr, x4, u4) - ur).max()
+        errs = {'galerkin': [], 'upwind': []}
+        for nn, steps in ((41, 50), (81, 100), (161, 200)):
+            xs = np.linspace(0.0, 1.0, nn)[:, None]; cn = np.stack([np.arange(nn - 1), np.arange(1, nn)], 1)
+            mdl = nd.KUpwindRichards(xs, cn, np.zeros(nn - 1, dtype='i'), dirichlet=([0, nn - 1], [-1.0, -3.0]), alpha=[3.35], n_vg=[2.0], theta_r=[0.102],
+                                     theta_s=[0.368], ks=[[7.967]], g=[-1.0], rho=rt, beta=beta, rho0=rho0)
+            u0 = np.full(nn, -3.0); u0[0] = -1.0; ex = np.interp(xs[:, 0], xr, ur); dt = T / steps
+            ul, _ = mdl.run(u0, T, steps)
+            ug = u0.copy()
+            for _ in range(steps):
+                ug, _ = mdl.newton(ug, ug, dt, tol=1e-11, system=lambda v, uo=ug: mdl.galerkin_system(v, uo, dt))
+            errs['upwind'].append(np.abs(ul - ex).max()); errs['galerkin'].append(np.abs(ug - ex).max())
+        ru = np.log2(errs['upwind'][-2] / errs['upwind'][-1]); rg = np.log2(errs['galerkin'][-2] / errs['galerkin'][-1])
+        print("      %s, t = %g (reference to %.1e)  nn 41, 81, 161: K-upwind errors %s (rate %.2f) | Galerkin errors %s (rate %.2f)" % (
+            tag, T, floor, ", ".join("%.1e" % e for e in errs['upwind']), ru, ", ".join("%.1e" % e for e in errs['galerkin']), rg))
+        check(ru > 0.7 and errs['upwind'][-1] < 0.5 * errs['upwind'][0], "%s: the K-upwinded transient converges to the independent solution (rate %.2f)" % (tag, ru))
+        check(rg > 0.9 and errs['galerkin'][-1] < 0.35 * errs['galerkin'][0], "%s: so does the Galerkin transient (rate %.2f), so the reference is the right equation" % (tag, rg))
 
 
 def compressible():
@@ -313,21 +365,28 @@ def compressible():
     err = max(np.abs(mc.invert(mc.m(uu)[0], uu + off) - uu).max() for off in (-5.0, 0.7, 4.0))   # from starting guesses well away from the answer
     check(err < 1e-9, "the head recovered from rho theta(psi) with beta = 0.4, started 5 m below to 4 m above: max |error| %.1e" % err)
     # against the ODE: Galerkin (the same equation, discretized differently) converges at rate 2, which checks the ODE; the K-upwinded scheme to the same solution
-    for beta in (0.05, 0.5):
-        sol = compressible_exact(beta); errs = {'galerkin': [], 'upwind': []}
+    for beta, rt, rho0 in ((0.05, 1.0, 1.0), (0.5, 1.0, 1.0), (0.3, 1.2, 1.5), (-0.05, 1.0, 1.0), (-0.3, 1.2, 1.5)):
+        tag = "beta = %.2f, rho_t = %.1f, rho0 = %.1f" % (beta, rt, rho0)
+        sol = compressible_exact(beta, rt, rho0); errs = {'galerkin': [], 'upwind': []}
         for nn in (21, 41, 81, 161):
             xs = np.linspace(0.0, 1.0, nn)[:, None]; cn = np.stack([np.arange(nn - 1), np.arange(1, nn)], 1)
             mdl = nd.KUpwindRichards(xs, cn, np.zeros(nn - 1, dtype='i'), dirichlet=([0, nn - 1], [-1.0, -3.0]), alpha=[3.35], n_vg=[2.0], theta_r=[0.102], theta_s=[0.368],
-                                     ks=[[7.967]], g=[-1.0], beta=beta)
+                                     ks=[[7.967]], g=[-1.0], rho=rt, beta=beta, rho0=rho0)
             y = xs[:, 0]; u0 = -1.0 - 2.0 * y; ex = sol(y)[0]
             ug, _ = mdl.newton(u0, u0, 0.0, tol=1e-11, system=lambda v: mdl.galerkin_system(v, v, 0.0))
             ul, _ = mdl.newton(u0, u0, None, tol=1e-11, maxit=100)
             errs['galerkin'].append(np.abs(ug - ex).max()); errs['upwind'].append(np.abs(ul - ex).max())
         rg = np.log2(errs['galerkin'][-2] / errs['galerkin'][-1]); ru = np.log2(errs['upwind'][-2] / errs['upwind'][-1])
-        print("      beta %.2f  nn 21..161  Galerkin errors %s (rate %.2f) | K-upwind errors %s (rate %.2f)" % (
-            beta, ", ".join("%.1e" % e for e in errs['galerkin']), rg, ", ".join("%.1e" % e for e in errs['upwind']), ru))
-        check(rg > 1.8, "beta = %.2f: the ODE agrees with the Galerkin solution at rate %.2f, so it is the right equation" % (beta, rg))
-        check(ru > 0.8 and errs['upwind'][-1] < 0.25 * errs['upwind'][0], "beta = %.2f: the K-upwinded scheme converges to it at rate %.2f" % (beta, ru))
+        print("      %s  nn 21..161  Galerkin errors %s (rate %.2f) | K-upwind errors %s (rate %.2f)" % (
+            tag, ", ".join("%.1e" % e for e in errs['galerkin']), rg, ", ".join("%.1e" % e for e in errs['upwind']), ru))
+        check(rg > 1.8, "%s: the ODE agrees with the Galerkin solution at rate %.2f, so it is the right equation" % (tag, rg))
+        check(ru > 0.8 and errs['upwind'][-1] < 0.25 * errs['upwind'][0], "%s: the K-upwinded scheme converges to it at rate %.2f" % (tag, ru))
+    # beta < 0: the low-order scheme is fine (above), but FCT's inversion of m for the head is not defined, and says so
+    try:
+        mdl.invert(mdl.m(u0)[0], u0); raised = False
+    except ValueError:
+        raised = True
+    check(raised, "beta < 0: FCT's head inversion raises instead of returning a head that does not match")
     # the strip equals the column with beta, and FCT keeps the mass
     case = rr.CASES['celia']; ny = 41
     xs, cn, fixed = strip(3, ny, case)
@@ -385,6 +444,7 @@ if __name__ == '__main__':
     head_bounds()
     implicit_fct()
     compressible()
+    compressible_transient()
     saturated_low_order()
     materials()
     if failures:

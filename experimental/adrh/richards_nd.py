@@ -17,7 +17,7 @@ flux from that element's own material: the flux is split by material, F = sum_m 
 stiffness of the elements of material m alone, so an interface node gives each soil its own K_r(psi) (psi is continuous across the interface). One
 material reduces to the same scheme as interface='node'.
 
-Compressibility: rho = rho_t exp(beta psi) (rho_t, beta in the constructor; rho0 = 1, the engine's bindings). The gravity term is then not the gradient of a nodal head, so the
+Compressibility: rho = rho_t exp(beta psi) (rho_t, beta, rho0 in the constructor; the engine's bindings fix rho0 = 1, and rho0 enters only as g / rho0). The gravity term is then not the gradient of a nodal head, so the
 flux of an edge uses the head difference dphi = u_j - u_i - rhoEdge g.(x_j - x_i) with rhoEdge the mean of rho over the edge, and the upwinded coefficient is rho K_r at the upwind
 node (upwind_flux_edges, antidiffusive_flux_edges); the storage is rho theta; FCT inverts m = rho theta(psi) for the head with a per-node Newton iteration.
 """
@@ -58,7 +58,7 @@ class KUpwindRichards:
     """alpha, n_vg, theta_r, theta_s: (nMaterials,); ks: (nMaterials, nd) the diagonal conductivities (dimensionless, as proteus's KsTypes); g: (nd,) the
     gravity direction (proteus's dimensionless_gravity); material: (nE,) the material of each element; dirichlet: (node numbers, values)."""
 
-    def __init__(self, x, conn, material, alpha, n_vg, theta_r, theta_s, ks, g, dirichlet, psk=0, interface='node', rho=1.0, beta=0.0, quadrature_order=3):
+    def __init__(self, x, conn, material, alpha, n_vg, theta_r, theta_s, ks, g, dirichlet, psk=0, interface='node', rho=1.0, beta=0.0, rho0=1.0, quadrature_order=3):
         self.x = np.asarray(x, dtype=float); self.conn = np.asarray(conn, dtype='i')
         self.nn, self.nd = self.x.shape
         self.nE, self.nV = self.conn.shape
@@ -67,12 +67,13 @@ class KUpwindRichards:
         self.alpha, self.n_vg, self.theta_r = (np.asarray(a, dtype=float) for a in (alpha, n_vg, theta_r))
         self.theta_s = np.asarray(theta_s, dtype=float); self.thetaSR = self.theta_s - self.theta_r
         self.ks = np.asarray(ks, dtype=float).reshape(len(self.alpha), self.nd)
-        self.g = np.asarray(g, dtype=float)
+        self.rho0 = float(rho0)
+        self.g = np.asarray(g, dtype=float) / self.rho0     # f = (rho^2 / rho0) K g = rho^2 K (g / rho0): the engine's bindings fix rho0 = 1, so it is carried in g
         self.psk = psk
         assert interface in ('node', 'element')
         self.interface = interface
-        self.rho, self.beta = float(rho), float(beta)          # rho_t and the compressibility: rho = rho_t exp(beta psi), rho0 = 1 (the engine's bindings)
-        self.compressible = self.beta != 0.0 or self.rho != 1.0
+        self.rho, self.beta = float(rho), float(beta)          # rho_t and the compressibility: rho = rho_t exp(beta psi); rho0 is carried in g
+        self.compressible = self.beta != 0.0 or self.rho != 1.0 or self.rho0 != 1.0
         self.fixed = np.asarray(dirichlet[0], dtype='i'); self.gD = np.asarray(dirichlet[1], dtype=float)
         self.nodeMat = first_incident_material(self.conn, self.material, self.nn)
         self.xn = np.zeros((self.nE, self.nV, 3)); self.xn[:, :, :self.nd] = self.x[self.conn]
@@ -228,6 +229,9 @@ class KUpwindRichards:
         pressure keeps the low-order head when the limited moisture content is saturated). For a compressible fluid m = rho_t exp(beta u) theta(u): the analytic
         inverse of theta = m / rho_t starts a per-node Newton iteration on m(u) = m."""
         if self.compressible:
+            if self.beta < 0.0:
+                raise ValueError("FCT inverts the moisture content for the head, and with beta < 0 m = rho_t exp(beta u) theta(u) is not monotone in u (it rises "
+                                 "again as u -> -infinity and falls beyond saturation), so the head is not determined: use beta >= 0 (the low-order scheme itself does not need it)")
             if self.beta == 0.0:                                # m = rho theta(u): the analytic inverse of theta = m / rho
                 return self._invert_incompressible(theta / self.rho, uL)
             return self._invert_compressible(theta, uL)

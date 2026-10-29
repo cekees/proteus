@@ -24,13 +24,13 @@ def build(case, nn):
                               theta_r=[case.theta_r], theta_s=[case.theta_s], ks=[[case.ks]], g=[-1.0], psk=case.psk)
 
 
-def march(model, case, steps, upto, kind, tol=1e-8):
+def march(model, case, steps, upto, kind, tol=1e-8, bounds='global'):
     """The head after `upto` of `steps` steps of one scheme ('low', 'post', 'implicit'); (head, iterations, predictor fallbacks)."""
     u = case.initial(model.x[:, 0]).astype(float); dt = case.t_end / steps; its = fb = 0
     for _ in range(upto):
         uold = u
         if kind == 'implicit':
-            u, c = model.implicit_fct_step(uold, dt, tol=tol, norm=2); its += c['predictor'] + c['final']; fb += c['fallback']
+            u, c = model.implicit_fct_step(uold, dt, tol=tol, norm=2, bounds=bounds); its += c['predictor'] + c['final']; fb += c['fallback']
         else:
             u, k = model.newton(u, uold, dt, tol, 2); its += k
             if kind == 'post':
@@ -54,14 +54,15 @@ def main():
         ref_on_coarse = np.interp(coarse.x[:, 0], fine.x[:, 0], thf)
         print("\n=== %s: %d nodes, %d steps of %.4g d, frame %d (t = %.4g d); reference %d nodes x %d steps, front at %.4f m" % (
             name, case.nn, case.steps, case.t_end / case.steps, frame, frame * case.t_end / case.steps, nn_f, case.steps * k, front(fine.x[:, 0], thf, level)))
-        print("  %-26s %10s %10s %10s %10s %10s" % ('', 'L1 dtheta', 'front (m)', 'psi min', 'its/step', 'fallbacks'))
-        for label, kind in (('K-upwind, lumped', 'low'), ('K-upwind + post-step FCT', 'post'), ('implicit FCT', 'implicit')):
+        print("  %-28s %10s %10s %10s %10s %10s" % ('', 'L1 dtheta', 'front (m)', 'psi min', 'its/step', 'fallbacks'))
+        for label, kind, bounds in (('K-upwind, lumped', 'low', 'global'), ('K-upwind + post-step FCT', 'post', 'global'), ('implicit FCT', 'implicit', 'global'),
+                                    ('implicit FCT, local bounds', 'implicit', 'local')):
             try:
-                u, its, fb = march(coarse, case, case.steps, frame, kind)
+                u, its, fb = march(coarse, case, case.steps, frame, kind, bounds=bounds)
             except RuntimeError as e:
-                print("  %-26s %s" % (label, str(e).split(':')[0])); continue
+                print("  %-28s %s" % (label, str(e).split(':')[0])); continue
             th = theta(coarse, u)
-            print("  %-26s %10.2e %10.4f %10.3f %10.2f %10d" % (label, l1(coarse.x[:, 0], th, ref_on_coarse), front(coarse.x[:, 0], th, level), u.min(), its / frame, fb))
+            print("  %-28s %10.2e %10.4f %10.3f %10.2f %10d" % (label, l1(coarse.x[:, 0], th, ref_on_coarse), front(coarse.x[:, 0], th, level), u.min(), its / frame, fb))
 
 
 if __name__ == '__main__':
