@@ -387,7 +387,11 @@ class SSP(BackwardEuler_cfl):
 
 class FLCBDF(TI_base):
     def __init__(self,transport):
-        from . import flcbdfWrappers
+        try:
+            from . import flcbdfWrappers
+        except ImportError:
+            #experimental build: experimental/flcbdf/setup.py, on PYTHONPATH
+            import flcbdfWrappers
         TI_base.__init__(self,transport)
         self.initCalls=0
         #masses
@@ -504,8 +508,47 @@ class FLCBDF(TI_base):
     def updateTimeHistory(self,resetFromDOF=False):
         logEvent("updating time history for FLCBDF")
         self.tLast = self.t
-        for ci in self.massComponents: self.flcbdf[ci].stepTaken(self.m[ci])
+        #models that follow this one in the step (redistancing, mass correction) may have changed the
+        #solution since the controller checked its error; the history has to start the next step from what
+        #they left, as backward Euler's m_last does (without this the level set drifts from backward Euler
+        #by O(t) at order 1 and fails Newton). Mass correction refreshes q[('m_tmp',ci)].
+        mfinal = dict((ci,self.transport.q.get(('m_tmp',ci),self.m[ci])) for ci in self.massComponents)
+        #the level set is stored at the quadrature points as u itself (m_tmp is q u), but redistancing
+        #changes only its dofs (postStep copies them): bring the quadrature values up to the dofs, or the
+        #history differs from where the next step starts by the redistancing jump, whatever the step size
+        for ci in self.massComponents:
+            q = self.transport.q
+            if mfinal[ci] is q.get(('u',ci)):
+                fs = self.transport.u[ci].femSpace
+                psi = fs.getBasisValuesRef(self.transport.elementQuadraturePoints)
+                q[('u',ci)][:] = numpy.dot(self.transport.u[ci].dof[fs.dofMap.l2g],psi.T)
+        #the error check of the step was made by the controller on the solution as the step left it. A
+        #projection moves only the level of the history (the integrator keeps the step's derivative), so a
+        #change that does not shrink with the step does not appear as a derivative and an error floor. That
+        #is right where the projected state is one the dofs can represent: the level set. The volume of
+        #fluid's mass correction overwrites its quadrature values with the Heaviside of the corrected level
+        #set, which its finite element space cannot represent; shifting to that value leaves an error of the
+        #representation, independent of the step, so its history is left as the integrator took it.
+        for ci in self.massComponents:
+            if mfinal[ci] is self.transport.q.get(('u',ci)): self.flcbdf[ci].shiftLevel(mfinal[ci])
+        for ci in range(self.nc): self.flcbdf[('u',ci)].shiftLevel(self.transport.u[ci].dof)
+        for ci in self.massComponents: self.flcbdf[ci].stepTaken(mfinal[ci])
         for ci in range(self.nc): self.flcbdf[('u',ci)].stepTaken(self.transport.u[ci].dof)
+    def _flcbdf_key(self,key):
+        return "m%d" % key if isinstance(key,int) else "u%d" % key[1]
+    def state(self):
+        """What a hot start needs to continue with the same history, order and
+        step size: each integrator's full state, and the current time and dt."""
+        st = {"tLast":float(self.tLast),"dt":float(self.dt)}
+        for key,f in self.flcbdf.items():
+            st["flcbdf_"+self._flcbdf_key(key)] = f.state()
+        return st
+    def set_state(self,st):
+        self.tLast = st["tLast"]
+        self.dt = st["dt"]
+        self.t = self.tLast + self.dt
+        for key,f in self.flcbdf.items():
+            f.set_state(numpy.ascontiguousarray(st["flcbdf_"+self._flcbdf_key(key)],dtype='d'))
     def updateStage(self):
         """
         increment stage counters and push necessary information

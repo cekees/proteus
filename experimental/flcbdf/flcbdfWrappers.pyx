@@ -1,0 +1,150 @@
+# A type of -*- python -*- file
+import numpy as np
+cimport numpy as np
+# the vector layer assumes PETSc is already initialized (the constructor below
+# sets Sys::initialized), which importing petsc4py guarantees
+from petsc4py import PETSc as _PETSc
+
+cdef class FLCBDF_integrator:
+    def choose_dt(self, double t, double tout):
+        return self.flcbdf.chooseDT(t,tout)
+
+    def set_dt(self, double DT):
+        self.flcbdf.setDT(DT)
+        return DT
+
+    def set_order(self, int k):
+        self.flcbdf.useFixedOrder(k)
+        return k
+
+    def initialize_dt(self,
+                       double t0,
+                       double tOut,
+                       np.ndarray y,
+                       np.ndarray yPrime):
+        cdef Vec *yVec = new Vec(REF, <double*>(y.data), self.flcbdf.yn.ldim_)
+        cdef Vec *yPrimeVec = new Vec(REF, <double*>(yPrime.data),self.flcbdf.yn.ldim_)
+        DT = self.flcbdf.chooseInitialStepSize(t0,tOut,yVec[0],yPrimeVec[0])
+        del yVec
+        del yPrimeVec
+        return DT
+
+    def setInitialGuess(self, np.ndarray y):
+        yn = np.asarray(<double[:self.flcbdf.yn.ldim_]> self.flcbdf.yn.p_)
+        y[:] = yn
+        
+    def lastStepErrorOk(self, np.ndarray y):
+        cdef Vec *yVec = new Vec(REF,<double*>(y.data),self.flcbdf.yn.ldim_)
+        Ok =  not self.flcbdf.errorForStepTooLarge(yVec[0])
+        del yVec
+        return int(Ok)
+
+    def calculate_yprime(self,
+                          np.ndarray y,
+                          np.ndarray Dy,
+                          np.ndarray yprime,
+                          np.ndarray Dyprime):
+        # per-call vectors: FLCBDF calls this with different arrays (element
+        # quadrature, the beta_bdf dummies, the dofs) on the same integrator
+        cdef int n = self.flcbdf.yn.ldim_
+        cdef Vec *yV = new Vec(REF, <double*>(y.data), n)
+        cdef Vec *DyV = new Vec(REF, <double*>(Dy.data), n)
+        cdef Vec *ypV = new Vec(REF, <double*>(yprime.data), n)
+        cdef Vec *DypV = new Vec(REF, <double*>(Dyprime.data), n)
+        self.flcbdf.calculate_yprime(yV[0], DyV[0], ypV[0], DypV[0])
+        del yV
+        del DyV
+        del ypV
+        del DypV
+
+    def stepTaken(self, np.ndarray y):
+        cdef Vec *yVec = new Vec(REF,<double*>(y.data),self.flcbdf.yn.ldim_)
+        self.flcbdf.estimateError(yVec[0])
+        del yVec
+        
+    def shiftLevel(self, np.ndarray y):
+        cdef Vec *yVec = new Vec(REF,<double*>(y.data),self.flcbdf.yn.ldim_)
+        self.flcbdf.shiftLevel(yVec[0])
+        del yVec
+
+    def retryStep_errorFailure(self):
+        cdef double h
+        h = self.flcbdf.retryStep_errorFailure()
+        return h
+
+    def retryStep_solverFailure(self):
+        cdef double h
+        h = self.flcbdf.retryStep_solverFailure()
+        return h
+
+    def initializeTimeHistory(self,
+                               np.ndarray y,
+                               np.ndarray yPrime):
+        cdef Vec *yVec = new Vec(REF,<double*>(y.data),self.flcbdf.yn.ldim_)
+        cdef Vec *yPrimeVec = new Vec(REF,<double*>(yPrime.data),self.flcbdf.yn.ldim_)
+        self.flcbdf.initializeTimeHistory(yVec[0],yPrimeVec[0])
+        del yVec
+        del yPrimeVec
+        
+    def setTolerances(self,
+                      double atol,
+                      double rtol,
+                      np.ndarray dV):
+        cdef Vec *dV_Vec  = new Vec(REF,<double*>(dV.data),self.flcbdf.yn.ldim_)
+        self.wNormp.setTolerances(atol,rtol,dV_Vec[0])
+        del dV_Vec
+        
+    def predicted(self):
+        """The predictor's y and y' (copies); for diagnostics."""
+        n = self.flcbdf.yn.ldim_
+        return (np.array(<double[:n]> self.flcbdf.yn.p_),
+                np.array(<double[:n]> self.flcbdf.ynprime.p_))
+
+    def state(self):
+        """Everything the next step depends on, as one float array (for archiving)."""
+        return np.array(self.flcbdf.packState(), dtype='d')
+
+    def set_state(self, np.ndarray s):
+        cdef vector[double] v
+        v.assign(<double*>s.data, <double*>s.data + s.size)
+        self.flcbdf.unpackState(v)
+
+    def diagnostics(self):
+        """(weighted error of the last step, step size, order); for diagnostics."""
+        return (self.flcbdf.lastError(), self.flcbdf.lastStep(), self.flcbdf.lastOrder())
+
+    def getCurrentAlpha(self):
+        cdef double alpha
+        alpha = self.flcbdf.getCurrentAlpha()
+        return alpha
+
+    def __cinit__(self,
+                   np.ndarray y,
+                   object yName):
+        # petsc4py has initialized PETSc and MPI: mark the Daetk vector layer
+        # as initialized, and use the default (non-owning) Sys so that
+        # destroying it does not PetscFinalize the process.
+        global initialized
+        initialized = True
+        self.petscSys = new Sys()
+        # y is this rank's dofs (owned and ghost): the local size. Daetk's
+        # vectors are created from the GLOBAL size and take the layout of the
+        # registered example, so the example is the local REF vector and the
+        # sizes the integrator and the norm see are the sum over the ranks.
+        cdef int dim=y.size
+        cdef int dimGlobal=int(_PETSc.COMM_WORLD.tompi4py().allreduce(dim))
+        self.sizeVec = new Vec(REF,<double*>(y.data),dim)#this is so we have a parallel vector in the registry
+        self.sizeVec.setExample()
+        self.wNormp = new WeightedL2Norm(dimGlobal)
+        if isinstance(yName, bytes):
+            yName = yName.decode()
+        dataFilename = "data_{0:d}_{1:s}.txt".format(dim,yName).encode()
+        self.data = new FullDataFile(0.0, dataFilename)
+        self.flcbdf = new FLCBDF_lite(dimGlobal, self.wNormp[0], self.data[0])
+
+    def __dealloc__(self):
+        del self.wNormp
+        del self.petscSys
+        del self.data
+        del self.flcbdf
+        del self.sizeVec

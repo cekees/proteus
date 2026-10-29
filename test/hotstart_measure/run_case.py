@@ -27,12 +27,39 @@ sys.path.insert(0, vortex)
 
 sys.path.insert(0, here)
 import vortex2D  # noqa: E402
-vortex2D.timeIntegration_vof = ti
-vortex2D.timeIntegration_ls = ti
 # HS_PARALLEL=1 selects the PETSc linear solvers the n files use in parallel
 # (vortex2D.parallel is False, which means LU, which parallel runs reject)
 if os.environ.get("HS_PARALLEL"):
     vortex2D.parallel = True
+    # the decks' parallel branch leaves the PETSc solvers at their defaults (a KSP atol of 1 for
+    # the redistancing model): direct solves on the subdomain blocks, tight tolerance
+    from petsc4py import PETSc
+    _opts = PETSc.Options()
+    for _pre in ("ncls_", "rdls_", "vof_", "mcorr_"):
+        _opts[_pre + "ksp_type"] = "gmres"
+        _opts[_pre + "ksp_rtol"] = "1e-12"
+        _opts[_pre + "ksp_atol"] = "1e-14"
+        _opts[_pre + "pc_type"] = "asm"
+        _opts[_pre + "pc_asm_overlap"] = "1"
+        _opts[_pre + "sub_pc_type"] = "lu"
+# HS_TI_LS / HS_TI_VOF override the integrator of one model (ls or vof)
+vortex2D.timeIntegration_vof = os.environ.get("HS_TI_VOF", ti)
+vortex2D.timeIntegration_ls = os.environ.get("HS_TI_LS", ti)
+# HS_FLCBDF_TOL sets atol_u and rtol_u (the FLCBDF error control) for the models
+# that use it; the n files do not set them, so they are overridden where the
+# controller reads them
+if os.environ.get("HS_FLCBDF_TOL"):
+    from proteus import StepControl as _SC
+    _init = _SC.FLCBDF_controller.__init__
+
+    def _flcbdf_init(self, model, nOptions, _init=_init):
+        for _d in (nOptions.atol_u, nOptions.rtol_u):
+            for _ci in _d:
+                _d[_ci] = float(os.environ["HS_FLCBDF_TOL"])
+        if os.environ.get("HS_DTMIN"):
+            nOptions.dt_min = float(os.environ["HS_DTMIN"])
+        _init(self, model, nOptions)
+    _SC.FLCBDF_controller.__init__ = _flcbdf_init
 vortex2D.timeOrder = torder
 vortex2D.soname = "hs_%s%d" % (ti, torder)
 # decomposition switches: HS_LAG=0 turns the lagged shock capturing off,
