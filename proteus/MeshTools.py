@@ -7496,6 +7496,49 @@ def tetrahedronVerticesToNormals(elementVertices):
     return faces
 
 
+def cubeVerticesToNormals(elementVertices):
+    """
+    Given the vertices of a quadrilateral (in the plane z = 0) or a hexahedron, return a normal
+    and a point for each face, as triangleVerticesToNormals does, from the convex hull of the vertices
+    whatever the order they are listed in.
+
+    The element must be convex with straight edges and, for a hexahedron, planar faces: a
+    quadrilateral always is, and so is a hexahedron that is a box or a parallelepiped. A
+    hexahedron with a warped (non-planar) face is not the polyhedron the hull encloses, and
+    ValueError is raised for it.
+    """
+    from scipy.spatial import ConvexHull
+    elementVertices = np.asarray(elementVertices, dtype=np.double)
+    nVertices = len(elementVertices)
+    if nVertices == 4:
+        nd, nFaces = 2, 4
+        if np.linalg.norm(elementVertices[:, 2]) > 0:
+            raise ValueError("Expected quadrilaterals in 2D plane, got something else")
+    elif nVertices == 8:
+        nd, nFaces = 3, 6
+    else:
+        raise ValueError("Expected 4 or 8 vertices, got %d" % nVertices)
+    hull = ConvexHull(elementVertices[:, :nd])
+    # a facet is a triangle in 3D, so a planar quadrilateral face is two with the same plane
+    planes = {}
+    for equation in hull.equations:
+        key = tuple(np.round(equation, 8))
+        planes.setdefault(key, equation)
+    if len(planes) != nFaces:
+        raise ValueError("A %s with %d distinct face planes (expected %d) is not planar-faced: "
+                         "line gauges cannot clip a warped element"
+                         % ("quadrilateral" if nd == 2 else "hexahedron", len(planes), nFaces))
+    faces = []
+    for equation in planes.values():
+        normal = np.zeros(3)
+        normal[:nd] = equation[:nd]
+        point = np.zeros(3)
+        # n . x + offset = 0 for x on the face, n a unit vector pointing out
+        point[:nd] = -equation[nd] * equation[:nd]
+        faces.append((normal, point))
+    return faces
+
+
 def intersectPoints(line, points):
     """
     Given a line segment (defined as two points), identify all points that the line segment intersects.

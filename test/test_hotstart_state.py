@@ -26,7 +26,7 @@ harness = os.path.join(here, "hotstart_measure")
 
 def _env(**extra):
     env = dict(os.environ, OMP_NUM_THREADS="1",
-               PYTHONPATH=os.pathsep.join([os.path.dirname(here), harness, os.environ.get("PYTHONPATH", "")]))
+               PYTHONPATH=os.pathsep.join([harness, os.environ.get("PYTHONPATH", "")]))
     env.update({k: str(v) for k, v in extra.items()})
     return env
 

@@ -46,7 +46,8 @@ def build3DMesh(p, nnx, nny, nnz):
                                                nLayersOfOverlap=0,
                                                parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
 
-def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transform=None, mesh_builder=None):
+def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transform=None, mesh_builder=None,
+                femSpace=FemTools.C0_AffineLinearOnSimplexWithNodalBasis, cube=False):
     comm = Comm.get()
 
     #Simplified Physics
@@ -64,9 +65,10 @@ def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transfo
     p.coefficients = TransportCoefficients.PoissonEquationCoefficients(aOfX = [lambda x: np.eye(p.nd, p.nd)],
                                                                        fOfX = [lambda x: 0], nc=1, nd=p.nd)
     #Simplified and Incomplete Numerics
-    n.femSpaces = {0:FemTools.C0_AffineLinearOnSimplexWithNodalBasis}
-    n.elementQuadrature = Quadrature.SimplexGaussQuadrature(p.nd,3)
-    n.elementBoundaryQuadrature = Quadrature.SimplexGaussQuadrature(p.nd-1,3)
+    n.femSpaces = {0:femSpace}
+    quadrature = Quadrature.CubeGaussQuadrature if cube else Quadrature.SimplexGaussQuadrature
+    n.elementQuadrature = quadrature(p.nd,3)
+    n.elementBoundaryQuadrature = quadrature(p.nd-1,3)
     n.numericalFluxType = NumericalFlux.NoFlux
     n.cfluxtag = None
     n.conservativeFlux = None
@@ -80,6 +82,18 @@ def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transfo
 
     if mesh_builder is not None:
         mlMesh = mesh_builder()
+    elif cube:
+        if p.nd == 2:
+            mlMesh = MeshTools.MultilevelQuadrilateralMesh(nnx, nny, 1, p.domain.x[0], p.domain.x[1], 0.0,
+                                                           p.domain.L[0], p.domain.L[1], 1.0,
+                                                           refinementLevels=1, nLayersOfOverlap=0,
+                                                           parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
+        else:
+            mlMesh = MeshTools.MultilevelHexahedralMesh(nnx, nny, nnz, 0, 0, 0,
+                                                        p.domain.x[0], p.domain.x[1], p.domain.x[2],
+                                                        p.domain.L[0], p.domain.L[1], p.domain.L[2],
+                                                        refinementLevels=1, nLayersOfOverlap=0,
+                                                        parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
     elif p.nd == 1:
         mlMesh = build1DMesh(p, total_nodes+1)
     elif p.nd == 2:
@@ -749,3 +763,285 @@ def test_slivers_at_the_end_of_a_line_are_not_selected_again():
     selected = Gauges.pruneDuplicateSegments(None, endpoints, segments)
     assert len(selected) == 2
     npt.assert_allclose([s[1, 0] for s in selected], [0.5, 0.7])
+
+
+# a discontinuous field has a value from each side of an element face: a line
+# gauge reports both, one gauge per side at every face the line crosses
+
+def line_element_intervals(mesh, p0, p1):
+    """(element, t0, t1) for every element the line p0 + t (p1 - p0), t in [0, 1],
+    passes through for longer than a roundoff, found by brute force from the
+    barycentric coordinates of the points along it."""
+    p0 = np.asarray(p0, float)
+    direction = np.asarray(p1, float) - p0
+    nd = len(mesh.elementNodesArray[0]) - 1
+    intervals = []
+    for e, nodes in enumerate(mesh.elementNodesArray):
+        X = mesh.nodeArray[nodes]
+        M = np.vstack([X[:, :nd].T, np.ones(nd + 1)])
+        Minv = np.linalg.inv(M)
+        a = Minv @ np.append(p0[:nd], 1.0)
+        b = Minv @ np.append(direction[:nd], 0.0)
+        lo, hi = 0.0, 1.0
+        for ai, bi in zip(a, b):
+            if abs(bi) < 1e-14:
+                if ai < -1e-12:
+                    hi = -1.0
+            elif bi > 0:
+                lo = max(lo, -ai / bi)
+            else:
+                hi = min(hi, -ai / bi)
+        if hi - lo > 1e-9:
+            intervals.append((e, lo, hi))
+    return intervals
+
+
+def dg_values(mesh):
+    """A different constant on each element, from where the element is, so that it is the
+    same whichever rank holds the element: the field the gauges of a discontinuous space read."""
+    centroids = mesh.nodeArray[mesh.elementNodesArray].mean(axis=1)
+    return ((np.floor(1000 * centroids[:, 0]) * 7 + np.floor(1000 * centroids[:, 1]) * 13
+             + np.floor(1000 * centroids[:, 2]) * 17) % 11 + 1)
+
+
+def run_dg_gauge(gauges, nd, femSpace, **mesh_options):
+    """Attach the gauges to a discontinuous field that is the constant dg_values(mesh)[e]
+    on element e, and sample it once."""
+    model, ic = gauge_setup(nd, femSpace=femSpace, **mesh_options)
+    gauges.attachModel(model, None)
+    m = model.levelModelList[-1]
+    fem = m.u[0].femSpace
+    mesh = fem.mesh
+    values = dg_values(mesh)
+    for e in range(mesh.nElements_global):
+        m.u[0].dof[fem.dofMap.l2g[e, 0]] = values[e]
+    m.timeIntegration.tLast = 0.0
+    gauges.calculate()
+    return mesh
+
+
+DG_SPACES = [FemTools.DG_AffineP0_OnSimplexWithMonomialBasis,
+             FemTools.DG_AffineP1_OnSimplexWithMonomialBasis]
+DG_LINES = {2: ((-0.5, 0.17, 0), (1.5, 0.64, 0)),
+            3: ((-0.5, 0.17, 0.31), (1.5, 0.64, 0.72))}
+DG_MESH = {2: dict(nnx=9, nny=9), 3: dict(nnx=4, nny=4, nnz=4)}
+
+
+@pytest.mark.parametrize('femSpace', DG_SPACES, ids=['P0', 'P1'])
+@pytest.mark.parametrize('nd', [2, 3])
+def test_line_gauge_of_a_discontinuous_field_has_a_gauge_on_each_side_of_a_face(nd, femSpace):
+    if Comm.get().size() > 1:
+        pytest.skip("the expected values are found on the whole mesh; see test_gauges_mpi.py")
+    filename = 'test_dg_line_output.csv'
+    silent_rm(filename)
+    line = DG_LINES[nd]
+    g = LineGauges(gauges=((('u0',), (line,)),), fileName=filename)
+    mesh = run_dg_gauge(g, nd, femSpace, **DG_MESH[nd])
+    names, data = parse_gauge_output(filename)
+    values = np.atleast_1d(data)[1:]
+    delete_file(filename)
+
+    intervals = line_element_intervals(mesh, *line)
+    values_by_element = dg_values(mesh)
+    # along the line, each element's entry then its exit
+    expected = []
+    for e, t0, t1 in sorted(intervals, key=lambda i: i[1]):
+        expected.append((t0, 0, values_by_element[e]))
+        expected.append((t1, 1, values_by_element[e]))
+    assert len(names) == len(expected)
+    # the first column is the line entering the mesh, then every crossed face has a pair
+    assert names[0].endswith('(after)') and names[-1].endswith('(before)')
+    x0, x1 = line[0][0], line[1][0]
+    for name, value, (t, side, want) in zip(names, values, expected):
+        assert name.endswith('(before)' if side else '(after)'), name
+        x = float(name.split('[')[1].split()[0])
+        # the header is printed to five digits
+        assert x == pytest.approx(x0 + t * (x1 - x0), abs=1e-4)
+        assert value == want
+    # the field does jump somewhere, or this test would not tell a side from the other
+    pairs = list(zip(values[1:-1:2], values[2:-1:2]))
+    assert any(before != after for before, after in pairs)
+
+
+def test_line_gauge_of_a_continuous_field_is_unchanged_by_discontinuous_support():
+    # one gauge at a face, whatever the elements on either side say
+    filename = 'test_continuous_line_output.csv'
+    silent_rm(filename)
+    g = LineGauges(gauges=((('u0',), (((-0.5, 0.17, 0), (1.5, 0.64, 0)),)),), fileName=filename)
+    run_gauge(g, [0.0], nd=2, **DG_MESH[2])
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    assert not any('(before)' in n or '(after)' in n for n in names)
+    x = np.array([float(n.split('[')[1].split()[0]) for n in names])
+    assert len(np.unique(np.round(x, 6))) == len(x)
+
+
+@pytest.mark.parametrize('nd', [2, 3])
+def test_line_integral_of_a_discontinuous_field_integrates_the_piecewise_field(nd):
+    if Comm.get().size() > 1:
+        pytest.skip("the expected values are found on the whole mesh; see test_gauges_mpi.py")
+    filename = 'test_dg_integral_output.csv'
+    silent_rm(filename)
+    line = DG_LINES[nd]
+    g = LineIntegralGauges(gauges=((('u0',), (line,)),), fileName=filename)
+    mesh = run_dg_gauge(g, nd, DG_SPACES[0], **DG_MESH[nd])
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    length = np.linalg.norm(np.subtract(line[1], line[0]))
+    values_by_element = dg_values(mesh)
+    # the line is outside the unit box for part of its length: only the part inside is integrated
+    exact = sum((t1 - t0) * length * values_by_element[e]
+                for e, t0, t1 in line_element_intervals(mesh, *line))
+    npt.assert_allclose(np.atleast_1d(data)[1], exact, rtol=1e-12)
+
+
+def test_point_gauge_of_a_discontinuous_field_on_a_face_still_takes_the_lowest_element():
+    if Comm.get().size() > 1:
+        pytest.skip("the expected values are found on the whole mesh; see test_gauges_mpi.py")
+    filename = 'test_dg_point_output.csv'
+    silent_rm(filename)
+    nnx = 9
+    h = 1.0 / (nnx - 1)
+    # a point at the middle of the vertical edge x = 4h, y between 2h and 3h
+    point = (4 * h, 2.5 * h, 0)
+    g = PointGauges(gauges=((('u0',), (point,)),), fileName=filename)
+    mesh = run_dg_gauge(g, 2, DG_SPACES[0], **DG_MESH[2])
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    containing = [e for e, nodes in enumerate(mesh.elementNodesArray)
+                  if all(c in mesh.nodeArray[nodes][:, 0] for c in (point[0],))
+                  and np.isclose(mesh.nodeArray[nodes][:, 0], point[0]).sum() >= 2
+                  and mesh.nodeArray[nodes][:, 1].min() <= point[1] <= mesh.nodeArray[nodes][:, 1].max()]
+    assert len(containing) == 2
+    assert np.atleast_1d(data)[1] == dg_values(mesh)[min(containing)]
+
+
+# quadrilaterals and hexahedra: the line is clipped against each element's faces
+
+CUBE_MESH = {2: dict(nnx=9, nny=9), 3: dict(nnx=5, nny=5, nnz=5)}
+CUBE_LINES = {2: ((-0.5, 0.17, 0), (1.5, 0.64, 0)),
+              3: ((-0.5, 0.17, 0.31), (1.5, 0.64, 0.72))}
+
+
+def shear(nd):
+    """An affine map of the unit square or cube: faces stay planar, so the elements are
+    parallelograms and parallelepipeds, and line parameters are preserved."""
+    A = np.eye(3)
+    A[0, 1] = 0.3
+    if nd == 3:
+        A[1, 2] = -0.2
+        A[0, 2] = 0.1
+    return A
+
+
+def grid_crossings(nd, cells, line):
+    """Parameters t in [0, 1] at which the line (in the coordinates of the unit grid of
+    `cells` cells per side) meets a grid plane inside the unit box."""
+    p0, p1 = np.asarray(line[0], float), np.asarray(line[1], float)
+    d = p1 - p0
+    ts = []
+    for axis in range(nd):
+        if d[axis] == 0:
+            continue
+        for k in range(cells + 1):
+            t = (k / cells - p0[axis]) / d[axis]
+            p = p0 + t * d
+            if 0 <= t <= 1 and np.all(p[:nd] >= -1e-12) and np.all(p[:nd] <= 1 + 1e-12):
+                ts.append(t)
+    return np.unique(np.round(ts, 12))
+
+
+@pytest.mark.parametrize('nd', [2, 3])
+def test_line_gauge_on_quadrilaterals_and_hexahedra_is_at_the_element_faces(nd):
+    if Comm.get().size() > 1:
+        pytest.skip("covered by test_gauges_mpi.py on simplices; this is the serial clip")
+    filename = 'test_cube_line_output.csv'
+    silent_rm(filename)
+    line = CUBE_LINES[nd]
+    g = LineGauges(gauges=((('u0',), (line,)),), fileName=filename)
+    model, ic = gauge_setup(nd, femSpace=FemTools.C0_AffineLinearOnCubeWithNodalBasis, cube=True,
+                            **CUBE_MESH[nd])
+    g.attachModel(model, None)
+    m = model.levelModelList[-1]
+    m.setInitialConditions(ic, 0.0)
+    m.timeIntegration.tLast = 0.0
+    g.calculate()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+
+    ts = grid_crossings(nd, CUBE_MESH[nd]['nnx'] - 1, line)
+    p0, p1 = np.asarray(line[0], float), np.asarray(line[1], float)
+    expected = np.array([p0 + t * (p1 - p0) for t in ts])
+    got = np.array([[float(v) for v in n.split('[')[1].split(']')[0].split()] for n in names])
+    assert len(got) == len(expected)
+    # the header is printed to five digits
+    npt.assert_allclose(got, expected, atol=1e-4)
+    # the field x + 10 y + 100 z is linear, which a (bi/tri)linear element represents exactly
+    npt.assert_allclose(np.atleast_1d(data)[1:], got @ np.array([1.0, 10.0, 100.0]), atol=5e-3)
+
+
+@pytest.mark.parametrize('nd', [2, 3])
+def test_clipping_a_sheared_grid_finds_the_same_crossings(nd):
+    """An affine map keeps faces planar and line parameters unchanged, so the elements of a
+    sheared grid (parallelograms, parallelepipeds) are crossed at the parameters of the grid."""
+    cells = 8 if nd == 2 else 4
+    if nd == 2:
+        mesh = MeshTools.QuadrilateralMesh()
+        mesh.generateQuadrilateralMeshFromRectangularGrid(cells + 1, cells + 1, 1.0, 1.0)
+    else:
+        mesh = MeshTools.HexahedralMesh()
+        mesh.generateHexahedralMeshFromRectangularGrid(cells + 1, cells + 1, cells + 1, 1.0, 1.0, 1.0)
+    A = shear(nd)
+    mesh.nodeArray[:] = mesh.nodeArray @ A.T
+    unit = CUBE_LINES[nd]
+    line = tuple(A @ np.asarray(p, float) for p in unit)
+    from proteus.MeshTools import getMeshIntersections, cubeVerticesToNormals
+    segments = sorted(getMeshIntersections(mesh, cubeVerticesToNormals, line))
+    p0 = np.asarray(line[0], float)
+    d = np.asarray(line[1], float) - p0
+    t = lambda point: np.dot(np.asarray(point) - p0, d) / np.dot(d, d)
+    # consecutive segments meet, and the ends are the grid's crossings
+    assert all(np.allclose(a[1], b[0], atol=1e-12) for a, b in zip(segments, segments[1:]))
+    got = np.array([t(segments[0][0])] + [t(s[1]) for s in segments])
+    npt.assert_allclose(got, grid_crossings(nd, cells, unit), atol=1e-12)
+
+
+@pytest.mark.parametrize('nd', [2, 3])
+def test_line_integral_on_quadrilaterals_and_hexahedra(nd):
+    if Comm.get().size() > 1:
+        pytest.skip("covered by test_gauges_mpi.py on simplices; this is the serial clip")
+    filename = 'test_cube_integral_output.csv'
+    silent_rm(filename)
+    line = CUBE_LINES[nd]
+    g = LineIntegralGauges(gauges=((('u0',), (line,)),), fileName=filename)
+    model, ic = gauge_setup(nd, femSpace=FemTools.C0_AffineLinearOnCubeWithNodalBasis, cube=True,
+                            **CUBE_MESH[nd])
+    g.attachModel(model, None)
+    m = model.levelModelList[-1]
+    m.setInitialConditions(ic, 0.0)
+    m.timeIntegration.tLast = 0.0
+    g.calculate()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    ts = grid_crossings(nd, CUBE_MESH[nd]['nnx'] - 1, line)
+    p0, p1 = np.asarray(line[0], float), np.asarray(line[1], float)
+    weights = np.array([1.0, 10.0, 100.0])
+    # u is linear, so its integral over the part inside the box is that part's length times u at its middle
+    middle = p0 + 0.5 * (ts[0] + ts[-1]) * (p1 - p0)
+    exact = (ts[-1] - ts[0]) * np.linalg.norm(p1 - p0) * (middle @ weights)
+    npt.assert_allclose(np.atleast_1d(data)[1], exact, rtol=1e-10)
+
+
+def test_a_warped_hexahedron_is_refused_not_clipped_wrongly():
+    from proteus.MeshTools import cubeVerticesToNormals
+    box = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+                    [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], float)
+    assert len(cubeVerticesToNormals(box)) == 6
+    warped = box.copy()
+    warped[6, 2] += 0.2  # one top corner lifted: the top and two side faces are no longer planar
+    with pytest.raises(ValueError, match="warped"):
+        cubeVerticesToNormals(warped)
+    # a convex quadrilateral that is not a rectangle is fine, whatever order its vertices come in
+    quad = np.array([[0, 0, 0], [2, 0, 0], [1.5, 1, 0], [0.2, 1.1, 0]], float)
+    for perm in ([0, 1, 2, 3], [2, 3, 0, 1], [1, 0, 3, 2]):
+        assert len(cubeVerticesToNormals(quad[perm])) == 4

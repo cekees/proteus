@@ -60,6 +60,26 @@ result["turek_integral"] = run(lambda fileName: LineIntegralGauges(gauges=((("u0
 diagonal = ((0, 0, 0), (1, 1, 1))
 result["diagonal_3d"] = run(lambda fileName: LineGauges(gauges=((("u0",), (diagonal,)),), fileName=fileName),
                             "diagonal", nd=3, total_nodes=2048)
+# a discontinuous field: a gauge on each side of every face the line crosses, the same at any
+# rank count; the line is not on a cut, so its segments are found on several ranks
+from proteus import FemTools
+def run_dg(gauges, name, **kw):
+    filename = "gauges_partition_%s.csv" % name
+    T.silent_rm(filename)
+    comm.barrier()
+    gauge = gauges(fileName=filename)
+    T.run_dg_gauge(gauge, 2, FemTools.DG_AffineP0_OnSimplexWithMonomialBasis, **kw)
+    names, data = T.parse_gauge_output(filename)
+    T.delete_file(filename)
+    return {"names": names, "values": np.atleast_2d(data)[0, 1:].tolist()}
+
+dg_line = ((-0.5, 0.17, 0), (1.5, 0.64, 0))
+result["dg_line"] = run_dg(lambda fileName: LineGauges(gauges=((("u0",), (dg_line,)),), fileName=fileName),
+                           "dg_line", nnx=9, nny=9)
+result["dg_integral"] = run_dg(
+    lambda fileName: LineIntegralGauges(gauges=((("u0",), (dg_line,)),), fileName=fileName),
+    "dg_integral", nnx=9, nny=9)
+
 if comm.rank() == 0:
     print("OBSERVED_SIZE=%d" % comm.size())
     print("GAUGE_RESULT=" + json.dumps(result))

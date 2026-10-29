@@ -39,7 +39,7 @@ pytestmark = pytest.mark.skipif(MPIEXEC is None, reason="needs mpiexec")
 
 def _run(out, ranks, mode, n, endn=None):
     env = dict(os.environ, HS_PARALLEL="1", HS_PARALLEL_ATOL="1e-14", OMP_NUM_THREADS="1",
-               PYTHONPATH=os.pathsep.join([os.path.dirname(here), here, os.environ.get("PYTHONPATH", "")]))
+               PYTHONPATH=os.pathsep.join([here, os.environ.get("PYTHONPATH", "")]))
     if endn is not None:
         env["HS_ENDN"] = str(endn)
     cmd = [MPIEXEC, "-n", str(ranks), sys.executable, os.path.join(harness, "run_case.py"),
