@@ -97,6 +97,39 @@ result["vertical_integral"] = run(
     lambda fileName: LineIntegralGauges(gauges=((("u0",), (vertical,)),), fileName=fileName),
     "vertical")
 
+# erdc#426: the element containing a point is not always in the star of the nearest node.  On this
+# graded mesh it happens for about 1 point in 200; the ring search must find the element anyway.
+from scipy import spatial
+from proteus.Gauges import PointGauges as _PG
+model, ic = T.gauge_setup(2, mesh_builder=adapted_square)
+mesh = model.levelModelList[-1].mesh
+femSpace = model.levelModelList[-1].u[0].femSpace
+probe = _PG(gauges=((("u0",), ((0.5, 0.5, 0),)),), fileName="gauges_pumi_adapt_probe.csv")
+tree = spatial.cKDTree(mesh.nodeArray)
+rng = np.random.default_rng(1 + comm.rank())
+elements = rng.integers(0, mesh.nElements_global, 3000)
+points = np.einsum("ni,nij->nj", rng.dirichlet(np.ones(3), len(elements)),
+                   mesh.nodeArray[mesh.elementNodesArray[elements]])
+outside_star = located = 0
+for p in points:
+    node = int(tree.query(p)[1])
+    star = mesh.nodeElementsArray[mesh.nodeElementOffsets[node]:mesh.nodeElementOffsets[node + 1]]
+    element = probe.getLocalElement(femSpace, p, node)
+    inside_found = False
+    if element is not None:
+        X = mesh.nodeArray[mesh.elementNodesArray[element]][:, :2]
+        lam = np.linalg.solve(np.vstack([X.T, np.ones(3)]), np.append(p[:2], 1.0))
+        inside_found = bool(np.all(lam >= -1e-9))
+    containing_in_star = False
+    for e in star:
+        X = mesh.nodeArray[mesh.elementNodesArray[e]][:, :2]
+        containing_in_star |= bool(np.all(np.linalg.solve(np.vstack([X.T, np.ones(3)]), np.append(p[:2], 1.0)) >= -1e-9))
+    outside_star += int(not containing_in_star)
+    located += int(inside_found)
+totals = comm.comm.tompi4py().allgather((len(points), outside_star, located))
+result["location"] = {"points": sum(t[0] for t in totals), "outside_star": sum(t[1] for t in totals),
+                      "located": sum(t[2] for t in totals)}
+
 if comm.rank() == 0:
     print("OBSERVED_SIZE=%d" % comm.size())
     print("GAUGE_RESULT=" + json.dumps(result))

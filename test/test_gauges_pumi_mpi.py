@@ -107,3 +107,8 @@ def test_gauges_on_a_mesh_adapted_in_parallel_do_not_depend_on_the_partition(tmp
     npt.assert_allclose(result["line"]["values"], u(x, 0.25), atol=1e-5)
     npt.assert_allclose(result["integral"]["values"], [3.0], rtol=1e-10)
     npt.assert_allclose(result["vertical_integral"]["values"], [5.5], rtol=1e-10)
+    # erdc#426: points whose element is not in the star of their nearest node do occur on
+    # a graded mesh, and every point is still found in an element that contains it
+    location = result["location"]
+    assert location["outside_star"] > 0
+    assert location["located"] == location["points"]

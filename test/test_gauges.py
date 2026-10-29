@@ -47,7 +47,7 @@ def build3DMesh(p, nnx, nny, nnz):
                                                parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
 
 def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transform=None, mesh_builder=None,
-                femSpace=FemTools.C0_AffineLinearOnSimplexWithNodalBasis):
+                femSpace=FemTools.C0_AffineLinearOnSimplexWithNodalBasis, cube=False):
     comm = Comm.get()
 
     #Simplified Physics
@@ -66,8 +66,9 @@ def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transfo
                                                                        fOfX = [lambda x: 0], nc=1, nd=p.nd)
     #Simplified and Incomplete Numerics
     n.femSpaces = {0:femSpace}
-    n.elementQuadrature = Quadrature.SimplexGaussQuadrature(p.nd,3)
-    n.elementBoundaryQuadrature = Quadrature.SimplexGaussQuadrature(p.nd-1,3)
+    quadrature = Quadrature.CubeGaussQuadrature if cube else Quadrature.SimplexGaussQuadrature
+    n.elementQuadrature = quadrature(p.nd,3)
+    n.elementBoundaryQuadrature = quadrature(p.nd-1,3)
     n.numericalFluxType = NumericalFlux.NoFlux
     n.cfluxtag = None
     n.conservativeFlux = None
@@ -81,6 +82,18 @@ def gauge_setup(nd, total_nodes=None, nnx=None, nny=None, nnz=None, mesh_transfo
 
     if mesh_builder is not None:
         mlMesh = mesh_builder()
+    elif cube:
+        if p.nd == 2:
+            mlMesh = MeshTools.MultilevelQuadrilateralMesh(nnx, nny, 1, p.domain.x[0], p.domain.x[1], 0.0,
+                                                           p.domain.L[0], p.domain.L[1], 1.0,
+                                                           refinementLevels=1, nLayersOfOverlap=0,
+                                                           parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
+        else:
+            mlMesh = MeshTools.MultilevelHexahedralMesh(nnx, nny, nnz, 0, 0, 0,
+                                                        p.domain.x[0], p.domain.x[1], p.domain.x[2],
+                                                        p.domain.L[0], p.domain.L[1], p.domain.L[2],
+                                                        refinementLevels=1, nLayersOfOverlap=0,
+                                                        parallelPartitioningType=MeshTools.MeshParallelPartitioningTypes.node)
     elif p.nd == 1:
         mlMesh = build1DMesh(p, total_nodes+1)
     elif p.nd == 2:
@@ -901,3 +914,134 @@ def test_point_gauge_of_a_discontinuous_field_on_a_face_still_takes_the_lowest_e
                   and mesh.nodeArray[nodes][:, 1].min() <= point[1] <= mesh.nodeArray[nodes][:, 1].max()]
     assert len(containing) == 2
     assert np.atleast_1d(data)[1] == dg_values(mesh)[min(containing)]
+
+
+# quadrilaterals and hexahedra: the line is clipped against each element's faces
+
+CUBE_MESH = {2: dict(nnx=9, nny=9), 3: dict(nnx=5, nny=5, nnz=5)}
+CUBE_LINES = {2: ((-0.5, 0.17, 0), (1.5, 0.64, 0)),
+              3: ((-0.5, 0.17, 0.31), (1.5, 0.64, 0.72))}
+
+
+def shear(nd):
+    """An affine map of the unit square or cube: faces stay planar, so the elements are
+    parallelograms and parallelepipeds, and line parameters are preserved."""
+    A = np.eye(3)
+    A[0, 1] = 0.3
+    if nd == 3:
+        A[1, 2] = -0.2
+        A[0, 2] = 0.1
+    return A
+
+
+def grid_crossings(nd, cells, line):
+    """Parameters t in [0, 1] at which the line (in the coordinates of the unit grid of
+    `cells` cells per side) meets a grid plane inside the unit box."""
+    p0, p1 = np.asarray(line[0], float), np.asarray(line[1], float)
+    d = p1 - p0
+    ts = []
+    for axis in range(nd):
+        if d[axis] == 0:
+            continue
+        for k in range(cells + 1):
+            t = (k / cells - p0[axis]) / d[axis]
+            p = p0 + t * d
+            if 0 <= t <= 1 and np.all(p[:nd] >= -1e-12) and np.all(p[:nd] <= 1 + 1e-12):
+                ts.append(t)
+    return np.unique(np.round(ts, 12))
+
+
+@pytest.mark.parametrize('nd', [2, 3])
+def test_line_gauge_on_quadrilaterals_and_hexahedra_is_at_the_element_faces(nd):
+    if Comm.get().size() > 1:
+        pytest.skip("covered by test_gauges_mpi.py on simplices; this is the serial clip")
+    filename = 'test_cube_line_output.csv'
+    silent_rm(filename)
+    line = CUBE_LINES[nd]
+    g = LineGauges(gauges=((('u0',), (line,)),), fileName=filename)
+    model, ic = gauge_setup(nd, femSpace=FemTools.C0_AffineLinearOnCubeWithNodalBasis, cube=True,
+                            **CUBE_MESH[nd])
+    g.attachModel(model, None)
+    m = model.levelModelList[-1]
+    m.setInitialConditions(ic, 0.0)
+    m.timeIntegration.tLast = 0.0
+    g.calculate()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+
+    ts = grid_crossings(nd, CUBE_MESH[nd]['nnx'] - 1, line)
+    p0, p1 = np.asarray(line[0], float), np.asarray(line[1], float)
+    expected = np.array([p0 + t * (p1 - p0) for t in ts])
+    got = np.array([[float(v) for v in n.split('[')[1].split(']')[0].split()] for n in names])
+    assert len(got) == len(expected)
+    # the header is printed to five digits
+    npt.assert_allclose(got, expected, atol=1e-4)
+    # the field x + 10 y + 100 z is linear, which a (bi/tri)linear element represents exactly
+    npt.assert_allclose(np.atleast_1d(data)[1:], got @ np.array([1.0, 10.0, 100.0]), atol=5e-3)
+
+
+@pytest.mark.parametrize('nd', [2, 3])
+def test_clipping_a_sheared_grid_finds_the_same_crossings(nd):
+    """An affine map keeps faces planar and line parameters unchanged, so the elements of a
+    sheared grid (parallelograms, parallelepipeds) are crossed at the parameters of the grid."""
+    cells = 8 if nd == 2 else 4
+    if nd == 2:
+        mesh = MeshTools.QuadrilateralMesh()
+        mesh.generateQuadrilateralMeshFromRectangularGrid(cells + 1, cells + 1, 1.0, 1.0)
+    else:
+        mesh = MeshTools.HexahedralMesh()
+        mesh.generateHexahedralMeshFromRectangularGrid(cells + 1, cells + 1, cells + 1, 1.0, 1.0, 1.0)
+    A = shear(nd)
+    mesh.nodeArray[:] = mesh.nodeArray @ A.T
+    unit = CUBE_LINES[nd]
+    line = tuple(A @ np.asarray(p, float) for p in unit)
+    from proteus.MeshTools import getMeshIntersections, cubeVerticesToNormals
+    segments = sorted(getMeshIntersections(mesh, cubeVerticesToNormals, line))
+    p0 = np.asarray(line[0], float)
+    d = np.asarray(line[1], float) - p0
+    t = lambda point: np.dot(np.asarray(point) - p0, d) / np.dot(d, d)
+    # consecutive segments meet, and the ends are the grid's crossings
+    assert all(np.allclose(a[1], b[0], atol=1e-12) for a, b in zip(segments, segments[1:]))
+    got = np.array([t(segments[0][0])] + [t(s[1]) for s in segments])
+    npt.assert_allclose(got, grid_crossings(nd, cells, unit), atol=1e-12)
+
+
+@pytest.mark.parametrize('nd', [2, 3])
+def test_line_integral_on_quadrilaterals_and_hexahedra(nd):
+    if Comm.get().size() > 1:
+        pytest.skip("covered by test_gauges_mpi.py on simplices; this is the serial clip")
+    filename = 'test_cube_integral_output.csv'
+    silent_rm(filename)
+    line = CUBE_LINES[nd]
+    g = LineIntegralGauges(gauges=((('u0',), (line,)),), fileName=filename)
+    model, ic = gauge_setup(nd, femSpace=FemTools.C0_AffineLinearOnCubeWithNodalBasis, cube=True,
+                            **CUBE_MESH[nd])
+    g.attachModel(model, None)
+    m = model.levelModelList[-1]
+    m.setInitialConditions(ic, 0.0)
+    m.timeIntegration.tLast = 0.0
+    g.calculate()
+    names, data = parse_gauge_output(filename)
+    delete_file(filename)
+    ts = grid_crossings(nd, CUBE_MESH[nd]['nnx'] - 1, line)
+    p0, p1 = np.asarray(line[0], float), np.asarray(line[1], float)
+    weights = np.array([1.0, 10.0, 100.0])
+    # u is linear, so its integral over the part inside the box is that part's length times u at its middle
+    middle = p0 + 0.5 * (ts[0] + ts[-1]) * (p1 - p0)
+    exact = (ts[-1] - ts[0]) * np.linalg.norm(p1 - p0) * (middle @ weights)
+    npt.assert_allclose(np.atleast_1d(data)[1], exact, rtol=1e-10)
+
+
+def test_a_warped_hexahedron_is_refused_not_clipped_wrongly():
+    from proteus.MeshTools import cubeVerticesToNormals
+    box = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+                    [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], float)
+    assert len(cubeVerticesToNormals(box)) == 6
+    warped = box.copy()
+    warped[6, 2] += 0.2  # one top corner lifted: the top and two side faces are no longer planar
+    with pytest.raises(ValueError, match="warped"):
+        cubeVerticesToNormals(warped)
+    # a convex quadrilateral that is not a rectangle is fine, whatever order its vertices come in
+    quad = np.array([[0, 0, 0], [2, 0, 0], [1.5, 1, 0], [0.2, 1.1, 0]], float)
+    for perm in ([0, 1, 2, 3], [2, 3, 0, 1], [1, 0, 3, 2]):
+        assert len(cubeVerticesToNormals(quad[perm])) == 4
