@@ -84,7 +84,7 @@ function(adrh_test name module script)
     TIMEOUT 1800)
 endfunction()
 
-foreach(script stabilization_test.py upwind_test.py richards_layers.py)
+foreach(script stabilization_test.py upwind_test.py richards_layers.py richards_nd_test.py)
   get_filename_component(stem ${script} NAME_WE)
   adrh_test(proto_${stem} adrh_proto ${script})
   if(tests_kokkos)

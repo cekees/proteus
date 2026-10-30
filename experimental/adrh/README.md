@@ -484,3 +484,185 @@ from one material and the density factor assumes `beta = 0` (true of every deck)
 * **On the GPU**, Celia, Szymkiewicz and HYDRUS with `--upwind --fct` print the same differences from the saved profiles as the host (RTX 6000 Ada, `adrh_kokkos` CUDA module).
 * **Not done.** One material per run for the nodal `kr` (the node's material number is an argument, but the decks use one); `beta != 0`; 2D and 3D decks; the cost of the new passes (they are the same
   row-parallel gathers as the dissipation pass, 2 to 4% of the assembly there); FCT iterated inside the Newton loop.
+
+## Heterogeneous media and 2D: `richards_nd.py`, `richards_nd_test.py`, `richards_2d.py`
+
+The K-upwinded scheme on a general P1 mesh (`KUpwindRichards`, 1, 2 or 3 dimensions), built from the same passes as the 1D `Column` (which stays pinned to proteus's saved profiles): the element kernel in
+mode 1 and 2, `richards_kr_nodes`, the new `richards_m_nodes` (the nodal storage `m` and `dm/du` with each node's own retention curve, in both modules), `upwind_flux`, `antidiffusive_flux` and the FCT limiter.
+
+* **Nodal materials.** `K_s` is the element's. The storage and the upwind relative permeability are nodal, so a node has one retention curve, the first incident element's, which is what proteus does
+  (`Richards.py`, `nodeMaterialTypes_n`). `first_incident_material` does it.
+* **`interface='element'`** takes the upwind `K_r` of an element's flux from that element's own material: the flux is split by material, `F = sum_m kr_m(psi_up) c_m (phi_j - phi_i)`, `c_m` the upwinding weight of the stiffness of
+  the elements of material `m` alone (psi is continuous across the interface). For one material it is the same scheme. Measured on the two-layer steady column of `richards_layers.py` against the ODE (shooting) solution:
+
+  | nodes | proteus's rule (`interface='node'`) | `interface='element'` |
+  |---|---|---|
+  | 21 | 5.8e-1 | 6.3e-3 |
+  | 41 | 4.7e-1 (rate 0.32) | 3.3e-3 (0.91) |
+  | 81 | 3.4e-1 (0.44) | 1.7e-3 (0.96) |
+  | 161 | 2.3e-1 (0.57) | 8.7e-4 (0.98) |
+  | 321 | 1.4e-1 (0.68) | 4.4e-4 (0.99) |
+
+  Proteus's rule converges, slowly, because the one element above the interface takes `K_r` from the soil below it. The storage stays nodal in both so that FCT can invert the moisture content analytically.
+* **FCT bounds on the head** (`fct_correct(bounds='head')`, the default; `'moisture'` is proteus's). The moisture contents of two soils at one head are not comparable, so a moisture bound across an interface lets a node dry
+  below every head around it: in the lens deck (`richards_2d.py --lens --fct`, 41 x 41 nodes) the head falls to -11.3 m after 70 steps and to -15.7 m after 280, from an initial minimum of -10. Bounding the head
+  (`head_extrema` over a node's row, mapped to moisture content with the node's own curve, `fct_limit_flux_bounded`) keeps it at -10 and is the moisture bound for one material (equal to 1e-12). The moisture bound is
+  proteus's; whether proteus has the same undershoot on a lens was not run.
+* **Tests** (`richards_nd_test.py`, both modules, in CTest): the 1D Celia deck against `Column`, low-order 8e-14 and FCT 8e-13; the Celia column as a strip of triangles (x-uniform) equals the 1D solution to 3e-9 (low-order),
+  and FCT keeps the mass exactly and stays in the data's bounds; the layered column and its strip; a transient layered FCT run; the head bounds against the moisture bounds; `golden.py` has the three new passes
+  (bitwise equal host and Kokkos).
+* **The 2D deck** (`richards_2d.py`): proteus's `re_vgm_sand_10x10m_2d` (10 m x 10 m sand, ponded on the middle third of the top, 0.35 d) with an optional lens of a finer soil. There is no saved reference for the deck; it
+  checks the bounds, and host and Kokkos agree (570 Newton iterations, the same mass, on the lens with FCT). Not done: a comparison with a proteus run of the same deck, and 3D.
+
+Compressibility (`beta != 0`) is in the K-upwinded scheme through the edge form of the flux (section below).
+
+### Cost of the K-upwinded passes (`upwind_timing.py`, `upwind_passes_timed`)
+
+3D tetrahedra (Kuhn cube, six per cell), device-resident, best of 5, against the colored assembly of the advection-diffusion element kernel on the same mesh as a yardstick (the Richards element kernel costs about
+three times that per element, above; that factor was not re-measured here). K_r varies by orders of magnitude in the state (a wet layer on a dry column). Times in ms:
+
+| pass | RTX 6000 Ada, 29,791 rows (424 k nnz) | Ada, 132,651 rows (1.9 M nnz) | Mac, 12 OpenMP threads, 29,791 rows | Mac, 1 thread, 29,791 rows |
+|---|---|---|---|---|
+| `kr_nodes` | 0.02 | 0.06 | 0.12 | 0.47 |
+| `upwind_flux` (residual and Jacobian) | 0.02 | 0.07 | 0.14 | 0.71 |
+| `antidiffusive_flux` | 0.02 | 0.08 | 0.10 | 0.50 |
+| FCT limiter, moisture bounds (3 passes) | 0.21 | 0.58 | 0.62 | 1.68 |
+| `head_extrema` | 0.01 | 0.02 | 0.08 | 0.38 |
+| FCT limiter, bounds given (3 passes) | 0.20 | 0.65 | 0.55 | 1.29 |
+| **head-bounded FCT step** (antidiffusive flux + head extrema + limiter) | **0.23** | **0.76** | **0.73** | **2.17** |
+| yardstick: colored AD assembly | 7.3 | 13.5 | 17.0 | 121 |
+
+The whole FCT step is 3-6% of the yardstick on the Ada and 4% on the Mac with 12 threads: the limiter's three row-parallel passes dominate (0.2-0.65 ms on the device, launch-bound and gather-heavy), the flux passes
+are a few percent of that. Upload of the CSR arrays and the state is 2-6 ms and is paid once, not per pass. Not measured: a T4 (the CI job runs the tests, not this script), and a whole Newton iteration with the
+Richards element kernel in the denominator.
+
+## Implicit FCT, the correction inside the solve (`implicit_fct_step`; `richards_implicit_fct.py`)
+
+proteus's `FCT_TYPE='implicit'` (Dielmann, Kuzmin and Kees, JNMA), the first FCT in this directory that is not applied after the solve. One step: (1) a Galerkin predictor `p^H` (consistent mass, K at the quadrature
+points; if its Newton iteration fails within `predictor_maxit` = 20 iterations the low-order solution stands in, as proteus's `FCT_PREDICTOR_FALLBACK`), (2) the raw antidiffusive fluxes at `p^H`,
+`g_ij = M_C,ij (sDot_i - sDot_j) + A_ij` with `sDot = (s(p^H) - s^n)/dt` and `A` the Galerkin flux minus the K-upwinded one, multiplied by the nodal-variation prelimiter
+`alpha_nv,i = 1 - (|sum_j (h_i - h_j)| / sum_j |h_i - h_j|)^3` (`j` over the nodes coupled by the mass matrix, `h` the pressure head; `min(alpha_i, alpha_j)` per edge), limited by Zalesak's ratios with **global**
+bounds (each node's `theta_r`..`theta_s`) taken from `s^n`, giving the datum `s^{n,FCT} = s^n + (dt/M_L) sum_j alpha_ij g_ij`, and (3) the low-order solve
+`M_L (s(p) - s^{n,FCT})/dt + A~(p) u(p) = 0` started from `p^H`. New passes in `lowOrder.h` (both modules): `nodalVariationRow`, `fctFluxRowAlpha`, `implicitFctLimit` (it reuses `fctBoundsRowGiven` and
+`fctApplyRow`, with `s^n` as the base point); `golden.py` has them (bitwise equal host and Kokkos). The limiter agrees with an independent numpy version to 0 (random fluxes, two materials), and the datum conserves
+`sum M_L s` to 4e-19. proteus keeps `s^n` at the Dirichlet nodes (`bc_mask`); so does `implicit_datum` (`mask=False` shows the exact conservation).
+
+Measured (`richards_implicit_fct.py`, 1D decks at proteus's mesh and step, first saved time, against the post-step K-upwinded FCT on a mesh 8 times finer in space and time; L1 of the moisture content; the predictor never failed):
+
+| deck | K-upwind, lumped | post-step FCT | implicit FCT | Newton iterations per step (low / post / implicit) |
+|---|---|---|---|---|
+| Celia, 12 h | 3.2e-3 (front 0.6429) | 7.2e-4 (0.6681) | 1.1e-3 (0.6656) | 3.0 / 3.4 / 5.1 |
+| HYDRUS, 5 h | 6.0e-2 (15.94) | 5.2e-2 (15.95) | 5.6e-2 (15.95) | 7.3 / 8.4 / 10.3 |
+| Szymkiewicz, 1.5 h | 0.168 (3.78) | 0.153 (3.79) | 0.161 (3.79) | 3.0 / 3.1 / 5.9 |
+
+(reference fronts 0.6736, 16.07, 4.14 m). On these decks it is **less accurate than the post-step FCT and better than the low-order scheme**, at 1.5 to 2 times the Newton iterations (two solves). Its head stays at the
+data's bounds (HYDRUS lowest psi -15.40 against the post-step FCT's -16.12). The differences from proteus's saved profiles are scheme differences: the saved `stab_2` and `FCT` columns are matched exactly by the
+low-order and post-step schemes (0.000), and the implicit one is a third scheme.
+
+**Where it fails: the lens deck** (`richards_2d.py --lens`, 21 x 21 nodes, 35 steps): with proteus's global bounds (`bounds='global'`) the head falls to **-174 m** (initial minimum -10; 7 nodes below it; -75 m at 41 x 41 nodes and 70 steps), because
+the global lower bound lets a dry node's datum fall to `theta_r`, where a tiny moisture change is an enormous head change; the prelimiter does not prevent it. `bounds='local'`, now the default (the head's extrema over a node and its
+neighbours at the predictor and the old state, mapped to moisture content with the node's own curve) holds it at -10.3 m, still a small undershoot (3 nodes), not zero. The Galerkin predictor fails often at the deck's
+coarse step (6 of 35 steps without the lens, 11 of 35 with it, at 21 x 21 nodes; 1 of 280 at 41 x 41) and each failure costs `predictor_maxit` iterations before the fallback. Whether proteus's implicit FCT
+does the same on a lens was not run. The post-step FCT with head bounds stays inside [-10, 0.1] on the same deck.
+
+**Which default.** `bounds='local'` is the default of `implicit_fct_step`, `implicit_datum` and `run(implicit=True)`; `bounds='global'` is proteus's algorithm and stays available (`proteus_reference_2d.py` and the proteus comparisons below pass it, and the 1e-10 agreement with proteus's implicit FCT is for it). The two cost nothing on the benchmark decks: on Celia, HYDRUS and Szymkiewicz (`richards_implicit_fct.py`, a row for each) the L1 errors, fronts and lowest heads equal each other to the digits printed (1.10e-3, 5.56e-2, 1.61e-1; HYDRUS 10.42 against 10.26 iterations per step), and only local bounds hold the lens (-10.3 m against -174 m). This is a departure from proteus's FCT, made for this branch (main, 2.0); the 1.9.x line and the papers that use it are unaffected.
+(`richards_implicit_fct.py`, a row for each) its L1 errors, fronts and lowest heads equal the global-bounds ones to the digits printed (1.10e-3, 5.56e-2, 1.61e-1; HYDRUS 10.42 against 10.26 iterations per step), and it is the only one of the two that
+holds the lens (-10.3 m against -174 m). Use it wherever the data have a dry region next to a wet one; making it the default would be a deviation from proteus that the PR should propose, not assume.
+
+## Compressibility, `beta != 0` (`KUpwindRichards(..., rho=, beta=, rho0=)`)
+
+`rho = rho_t exp(beta psi)`, with `rho0` as in proteus (`rho0 != 1` enters only through `f = (rho^2 / rho0) K_r K_s g = rho^2 K_r K_s (g / rho0)`, so the engine's bindings, which fix `rho0 = 1`, are used with `g / rho0`;
+`beta >= 0` for FCT, see below). The total-head form of the K-upwinded flux needs the gravity term to be the gradient of a nodal head, which it is not when `rho / rho0 != 1`: the Galerkin flux is
+`rho K_r K_s (grad psi - (rho / rho0) g)`. The edge flux is therefore `F_ij = (rho K_r)_up c_ij dphi_ij` with `c_ij` from the unit-density stiffness `S`, the upwinded coefficient `rho K_r` taken at the upwind node, and
+`dphi_ij = u_j - u_i - rhoEdge g.(x_j - x_i)`, `rhoEdge` the mean of `rho` over the edge (what proteus's edge loop does with its salinity density). New passes `upwindFluxRowE` and
+`antidiffusiveFluxRowE` (`upwind_flux_edges`, `antidiffusive_flux_edges`; both modules, bitwise equal in `golden.py`) take `dphi` and its partials in `u_i`, `u_j` on the pattern, so the Jacobian includes the density's
+dependence on `u`; with `rho = 1` and `beta = 0` they are the nodal-head passes (1.8e-15). The storage is `rho theta` (`richards_m_nodes` has had `rho`, `beta` all along), the Galerkin predictor and the stiffness
+of the antidiffusive flux (mode 2) carry `rho` at the quadrature points, and FCT's inversion of `m = rho_t exp(beta u) theta(u)` is a bracketed, safeguarded Newton iteration per node: `m` falls below `rho_t theta_r` at very negative
+heads, where the analytic inverse does not reach.
+
+Checked against an exact solution (`richards_nd_test.py`, a steady column, `psi = -1` below and `-3` above, sand with `K_s = 7.967`): with `rho = exp(beta psi)` and gravity down the flux `Q = -rho K (psi' + rho)` is constant, so
+`psi' = -Q exp(-beta psi) / K(psi) - exp(beta psi)` and `Q` follows by shooting. The Galerkin discretization of the same equation converges to it at rate 2.00 for `beta = 0.05` and `0.5` (so the ODE is right), and the K-upwinded
+scheme converges to the same solution:
+
+| beta | nodes 21, 41, 81, 161: max error of psi | rate (finest pair) |
+|---|---|---|
+| 0.05 | 2.9e-2, 1.6e-2, 8.4e-3, 4.3e-3 | 0.96 |
+| 0.5 | 1.3e-1, 7.8e-2, 4.6e-2, 2.5e-2 | 0.87 |
+
+The flux Jacobian agrees with central differences (6e-10, beta = 0.4); the x-uniform strip equals the column (2e-12, beta = 0.05); FCT keeps `sum M_L rho theta` exactly; the implicit step stays in the data's bounds.
+
+**`rho_t != 1` and `rho0 != 1`.** The ODE with them is `psi' = -Q / (rho_t exp(beta psi) K) - rho_t exp(beta psi) / rho0`; at `beta = 0.3, rho_t = 1.2, rho0 = 1.5` the Galerkin solution converges to it at rate 2.00 and the K-upwinded one at 0.91
+(test in `richards_nd_test.py`).
+
+**Negative `beta`.** The steady column converges the same way (`beta = -0.05` and `-0.3`: Galerkin rate 2.00, K-upwind 0.97 and 0.99), and so does the low-order transient (`-0.05`, below). FCT does not work: it inverts
+`m = rho_t exp(beta u) theta(u)` for the head, and with `beta < 0` that `m` is not monotone (it rises again as `u -> -infinity`, because `exp(beta u)` grows faster than `theta` falls, and falls beyond saturation), so the head is not
+determined. The inversion returned heads of order 1e18 without complaint; it now raises `ValueError`. At `beta = -0.3` and `psi = -3` `d(rho theta)/dpsi` is negative, so the transient problem there is ill-posed (the reference
+solver cannot integrate it), which is the physical reason: a fluid that gets lighter under pressure.
+
+**The transient** (`compressible_transient` in `richards_nd_test.py`): a wetting front, `psi = -3` initially and at the top, `-1` at the bottom, `t = 1`, against a method-of-lines solution written without the engine (node-centred
+conservative differences, 1601 nodes, BDF to 1e-10; its own error 9e-4 at `beta = 0.3` and 6e-5 at `-0.05`). Backward Euler, 50, 100 and 200 steps on nodes 41, 81 and 161:
+
+| case | K-upwind errors | rate | Galerkin errors | rate |
+|---|---|---|---|---|
+| beta 0.3, rho_t 1.2, rho0 1.5 | 5.9e-1, 3.9e-1, 2.3e-1 | 0.76 | 4.1e-2, 1.5e-2, 5.9e-3 | 1.32 |
+| beta -0.05 | 1.3e-1, 7.1e-2, 3.8e-2 | 0.92 | 7.8e-3, 3.9e-3, 1.9e-3 | 1.00 |
+
+The Galerkin transient converging to the independent solution is what shows the reference is the right equation; the K-upwinded scheme converges to it more slowly, as at `beta = 0` (first order at a sharp front). Not done: a comparison
+with proteus's own low-order scheme at `beta != 0`, whose edge loop uses a density ratio from its salinity density only (no `exp(beta psi)`) and was not reproduced here; at the deck value `beta = 1e-4` and heads within 10 m the factor
+`exp(beta psi)` differs from 1 by 1e-3.
+
+## Against proteus's own code (`proteus_reference_2d.py`)
+
+The JNMA branch of proteus (cekees/proteus#123 and #124) has the implicit FCT; its 2D sand deck and 1D Celia deck were run beside `richards_nd.py` on the same mesh, step for step (`proteus_reference_2d.py` copies and patches
+the decks in a scratch directory; it needs that proteus built, `PROTEUS_REF_BIN` and `PROTEUS_REF_DECKS`). Setup that matters, each found by a comparison that did not match: **the deck's element quadrature is order 4**, not 3 (the Galerkin
+step depends on it, the low-order scheme does not); **Dirichlet conditions must be strong** (`forceStrongConditions=True`; the default is a weak boundary flux that leaves the boundary nodes 5e-2 m off the data); **the pond edges
+must fall on mesh nodes**: on the deck's Triangle mesh the edge at x = 10/3 lies inside a boundary face, and proteus's weak boundary flux then acts on a face that is part pond and part not (my residual at proteus's step-1
+solution was 1e-13 at every free node but the two beside the pond); with the pond limits given a 1e-9 tolerance and a structured 31 x 31 grid the two agree. All numbers below: 31 x 31 nodes, 35 steps of 0.01 d, Newton to 1e-12.
+
+| case | max abs dpsi | max abs dtheta | proteus psi min |
+|---|---|---|---|
+| Galerkin | 5.6e-10 | 8e-17 | -10.0325 |
+| Galerkin, beta 1e-4 / 0.05 | 1e-11 / 3e-14 | 1e-16 | |
+| Galerkin, with the lens (144 elements of a second soil) | 4.2e-10 | 2e-16 | -10.0325 |
+| K-upwind low-order | 5.2e-11 | 2e-16 | -10.0000 |
+| K-upwind low-order, with the lens, nodal rule (`interface='node'`) | 7.1e-11 | 3e-16 | |
+| K-upwind low-order, with the lens, `interface='element'` | 0.24 | 1.4e-2 | (a different scheme) |
+| K-upwind low-order, beta 1e-4 / 0.01 / 0.05 | 1.4e-3 / 0.145 / 0.51 | 2.9e-6 / 3.0e-4 / 1.9e-3 | |
+| implicit FCT | 1.8e-2 | 8e-4 | -1760.47 (mine) / -1760.45 |
+| implicit FCT, with the lens | 3.5e2 | 3.3e-3 | -1586.3 / -1585.9 |
+
+Reading: **the engine's Galerkin, low-order and nodal-material passes are proteus's to round-off in 2D, with and without the lens, and the Galerkin path with compressibility is proteus's to 1e-11 up to beta = 0.05.** The nodal-material rule
+(`first_incident_material`) is the same as proteus's, and the `interface='element'` rule is a different scheme (0.24 m, 1.4e-2 in moisture content on this lens). **The implicit FCT agrees with proteus's**: on the 1D Celia deck at proteus's step to
+1.4e-3 m in the head and 4.4e-6 in moisture content (an ad hoc run, not in the script); on this 2D deck at 350 steps of 0.001 d step by step (also ad hoc): 3e-17 in moisture content after one step, at most 1e-10 through step 20 (including
+intermediate dry-node heads of -137 m and -90 m that both codes produce), growing afterwards to 1.6e-5 at step 50 and 5e-4 at step 350 (the limiter clips at the bounds, so tiny differences amplify; the Newton tolerance is not the
+cause: 1e-8 and 1e-12 give the same). **Proteus's implicit FCT has the same undershoot as mine**: -1760 m on the plain 2D sand deck at 0.01 d, -35 m on the lens at 0.0025 d, -10.3 m to -13 m at 0.005 to 0.001 d. It comes from the global
+bounds in the JNMA algorithm (and the Galerkin predictor failing at the coarse step), not from this implementation; `bounds='local'` is an addition here, and the default.
+
+**Compressibility: proteus's low-order scheme is not consistent for beta != 0.** The low-order schemes differ by an amount proportional to beta (table). Against the exact steady compressible column of `richards_nd_test.py`
+(`proteus_reference_2d.py --steady`, the 1D Celia deck run to a steady state, psi = -1 below and -3 above, T = 200 d; nodes 21, 41, 81; max |psi - exact|, convergence rate in brackets):
+
+| beta | proteus Galerkin | proteus low-order | richards_nd K-upwind |
+|---|---|---|---|
+| 0.05 | 2.5e-4, 6.5e-5 (1.96), 1.6e-5 (2.01) | 5.6e-2, 4.6e-2 (0.28), 4.1e-2 (0.18) | 2.9e-2, 1.6e-2 (0.85), 8.4e-3 (0.93) |
+| 0.5 | 9.1e-4, 2.5e-4 (1.87), 6.2e-5 (2.01) | 0.33, 0.32 (0.06), 0.31 (0.04) | 0.13, 7.8e-2 (0.69), 4.6e-2 (0.78) |
+
+Proteus's Galerkin scheme converges to the exact solution at rate 2 (and to my Galerkin's errors); its low-order scheme stops converging at an error that grows with beta, 4e-2 m at 0.05 and 0.31 m at 0.5, because the density enters the
+gravity term of its edge flux only through the salinity density (`rho_edge / rho`) and not through `exp(beta psi)` (read in `Richards.h`'s edge loop; not changed here). The edge form of `richards_nd.py` converges to the exact solution. At the deck's
+beta = 1e-4 the effect is 1.4e-3 m after 35 steps, so the decks' results are not affected.
+
+**The post-step FCT (proteus's semi-implicit FCT, `FCT=True`, `FCT_TYPE='semi-implicit'`) in 2D.** On the deck it returned the low-order solution to the last digit, and the reason is a veto in `Richards.FCTStep`: on the
+Newton-invert path (`nd > 1`, so every 2D case) the limited step is thrown away and the low-order head kept whenever the correction moves any node's head by more than 1 m (`RICHARDS_FCT_DU_MAX`, default 1), and a dry node's moisture
+content moves its head by metres. `RICHARDS_FCT_DBG=1` logs each decision; `proteus_reference_2d.py` sets `RICHARDS_FCT_DU_MAX=1e30`. With the veto lifted, the limiter differs from `fct_correct(bounds='moisture')` in two ways, both found by
+dumping proteus's step-1 arrays and replaying its limiter in numpy (the replica reproduces proteus's limited moisture content to 6e-17):
+* **`FCT_SATURATED_LOW_ORDER`**: where the low-order head is >= 0 the room to the bounds is set to zero, so every flux touching the node is limited to zero. `fct_correct(..., sat_low=True)` does the same (`richards_nd_test.py`).
+* **The Dirichlet rows of the high-order flux matrix.** Proteus's `TransportMatrixConsistent` also holds the weak exterior-boundary terms (`Richards_IIPG_exterior`), which are not symmetric: in the row of a Dirichlet node they add an antidiffusive flux
+  that the transposed entry does not have (1.45e-2 against 0 at the pond nodes after one step). Every interior edge agrees with `antidiffusive()` to 1e-17 (4918 edges), and with proteus's fluxes in the Dirichlet rows and mine everywhere else the
+  replayed limiter reproduces proteus to 2e-16; with mine in the Dirichlet rows it is off by 6e-3. The rows are masked (`bc_mask`), so no Dirichlet value changes, but the Zalesak ratios there limit the fluxes of their free neighbours: five nodes
+  beside the Dirichlet corners and pond edges differ by up to 3e-3 in moisture content after one step (35 steps: max |dtheta| 2.5e-2, mean |dpsi| 4e-3). It is a property of the weak boundary treatment, not an error in the limiter, and `fct_correct`
+  does not model it.
+
+**The deck's Triangle mesh** (`--mesh triangle`, 1496 nodes, 2861 elements): the Galerkin scheme does not run in proteus at the deck-copy's fixed 0.01 d step (the nonlinear solver fails at step 12; the original deck uses its adaptive controller), so there is no
+Galerkin comparison, and the K-upwinded low-order scheme differs by 5.8e-2 in moisture content (max |dpsi| 6.4 m at a dry node, mean 0.13 m). The difference is the pond: no mesh node lies at x = 10/3 or 20/3 (the top nodes are 3.125, 3.4375, ...),
+so the Dirichlet nodes cover 3.44 to 6.56 here, and in proteus the weak flux also acts on the two faces that are part pond. Its wetting front lies between mine with the pond on nodes only and mine with the pond widened by one node at each end
+(mean |dtheta| 4.4e-3 and 7.8e-3 for those two; proteus's is the one in between), the largest differences being the nodes just outside the pond (x = 3.125 and 6.875, y = 10: -0.169 against -0.102). Matching it needs the weak boundary flux of
+`Richards_IIPG_exterior`, which this driver does not model.

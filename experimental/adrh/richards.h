@@ -83,6 +83,18 @@ namespace adrh
     dkr_du = -DKWr;
   }
 
+  // The storage m = rho theta_w(psi) of a node (and dm/du, u the pressure head) with the node's own retention curve: the lumped mass of the
+  // low-order scheme is nodal, so a node on a soil interface has one theta(psi), the first incident element's (as proteus's nodeMaterialTypes_n).
+  ADRH_FN void mNode(double u, double alpha, double n, double thetaR, double thetaSR, int psk, double rho, double beta, double &m, double &dm_du)
+  {
+    double thetaW, DthetaW, KWr, DKWr;
+    if (psk == 1 || psk == 2) bcWetting(-u, alpha, n, thetaR, thetaSR, psk, thetaW, DthetaW, KWr, DKWr);
+    else vgmWetting(-u, alpha, n, thetaR, thetaSR, thetaW, DthetaW, KWr, DKWr);
+    const double rhom = rho * std::exp(beta * u), drhom = beta * rhom;
+    m = rhom * thetaW;
+    dm_du = -rhom * DthetaW + drhom * thetaW;
+  }
+
   template <int nS_>
   struct RichardsVGM : DenseMasks
   {
