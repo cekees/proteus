@@ -60,9 +60,7 @@ def _run(ranks, cwd):
     env.setdefault("PRTE_MCA_rmaps_default_mapping_policy", ":oversubscribe")
     argv = [PARUN, "-l1", "cylinder_so.py", "-C", "T=0.3 onlySaveFinalSolution=True"]
     if ranks > 1:
-        argv = [MPIEXEC, "-n", str(ranks), sys.executable] + argv
-    else:
-        argv = [sys.executable] + argv
+        argv = [MPIEXEC, "-n", str(ranks)] + argv
     out = subprocess.run(argv, capture_output=True, text=True, timeout=900, env=env,
                          cwd=str(cwd))
     assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-2000:]

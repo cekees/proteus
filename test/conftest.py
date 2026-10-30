@@ -1,4 +1,5 @@
 """Test-suite wide fixtures."""
+import importlib.util
 import os
 import subprocess
 import sys
@@ -34,6 +35,50 @@ def pytest_configure(config):
 # its own still sets Comm.argv before anything starts it.)
 from proteus import Comm, runtime  # noqa: E402
 Comm.argv = runtime.petsc_argv()
+
+
+# Optional dependencies. Chrono and PUMI are compiled into extensions only when the build found
+# them (PROTEUS_SKIP_CHRONO / PROTEUS_SKIP_PUMI, or no install to find), so a build without one
+# has no such extension and every test that imports it fails at collection or at its first line.
+# That says nothing about the code under test, so those tests are not collected, and the report
+# header names what is missing and why. A capability is probed by the extension itself, not by
+# the environment variable, so the answer is what the installed proteus can actually do.
+#
+# Tests that need one live under the paths listed here; a new one goes in this table.
+OPTIONAL_DEPENDENCIES = {
+    'chrono': dict(
+        extension='proteus.mbd.CouplingFSI',
+        paths=('AddedMass', 'FSI', 'test_mbd_chrono.py')),
+    'pumi': dict(
+        extension='proteus.MeshAdaptPUMI.MeshAdapt',
+        paths=('MeshAdaptPUMI', 'test_gauges_pumi_mpi.py')),
+}
+
+
+def _has_extension(name):
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+_MISSING = {dep: spec for dep, spec in OPTIONAL_DEPENDENCIES.items()
+            if not _has_extension(spec['extension'])}
+
+
+def pytest_ignore_collect(collection_path, config):
+    rel = os.path.relpath(str(collection_path), _TEST_ROOT[:-1])
+    top = rel.split(os.sep)[0]
+    for spec in _MISSING.values():
+        if top in spec['paths']:
+            return True
+    return None
+
+
+def pytest_report_header(config):
+    if _MISSING:
+        return ['optional dependencies not built, their tests are not collected: '
+                + ', '.join('%s (no %s)' % (dep, spec['extension']) for dep, spec in sorted(_MISSING.items()))]
 
 
 # mpiexec itself sometimes fails to start on a CI runner (the macOS Intel runner with Open MPI 5,
