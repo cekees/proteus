@@ -46,6 +46,14 @@ class ShockCapturing_base(object):
         self.lagRequested=lag
         #mwf had to put in da_sge, df_sge
         self.coefficients = coefficients
+    def state(self):
+        """Nothing to carry beyond the solution (the state contract, see TimeIntegration.TI_base.state)."""
+        return None
+
+    def set_state(self, state):
+        """Restore what ``state()`` returned; see TimeIntegration.TI_base.state."""
+        pass
+
     def initializeElementQuadrature(self,mesh,t,cq):
         self.mesh=mesh
         self.numDiff=[]

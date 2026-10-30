@@ -47,6 +47,14 @@ class SC_base(object):
 #"""
 # k |  Step Size   |      tn      |errf|nlsf|ilsf|func|jacs|NLit|L_IT|linS|"""
         #self.datafile.write(dheader)
+    def state(self):
+        """Nothing to carry beyond the solution (the state contract, see TimeIntegration.TI_base.state)."""
+        return None
+
+    def set_state(self, state):
+        """Restore what ``state()`` returned; see TimeIntegration.TI_base.state."""
+        pass
+
     def setInitialGuess(self,uList,rList):
         pass
     def set_dt_allLevels(self):
