@@ -119,6 +119,39 @@ def calls(m, nE=2000):
         out["faces_%dd" % nd] = ("advection_diffusion_sine_faces",
                                  (nd, "p1", b[:nd].copy(), 0.2, omega[:nd].copy(), 0.3, local, kind, xs[nd], un, qpf, qwf,
                                   2.0, 1.0, 1.0, 0.7, 0.4))
+    # the nodal passes and the head-bounded FCT limiter on a 2D triangle mesh's pattern: two materials, a random state
+    import scipy.sparse as sp
+    nx = ny = 30
+    i, j = np.meshgrid(np.arange(nx - 1), np.arange(ny - 1), indexing="ij")
+    a = (i * ny + j).ravel(); bb = ((i + 1) * ny + j).ravel(); c = ((i + 1) * ny + j + 1).ravel(); d = (i * ny + j + 1).ravel()
+    conn = np.stack([np.stack([a, bb, c], 1), np.stack([a, c, d], 1)], 1).reshape(-1, 3)
+    n = nx * ny
+    P = sp.coo_matrix((np.ones(conn.size * 3), (np.repeat(conn, 3, 1).ravel(), np.tile(conn, (1, 3)).ravel())), shape=(n, n)).tocsr()
+    P.sort_indices()
+    indptr, indices = P.indptr.astype(np.int32), P.indices.astype(np.int32)
+    tpos = np.asarray(m.transpose_map(indptr, indices)) if hasattr(m, "transpose_map") else None
+    mat = rng.integers(0, 2, n).astype(np.int32)
+    uh = rng.uniform(-8.0, -0.5, n); uo_ = rng.uniform(-8.0, -0.5, n)
+    alpha = np.array([3.35, 1.0]); nvg = np.array([2.0, 1.6]); thr = np.array([0.102, 0.08]); thsr = np.array([0.266, 0.35])
+    out["richards_m_nodes"] = ("richards_m_nodes", (alpha, nvg, thr, thsr, 0, mat, uh, 1.0, 0.0))
+    out["head_extrema"] = ("head_extrema", (indptr, indices, uh, uo_))
+    if tpos is not None:
+        Mc = rng.uniform(0.0, 1.0, indices.size); A = rng.normal(size=indices.size); ML = rng.uniform(0.5, 1.5, n)
+        pm = np.maximum(uh, uo_) + 0.5; pn = np.minimum(uh, uo_) - 0.5
+        mL_ = rng.uniform(0.1, 0.3, n); mo_ = rng.uniform(0.1, 0.3, n); mmax = np.maximum(mL_, mo_) + 0.02; mmin = np.minimum(mL_, mo_) - 0.02
+        out["fct_limit_flux_bounded"] = ("fct_limit_flux_bounded", (indptr, indices, tpos, Mc, A, ML, mL_, mo_, mmax, mmin, 0.01))
+        # implicit FCT: the prelimiter, and the limited datum from an antisymmetric flux
+        At = A - A[tpos]; At[np.repeat(np.arange(n), np.diff(indptr)) == indices] = 0.0
+        alpha_nv = np.asarray(m.nodal_variation(indptr, indices, Mc, uh, 3.0)) if hasattr(m, "nodal_variation") else None
+        out["nodal_variation"] = ("nodal_variation", (indptr, indices, Mc, uh, 3.0))
+        # the edge-difference upwind and antidiffusive passes (compressible flux): S, dphi and its partials, kr
+        Sx = -np.abs(rng.normal(size=indices.size)); Sx = 0.5 * (Sx + Sx[tpos])
+        dph = rng.normal(size=indices.size); dph = dph - dph[tpos]
+        kr_ = rng.uniform(0.0, 1.0, n); dkr_ = rng.uniform(0.0, 1.0, n)
+        out["upwind_flux_edges"] = ("upwind_flux_edges", (indptr, indices, Sx, dph, -np.ones(indices.size), np.ones(indices.size), kr_, dkr_))
+        out["antidiffusive_flux_edges"] = ("antidiffusive_flux_edges", (indptr, indices, rng.normal(size=indices.size), Sx, dph, kr_))
+        if alpha_nv is not None:
+            out["implicit_fct_limit"] = ("implicit_fct_limit", (indptr, indices, tpos, Mc, At, ML, mL_, mo_, np.maximum(mL_, mo_) + 0.05, np.minimum(mL_, mo_) - 0.05, alpha_nv, 0.01))
     return out
 
 
@@ -131,6 +164,8 @@ def run(m, nE=2000):
             r = getattr(m, fn)(*args)
         except NotImplementedError:
             continue
+        if not isinstance(r, tuple):
+            r = (r,)
         for k, v in enumerate(r):
             res["%s.%s" % (name, "RJ"[k])] = np.asarray(v)
     return res

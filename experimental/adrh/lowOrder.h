@@ -26,6 +26,7 @@
 // sorted columns and a structurally symmetric pattern.
 #pragma once
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <vector>
 #include "engine.h"
@@ -283,6 +284,44 @@ namespace adrh
     if (ii >= 0) J[ii] = Jii;
   }
 
+  // The same pass with the head difference of each edge given, dphi[p] = H_j - H_i for entry p = (i, j) (antisymmetric), and its partial derivatives ddi[p] = d dphi / du_i,
+  // ddj[p] = d dphi / du_j, instead of the nodal total head phi. For a compressible fluid (rho = rho_t exp(beta u)) the gravity term of the flux is not the gradient of a
+  // nodal head: the edge difference is dphi = u_j - u_i - rhoEdge (g.(x_j - x_i)) with rhoEdge the edge mean of rho / rho0, and kr (here the nodal rho kr) carries
+  // the density at the upwind node. With rho = rho0 = 1 and beta = 0, dphi = phi_j - phi_i, ddi = -1, ddj = 1 and this is upwindFluxRow.
+  ADRH_FN void upwindFluxRowE(int i, const int *rowptr, const int *colidx, const double *S, const double *dphi, const double *ddi, const double *ddj,
+                              const double *kr, const double *dkr, double *r, double *J)
+  {
+    double rsum = 0.0, Jii = 0.0;
+    int ii = -1;
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j == i) { ii = p; continue; }
+      const double c = S[p] < 0.0 ? -S[p] : 0.0, dp = dphi[p];
+      double F, dFi, dFj;
+      if (-S[p] * dp <= 0.0) { F = kr[i] * c * dp; dFi = dkr[i] * c * dp + kr[i] * c * ddi[p]; dFj = kr[i] * c * ddj[p]; }
+      else { F = kr[j] * c * dp; dFi = kr[j] * c * ddi[p]; dFj = dkr[j] * c * dp + kr[j] * c * ddj[p]; }
+      rsum -= F;
+      J[p] = -dFj;
+      Jii -= dFi;
+    }
+    r[i] = rsum;
+    if (ii >= 0) J[ii] = Jii;
+  }
+
+  // the antidiffusive flux with the edge head difference given (see upwindFluxRowE): (-C - kr_up c) dphi
+  ADRH_FN void antidiffusiveFluxRowE(int i, const int *rowptr, const int *colidx, const double *C, const double *S, const double *dphi, const double *kr, double *A)
+  {
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j == i) { A[p] = 0.0; continue; }
+      const double c = S[p] < 0.0 ? -S[p] : 0.0;
+      const double krup = (-S[p] * dphi[p] <= 0.0) ? kr[i] : kr[j];
+      A[p] = (-C[p] - krup * c) * dphi[p];
+    }
+  }
+
   // the Galerkin flux (frozen stiffness C, the matrix of mode 2) minus the K-upwinded one, into i from j: antisymmetric, the antidiffusive flux of FCT
   ADRH_FN void antidiffusiveFluxRow(int i, const int *rowptr, const int *colidx, const double *C, const double *S, const double *phi,
                                     const double *kr, double *A)
@@ -312,6 +351,102 @@ namespace adrh
       G[p] = g;
       G[tpos[p]] = -g;
     }
+  }
+
+  // FCT bounds from the HEAD, for a medium whose nodes have different retention curves: the local extrema of the moisture content over a node and its
+  // neighbours are not comparable across soils (the same head is a different moisture content), so the limiter bounds the head, which is continuous
+  // across a soil interface, and maps the bounds to moisture content with the node's own curve, m_i(max_j psi_j) and m_i(min_j psi_j). For one material
+  // this is the bound of fctBoundsRow (m is increasing in psi). headExtremaRow: the extrema over row i of two states a and b (the low-order and old
+  // heads; pass the same array twice to bound over one state alone).
+  ADRH_FN void headExtremaRow(int i, const int *rowptr, const int *colidx, const double *a, const double *b, double *pmax, double *pmin)
+  {
+    double hi = a[i] > b[i] ? a[i] : b[i], lo = a[i] < b[i] ? a[i] : b[i];
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      const double h = a[j] > b[j] ? a[j] : b[j], l = a[j] < b[j] ? a[j] : b[j];
+      if (h > hi) hi = h;
+      if (l < lo) lo = l;
+    }
+    pmax[i] = hi; pmin[i] = lo;
+  }
+
+  // pass 2 of FCT with the bounds mmax_i, mmin_i given (as fctBoundsRow, which takes them over mL and mold)
+  ADRH_FN void fctBoundsRowGiven(int i, const int *rowptr, const int *colidx, const double *G, const double *mL, const double *mmax, const double *mmin,
+                                 const double *ML, double dt, double *Rp, double *Rm)
+  {
+    double Pp = 0.0, Pm = 0.0;
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const double g = G[p];
+      if (g > 0.0) Pp += g; else Pm += g;
+    }
+    const double Qp = ML[i] / dt * (mmax[i] - mL[i]), Qm = ML[i] / dt * (mmin[i] - mL[i]);
+    const double rp = Pp > 0.0 ? Qp / Pp : 1.0, rm = Pm < 0.0 ? Qm / Pm : 1.0;
+    Rp[i] = rp < 1.0 ? rp : 1.0;
+    Rm[i] = rm < 1.0 ? rm : 1.0;
+  }
+
+  // the host reference: fctLimitFlux with the bounds given
+  inline void fctLimitFluxBounded(int nRows, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *A, const double *ML,
+                                  const double *mL, const double *moldFlux, const double *mmax, const double *mmin, double dt, double *mOut)
+  {
+    std::vector<double> G(rowptr[nRows]), Rp(nRows), Rm(nRows);
+    for (int i = 0; i < nRows; ++i) fctFluxRowA(i, rowptr, colidx, tpos, Mc, A, mL, moldFlux, dt, G.data());
+    for (int i = 0; i < nRows; ++i) fctBoundsRowGiven(i, rowptr, colidx, G.data(), mL, mmax, mmin, ML, dt, Rp.data(), Rm.data());
+    for (int i = 0; i < nRows; ++i) fctApplyRow(i, rowptr, colidx, G.data(), Rp.data(), Rm.data(), ML, mL, dt, mOut);
+  }
+
+  // ---- implicit FCT (Dielmann, Kuzmin and Kees, JNMA; proteus's ImplicitFCTStep) ----------------------------------------------------------------------------
+  // The limiter is applied BEFORE the final solve, to the raw antidiffusive fluxes at the Galerkin predictor p^H, and the limited correction goes into the datum
+  // of the low-order solve:   s^{n,FCT}_i = s^n_i + (dt / M_L,i) sum_j alpha_ij g_ij,    M_L (s(p) - s^{n,FCT}) / dt + A~(p) u(p) = 0.
+  // g_ij = M_C,ij (sDot_i - sDot_j) + A_ij with sDot = (s(p^H) - s^n) / dt and A the antidiffusive flux at p^H (the Galerkin flux minus the K-upwinded one, as
+  // antidiffusiveFluxRow), so the flux pass is fctFluxRowA with mL = s(p^H), mold = s^n. Two differences from the post-step limiter: the bounds are GLOBAL
+  // (smax, smin: the retention curve's own, per node) and taken from s^n, and a nodal-variation prelimiter alpha_nv switches the correction off where the head
+  // is locally extremal (a smooth monotone profile keeps 1, a node that is a local extremum of the head gets 0):
+  //     alpha_nv,i = 1 - (|sum_j (h_i - h_j)| / sum_j |h_i - h_j|)^power,    j != i with M_C,ij > 0 (the neighbours that couple through the mass),
+  // alpha_ij = min(alpha_nv,i, alpha_nv,j) multiplies the flux, which keeps it antisymmetric. power <= 0 switches the prelimiter off.
+  ADRH_FN void nodalVariationRow(int i, const int *rowptr, const int *colidx, const double *Mc, const double *head, double power, double *alpha)
+  {
+    double num = 0.0, den = 0.0;
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j == i || Mc[p] <= 0.0) continue;
+      const double d = head[i] - head[j];
+      num += d;
+      den += d < 0.0 ? -d : d;
+    }
+    const double r = num < 0.0 ? -num : num;
+    alpha[i] = (den > 0.0 && power > 0.0) ? 1.0 - std::pow(r / den, power) : 1.0;
+  }
+
+  // pass 1 with the prelimiter: g_ij of fctFluxRowA times min(alpha_i, alpha_j), written to (i, j) and negated to (j, i)
+  ADRH_FN void fctFluxRowAlpha(int i, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *A, const double *sH,
+                               const double *sn, const double *alpha, double dt, double *G)
+  {
+    const double di = sH[i] - sn[i];
+    for (int p = rowptr[i]; p < rowptr[i + 1]; ++p)
+    {
+      const int j = colidx[p];
+      if (j < i) continue;
+      if (j == i) { G[p] = 0.0; continue; }
+      const double dj = sH[j] - sn[j];
+      const double a = alpha[i] < alpha[j] ? alpha[i] : alpha[j];
+      const double g = a * (-Mc[p] * (dj - di) / dt + A[p]);
+      G[p] = g;
+      G[tpos[p]] = -g;
+    }
+  }
+
+  // the host reference: the limited datum s^{n,FCT} (no Dirichlet mask: the caller keeps s^n at the nodes it holds fixed). smax, smin must bracket s^n.
+  inline void implicitFctLimit(int nRows, const int *rowptr, const int *colidx, const int *tpos, const double *Mc, const double *A, const double *ML,
+                               const double *sH, const double *sn, const double *smax, const double *smin, const double *alpha, double dt, double *datum)
+  {
+    std::vector<double> G(rowptr[nRows]), Rp(nRows), Rm(nRows);
+    for (int i = 0; i < nRows; ++i) fctFluxRowAlpha(i, rowptr, colidx, tpos, Mc, A, sH, sn, alpha, dt, G.data());
+    for (int i = 0; i < nRows; ++i) fctBoundsRowGiven(i, rowptr, colidx, G.data(), sn, smax, smin, ML, dt, Rp.data(), Rm.data());
+    for (int i = 0; i < nRows; ++i) fctApplyRow(i, rowptr, colidx, G.data(), Rp.data(), Rm.data(), ML, sn, dt, datum);
   }
 
   // moldFlux: the old state the flux pass differences mL against (delta = mL - moldFlux); moldBounds: the one the local extrema are taken over
