@@ -382,16 +382,22 @@ jobs:
           #
           # The sampler records what the runner is doing while the tests run
           # (load, CPU user/sys split, busiest processes and their thread
-          # counts, memory); the next step prints it. It is left running, not
-          # killed: the runner reaps it at the end of the job, and pytest
-          # stays this step's last command, so its status is the step's.
+          # counts, memory); the next step prints it. It is not killed (pytest
+          # stays this step's last command, so its status is the step's), but
+          # it ends itself: the loop runs only while this step's shell is
+          # alive. The earlier "the runner reaps it at the end of the job" holds
+          # for a GitHub-hosted VM, which is destroyed. A self-hosted macOS
+          # runner does not reap it: 72 loops piled up on one Mac in 1.9 days
+          # (a `top -l 1` every 30 s each, ~340% CPU at one sample) and starved
+          # the MPI tests of the machine it shares with people.
           # (Two earlier versions failed the step after every test had
           # passed: an "exit $status", which on Ubuntu goes through
           # ~/.bash_logout in this login shell, and a "kill" of a sampler
           # that had already died on "ps | head"'s broken pipe on macOS.)
+          STEP_PID=$$
           ( set +e
             P="$RUNNER_TEMP/ps.txt"
-            while sleep 30; do
+            while kill -0 "$STEP_PID" 2>/dev/null && sleep 30; do
               echo "=== $(date -u +%H:%M:%S) $(uptime)"
               if [ "$RUNNER_OS" = macOS ]; then
                 top -l 1 -n 0 > "$RUNNER_TEMP/top.txt"
