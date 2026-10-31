@@ -131,3 +131,36 @@ spin-up on a live, uninterrupted run (`HS_SPIN`):
 * `VBDF` with `timeOrder` 1 and 3 give identical results, different from 2.
   Not understood.
 * Parallel, and the momentum models that keep `dof_last_last` (RANS2P family).
+
+## RANS3PF (2026-10-31): `run_rans3p.py`, `compare_rans3p.py`
+
+`test/HotStart_3P`, the 2D cylinder case with `mprans.RANS3PF` (P1 velocity, single phase, four models:
+momentum, pressure increment, pressure, pressure initial), `ns_lag_shockCapturing = ns_lag_subgridError = True`
+(RANS3PF switches the lag on after `nStepsToDelay`), BackwardEuler_cfl, `dt_fixed = 0.005`, 40 steps, archive
+every step. Same three modes as `run_case.py` (`full`, `stop N`, `hot N`); `HS_DUMP` (stop run) and
+`HS_INJECT` + `HS_TRUE` (hot run) are the oracle, by owner prefix (`sc`, `sge`, `ti`, `lm`, `ctl`, `sys`, `q`,
+`ebqe`, `all`, a digit narrows to one model) and `HS_QKEYS` to pick `q` arrays.
+
+Noise floor 0. Hot start at N = 20, relative L2 against the uninterrupted run: steps 20 and 21 are
+bit-identical, step 22 first differs (u Linf 1.5e-3, p 0.58, pInc 0.28), step 41 u 1.7e-4, v 1.0e-4, p 9.5e-2.
+Oracle (`HS_INJECT`, every attribute listed is put back after the spin-up; relative L2 of u at step 40):
+
+| restored | u at step 40 |
+|---|---|
+| nothing | 1.7e-4 |
+| every attribute of every model's shock capturing, subgrid error, time integration, step controller, system controller | 1.7e-4 |
+| all `q` arrays | 3.3e-5 |
+| `q[('u_last', 0)]` of the pressure model alone (delta-debugging over 67 keys) | 3.3e-5 |
+| that and the pressure model's `q_p_sharp`, `ebqe_p_sharp`, `q_grad_p_sharp`, `ebqe_grad_p_sharp` | 1.3e-7 |
+| everything above plus all owners and numerical fluxes | 1.3e-7 |
+
+So the drift was the pressure model's lagged pressure (`mprans.Pres`, set in `postStep`) and the sharp pressure it hands
+the momentum model: a hot start rebuilt `u_last` and `p_sharp` from the restart state, and they were not archived.
+They live on the coefficients object, so the solver_state archive now has a `coefficients` owner, and
+`mprans.Pres.Coefficients` declares `state()` / `set_state()`. With it a plain hot start gives u 1.3e-7, p 1.1e-6
+(relative L2 at step 40), the same as the oracle row above: 1300x less drift, and the archive reproduces it.
+`test/test_hotstart_rans3pf.py` asserts it (and that it fails without the owner, `HS_NO_COEF=1`).
+
+A 1.3e-7 floor remains that no Python-visible attribute of any model, coefficients, numerical flux or `q` array
+removes; the first differing step is 22, not 21. Not localized. RANS3PF's own shock capturing and subgrid error need
+nothing restored to reach it.

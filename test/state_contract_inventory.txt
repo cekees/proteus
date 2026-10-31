@@ -6,7 +6,8 @@
 #   state       defines state()/set_state(): archived per rank in solver_state/ and restored after the spin-up
 #   rebuilt     carries history that the spin-up rebuilds from the solution, and a hot start MEASURED to
 #               continue exactly without its own state, given the state of the other owners of the model
-#               (test/test_hotstart_state.py: backward Euler, and RKEV with its lagged shock capturing)
+#               (test/test_hotstart_state.py: backward Euler, and RKEV with its lagged shock capturing;
+#               test/hotstart_measure with HS_RD_LAG=1: mprans.RDLS.ShockCapturing, 1e-16 on every field)
 #   follows     carries no history of its own: it re-derives its next step from a restored object
 #               (the FLCBDF controllers read the restored integrator, syncAfterRestore)
 #   unmeasured  may carry history; a hot start rebuilds it from the restart state and nobody has measured
@@ -34,7 +35,7 @@ SC mprans.NCLS3P ShockCapturing unmeasured
 SC mprans.RANS2P ShockCapturing unmeasured
 SC mprans.RANS3PF ShockCapturing unmeasured
 SC mprans.RANS3PSed ShockCapturing unmeasured
-SC mprans.RDLS ShockCapturing unmeasured
+SC mprans.RDLS ShockCapturing rebuilt
 SC mprans.SW2D ShockCapturing unmeasured
 SC mprans.TADR ShockCapturing unmeasured
 SC mprans.VOF ShockCapturing state
