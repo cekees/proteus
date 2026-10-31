@@ -558,6 +558,7 @@ class Min_dt_controller(SC_base):
         self.stepExact = False
     def initialize_dt_model(self,t0,tOut):
         self.saveSolution()
+        self.t_model_last = t0
         for m in self.model.levelModelList:
             m.timeIntegration.initialize_dt(t0,tOut,m.q)
         self.dt_model = m.timeIntegration.dt
@@ -591,6 +592,7 @@ class Min_dt_RKcontroller(SC_base):
         self.stepExact = False#True#False
     def initialize_dt_model(self,t0,tOut):
         self.saveSolution()
+        self.t_model_last = t0
         for m in self.model.levelModelList:
             m.timeIntegration.initialize_dt(t0,tOut,m.q)
         self.dt_model = m.timeIntegration.dt
@@ -642,6 +644,7 @@ class Min_dt_cfl_controller(Min_dt_controller):
 
     def initialize_dt_model(self,t0,tOut):
         self.saveSolution()
+        self.t_model_last = t0
         m = self.model.levelModelList[-1]
         maxCFL = 1.0e-6
         for ci in range(m.nc):
@@ -813,6 +816,7 @@ class FLCBDF_controller(SC_base):
         self.t_model = self.t_model_last + self.dt_model
     def initialize_dt_model(self,t0,tOut):
         self.saveSolution()
+        self.t_model_last = t0
         for m in self.model.levelModelList:
             m.timeIntegration.initialize_dt(t0,tOut,m.q)
         self.dt_model = m.timeIntegration.dt
