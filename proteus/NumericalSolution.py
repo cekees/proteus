@@ -1219,7 +1219,7 @@ class NS_base(object):  # (HasTraits):
     SOLVER_STATE_GROUP = "solver_state"
 
     #: the lagged objects of a level model whose state a hot start restores
-    SOLVER_STATE_OWNERS = ("shockCapturing", "stabilization", "timeIntegration")
+    SOLVER_STATE_OWNERS = ("shockCapturing", "stabilization", "timeIntegration", "coefficients")
 
     def _solver_state_group_path(self, model, owner=None):
         path = "%s/%s" % (self.SOLVER_STATE_GROUP, model.name)

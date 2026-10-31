@@ -90,3 +90,14 @@ def test_the_base_class_carries_nothing(family):
     obj = object.__new__(base)
     assert obj.state() is None
     assert obj.set_state({}) is None
+
+
+def test_the_pressure_model_declares_its_state_through_the_coefficients_owner():
+    """The lagged pressure and sharp pressure live on mprans.Pres.Coefficients, not on a shock
+    capturing, subgrid error or time integration object; the archive reads them as the
+    ``coefficients`` owner."""
+    from proteus import NumericalSolution
+    from proteus.mprans import Pres
+    assert "coefficients" in NumericalSolution.NS_base.SOLVER_STATE_OWNERS
+    assert "state" in vars(Pres.Coefficients) and "set_state" in vars(Pres.Coefficients)
+    assert Pres.Coefficients().state() is None  # not attached to a model: nothing to carry
