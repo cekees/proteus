@@ -7,7 +7,8 @@
 #   rebuilt     carries history that the spin-up rebuilds from the solution, and a hot start MEASURED to
 #               continue exactly without its own state, given the state of the other owners of the model
 #               (test/test_hotstart_state.py: backward Euler, and RKEV with its lagged shock capturing;
-#               test/hotstart_measure with HS_RD_LAG=1: mprans.RDLS.ShockCapturing, 1e-16 on every field)
+#               test/hotstart_measure with HS_RD_LAG=1: mprans.RDLS.ShockCapturing, 1e-16 on every field;
+#               test/test_hotstart_rans3pf.py: mprans.RANS3PF.SubgridError, bit-identical given the state of the rest)
 #   follows     carries no history of its own: it re-derives its next step from a restored object
 #               (the FLCBDF controllers read the restored integrator, syncAfterRestore)
 #   unmeasured  may carry history; a hot start rebuilds it from the restart state and nobody has measured
@@ -33,7 +34,7 @@ SC mprans.Kappa ShockCapturing unmeasured
 SC mprans.NCLS ShockCapturing state
 SC mprans.NCLS3P ShockCapturing unmeasured
 SC mprans.RANS2P ShockCapturing unmeasured
-SC mprans.RANS3PF ShockCapturing unmeasured
+SC mprans.RANS3PF ShockCapturing state
 SC mprans.RANS3PSed ShockCapturing unmeasured
 SC mprans.RDLS ShockCapturing rebuilt
 SC mprans.SW2D ShockCapturing unmeasured
@@ -67,7 +68,7 @@ SG mprans.Kappa SubgridError unmeasured
 SG mprans.NCLS SubgridError unmeasured
 SG mprans.NCLS3P SubgridError unmeasured
 SG mprans.RANS2P SubgridError unmeasured
-SG mprans.RANS3PF SubgridError unmeasured
+SG mprans.RANS3PF SubgridError rebuilt
 SG mprans.RANS3PSed SubgridError unmeasured
 SG mprans.RDLS SubgridError unmeasured
 SG mprans.SW2D SubgridError unmeasured

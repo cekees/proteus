@@ -96,7 +96,7 @@ def _grab(o, group):
     return out
 
 
-def _put(o, saved):
+def _put(o, saved, group=None):
     if isinstance(o, dict):
         for k, v in saved.items():
             if os.environ.get("HS_QKEYS") and not any(w in str(k) for w in os.environ["HS_QKEYS"].split(",")):
@@ -107,6 +107,8 @@ def _put(o, saved):
                 o[k][:] = v
         return
     for k, v in saved.items():
+        if os.environ.get("HS_OWNEREXACT") is not None and group == os.environ.get("HS_OWNEREXACT_GROUP") and k not in os.environ["HS_OWNEREXACT"].split("|"):
+            continue
         cur = getattr(o, k, None)
         if k.endswith("_last") and k != "dt_last":  # may alias another array until the lag switches on
             setattr(o, k, copy.deepcopy(v))
@@ -125,14 +127,26 @@ if os.environ.get("HS_INJECT"):
     def _restore(self, model, index, tCount):
         _orig(self, model, index, tCount)
         if index == len(self.modelList) - 1:
+            if os.environ.get("HS_FIRST_FALSE"):  # the stepping loop's own flag, which preStep reads
+                self.firstStep = False
             own = _owners(self)
             for g in own:
                 if "all" in _groups or any(g.startswith(w) for w in _groups):
-                    _put(own[g], _truth[g])
+                    _put(own[g], _truth[g], g)
     NS_base.restoreSolverState = _restore
 
 if os.environ.get("HS_NO_COEF"):  # the archive as it was before the coefficients owner
     proteus.NumericalSolution.NS_base.SOLVER_STATE_OWNERS = ("shockCapturing", "stabilization", "timeIntegration")
+if os.environ.get("HS_DUMP_START"):  # the state a hot run starts stepping from, to diff against a stop run's HS_DUMP
+    from proteus.NumericalSolution import NS_base as _NS
+    _prev = _NS.restoreSolverState
+
+    def _restore_and_dump(self, model, index, tCount):
+        _prev(self, model, index, tCount)
+        if index == len(self.modelList) - 1:
+            pickle.dump({g: _grab(o, g) for g, o in _owners(self).items()}, open(os.environ["HS_DUMP_START"], "wb"))
+    _NS.restoreSolverState = _restore_and_dump
+
 ns = proteus.NumericalSolution.NS_base(so, pList, nList, sList, opts)
 ns.calculateSolution(so.name)
 if os.environ.get("HS_DUMP"):

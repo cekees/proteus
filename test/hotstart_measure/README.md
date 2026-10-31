@@ -161,6 +161,11 @@ They live on the coefficients object, so the solver_state archive now has a `coe
 (relative L2 at step 40), the same as the oracle row above: 1300x less drift, and the archive reproduces it.
 `test/test_hotstart_rans3pf.py` asserts it (and that it fails without the owner, `HS_NO_COEF=1`).
 
-A 1.3e-7 floor remains that no Python-visible attribute of any model, coefficients, numerical flux or `q` array
-removes; the first differing step is 22, not 21. Not localized. RANS3PF's own shock capturing and subgrid error need
-nothing restored to reach it.
+The 1.3e-7 floor was the stepping loop's own `firstStep` flag, which stayed True after a restart: RANS3PF's `preStep`
+then reset the entropy residual to 1e15 (a low-order first step) and skipped the extrapolation from the previous
+solutions, whatever state had been restored. (The first differing step reads 22, not 21, only because the hot run
+archives the restart point again as step 21.) A continue-mode hot start now sets `firstStep = False` when every model
+restored its state, and `RANS3PF.Coefficients` and `RANS3PF.ShockCapturing` declare what they need: entropy residual,
+the two previous solutions, `dt_last`, the velocity at quadrature points, and `numDiff_last` with its lag machine. The
+oracle found that set by delta debugging; the subgrid error needs nothing. A plain hot start is now bit-identical to the
+uninterrupted run (`HS_FIRST_FALSE=1` puts the flag back in an oracle run that restores state by hand).

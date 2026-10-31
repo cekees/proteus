@@ -1,8 +1,11 @@
 """Hot start of the RANS3PF cylinder case (test/HotStart_3P, momentum + pressure increment + pressure
-models) continues the uninterrupted run: the pressure model's lagged pressure and sharp pressure are
-archived through the coefficients owner of the solver_state archive.
+models) continues the uninterrupted run bit for bit. What it takes: the pressure model's lagged pressure
+and sharp pressure and the momentum model's entropy residual, previous solutions and velocity at the
+quadrature points (the coefficients owner of the solver_state archive), RANS3PF's lagged shock capturing
+(``numDiff_last`` and its state machine), and the stepping loop's first-step flag off, because the
+history is back.
 
-Without them the hot start rebuilds both from the restart state and drifts (u 1.7e-4 relative at
+Without them the hot start rebuilds all of it from the restart state and drifts (u 1.7e-4 relative at
 step 40; the harness is test/hotstart_measure/run_rans3p.py, whose README section has the oracle)."""
 import os
 import subprocess
@@ -39,7 +42,7 @@ def _error(tmp_path, extra=None):
 
 
 def test_hotstart_with_pressure_state_continues_the_uninterrupted_run(tmp_path):
-    assert _error(tmp_path) < 1e-5
+    assert _error(tmp_path) == 0.0  # bit-identical: the archive carries everything the step reads
 
 
 def test_hotstart_without_the_coefficients_owner_drifts(tmp_path):
