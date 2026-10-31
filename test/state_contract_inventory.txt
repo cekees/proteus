@@ -8,7 +8,8 @@
 #               continue exactly without its own state, given the state of the other owners of the model
 #               (test/test_hotstart_state.py: backward Euler, and RKEV with its lagged shock capturing;
 #               test/hotstart_measure with HS_RD_LAG=1: mprans.RDLS.ShockCapturing, 1e-16 on every field;
-#               test/test_hotstart_rans3pf.py: mprans.RANS3PF.SubgridError, bit-identical given the state of the rest)
+#               test/test_hotstart_rans3pf.py: mprans.RANS3PF.SubgridError and Min_dt_cfl_controller, bit-identical given the state of the rest;
+#               the vortex2D backward Euler hot start, 1e-16: Min_dt_controller, Newton_controller, MCorr.Newton_controller, Sequential_MinModelStep)
 #   follows     carries no history of its own: it re-derives its next step from a restored object
 #               (the FLCBDF controllers read the restored integrator, syncAfterRestore)
 #   unmeasured  may carry history; a hot start rebuilds it from the restart state and nobody has measured
@@ -83,7 +84,7 @@ SO SplitOperator Sequential_FixedStep_Simple unmeasured
 SO SplitOperator Sequential_MinAdaptiveModelStep unmeasured
 SO SplitOperator Sequential_MinAdaptiveModelStep_SS unmeasured
 SO SplitOperator Sequential_MinFLCBDFModelStep follows
-SO SplitOperator Sequential_MinModelStep unmeasured
+SO SplitOperator Sequential_MinModelStep rebuilt
 SO SplitOperator Sequential_NonUniformFixedStep unmeasured
 SO SplitOperator Sequential_tnList unmeasured
 STEP StepControl FLCBDF_controller follows
@@ -91,15 +92,15 @@ STEP StepControl FLCBDF_controller_sys follows
 STEP StepControl GustafssonFullNewton_dt_controller unmeasured
 STEP StepControl HeuristicNL_dt_controller unmeasured
 STEP StepControl Min_dt_RKcontroller unmeasured
-STEP StepControl Min_dt_cfl_controller unmeasured
-STEP StepControl Min_dt_controller unmeasured
+STEP StepControl Min_dt_cfl_controller rebuilt
+STEP StepControl Min_dt_controller rebuilt
 STEP StepControl Min_dt_controller_FCT unmeasured
-STEP StepControl Newton_controller unmeasured
+STEP StepControl Newton_controller rebuilt
 STEP StepControl Osher_PsiTC_controller unmeasured
 STEP StepControl Osher_PsiTC_controller2 unmeasured
 STEP StepControl Osher_controller unmeasured
 STEP StepControl PsiTCtte_controller unmeasured
-STEP mprans.MCorr Newton_controller unmeasured
+STEP mprans.MCorr Newton_controller rebuilt
 STEP mprans.MCorr3P Newton_controller unmeasured
 STEP mprans.RDLS PsiTC unmeasured
 TI TimeIntegration BackwardEuler rebuilt
