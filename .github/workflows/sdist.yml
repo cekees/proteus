@@ -226,6 +226,28 @@ jobs:
               print("ymf DataItem keys unavailable: %r" % (exc,))
           PY
 
+      # The conda-forge clang has no sysroot of its own (its .cfg adds only -isystem and -L),
+      # so every compile and link falls back to whatever SDK the host points at. On a host whose
+      # Command Line Tools default to the MacOSX27 SDK that fails two ways, both seen on the
+      # Apple Silicon runner 2026-10-30: libc++ <wchar.h> "We don't know how to get the definition
+      # of mbstate_t" and "ld: library not found for -lSystem". Pin the newest 26.x SDK when the
+      # host has one; otherwise leave the default alone (GitHub-hosted macos-15 images do not
+      # carry 27). Written to GITHUB_ENV so the sdist build, the install and the tests all see it.
+      - name: Pin the macOS SDK for the conda toolchain
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          sdk=
+          for d in /Library/Developer/CommandLineTools/SDKs/MacOSX26.*.sdk /Applications/Xcode*.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.*.sdk; do
+            [ -d "$d" ] && sdk="$d"
+          done
+          if [ -n "$sdk" ]; then
+            echo "SDKROOT=$sdk" >> "$GITHUB_ENV"
+            echo "-- pinned SDKROOT=$sdk"
+          else
+            echo "-- no MacOSX26 SDK on this host; default SDK: $(xcrun --show-sdk-path 2>&1)"
+          fi
+
       - name: Build sdist
         shell: bash -l {0}
         run: |
