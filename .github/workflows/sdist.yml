@@ -346,6 +346,24 @@ jobs:
                 "%d names belong to other users" % (removed, kmp, foreign))
           EOF
 
+      # Fork overlay: Open MPI's btl/sm leaves /dev/shm/sm_segment.<host>.<uid>.<jobfamily>.<rank> behind, and
+      # libomp /dev/shm/__KMP_REGISTERED_LIB_<pid>_<n>, whenever an MPI process does not reach MPI_Finalize
+      # (killed ranks, timeouts, exit() in a helper). Counted 2026-11-01: 12,079 on spark2 (1,300 to 6,300 a
+      # day) and 26,490 on ceds-model, all the runner user's; space and inodes were fine. The job family in
+      # the name is a 16-bit number, so a new run meets a stale name sooner or later; cekees/proteus#146's
+      # linux-aarch64 leg hung 600 s in test_reconstructParallel after "A system call failed during shared
+      # memory initialization" (help-opal-shmem-mmap.txt). Remove the runner user's own names older than four
+      # hours (no job here runs that long, and the other runners on the host share the user), and the PRRTE
+      # session directories of the same age. The macOS step above does the same for MPICH's POSIX names.
+      - name: Remove stale MPI shared-memory segments (self-hosted Linux)
+        if: runner.os == 'Linux' && runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          me=$(id -un)
+          n=$(find /dev/shm -maxdepth 1 -user "$me" \( -name 'sm_segment.*' -o -name '__KMP_REGISTERED_LIB_*' \) -mmin +240 -print -delete 2>/dev/null | wc -l)
+          d=$(find /tmp -maxdepth 1 -user "$me" \( -name 'prte.*' -o -name 'ompi.*' \) -mmin +240 -print -exec rm -rf {} + 2>/dev/null | wc -l)
+          echo "removed $n stale shared-memory names and $d session directories; $(ls /dev/shm | wc -l) entries remain in /dev/shm"
+
       - name: Run test suite
         shell: bash -l {0}
         run: |
