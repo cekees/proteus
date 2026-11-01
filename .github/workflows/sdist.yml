@@ -11,7 +11,9 @@ on:
   # post-merge CI at all: merging into it produced no run, so a merge that
   # broke something stayed invisible until somebody opened the next PR.
   push:
-    branches: [main, 1.9.x]
+    # Fork overlay: dev too, so every upstream merge (fork-sync merges main into dev) runs the full suite on the
+    # self-hosted runners, macOS Intel legs included, against the committed lock.
+    branches: [main, 1.9.x, dev]
   pull_request:
     # Fork overlay: "labeled" is listed so that adding the "intel" label to a pull request starts a run with the
     # macOS Intel legs (the job-level `if` below ignores every other label). The concurrency group cancels the

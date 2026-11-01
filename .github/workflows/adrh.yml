@@ -6,7 +6,7 @@ name: ADRH engine (experimental/adrh)
 # (ad_regression.py and the like) need a built proteus and are run by hand.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]   # fork overlay: dev too (same paths filter)
     paths:
       - 'experimental/adrh/**'
       - 'proteus/Quadrature.py'
