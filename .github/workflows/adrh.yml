@@ -62,6 +62,13 @@ jobs:
           python-version: "3.12"
           activate-environment: adrh
       - name: Install the build and test dependencies
+        # Fork overlay: the self-hosted Linux hosts have NVIDIA drivers (spark2's GB10, ceds-model's two RTX 6000
+        # Ada), so conda's __cuda virtual package makes the solver pick the CUDA build of kokkos (cuda134sm75), and
+        # this CPU-only build then goes through nvcc_wrapper: "nvcc: command not found" on ceds-model, duplicate
+        # fatbinData symbols under LTO on spark2. An empty CONDA_OVERRIDE_CUDA hides the driver from the solver,
+        # which then resolves the CPU build the GitHub-hosted runners get (h572f79f_1 / hacc18ba_1).
+        env:
+          CONDA_OVERRIDE_CUDA: ""
         run: >
           conda install -y -c conda-forge --override-channels
           cmake ninja compilers pybind11 numpy scipy kokkos
