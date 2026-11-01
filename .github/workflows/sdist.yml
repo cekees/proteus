@@ -13,7 +13,12 @@ on:
   push:
     branches: [main, 1.9.x]
   pull_request:
+    # Fork overlay: "labeled" is listed so that adding the "intel" label to a pull request starts a run with the
+    # macOS Intel legs (the job-level `if` below ignores every other label). The concurrency group cancels the
+    # pull request's in-flight run when that happens.
+    types: [opened, synchronize, reopened, labeled]
   # The macOS Intel legs do not run on pull requests (see matrix.exclude below); a manual run has them.
+  # Fork overlay: a pull request labelled "intel" runs them too, on the self-hosted macos-x64 runner (darcy).
   workflow_dispatch:
     inputs:
       canary:
@@ -38,6 +43,8 @@ concurrency:
 
 jobs:
   build-and-test:
+    # Fork overlay: a label event runs the workflow only for the "intel" label (see on.pull_request.types).
+    if: github.event.action != 'labeled' || github.event.label.name == 'intel'
     # Where a fork has its own machines, set the Actions variable FAST_LEGS to a comma-separated list of leg keys
     # (linux-x64, linux-aarch64, macos-arm64, macos-x64) and those legs run on the self-hosted runner their `fast`
     # label names instead of the GitHub-hosted one. Unset (the default, and the organisation's setting) every leg
@@ -53,7 +60,8 @@ jobs:
         # matrix context is not available in one.
         # TODO: drop the macOS Intel legs altogether after the 1.9.1 release (cekees, 2026-10-28); the platform is kept
         # until then because 1.9.1 is meant to build on it (the 1.9.x line still runs it on pull requests).
-        exclude: ${{ fromJSON(github.event_name == 'pull_request' && '[{"leg":{"os":"macos-15-intel"}}]' || '[]') }}
+        # Fork overlay: the "intel" label on a pull request keeps the Intel legs in (they run on darcy, 60-140 min each).
+        exclude: ${{ fromJSON((github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'intel')) && '[{"leg":{"os":"macos-15-intel"}}]' || '[]') }}
         # Each leg runs twice: the suite without the two FSI IBM tests
         # (suite: main), and those two tests alone (suite: fsi). Each of the
         # two is a full 1 s simulation, 200 steps in serial; serially on these

@@ -32,21 +32,31 @@ jobs:
     # adding the "gpu" label to a pull request runs the gpu job; the CPU legs do not need to run again for it
     if: github.event_name != 'schedule' && github.event.action != 'labeled'
     name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
+    # Fork overlay: the same FAST_LEGS routing as sdist.yml; a leg whose key is listed in the Actions variable runs on
+    # the self-hosted runner its `fast` label names, otherwise on the GitHub-hosted `os`.
+    runs-on: ${{ contains(format(',{0},', vars.FAST_LEGS), format(',{0},', matrix.key)) && fromJSON(matrix.fast) || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {name: linux-64, os: ubuntu-latest}
-          - {name: linux-aarch64, os: ubuntu-24.04-arm}
-          - {name: macos-15 (Apple Silicon), os: macos-15}
+          - {name: linux-64, os: ubuntu-latest, key: linux-x64, fast: '["self-hosted","linux-x64"]'}
+          - {name: linux-aarch64, os: ubuntu-24.04-arm, key: linux-aarch64, fast: '["self-hosted","linux-aarch64"]'}
+          - {name: macos-15 (Apple Silicon), os: macos-15, key: macos-arm64, fast: '["self-hosted","macos-arm64"]'}
     defaults:
       run:
         shell: bash -el {0}
     steps:
       - uses: actions/checkout@v4
+      - name: Remove the conda environment a previous job left on this self-hosted runner
+        # Fork overlay: as in sdist.yml, setup-miniconda updating an environment in place on a persistent runner
+        # fails with "Cannot find a valid extracted directory cache". Start clean.
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: rm -rf "$HOME/miniconda3/envs/adrh" "$HOME/conda_pkgs_dir"
       - name: Set up conda environment
         uses: conda-incubator/setup-miniconda@v3
+        env:
+          CONDA_PKGS_DIRS: ${{ runner.temp }}/conda_pkgs
         with:
           miniforge-version: latest
           python-version: "3.12"
