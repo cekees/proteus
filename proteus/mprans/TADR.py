@@ -122,9 +122,20 @@ class RKEV(TimeIntegration.SSP):
             self.m_old[ci] = transport.q[('u',ci)].copy()
             self.u_dof_last[ci] = transport.u[ci].dof.copy()
 
+    def ownedMaxCFL(self):
+        """Maximum of the edge based cfl over the dofs this rank owns: the cfl of a ghost dof is built from a
+        truncated graph row, so it is not the cfl of the dof and may exceed the global maximum."""
+        t = self.transport
+        if t.comm.size() == 1:
+            return self.cfl.max()
+        dofMap = t.u[0].femSpace.dofMap
+        rank = t.comm.rank()
+        nOwned = dofMap.dof_offsets_subdomain_owned[rank + 1] - dofMap.dof_offsets_subdomain_owned[rank]
+        return self.cfl[:nOwned].max()
+
     def choose_dt(self):
         maxCFL = 1.0e-6
-        maxCFL = max(maxCFL, globalMax(self.cfl.max()))
+        maxCFL = max(maxCFL, globalMax(self.ownedMaxCFL()))
         self.dt = self.runCFL/maxCFL
         if self.dtLast is None:
             self.dtLast = self.dt
@@ -769,6 +780,7 @@ class LevelModel(OneLevelTransport):
             for ci in range(1, coefficients.nc):
                 assert self.u[ci].femSpace.__class__.__name__ == self.u[0].femSpace.__class__.__name__, "to reuse_test_trial_quad all femSpaces must be the same!"
         self.u_dof_old = None
+        self._dofVecs = {}
         self.mesh = self.u[0].femSpace.mesh  # assume the same mesh for  all components for now
         self.testSpace = testSpaceDict
         self.dirichletConditions = dofBoundaryConditionsDict
@@ -1295,6 +1307,19 @@ class LevelModel(OneLevelTransport):
     # def calculateQuadrature(self):
     #     self.coefficients.initializeElementQuadrature(self.timeIntegration.t, self.q)
                 
+    def scatterDOFArray(self, a):
+        """Replace the ghost entries of a dof array by the owners' values (in place)."""
+        if self.comm.size() == 1:
+            return
+        par = self._dofVecs.get(id(a))
+        if par is None:
+            dofMap = self.u[0].femSpace.dofMap
+            rank = self.comm.rank()
+            nOwned = dofMap.dof_offsets_subdomain_owned[rank + 1] - dofMap.dof_offsets_subdomain_owned[rank]
+            par = self._dofVecs[id(a)] = ParVec_petsc4py(
+                a, 1, nOwned, dofMap.nDOF_all_processes, dofMap.nDOF_subdomain - nOwned, dofMap.subdomain2global)
+        par.scatter_forward_insert()
+
     def FCTStep(self):
         # Explicit solvers call FCTStep() unconditionally.
         # If FCT is disabled, advance with low-order solution (uLow).
@@ -1360,11 +1385,25 @@ class LevelModel(OneLevelTransport):
         argsDict["nDOF_trial_element_fct"] = self.nDOF_trial_element[0]
         argsDict["rho_f"] = self.coefficients.rho_f
         argsDict["rho_s"] = self.coefficients.rho_s
+        # uLow of a ghost dof is built from a truncated graph row in calculateResidual, and the limiter of an
+        # owned dof reads it, so take the owners' values; R is scattered between the two phases of the kernel
+        self.scatterDOFArray(self.uLow)
+        Rpos = np.ones(self.u[0].dof.shape)
+        Rneg = np.ones(self.u[0].dof.shape)
+        argsDict["Rpos_dof"] = Rpos
+        argsDict["Rneg_dof"] = Rneg
+        argsDict["phase"] = 0
+        self.adr.FCTStep(argsDict)
+        self.scatterDOFArray(Rpos)
+        self.scatterDOFArray(Rneg)
+        argsDict["phase"] = 1
         self.adr.FCTStep(argsDict)
         argsDict["mIn"] = limited_mass
         argsDict["uOut"] = limited_solution
         argsDict["nodal_porosity"] = theta_dof_out_arr
         self.adr.invert(argsDict)
+        # ghost entries of the limited solution come from truncated rows
+        self.scatterDOFArray(limited_solution)
         if self.forceStrongConditions:
             for dofN, g in list(self.dirichletConditionsForceDOF.DOFBoundaryConditionsDict.items()):
                 limited_solution[dofN] = g(self.dirichletConditionsForceDOF.DOFBoundaryPointDict[dofN],
@@ -1702,6 +1741,24 @@ class LevelModel(OneLevelTransport):
 
         #argsDict["a_rowptr"] = self.coefficients.sdInfo[(0,0)][0]
         #argsDict["a_colind"] = self.coefficients.sdInfo[(0,0)][1]
+        if self.coefficients.STABILIZATION_TYPE in (2, 3, 4):
+            # edge based stabilization: psi and the normalized entropy residual of a ghost dof come from a
+            # truncated graph row and the dissipation of an owned dof reads them. Compute them (phase 0),
+            # scatter them, then the rest; phase 0 has already added the element residuals to r.
+            psi_dof = np.zeros(self.u[0].dof.shape, 'd')
+            global_entropy_residual_dof = np.zeros(self.u[0].dof.shape, 'd')
+            argsDict["psi_dof"] = psi_dof
+            argsDict["global_entropy_residual_dof"] = global_entropy_residual_dof
+            argsDict["phase"] = 0
+            self.adr.calculateResidual(argsDict)
+            r.fill(0.0)
+            self.scatterDOFArray(psi_dof)
+            self.scatterDOFArray(global_entropy_residual_dof)
+            argsDict["phase"] = 1
+        else:
+            argsDict["psi_dof"] = np.zeros(self.u[0].dof.shape, 'd')
+            argsDict["global_entropy_residual_dof"] = np.zeros(self.u[0].dof.shape, 'd')
+            argsDict["phase"] = 1
         self.adr.calculateResidual(argsDict)
 
         
