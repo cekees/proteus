@@ -358,7 +358,11 @@ jobs:
       - name: Remove stale MPI shared-memory segments (self-hosted Linux)
         if: runner.os == 'Linux' && runner.environment == 'self-hosted'
         shell: bash
+        # Best effort: GitHub runs bash steps with -e -o pipefail, so a find that meets an entry another job removes
+        # first would fail the job (it did, on ceds-model-1, 2026-11-02). Cleanup never decides a job's result.
+        continue-on-error: true
         run: |
+          set +e +o pipefail
           me=$(id -un)
           n=$(find /dev/shm -maxdepth 1 -user "$me" \( -name 'sm_segment.*' -o -name '__KMP_REGISTERED_LIB_*' \) -mmin +240 -print -delete 2>/dev/null | wc -l)
           d=$(find /tmp -maxdepth 1 -user "$me" \( -name 'prte.*' -o -name 'ompi.*' \) -mmin +240 -print -exec rm -rf {} + 2>/dev/null | wc -l)
