@@ -30,5 +30,6 @@ PYBIND11_MODULE(cRichards, m)
     .def("FCTStep", &Richards_base::FCTStep)
     .def("kth_FCT_step", &Richards_base::kth_FCT_step)
     .def("calculateResidual_entropy_viscosity", &Richards_base::calculateResidual_entropy_viscosity)
-    .def("calculateMassMatrix", &Richards_base::calculateMassMatrix);
+    .def("calculateMassMatrix", &Richards_base::calculateMassMatrix)
+    .def("calculateEdgeVelocity", &Richards_base::calculateEdgeVelocity);
 }
