@@ -12,7 +12,8 @@ on:
       - 'proteus/Quadrature.py'
       - '.github/workflows/adrh.yml'
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    # fork overlay: ready_for_review / converted_to_draft switch between the draft and the full set of legs
+    types: [opened, synchronize, reopened, labeled, ready_for_review, converted_to_draft]
     paths:
       - 'experimental/adrh/**'
       - 'proteus/Quadrature.py'
@@ -31,14 +32,17 @@ jobs:
   kernels:
     # adding the "gpu" label to a pull request runs the gpu job; the CPU legs do not need to run again for it
     if: github.event_name != 'schedule' && github.event.action != 'labeled'
-    name: ${{ matrix.name }}
+    name: ${{ matrix.cfg.name }}
     # Fork overlay: the same FAST_LEGS routing as sdist.yml; a leg whose key is listed in the Actions variable runs on
     # the self-hosted runner its `fast` label names, otherwise on the GitHub-hosted `os`.
-    runs-on: ${{ contains(format(',{0},', vars.FAST_LEGS), format(',{0},', matrix.key)) && fromJSON(matrix.fast) || matrix.os }}
+    runs-on: ${{ contains(format(',{0},', vars.FAST_LEGS), format(',{0},', matrix.cfg.key)) && fromJSON(matrix.cfg.fast) || matrix.cfg.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
+        # Fork overlay, 2026-11-03: a draft pull request builds and tests on linux-64 only; ready for review, all three.
+        # (a dimension, not `include`: GitHub applies `exclude` before `include` adds entries)
+        exclude: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.draft) && '[{"cfg":{"key":"linux-aarch64"}},{"cfg":{"key":"macos-arm64"}}]' || '[]') }}
+        cfg:
           - {name: linux-64, os: ubuntu-latest, key: linux-x64, fast: '["self-hosted","linux-x64"]'}
           - {name: linux-aarch64, os: ubuntu-24.04-arm, key: linux-aarch64, fast: '["self-hosted","linux-aarch64"]'}
           - {name: macos-15 (Apple Silicon), os: macos-15, key: macos-arm64, fast: '["self-hosted","macos-arm64"]'}
@@ -93,7 +97,7 @@ jobs:
   gpu:
     if: >-
       vars.ADRH_GPU_RUNNER != '' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'pull_request' && (vars.ADRH_GPU_ON_PR == 'true' || contains(github.event.pull_request.labels.*.name, 'gpu'))))
+      || (github.event_name == 'pull_request' && ((vars.ADRH_GPU_ON_PR == 'true' && !github.event.pull_request.draft) || contains(github.event.pull_request.labels.*.name, 'gpu'))))
     name: CUDA ${{ vars.ADRH_GPU_ARCH || 'TURING75' }}
     runs-on: ${{ vars.ADRH_GPU_RUNNER }}
     timeout-minutes: 60
