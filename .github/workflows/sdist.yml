@@ -551,7 +551,9 @@ jobs:
             XDIST=auto
             if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
               SIBS=$(ls -d "$(dirname "$(cd "$RUNNER_TEMP/../.." && pwd)")"/actions-runner-cekees* 2>/dev/null | wc -l)
-              NCPU=$(python -c 'import os; print(os.cpu_count())')
+              # the cores this job may use: spark1's runner is pinned to its ten efficiency cores (CPUAffinity), and
+              # os.cpu_count() would see all twenty; macOS has no sched_getaffinity
+              NCPU=$(python -c 'import os; print(len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count())')
               XDIST=$(( NCPU / (SIBS > 0 ? SIBS : 1) / 2 ))
               [ "$XDIST" -lt 2 ] && XDIST=2
               [ "$XDIST" -gt 24 ] && XDIST=24
