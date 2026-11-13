@@ -12,16 +12,11 @@ on:
   # broke something stayed invisible until somebody opened the next PR.
   push:
     # Fork overlay: dev too, so every upstream merge (fork-sync merges main into dev) runs the full suite on the
-    # self-hosted runners, macOS Intel legs included, against the committed lock.
+    # self-hosted runners against the committed lock.
     branches: [main, 1.9.x, dev]
   pull_request:
-    # Fork overlay: "labeled" is listed so that adding the "intel" label to a pull request starts a run with the
-    # macOS Intel legs (the job-level `if` below ignores every other label). The concurrency group cancels the
-    # pull request's in-flight run when that happens.
     # Fork overlay: ready_for_review / converted_to_draft rerun with the full / the draft matrix (see `exclude`).
-    types: [opened, synchronize, reopened, labeled, ready_for_review, converted_to_draft]
-  # The macOS Intel legs do not run on pull requests (see matrix.exclude below); a manual run has them.
-  # Fork overlay: a pull request labelled "intel" runs them too, on the self-hosted macos-x64 runner (darcy).
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   workflow_dispatch:
     inputs:
       canary:
@@ -46,29 +41,19 @@ concurrency:
 
 jobs:
   build-and-test:
-    # Fork overlay: a label event runs the workflow only for the "intel" label (see on.pull_request.types).
-    if: github.event.action != 'labeled' || github.event.label.name == 'intel'
     # Where a fork has its own machines, set the Actions variable FAST_LEGS to a comma-separated list of leg keys
-    # (linux-x64, linux-aarch64, macos-arm64, macos-x64) and those legs run on the self-hosted runner their `fast`
+    # (linux-x64, linux-aarch64, macos-arm64) and those legs run on the self-hosted runner their `fast`
     # label names instead of the GitHub-hosted one. Unset (the default, and the organisation's setting) every leg
     # runs hosted, exactly as before; a machine that is down is dropped from the list.
     runs-on: ${{ contains(format(',{0},', vars.FAST_LEGS), format(',{0},', matrix.leg.key)) && fromJSON(matrix.leg.fast) || matrix.leg.os }}
     strategy:
       fail-fast: false
       matrix:
-        # macOS Intel is the slowest leg (89 min, 54 with the FSI tests) and the scarcest runner. It failed alone, with
-        # Apple Silicon passing, in 3 of 118 comparable job pairs (Apple Silicon failed alone in 3 as well), so a break
-        # that only Intel sees now shows up after the merge instead of before it: the legs run on every push to main
-        # (and on a manual run), not on pull requests. They are excluded here, not with a job-level `if`, because the
-        # matrix context is not available in one.
-        # TODO: drop the macOS Intel legs altogether after the 1.9.1 release (cekees, 2026-10-28); the platform is kept
-        # until then because 1.9.1 is meant to build on it (the 1.9.x line still runs it on pull requests).
-        # Fork overlay: the "intel" label on a pull request keeps the Intel legs in (they run on darcy, 60-140 min each).
         # Fork overlay, 2026-11-03 (cekees): a draft pull request runs only linux-64 / py3.12 (both suites, on
         # ceds-model's four runners); marking it ready for review runs the full matrix. A campaign round is one PR
         # pushed to many times while it is a draft, and spark2's single aarch64 runner capped the fork at about three
         # full-matrix PR runs an hour.
-        exclude: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.draft) && '[{"leg":{"key":"linux-aarch64"}},{"leg":{"key":"macos-arm64"}},{"leg":{"key":"macos-x64"}},{"leg":{"name":"linux-64 / py3.13 (locked)"}}]' || ((github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'intel')) && '[{"leg":{"os":"macos-15-intel"}}]' || '[]')) }}
+        exclude: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.draft) && '[{"leg":{"key":"linux-aarch64"}},{"leg":{"key":"macos-arm64"}},{"leg":{"name":"linux-64 / py3.13 (locked)"}}]' || '[]') }}
         # Each leg runs twice: the suite without the two FSI IBM tests
         # (suite: main), and those two tests alone (suite: fsi). Each of the
         # two is a full 1 s simulation, 200 steps in serial; serially on these
@@ -90,7 +75,7 @@ jobs:
           # there, so the >=4.2.1 floor in the environment files is what makes
           # the openmpi file solvable on Apple Silicon.
           #
-          # Runner labels: use macos-15-intel for x86_64 and macos-15 for arm64.
+          # Runner labels: use macos-15 for arm64.
           # macos-13 is retired and macos-14 is deprecated; a job whose runs-on
           # label no runner satisfies does not fail fast -- it sits queued until
           # GitHub's 24h ceiling kills it, and because one queued job keeps the
@@ -122,18 +107,6 @@ jobs:
             env_file: environment-openmpi-dev.yml
             key: linux-x64
             fast: '["self-hosted","linux-x64"]'
-          - name: macos-15 (Intel) / py3.12
-            os: macos-15-intel
-            python: "3.12.5"
-            env_file: environment-openmpi-dev.yml
-            key: macos-x64
-            fast: '["self-hosted","macos-x64"]'
-            # This runner is shared and slow: a suite that takes 15 min on
-            # Linux has taken 2 h 15 min here, and the tests' subprocess
-            # timeouts (sized for a workstation) then report hangs that were
-            # not. A fixed scale, since the load average on a shared VM says
-            # little about the slice this job gets.
-            timeout_scale: "3"
           # These two ran without PUMI/Chrono while conda-forge lacked the binaries
           # and while pychrono crashed on osx-arm64. Both reasons are gone: scorec
           # 4.2.1 and pychrono 10.0.0 are published for linux-64, osx-64,
