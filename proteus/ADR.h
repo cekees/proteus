@@ -16,6 +16,7 @@
 #include "equivalent_polynomials.h"
 #include "cutquadric.h"
 #include "UnfittedKernels.h"
+#include "Unfitted.h"
 #include "mprans/ArgumentsDict.h"
 #include "pyarray.h"
 
@@ -67,11 +68,12 @@ namespace proteus
 		// both tetrahedron rules have some negative weights). The degree-4 Nitsche penalty is exact against k=3
 		// only through degree 3; with the curved cut k=4 is what reaches L2 rate 3 and H1 rate 2 (measured, B4).
 		static const int nP_fit = (pOrder == 2 && (nSpace == 2 ? nQuadraturePoints_element >= 16 : nQuadraturePoints_element >= 45)) ? 4 : 3;
-		using GfType = GeneralizedFunctions<nSpace, nDOF_trial_element, nP_fit, nQuadraturePoints_element, nDOF_mesh_trial_element * nQuadraturePoints_elementBoundary>;
-		// The solid level set only needs the H/D moment fits, never the two-sided IFEM basis. In 2D it
-		// shares GfType (kept bit-for-bit). In 3D the basis solve is 2D-only, so the solid uses the
-		// basis-free type (C44 phase 1).
-		using GfTypeS = typename std::conditional<nSpace == 2, GfType,
+		// The fluid interface: the moment fits of H, 1-H, D and the two-sided IFE basis of the same cut
+		using GfType = unfitted::IFEFunctions<nSpace, nDOF_trial_element, nP_fit, nQuadraturePoints_element, nDOF_mesh_trial_element * nQuadraturePoints_elementBoundary>;
+		// The solid level set only needs the H/D moment fits, never the two-sided IFEM basis (2D keeps the
+		// useIfemBasis = true fits, bit for bit; in 3D the plain fit, C44 phase 1).
+		using GfTypeS = typename std::conditional<nSpace == 2,
+			GeneralizedFunctions<nSpace, nDOF_trial_element, nP_fit, nQuadraturePoints_element, nDOF_mesh_trial_element * nQuadraturePoints_elementBoundary>,
 			equivalent_polynomials::GeneralizedFunctions_mix<nSpace, nDOF_trial_element, nP_fit, nQuadraturePoints_element, nDOF_mesh_trial_element * nQuadraturePoints_elementBoundary, false>>::type;
 		// Degree of the edge-restricted moment-fit Heaviside used by the edge terms (SCIFEM, the
 		// triply-cut correction). The consistency terms are degree 2p-1 and the interior penalty 2p;
@@ -136,7 +138,7 @@ namespace proteus
 			{
 				return gf_f_cache[eN].calculate(element_phi_f, element_nodes, x_ref, mua, mub, jf, false, false);
 			}
-			catch (const equivalent_polynomials::ifem_singular_error &e)
+			catch (const unfitted::ifem_singular_error &e)
 			{
 				double c[3] = {0.0, 0.0, 0.0};
 				for (int j = 0; j < nSpace + 1; j++)
