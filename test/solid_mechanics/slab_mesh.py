@@ -92,3 +92,14 @@ def quarter_plate_with_hole(fileprefix, n, a=1.0, L=4.0, grading=2.0):
     nodes, tets, faces, flags = _slab(xy, HOLE, outer, BOTTOM, LEFT, thickness)
     _write(fileprefix, nodes, tets, faces, flags)
     return thickness
+
+
+def rectangle(fileprefix, nx, ny, Lx=1.0, Ly=1.0):
+    """Rectangle [0,Lx] x [0,Ly] with nx by ny cells. Returns the slab thickness."""
+    xy = np.zeros((nx + 1, ny + 1, 2))
+    xy[:, :, 0] = np.linspace(0.0, Lx, nx + 1)[:, None]
+    xy[:, :, 1] = np.linspace(0.0, Ly, ny + 1)[None, :]
+    thickness = Lx/nx
+    nodes, tets, faces, flags = _slab(xy, LEFT, RIGHT, BOTTOM, TOP, thickness)
+    _write(fileprefix, nodes, tets, faces, flags)
+    return thickness

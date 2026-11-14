@@ -4,53 +4,18 @@ Linear elasticity is obtained from the elastoplastic model with a cohesion far a
 Exact displacements are imposed on the outer boundary, symmetry on x = 0 and y = 0, w = 0 on the slab faces, and the hole
 is traction free.
 """
-import types
 import numpy as np
-from proteus import default_p, default_n, default_s, default_so
-from proteus import Domain, FemTools, Quadrature, NumericalFlux, StepControl, TimeIntegration, NonlinearSolvers
-from proteus import LinearSolvers, LinearAlgebraTools, MeshTools, NumericalSolution
-from proteus.elastoplastic import ElastoPlastic
 try:
-    from . import kirsch_exact, slab_mesh
+    from . import kirsch_exact, slab_mesh, solid_deck
 except ImportError:
-    import kirsch_exact, slab_mesh
+    import kirsch_exact, slab_mesh, solid_deck
 
 S, A, L, E, NU = 100.0, 1.0, 4.0, 2.0e5, 0.3
 bf = slab_mesh.boundaryFlags
 
 
-def _module(name, base):
-    m = types.ModuleType(name)
-    m.__dict__.update({k: v for k, v in base.__dict__.items() if not k.startswith('__')})
-    return m
-
-
 def make_pn(fileprefix, order=1):
-    p = _module('kirsch_p', default_p)
-    p.name = 'kirsch'
-    p.nd = 3
-    p.domain = Domain.MeshTetgenDomain(fileprefix)
-    p.domain.boundaryFlags = bf
-    p.genMesh = False
-    smTypes = np.zeros((1, 14), 'd')
-    smFlags = np.zeros((1,), 'i')
-    D = E/((1.0 + NU)*(1.0 - 2.0*NU))
-    smTypes[0, 0] = E
-    smTypes[0, 1] = NU
-    smTypes[0, 2] = D*(1.0 - NU)
-    smTypes[0, 3] = D*NU
-    smTypes[0, 4] = 0.5*D*(1.0 - 2.0*NU)
-    smTypes[0, 5] = 0.0      # friction angle
-    smTypes[0, 6] = 1.0e12   # cohesion: never yields
-    smTypes[0, 7] = 0.0      # dilation angle
-    smTypes[0, 12] = 0.0     # P_a = 0: constant modulus
-    smTypes[0, 13] = 0.0     # density
-    smFlags[0] = 1
-    p.LevelModelType = ElastoPlastic.LevelModel
-    p.coefficients = ElastoPlastic.Coefficients(modelType_block=smFlags, modelParams_block=smTypes,
-                                                g=[0.0, 0.0, 0.0], rhow=0.0, pa=0.0, nd=3, SRF=1.0)
-    p.initialConditions = None
-    p.analyticalSolution = None
+    p = solid_deck.physics('kirsch_p', fileprefix, bf, solid_deck.material(E, NU, cohesion=1.0e12))
 
     def ux(x, t):
         return kirsch_exact.displacement(x[0], x[1], S, A, E, NU)[0]
@@ -58,91 +23,18 @@ def make_pn(fileprefix, order=1):
     def uy(x, t):
         return kirsch_exact.displacement(x[0], x[1], S, A, E, NU)[1]
 
-    def zero(x, t):
-        return 0.0
-
-    def getDBC_u(x, flag):
-        if flag in (bf['right'], bf['top']):
-            return ux
-        if flag == bf['left']:
-            return zero
-
-    def getDBC_v(x, flag):
-        if flag in (bf['right'], bf['top']):
-            return uy
-        if flag == bf['bottom']:
-            return zero
-
-    def getDBC_w(x, flag):
-        if flag in (bf['back'], bf['front']):
-            return zero
-
-    def stress_u(x, flag):
-        if flag in (bf['right'], bf['top'], bf['left']):
-            return None
-        return zero
-
-    def stress_v(x, flag):
-        if flag in (bf['right'], bf['top'], bf['bottom']):
-            return None
-        return zero
-
-    def stress_w(x, flag):
-        if flag in (bf['back'], bf['front']):
-            return None
-        return zero
-
-    p.dirichletConditions = {0: getDBC_u, 1: getDBC_v, 2: getDBC_w}
-    p.stressFluxBoundaryConditions = {0: stress_u, 1: stress_v, 2: stress_w}
-    p.T = 1.0
-
-    n = _module('kirsch_n', default_n)
-    n.timeIntegration = TimeIntegration.NoIntegration
-    n.stepControl = StepControl.Newton_controller
-    n.tnList = [0.0, 1.0]
-    if order == 1:
-        space = FemTools.C0_AffineLinearOnSimplexWithNodalBasis
-        n.elementQuadrature = Quadrature.SimplexGaussQuadrature(3, 3)
-        n.elementBoundaryQuadrature = Quadrature.SimplexGaussQuadrature(2, 3)
-    else:
-        space = FemTools.C0_AffineQuadraticOnSimplexWithNodalBasis
-        n.elementQuadrature = Quadrature.SimplexGaussQuadrature(3, 6)
-        n.elementBoundaryQuadrature = Quadrature.SimplexGaussQuadrature(2, 6)
-    n.femSpaces = {0: space, 1: space, 2: space}
-    n.subgridError = None
-    n.massLumping = False
-    n.numericalFluxType = NumericalFlux.Stress_IIPG_exterior
-    n.shockCapturing = None
-    n.multilevelNonlinearSolver = NonlinearSolvers.Newton
-    n.levelNonlinearSolver = NonlinearSolvers.Newton
-    n.fullNewtonFlag = True
-    n.maxNonlinearIts = 25
-    n.maxLineSearches = 0
-    n.tolFac = 0.0
-    n.atol = 1.0e-5
-    n.nl_rtol_res = 0.0
-    n.nl_atol_res = 1.0e-5  # roundoff floor is ~1e-7 with E = 2e5
-    n.matrix = LinearAlgebraTools.SparseMatrix
-    n.multilevelLinearSolver = LinearSolvers.LU
-    n.levelLinearSolver = LinearSolvers.LU
-    n.linTolFac = 0.0
-    n.conservativeFlux = None
-    n.parallelPartitioningType = MeshTools.MeshParallelPartitioningTypes.node
-    n.nLayersOfOverlapForParallel = 1
-    return p, n
+    zero = solid_deck.zero
+    solid_deck.boundary_conditions(p, {0: {bf['right']: ux, bf['top']: ux, bf['left']: zero},
+                                       1: {bf['right']: uy, bf['top']: uy, bf['bottom']: zero},
+                                       2: {bf['back']: zero, bf['front']: zero}})
+    return p, solid_deck.numerics('kirsch_n', order)
 
 
 def solve(fileprefix, nRefine, order, opts):
     """Generate the mesh, solve, and return the level model."""
     slab_mesh.quarter_plate_with_hole(fileprefix, nRefine, a=A, L=L)
     p, n = make_pn(fileprefix, order)
-    so = _module('kirsch_so', default_so)
-    so.name = p.name = 'kirsch_n%d_p%d' % (nRefine, order)
-    so.sList = [default_s]
-    so.tnList = n.tnList
-    ns = NumericalSolution.NS_base(so, [p], [n], so.sList, opts)
-    ns.calculateSolution(so.name)
-    return ns, ns.modelList[0].levelModelList[-1]
+    return solid_deck.run(p, n, 'kirsch_n%d_p%d' % (nRefine, order), opts)
 
 
 def errors(model):
