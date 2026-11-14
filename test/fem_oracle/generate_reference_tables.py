@@ -34,7 +34,9 @@ Keys are ``<family>/<cell>/p<p>/<item>``.
 
 * family: ``lagrange_equi`` (equispaced nodes), ``lagrange_gll`` (GLL on edges, warp-and-blend inside;
   equal to equispaced for p <= 2; the quadrilateral/hexahedron have equispaced only, which equals GLL
-  for Q1, Q2), ``bernstein``.
+  for Q1, Q2), ``bernstein``. On the tetrahedron at p = 5 the ``lagrange_gll`` nodes are the published
+  warp-and-blend construction, the set ``FemTools`` uses, read from ``proteus/SimplexSpaces.py``: the
+  notebook's ``nodes3d`` places the interior nodes differently from p = 5 on (``oracle_gll_lattice``).
 * cell: ``interval`` ([0,1]), ``triangle`` and ``tetrahedron`` (the unit simplex, vertices at the origin
   and the unit vectors), ``quadrilateral`` and ``hexahedron`` ([-1,1]^d).
 * ``lattice`` (n, d): nodes (Lagrange) or Bezier control points (Bernstein). Function j is associated with
@@ -62,7 +64,7 @@ from math import pi, sqrt, sin, cos
 import numpy as np
 
 SEED = 20261112
-MAX_P = {"interval": 5, "triangle": 5, "tetrahedron": 4}  # the degrees CI supports
+MAX_P = {"interval": 5, "triangle": 5, "tetrahedron": 5}  # the degrees CI supports
 
 # alpha table from cell 82 of the notebook, rows p=3..15 (column 0: triangle, column 1: tetrahedron)
 ALPHA = np.array([[1.4152, 0.0000],
@@ -245,6 +247,29 @@ def gll_reference_nodes(cell, p):
     return Lb[:d].T.copy()
 
 
+def published_tetrahedron_nodes(p):
+    """The warp-and-blend nodes ``FemTools`` uses on the tetrahedron (the published construction), from
+    ``proteus/SimplexSpaces.py`` (numpy only, loaded by path so that no proteus build is needed)."""
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location("SimplexSpaces", os.path.join(here, "..", "..", "proteus", "SimplexSpaces.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.warp_blend_barycentric(3, p)[:, 1:].copy()
+
+
+def oracle_gll_lattice(cell, p):
+    """The ``lagrange_gll`` node set of the tables. It is the notebook's, except on the tetrahedron for
+    p >= 5, where the notebook's ``nodes3d`` and the published construction differ in the interior (see
+    ``test/test_simplex_spaces.py``) and the tables follow the one ``FemTools`` uses. There the node SET is
+    an input taken from the code; the basis on it is still built here (monomials, 50-digit inverse)."""
+    if p <= 2:
+        return equispaced_lattice(cell, p)
+    if cell == "tetrahedron" and p >= 5:
+        return published_tetrahedron_nodes(p)
+    return gll_reference_nodes(cell, p)
+
+
 # ---------------------------------------------------------------------------------------------
 # space definitions
 # ---------------------------------------------------------------------------------------------
@@ -345,7 +370,7 @@ class Space(object):
             if family == "lagrange_equi" or self.cube:
                 lattice = equispaced_lattice(cell, p)
             elif family == "lagrange_gll":
-                lattice = gll_reference_nodes(cell, p) if p > 2 else equispaced_lattice(cell, p)
+                lattice = oracle_gll_lattice(cell, p)
             else:
                 raise ValueError(family)
             self.lattice_unit = lattice
