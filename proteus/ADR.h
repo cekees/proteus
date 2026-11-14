@@ -15,6 +15,7 @@
 #include "ModelFactory.h"
 #include "equivalent_polynomials.h"
 #include "cutquadric.h"
+#include "UnfittedKernels.h"
 #include "mprans/ArgumentsDict.h"
 #include "pyarray.h"
 
@@ -475,125 +476,63 @@ namespace proteus
 			}
 		}
 
-		inline void updateEmbeddedBoundaryTerms(const double embeddedBoundary_penalty,
-												const double dV,
-												double *embeddedBoundary_normal,
-												const double u_s,
-												const double u,
-												const double grad_u[nSpace],
-												const double a,
-												double &r,
-												double &dr,
-												double &ham,
-												double *dham,
-												double *f,
-												double *df,
-												const double D_s)
+		// The cut-cell penalty terms at one quadrature point go through the kernels of UnfittedKernels.h (one form: a
+		// coefficient times a solution jump times a test-function jump). The caller passes the test and the trial
+		// functions separately because Petrov-Galerkin tests with the ordinary hats; for a Galerkin call they are the
+		// same arrays. A residual call passes J = nullptr (and the trial arrays null), a Jacobian call r = nullptr.
+		//
+		// Nitsche Dirichlet terms on Gamma_s: consistency -[a du/dn] v, adjoint -[a dv/dn](u - u_s) and the penalty
+		// (D_s a pen) (u - u_s) v. m[I] = D_s * (outward normal of the fluid)[I] is the Dirac measure carrying the normal
+		// (for the planar fit D_s times one normal per element, for the curved fit the normal-weighted Dirac -Dn_s of
+		// C44 phase 1b, which is exact for polynomial integrands on a curved Gamma_s); D_s alone multiplies the penalty.
+		inline void nitscheDirichlet(const double w, const double D_s, const double pen, const double a, const double *m,
+									 const double u_s, const double u, const double *grad_u,
+									 const double *v_test, const double *grad_v_test,
+									 const double *v_trial, const double *grad_v_trial,
+									 double *r, double *J)
 		{
-			// todo this doesn't look 1d/3d
-			double outward_normal[nSpace];
+			double flux_u = 0.0;
 			for (int I = 0; I < nSpace; I++)
-				outward_normal[I] = -embeddedBoundary_normal[I];
-
-			// diffusive flux
-			for (int I = 0; I < nSpace; I++)
+				flux_u += m[I] * grad_u[I];
+			flux_u *= a;
+			double flux_v_test[nDOF_test_element], flux_v_trial[nDOF_trial_element];
+			for (int i = 0; i < nDOF_test_element; i++)
 			{
-				ham -= outward_normal[I] * grad_u[I];
-				dham[I] -= D_s * a * outward_normal[I];
-				// Nitsche adjoint consistency
-				f[I] += D_s * a * outward_normal[I] * (u - u_s);
-				df[I] += D_s * a * outward_normal[I];
+				double s = 0.0;
+				for (int I = 0; I < nSpace; I++)
+					s += m[I] * grad_v_test[i * nSpace + I];
+				flux_v_test[i] = a * s;
 			}
-			ham *= D_s * a;
-
-			// Nitsche Dirichlet penalty
-			r += D_s * a * embeddedBoundary_penalty * (u - u_s);
-			dr += D_s * a * embeddedBoundary_penalty;
+			if (J)
+				for (int j = 0; j < nDOF_trial_element; j++)
+				{
+					double s = 0.0;
+					for (int I = 0; I < nSpace; I++)
+						s += m[I] * grad_v_trial[j * nSpace + I];
+					flux_v_trial[j] = a * s;
+				}
+			unfitted::symmetricConsistency<nDOF_test_element>(w, 1.0, flux_u, u - u_s, flux_v_test, v_test, flux_v_trial, v_trial, r, J);
+			unfitted::jumpPenalty<nDOF_test_element>(w, D_s * a * pen, u - u_s, v_test, v_trial, r, J);
 		}
 
-		// The same Nitsche terms with the normal-weighted Dirac Dn_s = D_s n (n into the fluid, phi_s > 0) in place of
-		// D_s times one normal per element: exact for polynomial integrands on a curved Gamma_s (C44 phase 1b, P3).
-		// outward_normal = -n, so D_s * outward_normal[I] = -Dn_s[I]; the penalty keeps the scalar D_s.
-		inline void updateEmbeddedBoundaryTermsDn(const double embeddedBoundary_penalty,
-												  const double *Dn_s,
-												  const double u_s,
-												  const double u,
-												  const double grad_u[nSpace],
-												  const double a,
-												  double &r,
-												  double &dr,
-												  double &ham,
-												  double *dham,
-												  double *f,
-												  double *df,
-												  const double D_s)
+		// Robin/convective condition a du/dn = -h (u - u_inf) on Gamma_s (n the fluid's own outward normal, into the
+		// solid): the physical law replaces the natural boundary term that integration by parts leaves behind, so it is
+		// one reaction-like term, a jump penalty with c = D_s h and no consistency or adjoint part.
+		inline void robinTerm(const double w, const double D_s, const double h_coeff, const double u_infinity, const double u,
+							  const double *v_test, const double *v_trial, double *r, double *J)
 		{
-			for (int I = 0; I < nSpace; I++)
-			{
-				const double Dn_out = -Dn_s[I]; // D_s * outward_normal[I]
-				ham -= a * Dn_out * grad_u[I];
-				dham[I] -= a * Dn_out;
-				f[I] += a * Dn_out * (u - u_s);
-				df[I] += a * Dn_out;
-			}
-			r += D_s * a * embeddedBoundary_penalty * (u - u_s);
-			dr += D_s * a * embeddedBoundary_penalty;
+			unfitted::jumpPenalty<nDOF_test_element>(w, D_s * h_coeff, u - u_infinity, v_test, v_trial, r, J);
 		}
 
-		inline void updateEmbeddedBoundaryRobinTerms(const double h_coeff,
-													const double u_infinity,
-													const double u,
-													double &r,
-													double &dr,
-													const double D_s)
+		// Prescribed flux jump across Gamma_f, [beta du/dn] = fluxJump(x) + fluxJumpVector(x) . n, supplied by the
+		// physics file (the vector part carries the cases whose jump depends on the interface normal; both default to
+		// zero). The load is  int_Gamma_f [beta du/dn] v  = + jump_flux D_f v, i.e. unfitted::load with g = -jump_flux.
+		inline double fluxJumpValue(const double fluxJump, const double *fluxJumpVector, const double *n)
 		{
-			// Robin/convective condition  a * du/dn = -h * (u - u_infinity)  on Gamma_s (n the
-			// fluid's own outward normal, into the solid): substitute this physical law directly
-			// for the natural boundary term -int a du/dn v ds that integration by parts leaves
-			// behind. Unlike updateEmbeddedBoundaryTerms above, a Robin law is already a natural
-			// condition -- nothing is being enforced weakly -- so it needs no consistency,
-			// symmetry, or penalty construction, only this one reaction-like term.
-			r += D_s * h_coeff * (u - u_infinity);
-			dr += D_s * h_coeff;
-		}
-
-		inline void updateImmersedBoundaryTerms(const double immersedBoundary_penalty,
-												const double dV,
-												double *immersedBoundary_normal,
-												double x,
-												double y,
-												double z,
-												const double u_s,
-												const double u,
-												const double grad_u[nSpace],
-												const double a,
-												double &r,
-												double &dr,
-												double &ham,
-												double *dham,
-												double *f,
-												double *df,
-												const double fluxJump,
-												const double *fluxJumpVector,
-												const double D_f)
-		{
-			// todo this doesn't look 1d/3d
-			// Prescribed flux jump across the interface, supplied by the physics file as
-			// [beta du/dn] = fluxJump(x) + fluxJumpVector(x) . n. The vector part carries
-			// the cases whose jump depends on the interface normal. Both default to zero,
-			// so a problem with no prescribed flux jump contributes nothing here.
 			double jump_flux = fluxJump;
 			for (int I = 0; I < nSpace; I++)
-				jump_flux += fluxJumpVector[I] * immersedBoundary_normal[I];
-			r += jump_flux * D_f;
-			dr = 0.0;
-			ham = 0.0;
-			dham[0] = 0.0;
-			dham[1] = 0.0;
-			f[0] = 0.0;
-			f[1] = 0.0;
-			df[0] = 0.0;
-			df[1] = 0.0;
+				jump_flux += fluxJumpVector[I] * n[I];
+			return jump_flux;
 		}
 
 		inline void calculateElementResidual(int icase_f,
@@ -727,14 +666,6 @@ namespace proteus
 				double dm = 0.0;
 				double f[nSpace];
 				double df[nSpace];
-				double f_s[nSpace] = {0., 0.};
-				double df_s[nSpace] = {0., 0.};
-				double ham_s = 0.0;
-				double dham_s[nSpace] = {0., 0.};
-				double f_f[nSpace] = {0., 0.};
-				double df_f[nSpace] = {0., 0.};
-				double ham_f = 0.0;
-				double dham_f[nSpace] = {0., 0.};
 				double m_t = 0.0;
 				double dm_t = 0.0;
 				double pdeResidual_u = 0.0;
@@ -747,16 +678,6 @@ namespace proteus
 				double numDiff1 = 0.0;
 				double *a = NULL;
 				double r = 0.0;
-				double r_s = 0.0;
-				// updateEmbeddedBoundaryTerms ACCUMULATES into its outputs (+=, -=, then ham *= D_s*a),
-				// so one private zero-initialised set per side. Sharing them silently double-counts.
-				double r_s_a = 0.0, dr_s_a = 0.0, ham_s_a = 0.0;
-				double dham_s_a[nSpace] = {0., 0.}, f_s_a[nSpace] = {0., 0.}, df_s_a[nSpace] = {0., 0.};
-				double r_s_b = 0.0, dr_s_b = 0.0, ham_s_b = 0.0;
-				double dham_s_b[nSpace] = {0., 0.}, f_s_b[nSpace] = {0., 0.}, df_s_b[nSpace] = {0., 0.};
-				double dr_s = 0.0;
-				double r_f = 0.0;
-				double dr_f = 0.0;
 				double jac[nSpace * nSpace];
 				double jacDet;
 				double jacInv[nSpace * nSpace];
@@ -826,9 +747,9 @@ namespace proteus
 						//PGIFEM
 					}
 				}
+				double va[nDOF_trial_element], va_grad_trial[nDOF_trial_element * nSpace], vb[nDOF_trial_element], vb_grad_trial[nDOF_trial_element * nSpace];
 				if (icase_f == 0)
 				{
-					double va[nDOF_trial_element], va_grad_trial[nDOF_trial_element * nSpace], vb[nDOF_trial_element], vb_grad_trial[nDOF_trial_element * nSpace];
 					for (int i = 0; i < nDOF_trial_element; i++)
 					{
 						va[i] = gf_f.VA(i);
@@ -951,6 +872,15 @@ namespace proteus
 					D_s_a = equivalent_polynomials::composite::evaluate<nP_fit>(comp_DA, xr_d, yr_d);
 					D_s_b = equivalent_polynomials::composite::evaluate<nP_fit>(comp_DB, xr_d, yr_d);
 				}
+				// Test functions without the quadrature weight, for the penalty kernels (Petrov-Galerkin tests with the
+				// ordinary hats, the trial side is the branch basis)
+				const double *ua_test = PG ? &u_test_ref.data()[k * nDOF_trial_element] : va;
+				const double *ub_test = PG ? &u_test_ref.data()[k * nDOF_trial_element] : vb;
+				const double *ua_grad_test = PG ? u_grad_trial : va_grad_trial;
+				const double *ub_grad_test = PG ? u_grad_trial : vb_grad_trial;
+				double *r_loc = elementResidual_u.data();
+				// the surface terms are added only where Gamma_s cuts the element (or the whole curved fit is in play)
+				const bool solidTerms = embeddedBoundary && (curvedSolid || (gf_s.exact.edge >= 0 && !gf_s.exact.corner));
 				if (embeddedBoundary)
 				{
 					double level_set_normal[nSpace] = {};
@@ -968,66 +898,70 @@ namespace proteus
 					if (sign < 0.0)
 						for (int I = 0; I < nSpace; I++)
 							level_set_normal[I] *= -1.0;
-					if (icase_f == 0)
+					if (solidTerms)
 					{
-						// The solution here is ua on the mua side and ub on the mub side; the plain `u` is
-						// neither. Handing `u` to the penalty makes (u - u_s) nonzero even when the discrete
-						// solution is exactly right, and the O(100/h) penalty amplifies that.
-
-						if (embeddedBoundary_robin)
+						if (icase_f == 0)
 						{
-							// Robin needs no jump-corrected gradient (no flux term of its own),
-							// but the jump-corrected VALUE still matters: u_infinity was derived
-							// from the exact ua/ub, not from ua+uja's jump-free counterpart.
-							// Deliberately NOT embeddedBoundary_u_inner_q/_outer_q: those are the
-							// Dirichlet data on Gamma_s, unrelated to the Robin target.
-							updateEmbeddedBoundaryRobinTerms(embeddedBoundary_robin_h_inner,
-								embeddedBoundary_robin_uInfinity_inner_q.data()[eN_k], ua + uja, r_s_a, dr_s_a, D_s_a);
-							updateEmbeddedBoundaryRobinTerms(embeddedBoundary_robin_h_outer,
-								embeddedBoundary_robin_uInfinity_outer_q.data()[eN_k], ub + ujb, r_s_b, dr_s_b, D_s_b);
-						}
-						else
-						{
-							double ga[nSpace], gb[nSpace];
-							for (int I = 0; I < nSpace; I++)
+							// The solution here is ua on the mua side and ub on the mub side; the plain `u` is
+							// neither. Handing `u` to the penalty makes (u - u_s) nonzero even when the discrete
+							// solution is exactly right, and the O(100/h) penalty amplifies that.
+							if (embeddedBoundary_robin)
 							{
-								ga[I] = grad_ua[I] + grad_uja[I];
-								gb[I] = grad_ub[I] + grad_ujb[I];
+								// Robin needs no jump-corrected gradient (no flux term of its own),
+								// but the jump-corrected VALUE still matters: u_infinity was derived
+								// from the exact ua/ub, not from ua+uja's jump-free counterpart.
+								// Deliberately NOT embeddedBoundary_u_inner_q/_outer_q: those are the
+								// Dirichlet data on Gamma_s, unrelated to the Robin target.
+								robinTerm(dV, D_s_a, embeddedBoundary_robin_h_inner,
+										  embeddedBoundary_robin_uInfinity_inner_q.data()[eN_k], ua + uja, ua_test, nullptr, r_loc, nullptr);
+								robinTerm(dV, D_s_b, embeddedBoundary_robin_h_outer,
+										  embeddedBoundary_robin_uInfinity_outer_q.data()[eN_k], ub + ujb, ub_test, nullptr, r_loc, nullptr);
 							}
-							updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, dV, level_set_normal,
-								embeddedBoundary_u_inner_q.data()[eN_k], ua + uja, ga, mua,
-								r_s_a, dr_s_a, ham_s_a, dham_s_a, f_s_a, df_s_a, D_s_a);
-							updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, dV, level_set_normal,
-								embeddedBoundary_u_outer_q.data()[eN_k], ub + ujb, gb, mub,
-								r_s_b, dr_s_b, ham_s_b, dham_s_b, f_s_b, df_s_b, D_s_b);
-						}
-					}
-					else
-					{
-						// icase_f != 0: this element is wholly on one side of Gamma_f (icase_f < 0
-						// water/mua, icase_f > 0 air/mub -- the same sign convention as demoted_f
-						// and mu_dem above), so a single scalar h and a single per-phase target
-						// apply throughout -- NOT u_s_dem, which (like embeddedBoundary_u_inner_q
-						// above) carries the true Dirichlet solution, not the Robin target.
-						if (embeddedBoundary_robin)
-						{
-							const double h_here = (icase_f < 0) ? embeddedBoundary_robin_h_inner
-								                                 : embeddedBoundary_robin_h_outer;
-							const double u_inf_here = (icase_f < 0)
-								? embeddedBoundary_robin_uInfinity_inner_q.data()[eN_k]
-								: embeddedBoundary_robin_uInfinity_outer_q.data()[eN_k];
-							updateEmbeddedBoundaryRobinTerms(h_here, u_inf_here, u, r_s, dr_s, D_s);
+							else
+							{
+								// Each side carries its own piece of the solid surface via D_s_a / D_s_b, and tests
+								// against the reconstructed basis the bulk uses; ImH_f + H_f = 1, so the total is preserved.
+								double ga[nSpace], gb[nSpace], ma[nSpace], mb[nSpace];
+								for (int I = 0; I < nSpace; I++)
+								{
+									ga[I] = grad_ua[I] + grad_uja[I];
+									gb[I] = grad_ub[I] + grad_ujb[I];
+									ma[I] = -D_s_a * level_set_normal[I];
+									mb[I] = -D_s_b * level_set_normal[I];
+								}
+								nitscheDirichlet(dV, D_s_a, embeddedBoundary_penalty / h_phi, mua, ma,
+												 embeddedBoundary_u_inner_q.data()[eN_k], ua + uja, ga,
+												 ua_test, ua_grad_test, nullptr, nullptr, r_loc, nullptr);
+								nitscheDirichlet(dV, D_s_b, embeddedBoundary_penalty / h_phi, mub, mb,
+												 embeddedBoundary_u_outer_q.data()[eN_k], ub + ujb, gb,
+												 ub_test, ub_grad_test, nullptr, nullptr, r_loc, nullptr);
+							}
 						}
 						else
 						{
-							if (curvedSolid)
-								updateEmbeddedBoundaryTermsDn(embeddedBoundary_penalty / h_phi, Dn_s,
-									u_s_dem, u, grad_u, a[0],
-									r_s, dr_s, ham_s, dham_s, f_s, df_s, D_s);
+							// icase_f != 0: this element is wholly on one side of Gamma_f (icase_f < 0
+							// water/mua, icase_f > 0 air/mub -- the same sign convention as demoted_f
+							// and mu_dem above), so a single scalar h and a single per-phase target
+							// apply throughout -- NOT u_s_dem, which (like embeddedBoundary_u_inner_q
+							// above) carries the true Dirichlet solution, not the Robin target.
+							const double *u_test = &u_test_ref.data()[k * nDOF_trial_element];
+							if (embeddedBoundary_robin)
+							{
+								const double h_here = (icase_f < 0) ? embeddedBoundary_robin_h_inner
+									                                 : embeddedBoundary_robin_h_outer;
+								const double u_inf_here = (icase_f < 0)
+									? embeddedBoundary_robin_uInfinity_inner_q.data()[eN_k]
+									: embeddedBoundary_robin_uInfinity_outer_q.data()[eN_k];
+								robinTerm(dV, D_s, h_here, u_inf_here, u, u_test, nullptr, r_loc, nullptr);
+							}
 							else
-								updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, dV, level_set_normal,
-									u_s_dem, u, grad_u, a[0],
-									r_s, dr_s, ham_s, dham_s, f_s, df_s, D_s);
+							{
+								double m[nSpace];
+								for (int I = 0; I < nSpace; I++)
+									m[I] = curvedSolid ? -Dn_s[I] : -D_s * level_set_normal[I];
+								nitscheDirichlet(dV, D_s, embeddedBoundary_penalty / h_phi, a[0], m, u_s_dem, u, grad_u,
+												 u_test, u_grad_trial, nullptr, nullptr, r_loc, nullptr);
+							}
 						}
 					}
 				}
@@ -1085,37 +1019,39 @@ namespace proteus
 					if (sign < 0.0)
 					  for (int I = 0; I < nSpace; I++)
 					    level_set_normal[I] *= -1.0;
-					updateImmersedBoundaryTerms(immersedBoundary_penalty / h_phi, // penalty,
-												dV,
-												level_set_normal,
-												x,
-												y,
-												z,
-												immersedBoundary_u_q.data()[eN_k],
-												u,
-												grad_u,
-												a[0], // assume scalar diffusion for now
-												r_f,
-												dr_f,
-												ham_f,
-												dham_f,
-												f_f,
-												df_f,
-												immersedBoundary_fluxJump_q.data()[eN_k],
-												&immersedBoundary_fluxJumpVector_q.data()[eN_k_3d],
-												// Gamma_f's jump physics only applies in the fluid: on an element that
-												// sits (locally, at this quadrature point) entirely inside the embedded
-												// solid, H_s==0 and D_f alone (gf_f.D, or the raw single-curve fallback
-												// when comp_DFa isn't available) does not know that -- it only encodes
-												// where Gamma_f itself is, not whether the fluid actually exists there.
-												// Without this factor an element wholly inside the solid but crossed by
-												// Gamma_f gets a fixed, u-independent Dirac source with nothing in the
-												// Jacobian to balance it (the bulk terms are already correctly zero via
-												// wA=wB=0), so Newton can never drive that row's residual to zero.
-												// On a triply-cut cell comp_DFa is already restricted to the fluid part of
-												// Gamma_f; multiplying it by the H_s fit again would restrict twice (a
-												// product of two fits), so H_s is applied only to the single-curve D_f.
-												(comp_DFa != nullptr) ? D_f : D_f * H_s);
+					// Gamma_f's jump physics only applies in the fluid: on an element that
+					// sits (locally, at this quadrature point) entirely inside the embedded
+					// solid, H_s==0 and D_f alone (gf_f.D, or the raw single-curve fallback
+					// when comp_DFa isn't available) does not know that -- it only encodes
+					// where Gamma_f itself is, not whether the fluid actually exists there.
+					// Without this factor an element wholly inside the solid but crossed by
+					// Gamma_f gets a fixed, u-independent Dirac source with nothing in the
+					// Jacobian to balance it (the bulk terms are already correctly zero via
+					// wA=wB=0), so Newton can never drive that row's residual to zero.
+					// On a triply-cut cell comp_DFa is already restricted to the fluid part of
+					// Gamma_f; multiplying it by the H_s fit again would restrict twice (a
+					// product of two fits), so H_s is applied only to the single-curve D_f.
+					const double jump_flux = fluxJumpValue(immersedBoundary_fluxJump_q.data()[eN_k],
+														   &immersedBoundary_fluxJumpVector_q.data()[eN_k_3d], level_set_normal);
+					const double D_f_load = (comp_DFa != nullptr) ? D_f : D_f * H_s;
+					if (icase_f == 0)
+					{
+						// Flux-jump load int_Gamma_f J_f v: D_f times the IFE test function, NOT weighted by
+						// wA/wB. On Gamma_f va = vb = v, and D_f integrates va and vb (polynomials of degree
+						// <= nP_fit) exactly; weighting by the Heaviside fits would multiply two fits and
+						// move part of the load between branch-a and branch-b nodes.
+						double v_load[nDOF_test_element];
+						for (int i = 0; i < nDOF_test_element; i++)
+						{
+							if (!gf_f.exact.edge && !gf_f.exact.corner) // full cut or cut on boundary of negative cell
+								v_load[i] = 0.5 * (ua_test[i] + ub_test[i]);
+							else if (gf_f.exact.edge == -1 || gf_f.exact.corner == -1)
+								v_load[i] = ua_test[i];
+							else
+								v_load[i] = ub_test[i];
+						}
+						unfitted::load<nDOF_test_element>(dV, -(jump_flux * D_f_load), v_load, r_loc);
+					}
 				}
 				//
 				// moving mesh
@@ -1198,11 +1134,6 @@ namespace proteus
 							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ujb, &ub_grad_test_dV[i_nSpace]) +
 							ck.Reaction_weak(r, ub_test_dV[i]) +
 							ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
-							// Flux-jump load int_Gamma_f J_f v: D_f times the IFE test function, NOT weighted by
-							// wA/wB. On Gamma_f va = vb = v, and D_f integrates va and vb (polynomials of degree
-							// <= nP_fit) exactly; weighting by the Heaviside fits would multiply two fits and
-							// move part of the load between branch-a and branch-b nodes.
-							elementResidual_u.data()[i] += r_f * 0.5 * (ua_test_dV[i] + ub_test_dV[i]);
 						}
 						else if (gf_f.exact.edge == -1 || gf_f.exact.corner == -1)
 						{
@@ -1212,7 +1143,6 @@ namespace proteus
 							ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_uja, &ua_grad_test_dV[i_nSpace]) +
 							ck.Reaction_weak(r, ua_test_dV[i]) +
 							ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ua, &ua_grad_test_dV[i_nSpace]));
-							elementResidual_u.data()[i] += r_f * ua_test_dV[i];
 						}
 						else if (gf_f.exact.edge == 1 || gf_f.exact.corner == 1)
 						{
@@ -1222,7 +1152,6 @@ namespace proteus
 								ck.Diffusion_weak(sd_rowptr.data(), sd_colind.data(), a_loc, grad_ujb, &ub_grad_test_dV[i_nSpace]) +
 								ck.Reaction_weak(r, ub_test_dV[i]) +
 								ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_ub, &ub_grad_test_dV[i_nSpace]));
-							elementResidual_u.data()[i] += r_f * ub_test_dV[i];
 						}
 						else assert(false && "Invalid gf_f.exact.edge/corner values. Should be -1, 0 or +1.");
 					}
@@ -1235,38 +1164,6 @@ namespace proteus
 															  ck.SubgridError(subgridError_u, Lstar_u[i]) +
 															  ck.NumericalDiffusion(q_numDiff_u_last.data()[eN_k], grad_u, &u_grad_test_dV[i_nSpace]));
 					}
-					if (embeddedBoundary)
-					{
-						if (curvedSolid || (gf_s.exact.edge >= 0 && !gf_s.exact.corner))
-						{
-							if (icase_f == 0)
-							{
-								// Test against the reconstructed basis the bulk uses, split by which
-								// fluid region each part of the solid surface sits in. ImH_f + H_f = 1,
-								// so the total contribution is preserved.
-								// Each side already carries its own piece of the solid surface via
-								// D_s_a / D_s_b, so no ImH_f / H_f weighting here.
-								elementResidual_u.data()[i] +=
-									(ck.Advection_weak(f_s_a, &ua_grad_test_dV[i_nSpace]) +
-									 ck.Reaction_weak(r_s_a, ua_test_dV[i]) +
-									 ck.Hamiltonian_weak(ham_s_a, ua_test_dV[i])) +
-									(ck.Advection_weak(f_s_b, &ub_grad_test_dV[i_nSpace]) +
-									 ck.Reaction_weak(r_s_b, ub_test_dV[i]) +
-									 ck.Hamiltonian_weak(ham_s_b, ub_test_dV[i]));
-							}
-							else
-							{
-								elementResidual_u.data()[i] += (ck.Advection_weak(f_s, &u_grad_test_dV[i_nSpace]) +
-																ck.Reaction_weak(r_s, u_test_dV[i]) +
-																ck.Hamiltonian_weak(ham_s, u_test_dV[i]));
-							}
-						}
-					}
-					// immersedBoundary's r_f (the flux-jump Dirac reaction) is tested above against the
-					// IFEM test function on Gamma_f (0.5*(va+vb), = va = vb there), not against the plain,
-					// unenriched u_test_dV (va != vb != u_test away from the vertices) and not inside the
-					// wA/wB-weighted branch terms (a product of two fits that moves load between branches). f_f/ham_f/df_f/dham_f are always zero (see
-					// updateImmersedBoundaryTerms), so nothing else from that call belongs here.
 				}
 				// Error is only meaningful where the PDE is actually assembled -- strictly, in the
 				// active fluid domain phi_s >= 0. The old gate used H_s (the moment-fit area
@@ -2954,16 +2851,7 @@ namespace proteus
 					   grad_ub[nSpace],
 					   m = 0.0, dm = 0.0,
 					   h_phi = 0.0,
-					   r_s = 0.0, dr_s = 0.0,
-					   r_s_a = 0.0, dr_s_a = 0.0, ham_s_a = 0.0, r_s_b = 0.0, dr_s_b = 0.0, ham_s_b = 0.0,
-					   dham_s_a[nSpace] = {0., 0.}, f_s_a[nSpace] = {0., 0.}, df_s_a[nSpace] = {0., 0.},
-					   dham_s_b[nSpace] = {0., 0.}, f_s_b[nSpace] = {0., 0.}, df_s_b[nSpace] = {0., 0.},
 					   f[nSpace], df[nSpace],
-					   f_s[nSpace] = {0., 0.}, df_s[nSpace] = {0., 0.},
-					   ham_s = 0.0, dham_s[nSpace] = {0., 0.},
-					   r_f = 0.0, dr_f = 0.0,
-					   f_f[nSpace] = {0., 0.}, df_f[nSpace] = {0., 0.},
-					   ham_f = 0.0, dham_f[nSpace] = {0., 0.},
 					   m_t = 0.0, dm_t = 0.0,
 					   dpdeResidual_u_u[nDOF_trial_element],
 					   Lstar_u[nDOF_test_element],
@@ -3029,10 +2917,10 @@ namespace proteus
 						//PGIFEM
 					}
 				}
+				double va[nDOF_trial_element], va_grad_trial[nDOF_trial_element * nSpace],
+					vb[nDOF_trial_element], vb_grad_trial[nDOF_trial_element * nSpace];
 				if (icase_f == 0)
 				{
-					double va[nDOF_trial_element], va_grad_trial[nDOF_trial_element * nSpace], 
-						vb[nDOF_trial_element], vb_grad_trial[nDOF_trial_element * nSpace];
 					for (int i = 0; i < nDOF_trial_element; i++)
 					{
 						va[i] = gf_f.VA(i);
@@ -3134,6 +3022,14 @@ namespace proteus
 					D_s_a = equivalent_polynomials::composite::evaluate<nP_fit>(comp_DA, xr_d, yr_d);
 					D_s_b = equivalent_polynomials::composite::evaluate<nP_fit>(comp_DB, xr_d, yr_d);
 				}
+				// Test functions without the quadrature weight (Petrov-Galerkin tests with the ordinary hats), and the
+				// trial functions, for the penalty kernels
+				const double *ua_test = PG ? &u_test_ref.data()[k * nDOF_trial_element] : va;
+				const double *ub_test = PG ? &u_test_ref.data()[k * nDOF_trial_element] : vb;
+				const double *ua_grad_test = PG ? u_grad_trial : va_grad_trial;
+				const double *ub_grad_test = PG ? u_grad_trial : vb_grad_trial;
+				double *J_loc = elementJacobian_u_u.data();
+				const bool solidTerms = embeddedBoundary && (curvedSolid || (gf_s.exact.edge >= 0 && !gf_s.exact.corner));
 				if (embeddedBoundary)
 				{
 					double level_set_normal[nSpace] = {};
@@ -3151,52 +3047,57 @@ namespace proteus
 					if (sign < 0.0)
 						for (int I = 0; I < nSpace; I++)
 							level_set_normal[I] *= -1.0;
-					if (icase_f == 0)
+					if (solidTerms)
 					{
-						// The solution here is ua on the mua side and ub on the mub side; the plain `u` is
-						// neither. Handing `u` to the penalty makes (u - u_s) nonzero even when the discrete
-						// solution is exactly right, and the O(100/h) penalty amplifies that.
-						// The prescribed jump is a constant offset with zero derivative, so it is
-						// residual-only and does not appear here.
-
-						if (embeddedBoundary_robin)
+						if (icase_f == 0)
 						{
-							updateEmbeddedBoundaryRobinTerms(embeddedBoundary_robin_h_inner,
-								embeddedBoundary_robin_uInfinity_inner_q.data()[eN_k], ua, r_s_a, dr_s_a, D_s_a);
-							updateEmbeddedBoundaryRobinTerms(embeddedBoundary_robin_h_outer,
-								embeddedBoundary_robin_uInfinity_outer_q.data()[eN_k], ub, r_s_b, dr_s_b, D_s_b);
-						}
-						else
-						{
-							updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, dV, level_set_normal,
-								embeddedBoundary_u_inner_q.data()[eN_k], ua, grad_ua, mua,
-								r_s_a, dr_s_a, ham_s_a, dham_s_a, f_s_a, df_s_a, D_s_a);
-							updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, dV, level_set_normal,
-								embeddedBoundary_u_outer_q.data()[eN_k], ub, grad_ub, mub,
-								r_s_b, dr_s_b, ham_s_b, dham_s_b, f_s_b, df_s_b, D_s_b);
-						}
-					}
-					else
-					{
-						if (embeddedBoundary_robin)
-						{
-							const double h_here = (icase_f < 0) ? embeddedBoundary_robin_h_inner
-								                                 : embeddedBoundary_robin_h_outer;
-							const double u_inf_here = (icase_f < 0)
-								? embeddedBoundary_robin_uInfinity_inner_q.data()[eN_k]
-								: embeddedBoundary_robin_uInfinity_outer_q.data()[eN_k];
-							updateEmbeddedBoundaryRobinTerms(h_here, u_inf_here, u, r_s, dr_s, D_s);
-						}
-						else
-						{
-							if (curvedSolid)
-								updateEmbeddedBoundaryTermsDn(embeddedBoundary_penalty / h_phi, Dn_s,
-									u_s_dem, u, grad_u, a[0],
-									r_s, dr_s, ham_s, dham_s, f_s, df_s, D_s);
+							// The solution here is ua on the mua side and ub on the mub side; the plain `u` is
+							// neither. The prescribed jump is a constant offset with zero derivative, so it is
+							// residual-only and does not appear here.
+							if (embeddedBoundary_robin)
+							{
+								robinTerm(dV, D_s_a, embeddedBoundary_robin_h_inner,
+										  embeddedBoundary_robin_uInfinity_inner_q.data()[eN_k], ua, ua_test, ua_trial, nullptr, J_loc);
+								robinTerm(dV, D_s_b, embeddedBoundary_robin_h_outer,
+										  embeddedBoundary_robin_uInfinity_outer_q.data()[eN_k], ub, ub_test, ub_trial, nullptr, J_loc);
+							}
 							else
-								updateEmbeddedBoundaryTerms(embeddedBoundary_penalty / h_phi, dV, level_set_normal,
-									u_s_dem, u, grad_u, a[0],
-									r_s, dr_s, ham_s, dham_s, f_s, df_s, D_s);
+							{
+								double ma[nSpace], mb[nSpace];
+								for (int I = 0; I < nSpace; I++)
+								{
+									ma[I] = -D_s_a * level_set_normal[I];
+									mb[I] = -D_s_b * level_set_normal[I];
+								}
+								nitscheDirichlet(dV, D_s_a, embeddedBoundary_penalty / h_phi, mua, ma,
+												 embeddedBoundary_u_inner_q.data()[eN_k], ua, grad_ua,
+												 ua_test, ua_grad_test, ua_trial, ua_grad_trial, nullptr, J_loc);
+								nitscheDirichlet(dV, D_s_b, embeddedBoundary_penalty / h_phi, mub, mb,
+												 embeddedBoundary_u_outer_q.data()[eN_k], ub, grad_ub,
+												 ub_test, ub_grad_test, ub_trial, ub_grad_trial, nullptr, J_loc);
+							}
+						}
+						else
+						{
+							const double *u_test = &u_test_ref.data()[k * nDOF_trial_element];
+							const double *u_trial = &u_trial_ref.data()[k * nDOF_trial_element];
+							if (embeddedBoundary_robin)
+							{
+								const double h_here = (icase_f < 0) ? embeddedBoundary_robin_h_inner
+									                                 : embeddedBoundary_robin_h_outer;
+								const double u_inf_here = (icase_f < 0)
+									? embeddedBoundary_robin_uInfinity_inner_q.data()[eN_k]
+									: embeddedBoundary_robin_uInfinity_outer_q.data()[eN_k];
+								robinTerm(dV, D_s, h_here, u_inf_here, u, u_test, u_trial, nullptr, J_loc);
+							}
+							else
+							{
+								double m[nSpace];
+								for (int I = 0; I < nSpace; I++)
+									m[I] = curvedSolid ? -Dn_s[I] : -D_s * level_set_normal[I];
+								nitscheDirichlet(dV, D_s, embeddedBoundary_penalty / h_phi, a[0], m, u_s_dem, u, grad_u,
+												 u_test, u_grad_trial, u_trial, u_grad_trial, nullptr, J_loc);
+							}
 						}
 					}
 				}
@@ -3217,70 +3118,7 @@ namespace proteus
 					wA = equivalent_polynomials::composite::evaluate<nP_fit>(comp_A, xr, yr);
 					wB = equivalent_polynomials::composite::evaluate<nP_fit>(comp_B, xr, yr);
 				}
-				double D_f = gf_f.D(0., 0.);
-				if (comp_DFa != nullptr)
-				{
-					// Gamma_f's own Dirac measure, restricted to the part still inside the active
-					// fluid domain (see comp_DFa_cache's declaration) -- the plain, single-curve
-					// gf_f.D(0.,0.) above double-counts whatever part of Gamma_f's chord falls
-					// inside Gamma_s's masked-out solid on a triply-cut element.
-					const double xr_f = x_ref.data()[k * 3 + 0], yr_f = x_ref.data()[k * 3 + 1];
-					D_f = equivalent_polynomials::composite::evaluate<nP_fit>(comp_DFa, xr_f, yr_f);
-				}
-				// A demoted element's Gamma_f lies entirely inside the solid: no part of it borders
-				// fluid, so the flux-jump load must vanish exactly there (any fit would leave a
-				// spurious source).
-				if (demoted_f != 0)
-					D_f = 0.0;
-				if (immersedBoundary)
-				{
-					double level_set_normal[nSpace];
-					double sign = 0.0;
-					double norm_exact = 0.0, norm_cut = 0.0;
-					for (int I = 0; I < nSpace; I++)
-					{
-						sign += immersedBoundary_normal_q.data()[eN_k_3d + I] * gf_f.get_normal()[I];
-						level_set_normal[I] = gf_f.get_normal()[I];
-						norm_cut += level_set_normal[I] * level_set_normal[I];
-						norm_exact += immersedBoundary_normal_q.data()[eN_k_3d + I] * immersedBoundary_normal_q.data()[eN_k_3d + I];
-					}
-					assert(std::fabs(1.0 - norm_cut) < 1.0e-8);
-					assert(std::fabs(1.0 - norm_exact) < 1.0e-8);
-					if (sign < 0.0)
-					  for (int I = 0; I < nSpace; I++)
-					    level_set_normal[I] *= -1.0;
-					updateImmersedBoundaryTerms(immersedBoundary_penalty / h_phi, // penalty,
-												dV,
-												level_set_normal,
-												x,
-												y,
-												z,
-												immersedBoundary_u_q.data()[eN_k],
-												u,
-												grad_u,
-												a[0], // assume scalar diffusion for now
-												r_f,
-												dr_f,
-												ham_f,
-												dham_f,
-												f_f,
-												df_f,
-												immersedBoundary_fluxJump_q.data()[eN_k],
-												&immersedBoundary_fluxJumpVector_q.data()[eN_k_3d],
-												// Gamma_f's jump physics only applies in the fluid: on an element that
-												// sits (locally, at this quadrature point) entirely inside the embedded
-												// solid, H_s==0 and D_f alone (gf_f.D, or the raw single-curve fallback
-												// when comp_DFa isn't available) does not know that -- it only encodes
-												// where Gamma_f itself is, not whether the fluid actually exists there.
-												// Without this factor an element wholly inside the solid but crossed by
-												// Gamma_f gets a fixed, u-independent Dirac source with nothing in the
-												// Jacobian to balance it (the bulk terms are already correctly zero via
-												// wA=wB=0), so Newton can never drive that row's residual to zero.
-												// On a triply-cut cell comp_DFa is already restricted to the fluid part of
-												// Gamma_f; multiplying it by the H_s fit again would restrict twice (a
-												// product of two fits), so H_s is applied only to the single-curve D_f.
-												(comp_DFa != nullptr) ? D_f : D_f * H_s);
-				}
+				// immersedBoundary: the prescribed flux-jump load is data (u-independent), so it is residual-only
 				//
 				// calculate subgrid error contribution to the Jacobian (strong residual, adjoint, jacobian of strong residual)
 				//
@@ -3337,13 +3175,13 @@ namespace proteus
 								for (int I = 0; I < nSpace; I++) a_loc[I * nSpace + I] = mua;
 								elementJacobian_u_u.data()[i * nDOF_trial_element + j] += wA * (ck.AdvectionJacobian_weak(df, ua_trial[j], &ua_grad_test_dV[i_nSpace]) +
 								ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]) +
-								ck.ReactionJacobian_weak(dr + dr_f, ua_trial[j], ua_test_dV[i]) +
+								ck.ReactionJacobian_weak(dr, ua_trial[j], ua_test_dV[i]) +
 								ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]));
 
 								for (int I = 0; I < nSpace; I++) a_loc[I * nSpace + I] = mub;
 								elementJacobian_u_u.data()[i * nDOF_trial_element + j] += wB * (ck.AdvectionJacobian_weak(df, ub_trial[j], &ub_grad_test_dV[i_nSpace]) +
 									ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]) +
-									ck.ReactionJacobian_weak(dr + dr_f, ub_trial[j], ub_test_dV[i]) +
+									ck.ReactionJacobian_weak(dr, ub_trial[j], ub_test_dV[i]) +
 									ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]));
 							}
 							else if (gf_f.exact.edge == -1 || gf_f.exact.corner == -1)
@@ -3351,7 +3189,7 @@ namespace proteus
 								for (int I = 0; I < nSpace; I++) a_loc[I * nSpace + I] = mua;
 								elementJacobian_u_u.data()[i * nDOF_trial_element + j] += wA * (ck.AdvectionJacobian_weak(df, ua_trial[j], &ua_grad_test_dV[i_nSpace]) +
 								ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]) +
-								ck.ReactionJacobian_weak(dr + dr_f, ua_trial[j], ua_test_dV[i]) +
+								ck.ReactionJacobian_weak(dr, ua_trial[j], ua_test_dV[i]) +
 								ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ua_grad_trial[j_nSpace], &ua_grad_test_dV[i_nSpace]));
 							}
 							else if (gf_f.exact.edge == 1 || gf_f.exact.corner == 1)
@@ -3359,7 +3197,7 @@ namespace proteus
 								for (int I = 0; I < nSpace; I++) a_loc[I * nSpace + I] = mub;
 								elementJacobian_u_u.data()[i * nDOF_trial_element + j] += wB * (ck.AdvectionJacobian_weak(df, ub_trial[j], &ub_grad_test_dV[i_nSpace]) +
 									ck.SimpleDiffusionJacobian_weak(sd_rowptr.data(), sd_colind.data(), a_loc, &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]) +
-									ck.ReactionJacobian_weak(dr + dr_f, ub_trial[j], ub_test_dV[i]) +
+									ck.ReactionJacobian_weak(dr, ub_trial[j], ub_test_dV[i]) +
 									ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &ub_grad_trial[j_nSpace], &ub_grad_test_dV[i_nSpace]));
 							}
 							else assert(false && "Invalid gf_f.exact.edge/corner values. Should be -1, 0 or +1.");
@@ -3372,33 +3210,6 @@ namespace proteus
 																							 ck.SubgridErrorJacobian(dsubgridError_u_u[j], Lstar_u[i]) +
 																							 ck.NumericalDiffusionJacobian(q_numDiff_u_last.data()[eN_k], &u_grad_trial[j_nSpace], &u_grad_test_dV[i_nSpace]));
 						}
-						if (embeddedBoundary)
-						{
-							if (curvedSolid || (gf_s.exact.edge >=0 && !gf_s.exact.corner))
-							{
-								if (icase_f == 0)
-								{
-									elementJacobian_u_u.data()[i * nDOF_trial_element + j] +=
-										(ck.AdvectionJacobian_weak(df_s_a, ua_trial[j], &ua_grad_test_dV[i_nSpace])
-										 + ck.ReactionJacobian_weak(dr_s_a, ua_trial[j], ua_test_dV[i])
-										 + ck.HamiltonianJacobian_weak(dham_s_a, &ua_grad_trial[j_nSpace], ua_test_dV[i])) +
-										(ck.AdvectionJacobian_weak(df_s_b, ub_trial[j], &ub_grad_test_dV[i_nSpace])
-										 + ck.ReactionJacobian_weak(dr_s_b, ub_trial[j], ub_test_dV[i])
-										 + ck.HamiltonianJacobian_weak(dham_s_b, &ub_grad_trial[j_nSpace], ub_test_dV[i]));
-								}
-								else
-								{
-									elementJacobian_u_u.data()[i * nDOF_trial_element + j] += (ck.AdvectionJacobian_weak(df_s, u_trial_ref.data()[k * nDOF_trial_element + j], &u_grad_test_dV[i_nSpace])
-																					+ ck.ReactionJacobian_weak(dr_s, u_trial_ref.data()[k * nDOF_trial_element + j], u_test_dV[i])
-																					+ ck.HamiltonianJacobian_weak(dham_s, &u_grad_trial[j_nSpace], u_test_dV[i]));
-								}
-							}
-						}
-						// immersedBoundary's dr_f is folded into the wA/wB branch reaction terms
-						// above (ck.ReactionJacobian_weak(dr + dr_f, ...)), matching the residual
-						// restructuring -- see the comment there. dr_f/df_f/dham_f are always zero
-						// (updateImmersedBoundaryTerms), so this was a no-op numerically either way,
-						// but kept the wrong (unenriched) test function on the books.
 					} // j
 				} // i
 			} // k
