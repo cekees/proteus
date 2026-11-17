@@ -425,6 +425,14 @@ jobs:
                       --cov-report=xml:coverage.xml --cov-report=html:htmlcov
                       --cov-report=term-missing:skip-covered)
           fi
+          # DIAGNOSTIC (branch richards-nan-diag, never merged): only the Richards implicit-FCT levee test,
+          # traced by test/richards_instr.py (lines start with RICHARDS_NAN_DIAG), output unbuffered (-s).
+          if [ "${{ matrix.suite }}" = fsi ]; then exit 0; fi
+          mkdir -p "$RUNNER_TEMP/diag" && cp "$GITHUB_WORKSPACE/test/richards_instr.py" "$RUNNER_TEMP/diag/"
+          PYTHONPATH="$RUNNER_TEMP/diag${PYTHONPATH:+:$PYTHONPATH}" python -m pytest -s -v -p richards_instr \
+            --import-mode=importlib -p no:cacheprovider \
+            ../test/salinity/test_vdft_compatible.py::test_levee_edge_flux_with_implicit_flow_fct
+          exit $?
           if [ "${{ matrix.suite }}" = fsi ]; then
             python -m pytest -v -n 2 --dist load --import-mode=importlib \
               --durations=5 "${COV_ARGS[@]}" "${FSI_IBM_TESTS[@]/#/../}"
