@@ -232,5 +232,17 @@ jobs:
             --ignore=../test/richards/WRR_input_files
             --ignore=../test/richards/WRR_draft
           )
+          # DIAGNOSTIC (branch richards-nan-diag-19x, never merged): only the Richards implicit-FCT levee test,
+          # traced by test/richards_instr.py (lines start with RICHARDS_NAN_DIAG), unbuffered (-s); then again with
+          # the first-step old-time-mass refresh as an experiment (RICHARDS_FIX_EXPERIMENT=1).
+          mkdir -p "$RUNNER_TEMP/diag" && cp "$GITHUB_WORKSPACE/test/richards_instr.py" "$RUNNER_TEMP/diag/"
+          PYTHONPATH="$RUNNER_TEMP/diag${PYTHONPATH:+:$PYTHONPATH}" python -m pytest -s -v -p richards_instr \
+            --import-mode=importlib -p no:cacheprovider \
+            ../test/salinity/test_vdft_compatible.py::test_levee_edge_flux_with_implicit_flow_fct || true
+          echo "RICHARDS_NAN_DIAG ===== SECOND RUN: RICHARDS_FIX_EXPERIMENT=1 (first-step old-time mass refreshed in preStep) ====="
+          RICHARDS_FIX_EXPERIMENT=1 PYTHONPATH="$RUNNER_TEMP/diag${PYTHONPATH:+:$PYTHONPATH}" python -m pytest -s -v -p richards_instr \
+            --import-mode=importlib -p no:cacheprovider \
+            ../test/salinity/test_vdft_compatible.py::test_levee_edge_flux_with_implicit_flow_fct
+          exit $?
           python -m pytest -v --forked --import-mode=importlib \
             "${DESELECT_ARGS[@]}" "${IGNORE_ARGS[@]}" ../test
