@@ -431,6 +431,10 @@ jobs:
           mkdir -p "$RUNNER_TEMP/diag" && cp "$GITHUB_WORKSPACE/test/richards_instr.py" "$RUNNER_TEMP/diag/"
           PYTHONPATH="$RUNNER_TEMP/diag${PYTHONPATH:+:$PYTHONPATH}" python -m pytest -s -v -p richards_instr \
             --import-mode=importlib -p no:cacheprovider \
+            ../test/salinity/test_vdft_compatible.py::test_levee_edge_flux_with_implicit_flow_fct || true
+          echo "RICHARDS_NAN_DIAG ===== SECOND RUN: RICHARDS_FIX_EXPERIMENT=1 (first-step old-time mass refreshed in preStep) ====="
+          RICHARDS_FIX_EXPERIMENT=1 PYTHONPATH="$RUNNER_TEMP/diag${PYTHONPATH:+:$PYTHONPATH}" python -m pytest -s -v -p richards_instr \
+            --import-mode=importlib -p no:cacheprovider \
             ../test/salinity/test_vdft_compatible.py::test_levee_edge_flux_with_implicit_flow_fct
           exit $?
           if [ "${{ matrix.suite }}" = fsi ]; then

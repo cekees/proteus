@@ -198,6 +198,47 @@ def install():
             LM.getJacobian = getJacobian
         make()
 
+    # ---- Richards.Coefficients.preStep: the density and the old-time mass around it --------------------------------
+    C = Richards.Coefficients
+    if not getattr(C, '_rnd_patched', False):
+        C._rnd_patched = True
+        orig_pre = C.preStep
+
+        def rinfo(c):
+            m = getattr(c, 'model', None)
+            if m is None:
+                return 'no model'
+            ti = m.timeIntegration
+            qr = m.q['rho'] if 'rho' in m.q else None
+            return ('density_model=%s exportTransportFluxes=%s use_rho_nodal=%s q_rho=%s rho_dof_in=%s rho_nodal=%s '
+                    'm_last=%s mn=%s u_dof_old=%s' % (c.density_model, getattr(c, 'exportTransportFluxes', None),
+                                                    m.use_rho_nodal, st(qr) if qr is not None else None, st(m.rho_dof_in),
+                                                    st(m.rho_nodal), st(ti.m_last[0]), st(m.mn), st(m.u_dof_old)))
+
+        def preStep(self, t, firstStep=False):
+            n = S['ncall'].get('prestep', 0)
+            S['ncall']['prestep'] = n + 1
+            if n < 6:
+                P('PRESTEP before t=%.6e firstStep=%s' % (t, firstStep), rinfo(self))
+            out = orig_pre(self, t, firstStep)
+            if os.environ.get('RICHARDS_FIX_EXPERIMENT') and firstStep and getattr(self, 'model', None) is not None \
+                    and self.density_model is not None:
+                # EXPERIMENT (what the fix does): the first step's old-time mass at the coupled density
+                lm = self.model
+                ti = lm.timeIntegration
+                before = ti.m_last[0].copy()
+                dof = lm.u[0].dof.copy()
+                r = np.zeros(dof.shape, 'd')
+                lm.getResidual(lm.u_dof_old.copy(), r)
+                ti.m_last[0][:] = ti.m_tmp[0]
+                lm.u[0].dof[:] = dof
+                if n < 6:
+                    P('FIXEXP m_last refreshed: max|new-old|=%.4e' % amax(ti.m_last[0] - before))
+            if n < 6:
+                P('PRESTEP after ', rinfo(self))
+            return out
+        C.preStep = preStep
+
     # ---- linear solver: matrix and du --------------------------------------------------------------------------
     orig_prep = LinearSolvers.LU.prepare
     orig_solve = LinearSolvers.LU.solve
