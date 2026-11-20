@@ -1220,6 +1220,15 @@ def setup_extensions_in_parallel(nprocs):
                          % (len(failed), len(EXTENSIONS), ', '.join(sorted(n for n, _ in failed))))
         sys.exit(1)
 
+# Notebooks are stored without outputs (.gitattributes): point this clone's git at the stripper, so nobody
+# has to set it up by hand. Here, not in build_ext, so it runs once per build; never fails the build.
+_here = os.path.dirname(os.path.abspath(__file__))
+if os.path.exists(os.path.join(_here, '.git')) and not os.environ.get('PROTEUS_NO_NOTEBOOK_FILTER'):
+    try:
+        subprocess.run([sys.executable, os.path.join('tools', 'strip_notebook.py'), '--install'], cwd=_here)
+    except OSError as e:
+        sys.stderr.write('proteus setup.py: could not set up the notebook git filter: %s\n' % e)
+
 import logging, multiprocessing
 logging.basicConfig(force=True,level=logging.INFO)
 mp = multiprocessing.get_context('fork')
