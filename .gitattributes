@@ -1,0 +1,4 @@
+# Notebooks are stored without outputs, run counts or kernel metadata, so running a
+# cell does not show up as a change. Every build (setup.py) points the clone's git at
+# tools/strip_notebook.py; nothing to set up by hand.
+*.ipynb filter=notebook-strip diff=notebook-strip
