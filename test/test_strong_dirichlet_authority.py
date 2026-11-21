@@ -96,9 +96,12 @@ def test_poisson_on_the_petsc_triangle_mesh_gives_the_serial_answer(ranks, tmp_p
     he = 0.1 (256 elements, 145 nodes; conda-forge's triangle makes 312 and 178) is read from
     strong_dirichlet_stored_mesh/, so this is the same on every machine. With conda-forge's mesh the test above gives
     the serial answer on 2, 3, 4, 5 and 6 ranks; with this one 3 and 4 ranks do not. Strict xfail: when the defect is
-    fixed this test passes, the marker must go."""
+    fixed this test passes, the marker must go. The partition is pinned to the mesh's element order, as in the
+    audit."""
     _need_superlu_dist()
-    serial = _run(1, tmp_path, POISSON, STORED_MESH=STORED_MESH)
-    parallel = _run(ranks, tmp_path, POISSON, STORED_MESH=STORED_MESH)
+    # the partition is pinned (CI's default graph partitioner cuts this mesh elsewhere and does not hit the corner)
+    pin = dict(STORED_MESH=STORED_MESH, PETSC_OPTIONS="-mat_partitioning_type current")
+    serial = _run(1, tmp_path, POISSON, **pin)
+    parallel = _run(ranks, tmp_path, POISSON, **pin)
     for key in ("s", "s2"):
         numpy.testing.assert_allclose(parallel[key], serial[key], rtol=1e-9, atol=1e-12, err_msg=key)

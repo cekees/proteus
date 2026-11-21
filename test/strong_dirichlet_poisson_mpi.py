@@ -39,12 +39,10 @@ mo.nLayersOfOverlapForParallel = 0
 mo.genMesh = True
 if os.environ.get("STORED_MESH"):
     # read triangle's output from a directory instead of running the `triangle` on PATH (every build of it meshes the
-    # same .poly differently; see TRIANGLE_AUDIT_2026-11-21.md): sd_poisson.{node,ele,edge} are copied into the cwd.
-    import shutil
-    if comm.rank() == 0:
-        for ext in ("node", "ele", "edge"):
-            shutil.copy(os.path.join(os.environ["STORED_MESH"], name + "." + ext), name + "." + ext)
-    comm.comm.tompi4py().Barrier()
+    # same .poly differently; see TRIANGLE_AUDIT_2026-11-21.md): sd_poisson.{node,ele,edge} are staged into the cwd.
+    import rank_staging  # every rank stages the same files: atomically
+    for ext in ("node", "ele", "edge"):
+        rank_staging.copy(os.path.join(os.environ["STORED_MESH"], name + "." + ext), name + "." + ext)
     mo.genMesh = False
 
 
