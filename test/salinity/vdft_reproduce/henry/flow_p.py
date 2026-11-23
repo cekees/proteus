@@ -1,6 +1,6 @@
 from proteus import *
 from proteus.default_p import *
-from proteus.richards import Richards
+from proteus.kernels import Richards
 import numpy as np
 try:
     from .domain_henry import *
@@ -78,6 +78,7 @@ coefficients = Richards.Coefficients(nd,
                                      ENTROPY_TYPE=1,
                                      LUMPED_MASS_MATRIX= False ,
                                      FCT=True, FCT_BND_DIFF=True, FCT_BND_KRW=True,  # Barua edge-flux runs: his FCT boundary block (both off by default since #173)
+                                     BC_CONS=True,  # the authors' builds ran with the boundary-conservative velocity ON (RICHARDS_BC_CONS unset meant on); the velocity-based coupling needs it for the manuscript's numbers
                                      #True,
                                      num_fct_iter=0,
                                      # FOR ENTROPY VISCOSITY

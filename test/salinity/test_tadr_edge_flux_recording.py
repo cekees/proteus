@@ -21,19 +21,15 @@ tvc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tvc)
 
 
-@pytest.fixture
-def levee_deck(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    modules = tvc._load(tvc.CASE_D, tvc.CASE_D_MODULES)
-    yield modules
-    tvc._unload(tvc.CASE_D_MODULES)
+# the levee deck with its stored mesh (the external `triangle` of each environment makes a different mesh)
+levee_deck = tvc.levee_deck
 
 
 @pytest.mark.parametrize("stab,rtol", [(5, 1e-10), (4, 1e-4)])
 def test_edge_flux_branches_record_the_applied_boundary_flux(levee_deck, monkeypatch, stab, rtol):
     """ImplicitEV (5): measured 6.6e-13 relative (the Newton tolerance). Explicit EV (4): measured 4.0e-6 (the
     recorded flux is evaluated at c^n with the step's B, the budget over the step)."""
-    from proteus.mprans import TADR
+    from proteus.kernels import TADR
     rows = []
     post = TADR.Coefficients.postStep
 

@@ -11,6 +11,7 @@ M^{n+1} = M^n + (m^{n+1} - m^n), so the discrete fluid balance it sees is the on
 """
 import importlib
 import os
+import shutil
 import sys
 
 import numpy as np
@@ -18,7 +19,7 @@ import pytest
 
 from proteus.iproteus import *  # noqa: F401,F403  (opts, default_s, NumericalSolution)
 from proteus import LinearSolvers, NonlinearSolvers, StepControl
-from proteus.mprans import TADR
+from proteus.kernels import TADR
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CASE_D = os.path.join(HERE, 'Levee_contamination_Density', 'Case_D')
@@ -56,7 +57,7 @@ def _run(so, pList, nList, name):
         p.name = p.__name__
         # the decks inherit genMesh from proteus.default_p, which other test modules set to False
         # at collection (test/post_processing/import_modules/bdm_tests_3Dtemplate.py)
-        p.genMesh = True
+        p.genMesh = not getattr(p, 'stored_mesh', False)
     so.sList = [default_s for p in pList]
     ns = NumericalSolution.NS_base(so, pList, nList, so.sList, opts)
     ns.calculateSolution(name)
@@ -120,7 +121,15 @@ def _check_budgets(transport, flow_atol, transport_atol):
 @pytest.fixture
 def levee_deck(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    # The mesh is stored, not generated: the external `triangle` of each environment (conda-forge on the Mac, on
+    # Linux, the PETSc-built one the fleet nightly puts first on PATH) makes a different mesh from the same .poly
+    # and options (26411, 26366 and 26312 elements), and the first dt of the explicit transport follows the mesh
+    # (0.192 s on the first, 0.249 s on the last). The files are triangle's output on the Mac, .1. removed.
+    for ext in ('node', 'ele', 'edge'):
+        shutil.copy(os.path.join(CASE_D, 'stored_mesh', 'levee_case_d.' + ext), tmp_path)
     modules = _load(CASE_D, CASE_D_MODULES)
+    domain, rp, rn, tp, tn, so = modules
+    rp.stored_mesh = tp.stored_mesh = True   # read by _run
     yield modules
     _unload(CASE_D_MODULES)
 
@@ -294,7 +303,7 @@ def test_levee_edge_flux_diagnostics_run(levee_deck, monkeypatch, stab, tadr_dia
     """Every run-time diagnostic, turned on through the Coefficients options, runs and logs without a probe failure
     (the probes catch their own exceptions, so a broken one would only say so in the log), and leaves the
     solution unchanged: c0 = cin = 0.5 stays 0.5."""
-    from proteus.richards import Richards
+    from proteus.kernels import Richards
     logged = []
 
     def record(msg, level=1, *args, **kwargs):
@@ -338,7 +347,7 @@ def test_levee_edge_velocity(levee_deck):
 
 @pytest.mark.parametrize('model', ['TADR', 'Richards'])
 def test_an_unknown_diagnostic_is_refused(model):
-    from proteus.richards import Richards
+    from proteus.kernels import Richards
     module = {'TADR': TADR, 'Richards': Richards}[model]
     with pytest.raises(ValueError, match="unknown %s diagnostics" % model):
         module._diagnostics(("boundary_flux", "no_such_probe"))
@@ -476,7 +485,7 @@ def test_first_dt_is_not_set_by_an_uninitialized_mass(levee_deck, monkeypatch):
     1e-6, so dt > eps / nl_atol_res = 2e-10 (the deck's first output interval is 1e-8). The transport's RKEV
     used to propose 0.5 / 1.9e13 = 2.66e-14 because its edge-based CFL is formed from M_low = 0 (TADR.h floors it
     at 1e-14). Stops at the first step's preStep, so it needs no time stepping."""
-    from proteus.richards import Richards
+    from proteus.kernels import Richards
     domain, rp, rn, tp, tn, so = levee_deck
     rp.coefficients.FCT = True
     rp.coefficients.FCT_TYPE = 'implicit'
@@ -537,9 +546,12 @@ def test_first_dt_of_an_explicit_transport_respects_its_cfl(levee_deck, monkeypa
         _run(so, [rp, tp], [rn, tn], 'vdft_levee_first_dt_long')
     assert np.finfo(float).eps / rn.nl_atol_res < seen['dt'] < 1.0e3, seen['dt']
     c = seen['c']
-    # the first step is not bound-preserving: it takes the wetting front's fluxes (c = 4.5 after 0.19 s) that the
-    # CFL of the initial state could not see
-    assert -10.0 <= c.min() and c.max() <= 10.0, (c.min(), c.max(), seen['dt'])
+    # the first step is not bound-preserving: it takes the wetting front's fluxes that the CFL of the initial state
+    # could not see. Measured on the stored mesh (26411 elements, first dt 0.192 s): c in [0, 4.49] (SSP11),
+    # [-2.31, 9.51] (SSP33). The first dt follows the mesh (0.249 s on the 26312-element mesh of the PETSc-built
+    # triangle: c in [-7.33, 16.07] for SSP33), so the bound is set above both; the failure it guards against, the
+    # interval as the first dt, is c ~ 1e8.
+    assert -20.0 <= c.min() and c.max() <= 20.0, (c.min(), c.max(), seen['dt'])
 
 
 def test_first_step_old_time_mass_is_at_the_coupled_density(levee_deck, monkeypatch):
@@ -550,7 +562,7 @@ def test_first_step_old_time_mass_is_at_the_coupled_density(levee_deck, monkeypa
     change the mass: Newton's first step goes to |u| ~ 1e14, the iterates grow by 2 per iteration to 1e189
     and the linear solve of the diverged step makes the all-NaN Jacobian of the nightly. Stops at the first
     step's preStep, so it needs no time stepping."""
-    from proteus.richards import Richards
+    from proteus.kernels import Richards
     domain, rp, rn, tp, tn, so = levee_deck
     rp.coefficients.FCT = True
     rp.coefficients.FCT_TYPE = 'implicit'
@@ -592,6 +604,6 @@ def test_first_step_old_time_mass_is_at_the_coupled_density(levee_deck, monkeypa
 def test_the_conservative_boundary_flux_is_opt_in():
     """BC_CONS changes the boundary velocity a coupled transport sees, so existing decks keep the pointwise trace
     unless they ask for it."""
-    from proteus.richards import Richards
+    from proteus.kernels import Richards
     import inspect
     assert inspect.signature(Richards.Coefficients.__init__).parameters['BC_CONS'].default is False
