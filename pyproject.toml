@@ -61,7 +61,7 @@ dependencies = [
 pro = "proteus.cli:main"
 
 [project.optional-dependencies]
-test = ["pytest", "pytest-cov", "pytest-xdist", "pytest-forked", "matplotlib"]
+test = ["pytest", "pytest-cov", "pytest-xdist", "pytest-forked", "matplotlib", "nbmake"]
 
 [project.urls]
 Homepage = "https://proteustoolkit.org"

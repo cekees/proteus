@@ -439,6 +439,16 @@ jobs:
         shell: bash
         run: cat "$RUNNER_TEMP/runner_load.txt" || true
 
+      # The notebooks under notebooks/ run top to bottom against the proteus installed above, so they may use any
+      # part of it; a cell that raises, including a failed assert, fails the step. One leg is enough.
+      - name: Run the notebooks
+        if: matrix.leg.name == 'linux-64 / py3.12' && matrix.suite == 'main'
+        shell: bash -l {0}
+        run: |
+          export MPLBACKEND="AGG" OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
+          mkdir notebook_output && cd notebook_output
+          python -m pytest -v -p no:cacheprovider --nbmake --nbmake-timeout=600 ../notebooks
+
       # The main suite's artifact keeps its name; the FSI suite's gets a suffix. Each carries the raw data
       # (.coverage, hence include-hidden-files) for the coverage job to combine.
       - name: Keep the coverage report

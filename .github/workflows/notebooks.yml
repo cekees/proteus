@@ -1,9 +1,8 @@
 name: notebooks
 
-# The exploration notebooks under notebooks/ (e.g. the IFEM basis derivations) are run top to bottom, and
-# their asserts must pass. They need numpy, sympy, scipy and matplotlib but no compiled proteus, so this job
-# does not wait for the proteus build in sdist.yml. It runs when a notebook changes, and weekly, so that a
-# new sympy or numpy release that breaks a notebook nobody touched is still noticed.
+# Notebooks under notebooks/ are committed without outputs, run counts or kernel metadata (.gitattributes,
+# tools/strip_notebook.py). This quick check catches one committed from a clone that was never built, so the
+# filter was never set up. The notebooks themselves run in sdist.yml, against the proteus it builds.
 on:
   push:
     branches: [main]
@@ -16,43 +15,13 @@ on:
       - 'notebooks/**'
       - 'tools/check_notebooks_stripped.py'
       - '.github/workflows/notebooks.yml'
-  schedule:
-    - cron: '17 6 * * 1'
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
-  run:
-    name: run the notebooks
+  stripped:
+    name: check the notebooks are stripped
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        shell: bash -el {0}
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-
-      # notebooks are committed without outputs or run metadata (.gitattributes, tools/strip_notebook.py)
-      - name: Check the notebooks are stripped
-        run: python3 tools/check_notebooks_stripped.py notebooks
-
-      - name: Set up conda environment
-        uses: conda-incubator/setup-miniconda@v3
-        with:
-          miniforge-version: latest
-          python-version: "3.12"
-          activate-environment: notebooks
-
-      - name: Install the notebook dependencies
-        run: >
-          conda install -y -c conda-forge --override-channels
-          numpy sympy scipy matplotlib pytest nbmake
-
-      # one test per notebook; a cell that raises, including a failed assert, fails it
-      - name: Run the notebooks
-        env:
-          MPLBACKEND: Agg
-        run: python -m pytest -v --nbmake --nbmake-timeout=600 notebooks
+      - run: python3 tools/check_notebooks_stripped.py notebooks
