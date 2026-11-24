@@ -135,10 +135,21 @@ jobs:
       - name: Build environment file for this leg
         shell: bash
         run: |
+          # Fork overlay: one conda environment per self-hosted runner. The runners of one machine share $HOME, so a
+          # shared "proteus-dev" was removed and rebuilt by a job while its sibling runner's job was still installing
+          # into it or running the suite in it (measured 2026-11-23: 67 of 666 jobs had it removed mid-install, 228
+          # mid-suite; "files were already present in the environment" warnings on every job). Hosted runners are
+          # fresh machines and keep the plain name.
+          if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            PROTEUS_ENV_NAME="proteus-dev-$(printf '%s' "$RUNNER_NAME" | tr -c 'A-Za-z0-9_.-' '_')"
+          else
+            PROTEUS_ENV_NAME=proteus-dev
+          fi
+          echo "PROTEUS_ENV_NAME=$PROTEUS_ENV_NAME" >> "$GITHUB_ENV"
           cp "${{ matrix.leg.env_file }}" environment-ci.yml
           # the openmpi/mpich files declare different env names; normalize so
           # activate-environment below matches whichever one this leg copied
-          sed -i.bak "s/^name: .*/name: proteus-dev/" environment-ci.yml
+          sed -i.bak "s/^name: .*/name: $PROTEUS_ENV_NAME/" environment-ci.yml
           FILE_PY=$(sed -n 's/^  - python =\(.*\)$/\1/p' environment-ci.yml)
           if [ "${{ matrix.leg.python }}" = "$FILE_PY" ] && [ "${{ github.event_name == 'schedule' || inputs.canary }}" != "true" ]; then
             # This leg's python IS the one the file pins, so use the file verbatim:
@@ -178,11 +189,11 @@ jobs:
           rm -f environment-ci.yml.bak
           cat environment-ci.yml
       - name: Remove the conda environment a previous job left on this self-hosted runner
-        # Fork overlay: setup-miniconda updates an existing proteus-dev in place, and mamba then fails with
+        # Fork overlay: setup-miniconda updates an existing environment of this runner in place, and mamba then fails with
         # "Cannot find a valid extracted directory cache" while unlinking and re-linking a package. Start clean.
         if: runner.environment == 'self-hosted'
         shell: bash
-        run: rm -rf "$HOME/miniconda3/envs/proteus-dev" "$HOME/conda_pkgs_dir"
+        run: rm -rf "$HOME/miniconda3/envs/$PROTEUS_ENV_NAME" "$HOME/conda_pkgs_dir"
       - name: Set up conda environment with PETSc/MPI/HDF5
         uses: conda-incubator/setup-miniconda@v3
         env:
@@ -192,7 +203,7 @@ jobs:
         with:
           miniforge-version: latest
           environment-file: environment-ci.yml
-          activate-environment: proteus-dev
+          activate-environment: ${{ env.PROTEUS_ENV_NAME }}
 
       # ymf comes from PyPI at the floor the environment files state (ymf >=0.3.1).
       # It used to come from "git+https://github.com/proteustoolkit/ymf.git@main", a
