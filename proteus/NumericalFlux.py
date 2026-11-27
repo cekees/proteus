@@ -536,6 +536,21 @@ class NF_base(object):
         """
         pass
 
+    def exteriorPenalty(self, ebqe, ck):
+        """The exterior penalty for the weak condition u_ck = g, scaled by max(1, dphi_ck/du_ck(g)).
+
+        The diffusive flux is -a grad(phi(u)).n, so a penalty scaled by a alone is too weak by the factor dphi/du
+        when the potential is steep: Diffusion_SIPG_exterior gave P1 L2 rates near 1 and boundary values at 15% of
+        the solution for phi = u^2 + 10u.  Penalizing phi(u) - phi(g) instead loses the condition where the potential
+        is degenerate (dphi/du = 0 at g, as for phi = u^r, Richards and two-phase flow), so the penalty stays on
+        u - g and is never weaker than before.  The factor is evaluated at g (self.ebqe holds the coefficients at the
+        boundary values), so it does not depend on u and the flux Jacobian needs no change.  For a linear potential
+        this is ebqe['penalty'] itself.
+        """
+        if 'nonlinear' not in self.vt.coefficients.potential.get(ck, {}).values() or ('dphi', ck, ck) not in self.ebqe:
+            return ebqe['penalty']
+        return ebqe['penalty']*numpy.maximum(1.0, self.ebqe[('dphi', ck, ck)])
+
 class DoNothing(NF_base):
     hasInterior=False
     def __init__(self,vt,
@@ -917,7 +932,7 @@ class Advection_DiagonalUpwind_Diffusion_IIPG(NF_base):
                                                                                   ebqe[('a',ci,ck)],
                                                                                   ebqe[('grad(phi)',ck)],
                                                                                   ebqe[('u',ck)],
-                                                                                  ebqe[('penalty')],
+                                                                                  self.exteriorPenalty(ebqe,ck),
                                                                                   ebqe[('diffusiveFlux',ck,ci)])
                     else:
                         cnumericalFlux.calculateExteriorNumericalDiffusiveFlux(self.mesh.exteriorElementBoundariesArray,
@@ -931,7 +946,7 @@ class Advection_DiagonalUpwind_Diffusion_IIPG(NF_base):
                                                                                ebqe[('a',ci,ck)],
                                                                                ebqe[('grad(phi)',ck)],
                                                                                ebqe[('u',ck)],
-                                                                               ebqe[('penalty')],
+                                                                               self.exteriorPenalty(ebqe,ck),
                                                                                ebqe[('diffusiveFlux',ck,ci)])
                     #print "dfe",ebq_global[('diffusiveFlux',ck,ci)]
  #        for ci in range(self.nc):
@@ -1034,7 +1049,7 @@ class Advection_DiagonalUpwind_Diffusion_IIPG(NF_base):
                                                                                                    dphi[(ck,cj)].dof,
                                                                                                    ebqe[('v',cj)],
                                                                                                    ebqe[('grad(v)',cj)],
-                                                                                                   ebqe['penalty'],
+                                                                                                   self.exteriorPenalty(ebqe,ck),
                                                                                                    fluxJacobian_exterior[ci][cj])
                                 else:
                                     cnumericalFlux.updateExteriorNumericalDiffusiveFluxJacobian(dphi[(ck,cj)].femSpace.dofMap.l2g,
@@ -1049,7 +1064,7 @@ class Advection_DiagonalUpwind_Diffusion_IIPG(NF_base):
                                                                                                 dphi[(ck,cj)].dof,
                                                                                                 ebqe[('v',cj)],
                                                                                                 ebqe[('grad(v)',cj)],
-                                                                                                ebqe['penalty'],
+                                                                                                self.exteriorPenalty(ebqe,ck),
                                                                                                 fluxJacobian_exterior[ci][cj])
 class Advection_DiagonalUpwind_Diffusion_SIPG(Advection_DiagonalUpwind_Diffusion_IIPG):
     def __init__(self,vt,getPointwiseBoundaryConditions,
@@ -1163,7 +1178,7 @@ class Advection_DiagonalUpwind_Diffusion_IIPG_exterior(NF_base):
                                                                                   ebqe[('a',ci,ck)],
                                                                                   ebqe[('grad(phi)',ck)],
                                                                                   ebqe[('u',ck)],
-                                                                                  ebqe[('penalty')],
+                                                                                  self.exteriorPenalty(ebqe,ck),
                                                                                   ebqe[('diffusiveFlux',ck,ci)])
                     else:
                         cnumericalFlux.calculateExteriorNumericalDiffusiveFlux(self.mesh.exteriorElementBoundariesArray,
@@ -1177,7 +1192,7 @@ class Advection_DiagonalUpwind_Diffusion_IIPG_exterior(NF_base):
                                                                                ebqe[('a',ci,ck)],
                                                                                ebqe[('grad(phi)',ck)],
                                                                                ebqe[('u',ck)],
-                                                                               ebqe[('penalty')],
+                                                                               self.exteriorPenalty(ebqe,ck),
                                                                                ebqe[('diffusiveFlux',ck,ci)])
             # a merged periodic seam is interior: no boundary flux there (NF_base.seamIsInterior)
             self.zeroFluxesOnInteriorSeam(ebqe,ci)
@@ -1224,7 +1239,7 @@ class Advection_DiagonalUpwind_Diffusion_IIPG_exterior(NF_base):
                                                                                                    dphi[(ck,cj)].dof,
                                                                                                    ebqe[('v',cj)],
                                                                                                    ebqe[('grad(v)',cj)],
-                                                                                                   ebqe['penalty'],
+                                                                                                   self.exteriorPenalty(ebqe,ck),
                                                                                                    fluxJacobian_exterior[ci][cj])
                                 else:
                                     cnumericalFlux.updateExteriorNumericalDiffusiveFluxJacobian(dphi[(ck,cj)].femSpace.dofMap.l2g,
@@ -1239,7 +1254,7 @@ class Advection_DiagonalUpwind_Diffusion_IIPG_exterior(NF_base):
                                                                                                 dphi[(ck,cj)].dof,
                                                                                                 ebqe[('v',cj)],
                                                                                                 ebqe[('grad(v)',cj)],
-                                                                                                ebqe['penalty'],
+                                                                                                self.exteriorPenalty(ebqe,ck),
                                                                                                 fluxJacobian_exterior[ci][cj])
 def RobinFactory(getRobinConditions, base=None):
     """A Robin condition ``alpha*u + beta*(q.n) = g`` on the exterior boundary.
@@ -1398,7 +1413,7 @@ class ConstantAdvection_Diffusion_IIPG_exterior(NF_base):
                                                                                   ebqe[('a',ci,ck)],
                                                                                   ebqe[('grad(phi)',ck)],
                                                                                   ebqe[('u',ck)],
-                                                                                  ebqe[('penalty')],
+                                                                                  self.exteriorPenalty(ebqe,ck),
                                                                                   ebqe[('diffusiveFlux',ck,ci)],
                                                                                   self.scale_penalty,
                                                                                   self.penalty_floor)
@@ -1414,7 +1429,7 @@ class ConstantAdvection_Diffusion_IIPG_exterior(NF_base):
                                                                                ebqe[('a',ci,ck)],
                                                                                ebqe[('grad(phi)',ck)],
                                                                                ebqe[('u',ck)],
-                                                                               ebqe[('penalty')],
+                                                                               self.exteriorPenalty(ebqe,ck),
                                                                                ebqe[('diffusiveFlux',ck,ci)],
                                                                                self.scale_penalty,
                                                                                self.penalty_floor)
@@ -1442,7 +1457,7 @@ class ConstantAdvection_Diffusion_IIPG_exterior(NF_base):
                                                                                                    dphi[(ck,cj)].dof,
                                                                                                    ebqe[('v',cj)],
                                                                                                    ebqe[('grad(v)',cj)],
-                                                                                                   ebqe['penalty'],
+                                                                                                   self.exteriorPenalty(ebqe,ck),
                                                                                                    fluxJacobian_exterior[ci][cj],
                                                                                                    self.scale_penalty,
                                                                                                    self.penalty_floor)
@@ -1459,7 +1474,7 @@ class ConstantAdvection_Diffusion_IIPG_exterior(NF_base):
                                                                                                 dphi[(ck,cj)].dof,
                                                                                                 ebqe[('v',cj)],
                                                                                                 ebqe[('grad(v)',cj)],
-                                                                                                ebqe['penalty'],
+                                                                                                self.exteriorPenalty(ebqe,ck),
                                                                                                 fluxJacobian_exterior[ci][cj],
                                                                                                 self.scale_penalty,
                                                                                                 self.penalty_floor)
@@ -1553,7 +1568,7 @@ class MixedDarcy_exterior(NF_base):
                                                                                   ebqe[('a',ci,ck)],
                                                                                   ebqe[('grad(phi)',ck)],
                                                                                   ebqe[('u',ck)],
-                                                                                  ebqe[('penalty')],
+                                                                                  self.exteriorPenalty(ebqe,ck),
                                                                                   ebqe[('diffusiveFlux',ck,ci)])
                     else:
                         cnumericalFlux.calculateExteriorNumericalDiffusiveFlux(self.mesh.exteriorElementBoundariesArray,
@@ -1567,7 +1582,7 @@ class MixedDarcy_exterior(NF_base):
                                                                                ebqe[('a',ci,ck)],
                                                                                ebqe[('grad(phi)',ck)],
                                                                                ebqe[('u',ck)],
-                                                                               ebqe[('penalty')],
+                                                                               self.exteriorPenalty(ebqe,ck),
                                                                                ebqe[('diffusiveFlux',ck,ci)])
         #mwf add for inflow flux?
         #for ci in range(self.nc):
@@ -1612,7 +1627,7 @@ class MixedDarcy_exterior(NF_base):
                                                                                                    dphi[(ck,cj)].dof,
                                                                                                    ebqe[('v',cj)],
                                                                                                    ebqe[('grad(v)',cj)],
-                                                                                                   ebqe['penalty'],
+                                                                                                   self.exteriorPenalty(ebqe,ck),
                                                                                                    fluxJacobian_exterior[ci][cj])
                                 else:
                                     cnumericalFlux.updateExteriorNumericalDiffusiveFluxJacobian(dphi[(ck,cj)].femSpace.dofMap.l2g,
@@ -1627,7 +1642,7 @@ class MixedDarcy_exterior(NF_base):
                                                                                                 dphi[(ck,cj)].dof,
                                                                                                 ebqe[('v',cj)],
                                                                                                 ebqe[('grad(v)',cj)],
-                                                                                                ebqe['penalty'],
+                                                                                                self.exteriorPenalty(ebqe,ck),
                                                                                                 fluxJacobian_exterior[ci][cj])
 
 class Advection_DiagonalUpwind_Diffusion_NIPG_exterior(Advection_DiagonalUpwind_Diffusion_IIPG_exterior):
@@ -2483,7 +2498,7 @@ class Diffusion_IIPG_exterior(NF_base):
                                                                                   ebqe[('a',ci,ck)],
                                                                                   ebqe[('grad(phi)',ck)],
                                                                                   ebqe[('u',ck)],
-                                                                                  ebqe[('penalty')],
+                                                                                  self.exteriorPenalty(ebqe,ck),
                                                                                   ebqe[('diffusiveFlux',ck,ci)],
                                                                                   self.scale_penalty,
                                                                                   self.penalty_floor)
@@ -2499,7 +2514,7 @@ class Diffusion_IIPG_exterior(NF_base):
                                                                                ebqe[('a',ci,ck)],
                                                                                ebqe[('grad(phi)',ck)],
                                                                                ebqe[('u',ck)],
-                                                                               ebqe[('penalty')],
+                                                                               self.exteriorPenalty(ebqe,ck),
                                                                                ebqe[('diffusiveFlux',ck,ci)],
                                                                                self.scale_penalty,
                                                                                self.penalty_floor)
@@ -2526,7 +2541,7 @@ class Diffusion_IIPG_exterior(NF_base):
                                                                                                    dphi[(ck,cj)].dof,
                                                                                                    ebqe[('v',cj)],
                                                                                                    ebqe[('grad(v)',cj)],
-                                                                                                   ebqe['penalty'],
+                                                                                                   self.exteriorPenalty(ebqe,ck),
                                                                                                    fluxJacobian_exterior[ci][cj],
                                                                                                    self.scale_penalty,
                                                                                                    self.penalty_floor)
@@ -2544,7 +2559,7 @@ class Diffusion_IIPG_exterior(NF_base):
                                                                                                 dphi[(ck,cj)].dof,
                                                                                                 ebqe[('v',cj)],
                                                                                                 ebqe[('grad(v)',cj)],
-                                                                                                ebqe['penalty'],
+                                                                                                self.exteriorPenalty(ebqe,ck),
                                                                                                 fluxJacobian_exterior[ci][cj],
                                                                                                 self.scale_penalty,
                                                                                                 self.penalty_floor)
@@ -3459,7 +3474,7 @@ class RusanovNumericalFlux_Diagonal_Diffusion_IIPG(Advection_DiagonalUpwind_Diff
                                                                                   ebqe[('a',ci,ck)],
                                                                                   ebqe[('grad(phi)',ck)],
                                                                                   ebqe[('u',ck)],
-                                                                                  ebqe[('penalty')],
+                                                                                  self.exteriorPenalty(ebqe,ck),
                                                                                   ebqe[('diffusiveFlux',ck,ci)])
                     else:
                         cnumericalFlux.calculateExteriorNumericalDiffusiveFlux(self.mesh.exteriorElementBoundariesArray,
@@ -3473,7 +3488,7 @@ class RusanovNumericalFlux_Diagonal_Diffusion_IIPG(Advection_DiagonalUpwind_Diff
                                                                                ebqe[('a',ci,ck)],
                                                                                ebqe[('grad(phi)',ck)],
                                                                                ebqe[('u',ck)],
-                                                                               ebqe[('penalty')],
+                                                                               self.exteriorPenalty(ebqe,ck),
                                                                                ebqe[('diffusiveFlux',ck,ci)])
         #mwf add for inflow flux? needs to be removed
         for ci in range(self.nc):
@@ -3737,7 +3752,7 @@ class HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_IIPG(NF_base):
                                                                                   ebqe[('a',ci,ck)],
                                                                                   ebqe[('grad(phi)',ck)],
                                                                                   ebqe[('u',ck)],
-                                                                                  ebqe[('penalty')],
+                                                                                  self.exteriorPenalty(ebqe,ck),
                                                                                   ebqe[('diffusiveFlux',ck,ci)],
                                                                                   self.scale_penalty,
                                                                                   self.penalty_floor)
@@ -3753,7 +3768,7 @@ class HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_IIPG(NF_base):
                                                                                ebqe[('a',ci,ck)],
                                                                                ebqe[('grad(phi)',ck)],
                                                                                ebqe[('u',ck)],
-                                                                               ebqe[('penalty')],
+                                                                               self.exteriorPenalty(ebqe,ck),
                                                                                ebqe[('diffusiveFlux',ck,ci)],
                                                                                self.scale_penalty,
                                                                                self.penalty_floor)
@@ -3840,7 +3855,7 @@ class HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_IIPG(NF_base):
                                                                                                    dphi[(ck,cj)].dof,
                                                                                                    ebqe[('v',cj)],
                                                                                                    ebqe[('grad(v)',cj)],
-                                                                                                   ebqe['penalty'],
+                                                                                                   self.exteriorPenalty(ebqe,ck),
                                                                                                    fluxJacobian_exterior[ci][cj],
                                                                                                    self.scale_penalty,
                                                                                                    self.penalty_floor)
@@ -3857,7 +3872,7 @@ class HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_IIPG(NF_base):
                                                                                                 dphi[(ck,cj)].dof,
                                                                                                 ebqe[('v',cj)],
                                                                                                 ebqe[('grad(v)',cj)],
-                                                                                                ebqe['penalty'],
+                                                                                                self.exteriorPenalty(ebqe,ck),
                                                                                                 fluxJacobian_exterior[ci][cj],
                                                                                                 self.scale_penalty,
                                                                                                 self.penalty_floor)
@@ -3879,7 +3894,7 @@ class HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_IIPG(NF_base):
                   #                                                                          dphi[(ck,cj)].dof,
                     #                                                                         ebqe[('v',cj)],
                     #                                                                        ebqe[('grad(v)',cj)],
-                     #                                                                       ebqe['penalty'],
+                     #                                                                       self.exteriorPenalty(ebqe,ck),
                       #                                                                      fluxJacobian_exterior[ci][cj],
                        #                                                                     self.scale_penalty,
                         #                                                                    self.penalty_floor)
@@ -3961,7 +3976,7 @@ class HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_SIPG_exterior(Diffusion_SI
                                                                                   ebqe[('a',ci,ck)],
                                                                                   ebqe[('grad(phi)',ck)],
                                                                                   ebqe[('u',ck)],
-                                                                                  ebqe[('penalty')],
+                                                                                  self.exteriorPenalty(ebqe,ck),
                                                                                   ebqe[('diffusiveFlux',ck,ci)],
                                                                                   self.scale_penalty,
                                                                                   self.penalty_floor)
@@ -3977,7 +3992,7 @@ class HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_SIPG_exterior(Diffusion_SI
                                                                                ebqe[('a',ci,ck)],
                                                                                ebqe[('grad(phi)',ck)],
                                                                                ebqe[('u',ck)],
-                                                                               ebqe[('penalty')],
+                                                                               self.exteriorPenalty(ebqe,ck),
                                                                                ebqe[('diffusiveFlux',ck,ci)],
                                                                                self.scale_penalty,
                                                                                self.penalty_floor)
@@ -4012,7 +4027,7 @@ class HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_SIPG_exterior(Diffusion_SI
                                                                                                    dphi[(ck,cj)].dof,
                                                                                                    ebqe[('v',cj)],
                                                                                                    ebqe[('grad(v)',cj)],
-                                                                                                   ebqe['penalty'],
+                                                                                                   self.exteriorPenalty(ebqe,ck),
                                                                                                    fluxJacobian_exterior[ci][cj],
                                                                                                    self.scale_penalty,
                                                                                                    self.penalty_floor)
@@ -4029,7 +4044,7 @@ class HamiltonJacobi_DiagonalLesaintRaviart_Diffusion_SIPG_exterior(Diffusion_SI
                                                                                                 dphi[(ck,cj)].dof,
                                                                                                 ebqe[('v',cj)],
                                                                                                 ebqe[('grad(v)',cj)],
-                                                                                                ebqe['penalty'],
+                                                                                                self.exteriorPenalty(ebqe,ck),
                                                                                                 fluxJacobian_exterior[ci][cj],
                                                                                                 self.scale_penalty,
                                                                                                 self.penalty_floor)
@@ -4114,7 +4129,7 @@ class HamiltonJacobi_Pressure_DiagonalLesaintRaviart_Diffusion_SIPG_exterior(Ham
                                                                                   ebqe[('a',ci,ck)],
                                                                                   ebqe[('grad(phi)',ck)],
                                                                                   ebqe[('u',ck)],
-                                                                                  ebqe[('penalty')],
+                                                                                  self.exteriorPenalty(ebqe,ck),
                                                                                   ebqe[('diffusiveFlux',ck,ci)],
                                                                                   self.scale_penalty,
                                                                                   self.penalty_floor)
@@ -4130,7 +4145,7 @@ class HamiltonJacobi_Pressure_DiagonalLesaintRaviart_Diffusion_SIPG_exterior(Ham
                                                                                ebqe[('a',ci,ck)],
                                                                                ebqe[('grad(phi)',ck)],
                                                                                ebqe[('u',ck)],
-                                                                               ebqe[('penalty')],
+                                                                               self.exteriorPenalty(ebqe,ck),
                                                                                ebqe[('diffusiveFlux',ck,ci)],
                                                                                self.scale_penalty,
                                                                                self.penalty_floor)
