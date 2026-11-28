@@ -91,8 +91,10 @@ dependencies:
   # started in that window failed for a reason outside the commit under test.
   # To test against ymf's main on purpose, set the Actions variable YMF_REF
   # (a branch, tag or commit; see sdist.yml), or pip install it over this one.
-  # Replace this pip entry with a plain "- ymf >=0.3.2" conda dependency
+  # Replace this pip entry with a plain "- ymf >=0.3.3" conda dependency
   # once the feedstock lands. ymf-import-gmsh is not on PyPI: it stays at git.
+  # 0.3.3: the nonlinear potential, div(-a grad(phi(u))), which proteus.ADRProblem
+  # and test_strong_form read (cekees/ymf#19).
   #
   # proteus at runtime needs only the ymf core, whose one dependency is the
   # pyyaml above: Archiver writes the archive of record through ymf.archive.
@@ -107,5 +109,5 @@ dependencies:
   # scripts/ymf_run is never exercised. pint (ymf[units]) stays out: nothing
   # proteus ships imports ymf.units.
   - pip:
-    - ymf >=0.3.2
+    - ymf >=0.3.3
     - git+https://github.com/proteustoolkit/ymf-import-gmsh.git@main
