@@ -88,6 +88,7 @@ class ADRCoefficients(TC_base):
         mass, advection, diffusion, potential, reaction, hamiltonian = {}, {}, {}, {}, {}, {}
         sdInfo = {}
         self._terms = []   # (key, compiled code, slice, source) to fill on evaluate
+        self._potentials = {}   # component -> phi's code, None for the component itself
         for i, eq in enumerate(adr["equations"]):
             def flags(block, constant_key=i):
                 # ymf says how a coefficient depends on each unknown, and
@@ -117,7 +118,7 @@ class ADRCoefficients(TC_base):
                     # Proteus's diffusion flags are 'constant' or 'nonlinear'
                     diffusion[i][ck] = ({index[c]: 'nonlinear' for c in b["depends_on"]}
                                         or {ck: 'constant'})
-                    potential[ck] = {ck: 'u'}
+                    self._potential(potential, ck, b.get("potential"), phi, i)
                     sdInfo[(i, ck)] = (numpy.array(b["rowptr"], CSR_INDEX_DTYPE),
                                        numpy.array(b["colind"], CSR_INDEX_DTYPE))
                     for n, code in enumerate(b["a"]):
@@ -149,6 +150,28 @@ class ADRCoefficients(TC_base):
             stem = names[vectors[0]][:-2]
             self.vectorComponents = [index["%s_%d" % (stem, k)] for k in range(self.nd)]
             self.vectorName = stem
+
+    def _potential(self, potential, ck, block, name, i):
+        """Component ``ck``'s potential: the unknown itself (Proteus's ``'u'``), or ``block``'s phi(u).
+
+        Proteus holds one potential per component, evaluated once and shared by every equation that diffuses it, so
+        two equations that give the same component different potentials are refused.
+        """
+        if block is None:
+            flags, code = {ck: 'u'}, None
+        else:
+            if set(block["depends_on"]) != {name}:
+                raise ValueError("the potential of %s depends on %s; Proteus's phi_k is a function of u_k alone"
+                                 % (name, ", ".join(sorted(block["depends_on"])) or "nothing"))
+            flags, code = {ck: 'nonlinear'}, block["phi"]
+        if ck in potential and self._potentials.get(ck) != code:
+            raise ValueError("equation %d gives %s the potential %s, another equation %s; Proteus has one potential "
+                             "per component" % (i, name, code or name, self._potentials.get(ck) or name))
+        potential[ck] = flags
+        self._potentials[ck] = code
+        if code is not None and not any(key == ('phi', ck) for key, _, _, _ in self._terms):
+            self._add(('phi', ck), code)
+            self._add(('dphi', ck, ck), block["dphi"][name])
 
     def _add(self, key, code, last=None):
         self._terms.append((key, _compile(code), last, code))

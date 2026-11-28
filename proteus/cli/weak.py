@@ -116,7 +116,8 @@ def _vector(vec, space):
 
     A common minus sign comes out (``sign`` -1), and a multiple of one
     unknown's gradient is written ``c ∇φ`` rather than its components --
-    ``∇u``, where the components would be ``(∂u/∂x, ∂u/∂y)``. Both forms
+    ``∇u``, where the components would be ``(∂u/∂x, ∂u/∂y)``, and
+    ``∇(u² + 10u)`` for a nonlinear potential. Both forms
     read back as the same vector.
     """
     import sympy
@@ -130,7 +131,7 @@ def _vector(vec, space):
     first = entries[0]
     gradient = None
     for d in first.atoms(D):
-        if d.args[0].is_Symbol and int(d.args[1]) == 0:
+        if not d.args[0].has(D) and int(d.args[1]) == 0:
             c = sympy.simplify(first / d)
             if not c.has(D) and all(
                     sympy.simplify(entries[k] - c * D(d.args[0], k)) == 0
@@ -140,7 +141,8 @@ def _vector(vec, space):
     if gradient is not None:
         c, phi = gradient
         prefix = "" if c == 1 else _paren(c) + " "
-        return sign, "%s∇%s" % (prefix, phi.name)
+        # the unknown, or a nonlinear potential of it: ∇u, ∇(u² + 10u)
+        return sign, "%s∇%s" % (prefix, phi.name if phi.is_Symbol else _paren(phi))
     return sign, to_notation(sympy.Matrix(entries))
 
 
@@ -172,7 +174,9 @@ def _lines(space, residuals, tests):
             lhs.append("∫Ω %s %s dx" % (to_notation(Dt(eq.mass)), w))
         flux = list(eq.advection)
         for phi, tensor in eq.diffusion.items():
-            grad = [D(sympy.Symbol(phi, real=True), k) for k in range(space.dim)]
+            # the potential the tensor acts on: the unknown, or phi(u) (ymf >= the nonlinear potential)
+            potential = getattr(eq, "potential", {}).get(phi, sympy.Symbol(phi, real=True))
+            grad = [D(potential, k) for k in range(space.dim)]
             for j in range(space.dim):
                 flux[j] -= sum(tensor[j, k] * grad[k] for k in range(space.dim))
         parts = [_split(f, space) for f in flux]
