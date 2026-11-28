@@ -1,0 +1,27 @@
+name: notebooks
+
+# Notebooks under notebooks/ are committed without outputs, run counts or kernel metadata (.gitattributes,
+# tools/strip_notebook.py). This quick check catches one committed from a clone that was never built, so the
+# filter was never set up. The notebooks themselves run in sdist.yml, against the proteus it builds.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'notebooks/**'
+      - 'tools/check_notebooks_stripped.py'
+      - '.github/workflows/notebooks.yml'
+  pull_request:
+    paths:
+      - 'notebooks/**'
+      - 'tools/check_notebooks_stripped.py'
+      - '.github/workflows/notebooks.yml'
+  workflow_dispatch:
+
+jobs:
+  stripped:
+    name: check the notebooks are stripped
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/check_notebooks_stripped.py notebooks
